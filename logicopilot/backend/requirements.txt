@@ -1,0 +1,32 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+pydantic[email]>=2.6
+pydantic-settings>=2.2
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# DB migrations
+alembic>=1.13
+
+# Auth (JWT + password hashing) + CLI
+PyJWT>=2.8
+cryptography>=42
+passlib[bcrypt]>=1.7
+typer>=0.12
+
+# Web automation — ERP recorder + entry playback
+playwright>=1.44
+
+# Document rendering (PDF -> page images, no system deps needed)
+PyMuPDF>=1.24
+
+# Excel reading/writing — material master lookup sheets, reference-value templates
+openpyxl>=3.1
+
+# OCR — Google Cloud Document AI
+google-cloud-documentai>=2.29
+
+# LLM — OpenAI (prompt generation + extraction pipeline)
+openai>=1.30
+psycopg2-binary>=2.9

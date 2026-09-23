@@ -1,0 +1,29 @@
+[project]
+name = "logicopilot-backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.5",
+    "email-validator>=2.3.0",
+    "fastapi>=0.139.0",
+    "google-cloud-documentai>=2.29",
+    "openai>=1.30",
+    "openpyxl>=3.1",
+    "passlib[argon2]>=1.7.4",
+    "psycopg[binary]>=3.3.4",
+    "pydantic-settings>=2.14.2",
+    "pyjwt>=2.13.0",
+    "pymupdf>=1.24",
+    "python-multipart>=0.0.32",
+    "sqlalchemy>=2",
+    "typer>=0.26.8",
+    "uvicorn[standard]>=0.50.2",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]

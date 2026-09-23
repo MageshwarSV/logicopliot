@@ -1,0 +1,546 @@
+"""assign_documents_detailed: the deterministic reconciliation that runs AFTER the model
+classifies each file - same-page collisions dropped, slots contested by specificity.
+classify_document (the actual OpenAI call) is mocked out per file so these tests exercise
+only the reconciliation logic, not the model."""
+
+from unittest.mock import MagicMock, patch
+
+from app.core.classifier import _keyword_signature_match, assign_documents, assign_documents_detailed, classify_document
+
+
+def _file(name, text=""):
+    return {"name": name, "text": text, "image": None}
+
+
+def _claim(key, pages, evidence="some evidence text"):
+    return {"key": key, "pages": pages, "evidence": evidence}
+
+
+CANDIDATES = [
+    {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
+    {"key": "pl", "name": "Packing List", "doc_type": "PackingList", "fields": []},
+    {"key": "bl", "name": "BL", "doc_type": "BL", "fields": []},
+    {"key": "frt", "name": "Freight", "doc_type": "Freight", "fields": []},
+]
+
+
+def _run(files, per_file_claims):
+    with patch("app.core.classifier.classify_document", side_effect=per_file_claims):
+        return assign_documents_detailed(files, CANDIDATES)
+
+
+# --------------------------------------------------------------------------- #
+# Positive cases
+# --------------------------------------------------------------------------- #
+
+def test_single_file_single_type_passes_through():
+    files = [_file("a.pdf")]
+    result = _run(files, [[_claim("inv", [1])]])
+    assert [m["key"] for m in result[0]] == ["inv"]
+
+
+def test_one_pdf_with_three_invoice_instances_all_kept():
+    # The "Bug 1" fix: three physically distinct invoices in one PDF, same key, disjoint
+    # pages - all three must survive, not collapse into one.
+    files = [_file("combined.pdf")]
+    claims = [[_claim("inv", [1]), _claim("inv", [2]), _claim("inv", [3])]]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["inv", "inv", "inv"]
+
+
+def test_three_files_each_one_invoice_all_win_the_slot():
+    # Three separate invoice files, each an equally specific (breadth=1) claimant - all three
+    # must be kept in the Invoice slot, not just the first.
+    files = [_file("inv1.pdf"), _file("inv2.pdf"), _file("inv3.pdf")]
+    claims = [[_claim("inv", [1])], [_claim("inv", [1])], [_claim("inv", [1])]]
+    result = _run(files, claims)
+    assert all(m["key"] == "inv" for ms in result for m in ms)
+    assert sum(len(ms) for ms in result) == 3
+
+
+def test_specific_claimant_beats_broad_claimant_for_a_contested_slot():
+    # File 0 claims ONLY Freight (specific, breadth=1). File 1 claims BL AND Freight
+    # (broad, breadth=2). File 0 must win Freight; file 1 keeps BL but loses Freight.
+    files = [_file("freight_cert.pdf"), _file("bl_and_freight.pdf")]
+    claims = [
+        [_claim("frt", [1])],
+        [_claim("bl", [1]), _claim("frt", [2])],
+    ]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["frt"]
+    assert [m["key"] for m in result[1]] == ["bl"]
+
+
+def test_combined_bl_plus_pl_on_different_pages_keeps_both():
+    files = [_file("bl_pl_combo.pdf")]
+    claims = [[_claim("bl", [1]), _claim("pl", [2])]]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"bl", "pl"}
+
+
+def test_multiple_winners_of_one_slot_are_all_reported():
+    # Two files both claim the specificity-winning bar for the same slot - both kept, not
+    # arbitrarily reduced to one.
+    files = [_file("inv_a.pdf"), _file("inv_b.pdf")]
+    claims = [[_claim("inv", [1])], [_claim("inv", [1])]]
+    result = _run(files, claims)
+    assert len(result[0]) == 1 and len(result[1]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Negative / edge cases
+# --------------------------------------------------------------------------- #
+
+def test_same_page_different_types_are_both_kept_for_a_combined_document():
+    # A "SHIPPING INVOICE CUM PACKING LIST" - one real page that genuinely is both an
+    # Invoice and a Packing List at once. Different keys sharing a page is NOT a conflict;
+    # the same file must be written into both slots.
+    files = [_file("shipping_invoice_cum_pl.pdf")]
+    claims = [[
+        _claim("inv", [1], evidence="short"),
+        _claim("pl", [1], evidence="a much longer and more convincing quote of the page text"),
+    ]]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+    assert len(result[0]) == 2
+
+
+def test_same_key_claiming_an_already_claimed_page_is_still_dropped():
+    # The SAME type claiming a page twice IS still a real conflict (unlike different types
+    # sharing a page, above) - the one with the longer evidence wins.
+    files = [_file("weird.pdf")]
+    claims = [[
+        _claim("inv", [1], evidence="short"),
+        _claim("inv", [1], evidence="a much longer and more convincing quote of the page text"),
+    ]]
+    result = _run(files, claims)
+    assert len(result[0]) == 1
+    assert result[0][0]["evidence"] == "a much longer and more convincing quote of the page text"
+
+
+def test_no_files_returns_empty_list():
+    assert _run([], []) == []
+
+
+def test_files_with_no_matches_at_all_return_empty_per_file():
+    files = [_file("junk.pdf"), _file("more_junk.pdf")]
+    result = _run(files, [[], []])
+    assert result == [[], []]
+
+
+def test_assign_documents_wrapper_returns_bare_keys_only():
+    files = [_file("a.pdf")]
+    with patch("app.core.classifier.classify_document", side_effect=[[_claim("inv", [1])]]):
+        result = assign_documents(files, CANDIDATES)
+    assert result == [["inv"]]
+
+
+def test_non_overlapping_pages_for_same_key_are_never_treated_as_a_clash():
+    # Two instances of the SAME key on a single file must not collide with each other just
+    # because they share a key - only an actual page overlap should ever drop one.
+    files = [_file("two_invoices.pdf")]
+    claims = [[_claim("inv", [1, 2]), _claim("inv", [3, 4])]]
+    result = _run(files, claims)
+    assert len(result[0]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Keyword-signature backstop for a genuinely combined document - the model's own
+# call sometimes notices only ONE of two types truly present on the same page.
+# --------------------------------------------------------------------------- #
+
+# Real structure from an actual "SHIPPING INVOICE CUM PACKING LIST" document.
+HUSKY_STYLE_TEXT = """
+SHIPPING INVOICE CUM PACKING LIST
+Exporter: Husky Injection Molding Systems (India) Private Limited
+INVOICE NO: EX/26-27/0413   INVOICE DATE: 3-Aug-2026
+Description of Goods   HSN Ref.   Quantity   Rate in USD   Amount in USD
+MANIFOLD SYSTEM 4 DROP 750-HT-PR-MS   84779000   1   2640.20   2,640.20
+Total No. of Packs: 1-WOODEN BOX
+Net Weight of Total Packs: 17.000 KGS
+Gross Weight of Total Packs: 22.000 KGS
+Dimension of each Pack: 620X420X380-1 IN MM
+Terms of Payment: Net 60 days
+"""
+
+ORDINARY_INVOICE_TEXT = """
+COMMERCIAL INVOICE
+INVOICE NO: INV-9821   INVOICE DATE: 12-Jul-2026
+Description of Goods   HSN   Quantity   Rate in USD   Amount in USD
+Widget assembly   84779000   10   50.00   500.00
+Net Weight: 5.5 KGS
+Terms of Payment: Net 30 days
+"""
+
+ORDINARY_PACKING_LIST_TEXT = """
+PACKING LIST
+Net Weight: 22.000 KGS   Gross Weight: 24.500 KGS
+No. of Packages: 2   Dimension: 400X300X200 MM
+Marks & Nos.: ABC-001
+"""
+
+# The real production document that exposed the gap: neither "packing list" nor "invoice no"
+# appears anywhere on the page. It calls itself "Commercial Invoice / Packing Slip", labels its
+# invoice number field "Commercial Inv No", and its packing table "PACKING DETAILS".
+SANSERA_STYLE_TEXT = """
+SANSERA
+Delivery Challan cum
+Commercial Invoice / Packing Slip
+Commercial Inv No / Date:
+4914437463/ 27.08.2026
+Total value
+SI No Part No Description HSN Qty Unit Rate/Unit
+1 715-173869-200 84869000 9,00 EA 49.60
+Amount (In Words) USD: SEVEN THOUSAND SIX HUNDRED FIFTY-FOUR
+PACKING DETAILS
+Sl no Pkg Part no Type Qty Gross weight Net weight No of Box Box Dimensions
+1 Box-1 715-173869-200 Carton Box 3 10 8,1 1 600 X 600 X 300 MM
+"""
+
+
+def test_keyword_backstop_adds_packinglist_when_model_only_found_invoice():
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[_claim("inv", [1], evidence="invoice fields present")]]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+    pl_claim = next(m for m in result[0] if m["key"] == "pl")
+    assert pl_claim["pages"] == [1]
+
+
+def test_keyword_backstop_adds_invoice_when_model_only_found_packinglist():
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[_claim("pl", [1], evidence="packing list fields present")]]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+
+
+def test_keyword_backstop_adds_invoice_on_a_real_combined_challan_the_model_only_saw_as_pl():
+    # The exact production case that exposed the gap: SANSERA's "Delivery Challan cum
+    # Commercial Invoice / Packing Slip" - the model only recognised the packing side (PL),
+    # and neither "invoice no" nor "packing list" appears anywhere on the page, so the
+    # required-phrase list had to widen to the real wording before this could pass.
+    files = [_file("sansera_challan.pdf", text=SANSERA_STYLE_TEXT)]
+    claims = [[_claim("pl", [1], evidence="packing details present")]]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+
+
+def test_ai_fallback_adds_the_second_type_when_regex_does_not_recognise_the_wording():
+    # A company whose wording matches NEITHER regex pattern at all (a "Despatch Note" that is
+    # also the commercial paperwork) - the AI fallback is the only thing that can catch this.
+    files = [_file("despatch.pdf", text="DESPATCH NOTE\nSome wording regex has never seen.")]
+    claims = [[_claim("inv", [1], evidence="invoice fields present")]]
+    with patch("app.core.classifier._ai_verify_second_type",
+               return_value={"pages": [1], "evidence": "a per-package weight breakdown"}):
+        result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+    added = next(m for m in result[0] if m["key"] == "pl")
+    assert "AI-verified" in added["evidence"]
+
+
+def test_ai_fallback_is_not_called_when_regex_already_matched():
+    from unittest.mock import Mock
+
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[_claim("inv", [1], evidence="invoice fields present")]]
+    mock_ai = Mock()
+    with patch("app.core.classifier._ai_verify_second_type", mock_ai):
+        result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+    mock_ai.assert_not_called()
+
+
+def test_ai_fallback_returning_not_present_adds_nothing():
+    files = [_file("plain_invoice.pdf", text=ORDINARY_INVOICE_TEXT)]
+    claims = [[_claim("inv", [1], evidence="invoice fields present")]]
+    with patch("app.core.classifier._ai_verify_second_type", return_value=None):
+        result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["inv"]
+
+
+def test_ai_fallback_is_not_called_when_every_slot_is_already_claimed():
+    from unittest.mock import Mock
+
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[
+        _claim("inv", [1], evidence="invoice fields present"),
+        _claim("pl", [1], evidence="packing list fields present"),
+    ]]
+    mock_ai = Mock()
+    with patch("app.core.classifier._ai_verify_second_type", mock_ai):
+        _run(files, claims)
+    mock_ai.assert_not_called()
+
+
+def test_ai_fallback_without_an_api_key_returns_none_without_crashing():
+    from app.core.classifier import _ai_verify_second_type
+
+    candidate = {"key": "pl", "name": "Packing List", "doc_type": "PackingList"}
+    result = _ai_verify_second_type("f.pdf", "some text", None, candidate, ["Invoice"])
+    assert result is None
+
+
+def test_keyword_backstop_does_not_fire_on_an_ordinary_invoice_with_one_weight_field():
+    # A real, single-type invoice that happens to mention "Net Weight" once must NOT get a
+    # phantom Packing List added - it never says "packing list" and has none of the other
+    # supporting markers (no gross weight, no dimensions, no marks & nos).
+    files = [_file("plain_invoice.pdf", text=ORDINARY_INVOICE_TEXT)]
+    claims = [[_claim("inv", [1], evidence="invoice fields present")]]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["inv"]
+
+
+def test_keyword_backstop_does_not_fire_on_an_ordinary_packing_list():
+    files = [_file("plain_pl.pdf", text=ORDINARY_PACKING_LIST_TEXT)]
+    claims = [[_claim("pl", [1], evidence="packing list fields present")]]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["pl"]
+
+
+def test_keyword_backstop_does_nothing_when_no_slot_exists_for_the_missing_type():
+    candidates_no_pl = [{"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []}]
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    with patch("app.core.classifier.classify_document",
+               side_effect=[[_claim("inv", [1], evidence="invoice fields present")]]):
+        result = assign_documents_detailed(files, candidates_no_pl)
+    assert [m["key"] for m in result[0]] == ["inv"]
+
+
+def test_keyword_backstop_does_not_duplicate_when_model_already_found_both():
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[
+        _claim("inv", [1], evidence="invoice fields present"),
+        _claim("pl", [1], evidence="packing list fields present"),
+    ]]
+    result = _run(files, claims)
+    assert len(result[0]) == 2
+
+
+def test_keyword_backstop_handles_empty_text_without_crashing():
+    files = [_file("blank.pdf", text="")]
+    claims = [[_claim("inv", [1])]]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["inv"]
+
+
+def test_keyword_backstop_multipage_claim_extends_augmentation_to_all_matched_pages():
+    # The existing claim spans two pages - the added claim for the missing type must cover
+    # the SAME pages, not just the first one.
+    files = [_file("combined2.pdf", text=HUSKY_STYLE_TEXT)]
+    claims = [[_claim("inv", [1, 2], evidence="invoice fields present")]]
+    result = _run(files, claims)
+    pl_claim = next(m for m in result[0] if m["key"] == "pl")
+    assert pl_claim["pages"] == [1, 2]
+
+
+def test_keyword_backstop_only_augments_the_relevant_file_in_a_batch():
+    # Three files in one batch, none contesting the same slot as another (kept deliberately
+    # non-competing - a SEPARATE test below covers what happens when two files DO compete for
+    # the same slot): only the combined one should gain a second claim; a plain single-type
+    # invoice for a DIFFERENT shipment and an unrelated BL file must be left exactly as the
+    # model found them.
+    files = [
+        _file("combined.pdf", text=HUSKY_STYLE_TEXT),
+        _file("plain_freight.pdf", text="FREIGHT CERTIFICATE\nOcean Freight: USD 500.00"),
+        _file("some_bl.pdf", text="BILL OF LADING\nShipper: Acme Corp\nConsignee: Beta Ltd"),
+    ]
+    claims = [
+        [_claim("inv", [1], evidence="invoice fields present")],
+        [_claim("frt", [1], evidence="freight certificate")],
+        [_claim("bl", [1], evidence="bill of lading")],
+    ]
+    result = _run(files, claims)
+    assert {m["key"] for m in result[0]} == {"inv", "pl"}
+    assert [m["key"] for m in result[1]] == ["frt"]
+    assert [m["key"] for m in result[2]] == ["bl"]
+
+
+def test_keyword_backstop_widening_a_files_breadth_can_lose_a_contested_slot():
+    # A real, worth-knowing interaction with the PRE-EXISTING specificity rule (unrelated to
+    # today's change): augmenting combined.pdf to claim BOTH Invoice and PackingList makes it
+    # a BROADER claimant. If a genuinely separate, single-type invoice file competes for the
+    # very same Invoice slot, the existing rule correctly prefers the narrower, more certain
+    # claim - so combined.pdf can lose Invoice here while keeping PackingList. This is the
+    # specificity rule behaving exactly as it already did before this feature existed; it is
+    # not something the backstop should try to override.
+    files = [
+        _file("combined.pdf", text=HUSKY_STYLE_TEXT),
+        _file("plain_invoice.pdf", text=ORDINARY_INVOICE_TEXT),
+    ]
+    claims = [
+        [_claim("inv", [1], evidence="invoice fields present")],
+        [_claim("inv", [1], evidence="invoice fields present")],
+    ]
+    result = _run(files, claims)
+    assert [m["key"] for m in result[0]] == ["pl"]
+    assert [m["key"] for m in result[1]] == ["inv"]
+
+
+def test_keyword_backstop_never_fires_for_a_doc_type_with_no_signature_defined():
+    # A BL slot exists and the file's own text obviously is not a BL, but "BL" has no
+    # entry in the signature table at all - it must never be silently added.
+    candidates_with_bl = [
+        {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
+        {"key": "bl", "name": "BL", "doc_type": "BL", "fields": []},
+    ]
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    with patch("app.core.classifier.classify_document",
+               side_effect=[[_claim("inv", [1], evidence="invoice fields present")]]):
+        result = assign_documents_detailed(files, candidates_with_bl)
+    assert "bl" not in {m["key"] for m in result[0]}
+
+
+def test_keyword_backstop_does_not_augment_a_file_the_model_matched_to_nothing():
+    # If the model found NO type at all for a file, the backstop does not step in and
+    # invent one from keywords alone - it only ever ADDS a missing type alongside one the
+    # model already found, never creates the first claim on its own.
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+    result = _run(files, [[]])
+    assert result[0] == []
+
+
+# --------------------------------------------------------------------------- #
+# _keyword_signature_match — direct unit tests on the matcher itself
+# --------------------------------------------------------------------------- #
+
+def test_signature_match_exact_threshold_boundary():
+    # Required phrase + exactly 2 supporting markers (the minimum) -> match.
+    text = "packing list\nnet weight: 5kg\ngross weight: 6kg"
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is True
+    assert hits == 2
+
+
+def test_signature_match_one_below_threshold_does_not_match():
+    text = "packing list\nnet weight: 5kg"  # only 1 supporting marker
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is False
+    assert hits == 1
+
+
+def test_signature_match_required_phrase_missing_never_matches_regardless_of_supporting_count():
+    # Every supporting marker present, but the required phrase itself is absent.
+    text = "net weight: 5kg\ngross weight: 6kg\ndimension: 10x10x10\nmarks and nos: ABC\ntotal no of packs: 2"
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is False
+
+
+def test_signature_match_invoice_exact_threshold_boundary():
+    text = "invoice no: INV-1\ninvoice date: 1-Jan-2026\nunit price: 5.00"
+    is_match, hits = _keyword_signature_match(text, "Invoice")
+    assert is_match is True
+    assert hits == 2
+
+
+def test_signature_match_invoice_required_phrase_missing():
+    text = "invoice date: 1-Jan-2026\nunit price: 5.00\namount in usd: 50.00\nhsn: 12345678"
+    is_match, _ = _keyword_signature_match(text, "Invoice")
+    assert is_match is False
+
+
+def test_signature_match_is_case_insensitive():
+    text = "PACKING LIST\nNET WEIGHT: 5KG\nGROSS WEIGHT: 6KG"
+    is_match, _ = _keyword_signature_match(text, "PackingList")
+    assert is_match is True
+
+
+def test_signature_match_real_document_exact_phrase_no_and_kind_of_packages():
+    # The EXACT real phrasing from the actual document this feature was built for:
+    # "No. & kind of Packages" - not a simplified test string.
+    text = (
+        "SHIPPING INVOICE CUM PACKING LIST\n"
+        "No. & kind of Packages: 1-WOODEN BOX\n"
+        "Net Weight of Total Packs: 17.000 KGS\n"
+        "Gross Weight of Total Packs: 22.000 KGS\n"
+        "Dimension of each Pack: 620X420X380-1 IN MM\n"
+    )
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is True
+    assert hits >= 3
+
+
+def test_signature_match_real_sansera_challan_neither_required_phrase_uses_the_word_literally():
+    # Production text (via scratch_diagnose_sansera.py): titled "Commercial Invoice / Packing
+    # Slip", its invoice number field reads "Commercial Inv No", its packing table header reads
+    # "PACKING DETAILS" - literally never "invoice no" or "packing list".
+    is_match, hits = _keyword_signature_match(SANSERA_STYLE_TEXT, "Invoice")
+    assert is_match is True
+    is_match, hits = _keyword_signature_match(SANSERA_STYLE_TEXT, "PackingList")
+    assert is_match is True
+
+
+def test_signature_match_unknown_doc_type_returns_false_without_crashing():
+    is_match, hits = _keyword_signature_match("packing list net weight gross weight", "Freight")
+    assert (is_match, hits) == (False, 0)
+
+
+def test_signature_match_none_and_empty_text_do_not_crash():
+    assert _keyword_signature_match("", "PackingList") == (False, 0)
+    assert _keyword_signature_match(None, "PackingList") == (False, 0)
+
+
+# --------------------------------------------------------------------------- #
+# classify_document — a page with no extractable OCR text must never be handed
+# to the model as an image to guess from. Program-based check only, never AI.
+# --------------------------------------------------------------------------- #
+
+def _settings_with_key():
+    s = MagicMock()
+    s.openai_api_key = "fake-key-for-test"
+    s.openai_model = "gpt-4o-mini"
+    return s
+
+
+def test_classify_document_returns_empty_for_blank_text_without_calling_openai():
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls:
+        result = classify_document("scan.png", "", MagicMock(exists=lambda: True), CANDIDATES)
+    assert result == []
+    mock_openai_cls.assert_not_called()
+
+
+def test_classify_document_returns_empty_for_none_text_without_calling_openai():
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls:
+        result = classify_document("scan.png", None, MagicMock(exists=lambda: True), CANDIDATES)
+    assert result == []
+    mock_openai_cls.assert_not_called()
+
+
+def test_classify_document_returns_empty_for_whitespace_only_text_without_calling_openai():
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls:
+        result = classify_document("scan.png", "   \n\t  ", MagicMock(exists=lambda: True), CANDIDATES)
+    assert result == []
+    mock_openai_cls.assert_not_called()
+
+
+def test_classify_document_ignores_a_real_image_when_text_is_blank():
+    # The old behaviour (removed): fall back to sending the page image itself for a vision
+    # guess when OCR text was empty. This confirms that path is gone even when a real,
+    # existing image file is available - having an image must never revive the AI call.
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pathlib.Path.read_bytes", return_value=b"fake png bytes"):
+        from pathlib import Path
+        result = classify_document("scan.png", "", Path("/fake/page_1.png"), CANDIDATES)
+    assert result == []
+    mock_openai_cls.assert_not_called()
+
+
+def test_classify_document_still_calls_openai_when_real_text_is_present():
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message.content = (
+        '{"matches": [{"key": "inv", "pages": [1], "evidence": "Invoice No: INV-123, Total Payable: 500"}]}'
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = fake_response
+
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls:
+        result = classify_document("invoice.pdf", "Invoice No: INV-123\nTotal Payable: 500", None, CANDIDATES)
+
+    mock_openai_cls.assert_called_once()
+    assert [m["key"] for m in result] == ["inv"]

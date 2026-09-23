@@ -1,0 +1,43 @@
+# This repo tracks only the logicopilot app's SOURCE CODE. Everything else - in this
+# folder or in logicopilot/ itself - is scratch space, generated output, credentials,
+# backups or local data, and stays out by default (allow-list, not a deny-list): a new
+# loose file at either level needs a deliberate line added here before it is ever
+# picked up by `git add .`, rather than being swept in by accident.
+/*
+!/.gitignore
+!/logicopilot/
+/logicopilot/*
+!/logicopilot/backend/
+!/logicopilot/frontend/
+
+# --- backend: source only ---
+/logicopilot/backend/*
+!/logicopilot/backend/app/
+!/logicopilot/backend/alembic/
+!/logicopilot/backend/tests/
+!/logicopilot/backend/pyproject.toml
+!/logicopilot/backend/requirements.txt
+!/logicopilot/backend/uv.lock
+!/logicopilot/backend/alembic.ini
+!/logicopilot/backend/README.md
+
+/logicopilot/backend/app/__pycache__/
+/logicopilot/backend/**/__pycache__/
+
+# --- frontend: source only ---
+/logicopilot/frontend/*
+!/logicopilot/frontend/src/
+!/logicopilot/frontend/public/
+!/logicopilot/frontend/package.json
+!/logicopilot/frontend/package-lock.json
+!/logicopilot/frontend/index.html
+!/logicopilot/frontend/tsconfig.json
+!/logicopilot/frontend/tsconfig.app.json
+!/logicopilot/frontend/tsconfig.node.json
+!/logicopilot/frontend/vite.config.ts
+!/logicopilot/frontend/README.md
+
+# --- general ---
+**/__pycache__/
+**/*.pyc
+.DS_Store
