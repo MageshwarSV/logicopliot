@@ -1,3 +1,5 @@
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -137,6 +139,28 @@ def update_tenant(
 
     db.commit()
     db.refresh(tenant)
+    return TenantOut.model_validate(tenant)
+
+
+@router.post("/{tenant_id}/irn-pending-key", response_model=TenantOut)
+def generate_irn_pending_key(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> TenantOut:
+    """The Super Admin dashboard's "Generate Link" button, for the standalone, no-login IRN
+    Pending page (see app/api/v1/public_irn.py) - a tenant's key is created once, the first
+    time this is called for them, and never rotated automatically after that, so a link
+    already handed out keeps working. Calling this again for a tenant that already has a key
+    is a no-op that just returns it - pressing the button again means "show me the link", not
+    "invalidate whatever copy is already in use"."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if not tenant.irn_pending_access_key:
+        tenant.irn_pending_access_key = secrets.token_urlsafe(32)
+        db.commit()
+        db.refresh(tenant)
     return TenantOut.model_validate(tenant)
 
 

@@ -89,3 +89,11 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # a material code or CTH, which is why this is opt-in per field, not a global behavior.
     fuzzy_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Mirrors FieldMark.example_value: typed live into the ERP while a Super Admin is
+    # RECORDING a script (see _sample_for_label), so the field validates and the steps after
+    # it can be recorded - never used as the field's real answer on any actual job. Mainly for
+    # an ask_operator field with no hardcoded_value of its own (a "Manual Entry" field created
+    # straight from the recorder, which otherwise has nothing to type but its own label - not
+    # a valid quotation number, PO number, etc. on the live ERP).
+    example_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+

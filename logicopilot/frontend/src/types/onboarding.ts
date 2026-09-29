@@ -104,6 +104,9 @@ export interface CustomField {
   /** is_target_value only: match on the same real-world thing despite OCR/formatting noise
    *  ("KUEHNE + NAGEL PVT. LTD." vs "KUEHNE+NAGEL") instead of requiring identical text. */
   fuzzy_match?: boolean;
+  /** Typed live into the ERP while recording a script — see Mark.example_value. Never the
+   *  field's real answer on any actual job. */
+  example_value?: string | null;
 }
 
 /** A customer's reference sheet — their own export, used to answer what the documents cannot.

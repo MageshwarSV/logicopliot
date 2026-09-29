@@ -30,10 +30,26 @@ MATCH_SLOTS = 4
 FUZZY_SIMILARITY_THRESHOLD = 0.82
 
 
+# A handful of corporate-suffix words that show up spelled out on one document and
+# abbreviated on the next - the same real company, but "PRIVATE LIMITED" and "PVT LTD" share
+# no substring and sit nowhere near 0.82 on a character-level ratio once the rest of the name
+# is short (found live: "KUEHNE AND NAGEL PRIVATE LIMITED" vs the reference table's "KUEHNE +
+# NAGEL PVT LTD" would not have matched, and a manual correction would have gone on to add a
+# second, near-duplicate row for the same freight forwarder). Word-level, applied before the
+# alnum squash below, so "AND" only ever folds when it stands alone as a word (never a name
+# that happens to contain "AND" as a substring).
+_SUFFIX_SYNONYMS = {
+    "AND": "", "PRIVATE": "PVT", "LIMITED": "LTD", "COMPANY": "CO", "CORPORATION": "CORP",
+}
+
+
 def _fuzzy_key(text: str) -> str:
     """Letters and digits only - so 'Kuehne + Nagel Pvt. Ltd.' and 'KUEHNE+NAGEL' compare
-    equal regardless of spacing or punctuation around a company's own name."""
-    return "".join(ch for ch in str(text or "").upper() if ch.isalnum())
+    equal regardless of spacing or punctuation around a company's own name, and so a spelled-out
+    corporate suffix and its abbreviation (see _SUFFIX_SYNONYMS) compare equal too."""
+    words = "".join(ch if ch.isalnum() else " " for ch in str(text or "").upper()).split()
+    words = [_SUFFIX_SYNONYMS.get(w, w) for w in words]
+    return "".join(words)
 
 
 def _fuzzy_similar(a: str, b: str) -> bool:
@@ -130,7 +146,7 @@ def lookup_reference(
 
 def remember_reference(
     db: Session, custom_field_id: str | None = None, match_values=None, resolved_value: str = "",
-    *, mark_id: str | None = None,
+    *, mark_id: str | None = None, fuzzy: bool = False,
 ) -> None:
     """Save what was just typed/corrected for these identifying values, so it is not asked for
     again. Does not commit - the caller decides the transaction boundary, the same as every
@@ -139,6 +155,16 @@ def remember_reference(
     Silently does nothing for a blank answer or values with nothing to key on: a row like that
     would either remember nothing worth remembering, or swallow every other blank line for this
     field the moment one of them is filled in.
+
+    fuzzy=True (only ever set for a field with fuzzy_match=True, mirroring lookup_reference's
+    own `fuzzy` param): checked BEFORE the exact-slot lookup below, not just after it. An
+    operator only ever reaches this path when lookup_reference (itself fuzzy-aware) already
+    found nothing - but that only means no EXISTING row was close enough on ITS reading of the
+    text; the freshly typed correction can still be a near-miss on a row that lookup rejected,
+    or on one added since. Without this, every spelling variant that keeps arriving ("KUEHNE +
+    NAGEL PVT LTD", "KUEHNE AND NAGEL PRIVATE LIMITED", ...) adds its OWN row instead of
+    updating the one the fuzzy reader already treats as the same company - exactly the
+    duplicate-row growth this field's fuzzy_match=True was meant to prevent.
     """
     value = (resolved_value or "").strip()
     if not value:
@@ -146,17 +172,27 @@ def remember_reference(
     slots = _padded_slots(match_values)
     if not any(slots):
         return
-    row = (
-        db.query(CustomFieldReferenceValue)
-        .filter(
-            *_owner_filter(custom_field_id, mark_id),
-            CustomFieldReferenceValue.match_value_1 == slots[0],
-            CustomFieldReferenceValue.match_value_2 == slots[1],
-            CustomFieldReferenceValue.match_value_3 == slots[2],
-            CustomFieldReferenceValue.match_value_4 == slots[3],
+    row = None
+    if fuzzy:
+        for cand in db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id)).all():
+            stored = [cand.match_value_1, cand.match_value_2, cand.match_value_3, cand.match_value_4]
+            if any(q and s and not _fuzzy_similar(q, s) for q, s in zip(slots, stored)):
+                continue
+            if any(q and s for q, s in zip(slots, stored)):
+                row = cand
+                break
+    if row is None:
+        row = (
+            db.query(CustomFieldReferenceValue)
+            .filter(
+                *_owner_filter(custom_field_id, mark_id),
+                CustomFieldReferenceValue.match_value_1 == slots[0],
+                CustomFieldReferenceValue.match_value_2 == slots[1],
+                CustomFieldReferenceValue.match_value_3 == slots[2],
+                CustomFieldReferenceValue.match_value_4 == slots[3],
+            )
+            .first()
         )
-        .first()
-    )
     if row is not None:
         if row.resolved_value != value:
             logger.info("reference cache: updating %s (was %r, now %r)", slots, row.resolved_value, value)

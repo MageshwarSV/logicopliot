@@ -124,6 +124,64 @@ def set_extraction_paused(
     return {"extraction_paused": row.extraction_paused}
 
 
+@router.get("/mailboxes")
+def list_mailboxes(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> list[dict]:
+    """Every operator mailbox connected anywhere in the system - Gmail, Zoho, whichever
+    provider - across EVERY tenant, since this screen is system-wide (Super Admin only), not
+    scoped to one tenant the way the rest of the admin UI is. Each row is exactly what
+    _operator_mailboxes (app/core/email_puller.py) would poll if not individually paused -
+    same filters (active, has mail credentials), same mail_paused switch shown here for
+    toggling. The tenant's own shared inbox (configured in .env, not a User row) has no
+    per-row identity to list or pause here.
+    """
+    from app.models.tenant import Tenant
+    from app.models.user import OPERATOR, User
+
+    rows = (
+        db.query(User, Tenant.name)
+        .outerjoin(Tenant, Tenant.id == User.tenant_id)
+        .filter(User.role == OPERATOR, User.mail_email.isnot(None))
+        .order_by(Tenant.name, User.full_name)
+        .all()
+    )
+    return [
+        {
+            "user_id": u.id,
+            "full_name": u.full_name,
+            "tenant_id": u.tenant_id,
+            "tenant_name": tenant_name,
+            "mail_provider": u.mail_provider,
+            "mail_email": u.mail_email,
+            "is_active": u.is_active,
+            "mail_paused": u.mail_paused,
+        }
+        for u, tenant_name in rows
+    ]
+
+
+@router.post("/mailboxes/{user_id}/pause")
+def set_mailbox_paused(
+    user_id: str,
+    payload: PauseFlag,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Stop (or resume) polling ONE operator's mailbox, independent of every other mailbox
+    and of the system-wide email_pull_paused switch above. Applies on the very next poll
+    cycle - nothing further to clear, the same as extraction's own pause."""
+    from app.models.user import User
+
+    user = db.get(User, user_id)
+    if user is None or not user.mail_email:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such connected mailbox.")
+    user.mail_paused = payload.paused
+    db.commit()
+    return {"user_id": user.id, "mail_paused": user.mail_paused}
+
+
 @router.post("/openai-admin-key")
 def set_openai_admin_key_endpoint(
     payload: OpenAIKeyIn,

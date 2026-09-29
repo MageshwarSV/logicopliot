@@ -68,6 +68,7 @@ export async function createCustomField(
     multi_value_from_document?: boolean;
     is_target_value?: boolean;
     fuzzy_match?: boolean;
+    example_value?: string | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);

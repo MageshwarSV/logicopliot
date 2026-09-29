@@ -158,6 +158,7 @@ export function JobRunPage() {
   const [irnUploading, setIrnUploading] = useState(false);
   const [irnError, setIrnError] = useState<string | null>(null);
   const [irnSkipping, setIrnSkipping] = useState(false);
+  const [irnApproving, setIrnApproving] = useState(false);
   const [excelBusy, setExcelBusy] = useState(false);
   const [excelError, setExcelError] = useState<string | null>(null);
   const [smartBusy, setSmartBusy] = useState(false);
@@ -270,6 +271,20 @@ export function JobRunPage() {
       setIrnError("Could not mark this stage complete. Try again.");
     } finally {
       setIrnSkipping(false);
+    }
+  }
+
+  async function handleIrnApprove() {
+    setIrnApproving(true);
+    setIrnError(null);
+    try {
+      await jobsApi.approveIrnDocuments(jobId);
+      const j = await jobsApi.getJob(jobId);
+      setJob(j);
+    } catch {
+      setIrnError("Could not mark this stage complete. Try again.");
+    } finally {
+      setIrnApproving(false);
     }
   }
 
@@ -595,10 +610,36 @@ export function JobRunPage() {
     }
   }
 
+  /** Beside every document header on the IRN tab, once GK1 has chosen Approval for IRN (not
+   *  Skip) - a placeholder for a feature still being designed ("later I will tell the
+   *  concept"), so it is deliberately inert for now: no click handler, no backend call. Shown
+   *  to GK1 (as soon as they choose Approval) and GK2 alike, since both read the same
+   *  persisted job.irn_approval_requested rather than anything role-specific. When GK1 chose
+   *  Skip instead, this same spot just says so - nothing to place a placeholder beside. */
+  function renderIrnPlaceholder() {
+    if (!job) return null;
+    if (job.irn_approval_requested) {
+      return (
+        <div className="mt-1 flex items-center gap-2">
+          <span className="text-xs text-slate-400">IRN: —</span>
+          <Button variant="secondary" disabled className="!px-2 !py-1 !text-xs">
+            Get DSC + IRN Number
+          </Button>
+        </div>
+      );
+    }
+    if (job.irn_documents_done) {
+      return <p className="mt-1 text-xs text-slate-400">Skipped</p>;
+    }
+    return null;
+  }
+
   /** The original email this job was created from, if it was created from one at all - shown
    *  on both Document Capture (so an operator sees what actually arrived, before touching
-   *  anything) and IRN Documents Upload. A plain upload or a job started any other way simply
-   *  has none, which is not an error. */
+   *  anything) and IRN Documents Upload. A job started any other way (a manual upload, an
+   *  Excel entry) has no email to show automatically, so the IRN tab instead lists whatever
+   *  was captured on Document Capture - same header either way, so this card is never a hidden
+   *  inconsistency between what GK1 saw and what GK2 sees. */
   function renderPrealert() {
     return (
       <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
@@ -608,9 +649,34 @@ export function JobRunPage() {
         {prealert === null ? (
           <p className="mt-2 text-sm text-slate-400">Loading…</p>
         ) : !prealert.available ? (
-          <p className="mt-2 text-sm text-slate-400">
-            No original email is on file for this job.
-          </p>
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-slate-400">
+              No original email is on file for this job.
+            </p>
+            {/* The documents already captured on Document Capture - for a job started by hand
+                instead of arriving by email, these ARE the pre-alert documents, just uploaded
+                directly rather than attached to a mail. Shown here too so GK1 and GK2 see them
+                on the IRN tab without switching back to Document Capture to check. */}
+            {docSlots.some((s) => s.files.some((f) => f.is_uploaded)) && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {docSlots.map(({ tdocId, name, doc_type, files }) => {
+                  const uploaded = files.filter((f) => f.is_uploaded);
+                  if (uploaded.length === 0) return null;
+                  return (
+                    <div key={tdocId}>
+                      <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                        {name} <span className="text-slate-400">({doc_type})</span>
+                      </p>
+                      {uploaded.map((d) => (
+                        <JobDocPreview key={d.id} jobId={jobId} docId={d.id} pages={d.page_count} />
+                      ))}
+                      {renderIrnPlaceholder()}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="mt-2 space-y-2">
             <p className="text-sm text-slate-700 dark:text-slate-300">
@@ -1225,6 +1291,22 @@ export function JobRunPage() {
       </div>
       {error && <div className="mb-6"><Alert>{error}</Alert></div>}
 
+      {/* One of this job's documents was removed after it was already extracted (an
+          operator deleting the wrong file, or the custom-filter-page sweep stripping one
+          that turned out to be junk-reference content) - its custom fields were cleared
+          along with it, and this is the only thing that says so. Shown above every tab,
+          not just Document Capture, since whoever opens the job next could land anywhere. */}
+      {job.needs_reextraction && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+          <span>⚠️ One of this job's documents changed since it was last extracted — press Extract to refresh its data.</span>
+          {!readOnly && (
+            <Button size="sm" variant="secondary" onClick={runExtract} isLoading={extracting}>
+              Extract now
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* ---------------- Document Capture ---------------- */}
       {activeTab === "capture" && (
         <Card className="p-5">
@@ -1598,6 +1680,16 @@ export function JobRunPage() {
           {excelError && (
             <div className="mb-4">
               <Alert>{excelError}</Alert>
+            </div>
+          )}
+
+          {/* GK1 chose Approval for IRN, and GK2 has pressed Final Approve & Proceed - the
+              real ERP submission does not run for this job, so there is no progress to show
+              here (no spinner, no "preparing"/"entering" banner - job.erp_status is never
+              touched on this path). Just says where the job actually is. */}
+          {job.gk2_status === "irn_document_process" && (
+            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300">
+              This job is in IRN Document Process.
             </div>
           )}
 
@@ -2043,20 +2135,31 @@ export function JobRunPage() {
                         <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
                           {doc.label}
                         </p>
-                        <div className="mt-1 flex flex-wrap gap-2">
-                          {doc.files.map((f) => (
-                            <button
-                              key={f.stored_as}
-                              type="button"
-                              onClick={() =>
-                                openSupportingDocumentFile(doc.id, f.stored_as, f.original_name)
-                              }
-                              className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
-                            >
-                              {f.original_name}
-                            </button>
-                          ))}
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          {doc.files.map((f) =>
+                            IMAGE_EXTENSIONS.some((ext) => f.original_name.toLowerCase().endsWith(ext)) ? (
+                              <SupportingDocFileThumb
+                                key={f.stored_as}
+                                jobId={jobId}
+                                docId={doc.id}
+                                storedAs={f.stored_as}
+                                name={f.original_name}
+                              />
+                            ) : (
+                              <button
+                                key={f.stored_as}
+                                type="button"
+                                onClick={() =>
+                                  openSupportingDocumentFile(doc.id, f.stored_as, f.original_name)
+                                }
+                                className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
+                              >
+                                {f.original_name}
+                              </button>
+                            ),
+                          )}
                         </div>
+                        {renderIrnPlaceholder()}
                       </div>
                       <button
                         type="button"
@@ -2140,16 +2243,20 @@ export function JobRunPage() {
               ) : (
                 <>
                   <p className="mx-auto max-w-md text-sm text-slate-500">
-                    Upload a document above, or skip if there is nothing to attach.
+                    Upload a document above if there's anything to attach, then choose one:
                   </p>
-                  <Button
-                    variant="secondary"
-                    className="mt-3"
-                    onClick={handleIrnSkip}
-                    isLoading={irnSkipping}
-                  >
-                    Skip — nothing to attach
-                  </Button>
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-3">
+                    <Button onClick={handleIrnApprove} isLoading={irnApproving}>
+                      Approval for IRN
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={handleIrnSkip}
+                      isLoading={irnSkipping}
+                    >
+                      Skip — nothing to attach
+                    </Button>
+                  </div>
                 </>
               )}
             </Card>
@@ -3377,6 +3484,52 @@ function JobDocPreview({ jobId, docId, pages }: { jobId: string; docId: string; 
       {zoom && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-6" onClick={() => setZoom(null)}>
           <img src={zoom} alt="document page" className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl" />
+        </div>
+      )}
+    </>
+  );
+}
+
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+
+/** A Supporting Document's own file, previewed the same way Prealert now previews Document
+ *  Capture's images - only for actual image files, since a PDF (the common case here) has no
+ *  simple single-image thumbnail the way an OCR'd page does. Every other file type stays the
+ *  plain click-to-open link this replaces, via isImageFile below. */
+function SupportingDocFileThumb({
+  jobId, docId, storedAs, name,
+}: { jobId: string; docId: string; storedAs: string; name: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let created: string | null = null;
+    (async () => {
+      try {
+        const u = await jobsApi.supportingDocumentFileUrl(jobId, docId, storedAs);
+        created = u;
+        if (alive) setUrl(u);
+        else URL.revokeObjectURL(u);
+      } catch {
+        /* falls back to nothing - the plain link elsewhere still works */
+      }
+    })();
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [jobId, docId, storedAs]);
+
+  if (!url) return <span className="text-xs text-slate-400">{name}…</span>;
+  return (
+    <>
+      <button type="button" onClick={() => setZoom(true)} className="block" title={`${name} — click to enlarge`}>
+        <img src={url} alt={name} className="h-20 w-auto rounded border border-slate-300 object-cover hover:ring-2 hover:ring-indigo-400 dark:border-slate-700" />
+      </button>
+      {zoom && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-6" onClick={() => setZoom(false)}>
+          <img src={url} alt={name} className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl" />
         </div>
       )}
     </>

@@ -70,17 +70,46 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
 
     Every already-extracted document is checked page-by-page against ONLY this new
     reference (older references already had their own sweep when THEY were added - nothing
-    needs to re-run for those). A document with any matching page is removed via the same
-    path an operator uses to delete a wrong upload; a job left with no real documents at all
-    afterward is deleted entirely - the identical two actions performed by hand earlier this
-    session (172 documents, then 4 jobs), now automatic.
+    needs to re-run for those). A document is removed only when EVERY one of its real pages
+    matches - it is entirely the new reference's own content, the same "whole document is
+    junk" case the feature was built for. A document where only SOME pages match is left
+    untouched and logged for a human to look at: an audit found the earlier version of this
+    sweep deleted the WHOLE document (an invoice's own real pages included) the moment ANY
+    one page matched, on a real, reproduced case of exactly that mixed shape - a customer's
+    genuine multi-page invoice with one boilerplate cover page mixed in. Automatically
+    stripping just the matching page from an ALREADY-EXTRACTED document's live field values
+    safely needs its own design (a value already read off that page, a cross-check already
+    run against it) - not something a background sweep should improvise. A job left with no
+    real documents at all afterward is deleted entirely - the identical two actions
+    performed by hand earlier this session (172 documents, then 4 jobs), now automatic.
+
+    Scoped to jobs still actually being worked - never a job already "completed" (its ERP
+    entry has gone through - the real, filed customs record) or "duplicate" (already
+    reviewed and settled). Those are finished, audited outcomes; silently rewriting their
+    paperwork weeks later because an admin uploaded an unrelated filter reference is exactly
+    the kind of surprise a customs-automation product cannot afford.
+
+    Removing a document goes through _remove_document_file (jobs.py), which also clears the
+    job's stale tenant custom-field values and flags Job.needs_reextraction - a custom field
+    has no document of its own to key a targeted cleanup on, so leaving it in place after the
+    document it may have depended on is gone left several real jobs with every mark-based
+    value wiped by this sweep while their custom fields sat there looking valid.
     """
     from app.api.v1.jobs import _delete_job_cascade, _remove_document_file
 
-    jobs = db.query(Job).filter(Job.status.notin_(("draft", "extracting"))).all()
+    jobs = (
+        db.query(Job)
+        .filter(Job.status.notin_(("draft", "extracting", "completed", "duplicate")))
+        .all()
+    )
     docs_removed = jobs_deleted = 0
 
     for job in jobs:
+        # Collected, never actually deleted from disk, until THIS job's own commit below
+        # has actually succeeded - _remove_document_file/_delete_job_cascade delete a file
+        # the instant they run, which cannot be undone if a LATER document in this same job
+        # then raises and the whole job's changes are rolled back.
+        dirs_to_delete: list = []
         try:
             job_docs = db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
             for jd in job_docs:
@@ -88,11 +117,24 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
                 if not isinstance(ej, dict):
                     continue
                 pages = ej.get("pages") or []
-                if not any(classify_custom_page(p, [reference_text])[0] for p in pages):
+                real_pages = [p for p in pages if p and p.strip()]
+                if not real_pages:
                     continue
-                logger.info("filter-page sweep: removing %s (job %s) - content matches the "
-                            "new reference page", jd.original_name, job.reference)
-                _remove_document_file(db, job, jd)
+                matches = [classify_custom_page(p, [reference_text])[0] for p in real_pages]
+                if not any(matches):
+                    continue
+                if not all(matches):
+                    logger.warning(
+                        "filter-page sweep: job %s document %s has %d of %d page(s) "
+                        "matching the new reference, not all - leaving it untouched, needs "
+                        "a human look (this sweep only ever removes a document that is "
+                        "ENTIRELY the reference's own content)",
+                        job.reference, jd.original_name, sum(matches), len(real_pages),
+                    )
+                    continue
+                logger.info("filter-page sweep: removing %s (job %s) - every page's content "
+                            "matches the new reference page", jd.original_name, job.reference)
+                dirs_to_delete.append(_remove_document_file(db, job, jd))
                 docs_removed += 1
 
             db.flush()
@@ -106,11 +148,13 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
                 # with (nothing to sweep, and not this sweep's business to delete it).
                 logger.info("filter-page sweep: deleting job %s - nothing real left after "
                             "the sweep above", job.reference)
-                _delete_job_cascade(db, job)
+                dirs_to_delete += _delete_job_cascade(db, job)
                 jobs_deleted += 1
             # Commit PER JOB, not once at the end: a later job's failure below must roll
             # back only ITS OWN partial changes, never undo every job already processed.
             db.commit()
+            for d in dirs_to_delete:
+                shutil.rmtree(d, ignore_errors=True)
         except Exception:  # noqa: BLE001
             logger.exception("filter-page sweep: failed on job %s - skipping, continuing "
                              "with the rest", job.reference)

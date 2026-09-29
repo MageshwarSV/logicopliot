@@ -23,5 +23,10 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # means read-and-write, so every tenant that existed before this was added is unaffected.
     # "manager" never appears here: that role is always read-only, not a per-tenant choice.
     role_write_enabled: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The one key that gets this tenant's IRN Pending link working (see
+    # app/api/v1/public_irn.py) - generated once from the Super Admin dashboard's "Generate
+    # Link" button and never rotated automatically, so a link already handed out keeps
+    # working. Null until generated; unique so one key never resolves to two tenants.
+    irn_pending_access_key: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="tenant")

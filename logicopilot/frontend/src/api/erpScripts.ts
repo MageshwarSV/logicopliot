@@ -159,7 +159,7 @@ export async function recorderScreenshot(
  *  reset — start over: position to zero and back to the first page
  *  seek  — set the position to `index` without touching the browser (used after a step is
  *          inserted mid-draft and performed by hand) */
-export type ReplayMode = "auto" | "next" | "prev" | "reset" | "seek";
+export type ReplayMode = "auto" | "next" | "prev" | "reset" | "seek" | "to";
 
 export interface ReplayResult {
   log: string[];

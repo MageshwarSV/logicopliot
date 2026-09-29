@@ -38,3 +38,4 @@ class TenantOut(BaseModel):
     is_active: bool
     allowed_modes: list[str] | None = None
     role_write_enabled: dict[str, bool] | None = None
+    irn_pending_access_key: str | None = None

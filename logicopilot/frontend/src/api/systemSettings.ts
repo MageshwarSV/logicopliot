@@ -42,6 +42,38 @@ export async function setExtractionPaused(paused: boolean): Promise<SystemSettin
   return data;
 }
 
+export interface Mailbox {
+  user_id: string;
+  full_name: string;
+  tenant_id: string | null;
+  tenant_name: string | null;
+  mail_provider: string | null;
+  mail_email: string;
+  is_active: boolean;
+  /** Per-mailbox switch - independent of the whole-system email_pull_paused flag above.
+   *  Stopping one operator's mailbox never touches anyone else's. */
+  mail_paused: boolean;
+}
+
+/** Every operator mailbox connected anywhere in the system (Gmail, Zoho, ...), across every
+ *  tenant - this screen is Super Admin/system-wide, not scoped to one tenant. The shared
+ *  inbox (configured in .env) has no per-row identity and is not included here. */
+export async function listMailboxes(): Promise<Mailbox[]> {
+  const { data } = await apiClient.get<Mailbox[]>("/system-settings/mailboxes");
+  return data;
+}
+
+export async function setMailboxPaused(
+  userId: string,
+  paused: boolean,
+): Promise<{ user_id: string; mail_paused: boolean }> {
+  const { data } = await apiClient.post<{ user_id: string; mail_paused: boolean }>(
+    `/system-settings/mailboxes/${userId}/pause`,
+    { paused },
+  );
+  return data;
+}
+
 /** Verified live against OpenAI before being saved - rejects with a 400 (message in
  *  err.response.data.detail) if the key itself is invalid, so nothing gets saved on a typo.
  *  Applied immediately: the very next AI call anywhere in the app uses it, no restart. */

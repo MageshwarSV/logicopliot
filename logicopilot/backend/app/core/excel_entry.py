@@ -128,6 +128,44 @@ def _set_values(rows: dict | None) -> list[dict]:
     return [d for d in seq if isinstance(d, dict)] if isinstance(seq, list) else []
 
 
+def rename_field_in_excel_config(config: dict | None, old_label: str, new_label: str) -> bool:
+    """Rewrite every excel_config column mapped to old_label so it points at new_label
+    instead - called when a mark or custom field is renamed.
+
+    Without this, a rename left every "field": "<old_label>" mapping in place, silently
+    blanking that Excel column on every job's export from then on: sheet_plans/
+    _rows_for_plan look a column's value up purely by whatever label its mapping currently
+    names, and a mapping naming a label nothing extracts under anymore just quietly
+    resolves to "" - _column_fill's own empty-workbook guard only refuses a build when
+    EVERY column comes out empty, so a single blanked column among several passes it
+    silently. This directly contradicts edit_custom_field's own docstring, which promises
+    "Renaming is safe."
+
+    Mutates `config` in place (the caller still owns persisting it - a JSON column's
+    in-place mutation needs its own flag_modified, not something this helper should assume
+    the caller does or doesn't want). Returns whether anything was actually changed.
+    """
+    if not config or not old_label or old_label == new_label:
+        return False
+    changed = False
+
+    def _rewrite(columns) -> None:
+        nonlocal changed
+        for col in columns or []:
+            if isinstance(col, dict) and (col.get("field") or "").strip() == old_label:
+                col["field"] = new_label
+                changed = True
+
+    sheets = config.get("sheets")
+    if isinstance(sheets, list):
+        for entry in sheets:
+            if isinstance(entry, dict):
+                _rewrite(entry.get("columns"))
+    else:
+        _rewrite(config.get("columns"))
+    return changed
+
+
 def sheet_plans(config: dict) -> list[dict]:
     """Every sheet this config fills, as a list of plans.
 
@@ -200,6 +238,12 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
     caps = [int(c.get("max_len") or 0) or None for c in cols]
     depth = 1
     if plan["scope"] == "line":
+        # Starts at 0, not the shared default of 1: a job with genuinely no line items at
+        # all (every per-row label's own rows list empty or absent) must produce ZERO rows
+        # on a line-scoped sheet, not one phantom row of blanks under a serial number that
+        # names a line item which was never there. Any label that DOES carry rows still
+        # sets the real depth exactly as before.
+        depth = 0
         for label in labels:
             if label in SERIALS:
                 continue          # a serial follows the row count, it does not set it
@@ -432,6 +476,23 @@ def build_for_job(
             # alongside this job's.
             if (ws.max_row or 0) > header_row:
                 ws.delete_rows(header_row + 1, ws.max_row - header_row)
+            # delete_rows clears cell CONTENT but leaves any merged_cells range whose anchor
+            # sits at or above header_row and extends into the data area still declared -
+            # Excel and openpyxl both then read every non-anchor cell in that range as
+            # blank, no matter what gets written into it afterward. A customer template with
+            # a title/banner cell merged down across the header and first data rows (an
+            # ordinary real-world layout) silently swallowed whatever this wrote there, with
+            # no error - exactly what "EVERYTHING HERE FAILS LOUDLY" above says must never
+            # happen. Discard anything overlapping the rows about to be written into, so a
+            # written value is actually readable, instead of hidden behind a stale merge.
+            # ws.unmerge_cells() itself is not safe to call here: it also tries to delete
+            # each non-anchor cell's entry from the worksheet's own cell store, which
+            # delete_rows (just above) already removed - raising a KeyError on a range that
+            # extends into the rows just deleted. Discarding the range declaration directly
+            # needs no such cell bookkeeping, because those cells are already gone.
+            for merged_range in list(ws.merged_cells.ranges):
+                if merged_range.max_row > header_row:
+                    ws.merged_cells.remove(merged_range)
             data = _rows_for_plan(plan, values, rows)
             for r, line in enumerate(data, start=header_row + 1):
                 for letter, cell_value in zip(letters, line):

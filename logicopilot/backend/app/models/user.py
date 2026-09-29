@@ -62,6 +62,11 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     mail_host: Mapped[str | None] = mapped_column(String(120), nullable=True)
     mail_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     mail_app_password_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # A per-mailbox on/off switch, independent of the system-wide email_pull_paused flag
+    # (app/core/system_settings.py) - lets a Super Admin stop just ONE noisy/misconfigured
+    # mailbox from the Settings page without pausing every other operator's inbox too.
+    # Meaningless (and never shown) for a user with no mailbox connected at all.
+    mail_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Which shipment modes (see app/core/modes.py::MODES) this user is scoped to. The REAL
     # access-control gate for gk2 (null/empty means they see nothing — a mode must be picked

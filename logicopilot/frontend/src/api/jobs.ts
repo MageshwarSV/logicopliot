@@ -30,15 +30,19 @@ export interface ListJobsOptions {
    *  own onClick, so the list shows exactly what was counted. */
   group?: string;
   bucket?: string;
+  /** IrnPendingPage's own filter - jobs GK2 has parked in "IRN Document Process". See
+   *  Job.gk2_status; independent of group/bucket. */
+  gk2Status?: string;
 }
 
 export async function listJobs(options: ListJobsOptions = {}): Promise<Job[]> {
-  const { tenantId, limit, offset, group, bucket } = options;
+  const { tenantId, limit, offset, group, bucket, gk2Status } = options;
   const { data } = await apiClient.get<Job[]>("/jobs", {
     params: {
       ...(tenantId ? { tenant_id: tenantId } : {}),
       ...(limit != null ? { limit, offset: offset ?? 0 } : {}),
       ...(group ? { group, bucket: bucket ?? "all" } : {}),
+      ...(gk2Status ? { gk2_status: gk2Status } : {}),
     },
   });
   return data;
@@ -222,6 +226,15 @@ export async function supportingDocumentFileUrl(
 export async function skipIrnDocuments(jobId: string): Promise<{ irn_documents_done: boolean }> {
   const { data } = await apiClient.post<{ irn_documents_done: boolean }>(
     `/jobs/${jobId}/irn-documents/skip`,
+  );
+  return data;
+}
+
+export async function approveIrnDocuments(
+  jobId: string,
+): Promise<{ irn_documents_done: boolean; irn_approval_requested: boolean }> {
+  const { data } = await apiClient.post<{ irn_documents_done: boolean; irn_approval_requested: boolean }>(
+    `/jobs/${jobId}/irn-documents/approve`,
   );
   return data;
 }

@@ -105,7 +105,9 @@ def test_upload_requires_a_label(client, db_session):
     assert resp.status_code == 422
 
 
-def test_upload_ticks_off_irn_documents_done(client, db_session):
+def test_upload_no_longer_ticks_off_irn_documents_done(client, db_session):
+    """GK1 must always press Approval for IRN or Skip explicitly now - uploading a document
+    on its own is not enough, even though it used to be."""
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     job = _make_job(db_session, tenant, group)
@@ -120,7 +122,23 @@ def test_upload_ticks_off_irn_documents_done(client, db_session):
     assert resp.status_code == 201, resp.text
 
     resp2 = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp2.json()["irn_documents_done"] is False
+
+
+def test_approve_ticks_off_irn_documents_done_and_records_the_choice(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group)
+    _login_operator(client, db_session, tenant)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/irn-documents/approve")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["irn_documents_done"] is True
+    assert resp.json()["irn_approval_requested"] is True
+
+    resp2 = client.get(f"/api/v1/jobs/{job.id}")
     assert resp2.json()["irn_documents_done"] is True
+    assert resp2.json()["irn_approval_requested"] is True
 
 
 def test_skip_ticks_off_irn_documents_done_without_uploading(client, db_session):
@@ -135,6 +153,7 @@ def test_skip_ticks_off_irn_documents_done_without_uploading(client, db_session)
 
     resp2 = client.get(f"/api/v1/jobs/{job.id}")
     assert resp2.json()["irn_documents_done"] is True
+    assert resp2.json()["irn_approval_requested"] is False
     assert resp2.json()["documents"] is not None  # sanity: job still loads fine
 
 
@@ -173,6 +192,28 @@ def test_delete_a_supporting_document(client, db_session):
     resp = client.delete(f"/api/v1/jobs/{job.id}/supporting-documents/{doc_id}")
     assert resp.status_code == 204, resp.text
     assert db_session.query(SupportingDocument).count() == 0
+
+
+def test_deleting_the_last_supporting_document_never_touches_irn_documents_done(client, db_session):
+    """irn_documents_done is only ever set by the explicit Approval-for-IRN/Skip endpoints now
+    - deleting a document, even the only one, must never undo GK1's already-recorded choice."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group)
+    _login_operator(client, db_session, tenant)
+
+    client.post(f"/api/v1/jobs/{job.id}/irn-documents/approve")
+    up = client.post(
+        f"/api/v1/jobs/{job.id}/supporting-documents",
+        data={"label": "COO"},
+        files={"files": ("coo.pdf", b"AAA", "application/pdf")},
+    )
+    doc_id = up.json()["id"]
+    assert client.get(f"/api/v1/jobs/{job.id}").json()["irn_documents_done"] is True
+
+    resp = client.delete(f"/api/v1/jobs/{job.id}/supporting-documents/{doc_id}")
+    assert resp.status_code == 204, resp.text
+    assert client.get(f"/api/v1/jobs/{job.id}").json()["irn_documents_done"] is True
 
 
 def test_gk2_can_also_upload_a_supporting_document(client, db_session):

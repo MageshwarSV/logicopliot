@@ -131,6 +131,50 @@ def test_gk2_approve_moves_to_preparing_erp_immediately(client, db_session):
     assert job.gk2_status == "preparing_erp"
 
 
+def test_gk2_approve_parks_in_irn_document_process_when_gk1_chose_approval(client, db_session):
+    """GK1 pressing Approval for IRN (not Skip) on IRN Documents Upload means Final Approve &
+    Proceed must NOT run the real ERP submission - it parks the job in a new wait-state
+    instead, with nothing real touched (erp_status stays untouched, no background thread)."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, irn_approval_requested=True)
+
+    gk2 = _make_gk2(db_session, tenant, modes=["Sea Import"])
+    login(client, gk2.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gk2_status"] == "irn_document_process"
+    assert resp.json()["outer_status"] == "IRN Document Process"
+    assert resp.json()["erp_status"] is None
+
+    db_session.refresh(job)
+    assert job.gk2_status == "irn_document_process"
+    assert job.erp_status is None
+
+
+def test_gk2_approve_runs_the_real_submission_when_gk1_chose_skip(client, db_session):
+    """The opposite of the test above, and the default for every job from before this column
+    existed (irn_approval_requested defaults to False) - Skip changes nothing about the real
+    ERP submission path."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, irn_approval_requested=False)
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, label_name="consignee_full_name",
+                                 extracted_value="ACME IMPORTS PVT LTD"))
+    db_session.commit()
+
+    gk2 = _make_gk2(db_session, tenant, modes=["Sea Import"])
+    login(client, gk2.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gk2_status"] == "preparing_erp"
+
+    db_session.refresh(job)
+    assert job.gk2_status == "preparing_erp"
+
+
 def test_run_gk2_submission_runs_the_real_erp_script_and_marks_submitted(db_session):
     """This is complete_job's Submit Entry, not a placeholder: the workbook is built, the
     tenant's ready ErpScript is replayed with it attached, and only a real successful run
@@ -379,6 +423,64 @@ def test_reopen_is_not_available_to_gk2_itself(client, db_session):
 
     resp = client.post(f"/api/v1/jobs/{job.id}/gk2/reopen")
     assert resp.status_code == 403
+
+
+def test_sync_status_fixes_a_stale_failed_gk2_status_on_a_completed_job(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, gk2_status="failed", status="completed")
+
+    admin = make_user(db_session, role="super_admin", email="admin-sync1@example.com")
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/sync-status")
+    assert resp.status_code == 200, resp.text
+
+    db_session.refresh(job)
+    assert job.gk2_status == "submitted"
+
+
+def test_sync_status_also_fixes_a_stale_in_flight_gk2_status_on_a_completed_job(client, db_session):
+    """The real incident this was broadened for: a job that finished through the Entry Browser's
+    own live rerun (not gk2_approve's background thread) can be genuinely completed while
+    gk2_status is still sitting on whatever in-flight value the run happened to be at when that
+    path took over - "entering_erp" here, not just "failed"."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, gk2_status="entering_erp", status="completed")
+
+    admin = make_user(db_session, role="super_admin", email="admin-sync2@example.com")
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/sync-status")
+    assert resp.status_code == 200, resp.text
+
+    db_session.refresh(job)
+    assert job.gk2_status == "submitted"
+
+
+def test_sync_status_rejects_a_job_that_has_not_actually_completed(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, gk2_status="entering_erp", status="extracted")
+
+    admin = make_user(db_session, role="super_admin", email="admin-sync3@example.com")
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/sync-status")
+    assert resp.status_code == 409
+
+
+def test_sync_status_rejects_a_job_already_correctly_submitted(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    job = _make_job(db_session, tenant, group, gk2_status="submitted", status="completed")
+
+    admin = make_user(db_session, role="super_admin", email="admin-sync4@example.com")
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/gk2/sync-status")
+    assert resp.status_code == 409
 
 
 def test_run_gk2_submission_does_nothing_if_the_job_has_already_moved_on(db_session):

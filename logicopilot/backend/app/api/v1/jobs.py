@@ -352,6 +352,23 @@ def _best_rows_to_scalar_compare(
     return best or ("missing", None, None)
 
 
+def _numeric_total_field(single_values: dict, row_label: str) -> float | None:
+    """This document's own printed TOTAL for a line-item column, when the template also
+    captures one as an ordinary single-value field alongside the row-level one - e.g.
+    "total_quantity" next to "item_quantity". None when no such field exists on this
+    document, or its value isn't numeric - the row-count decision this backs then falls
+    back to the plain "more rows" preference, same as before this existed.
+    """
+    bare = re.sub(r"^(item|products?|product)_", "", row_label, flags=re.IGNORECASE)
+    for candidate in (f"total_{bare}", f"{bare}_total"):
+        for key, value in single_values.items():
+            if key.lower() == candidate.lower():
+                total = numeric_total([value])
+                if total is not None:
+                    return total
+    return None
+
+
 def _row_sums_disagree(rows_a: list, rows_b: list, labels: list[str]) -> bool:
     """Two independent reads of the SAME table (OCR text vs the page image) can agree on the
     row COUNT while still disagreeing on individual VALUES - a value dropped from the middle
@@ -533,9 +550,16 @@ def _verification_findings(db: Session, job: Job, links: list | None = None) -> 
                     # job has several sets.
                     continue
                 st, sv, tv = _best_cross_compare(s_candidates, t_candidates, party=party)
-            # Set 1 keeps the bare link id, so acceptances recorded before this change are
-            # still honoured rather than silently reverting to unaccepted.
-            fid = link.id if s == 1 else f"{link.id}#{s}"
+            # Keyed on the actual compared VALUES, not just the link+set - an acceptance
+            # used to be keyed on link identity alone, so a value corrected or recomputed
+            # AFTER being accepted (see correct_field_value, recompute_mark,
+            # recompute_custom_field - none of them touch accepted_verifications) kept
+            # reading as accepted even though the operator never looked at the NEW values,
+            # only whatever was there before. A short hash of what is actually being shown
+            # makes an old acceptance stop applying the instant either side's value
+            # changes, without any of those write paths needing to know this exists.
+            content = hashlib.sha256(f"{sv}\x00{tv}".encode()).hexdigest()[:10]
+            fid = f"{link.id}#{s}#{content}"
             out.append({
                 "id": fid, "link": link, "set_index": s,
                 "source_value": sv, "target_value": tv,
@@ -697,6 +721,8 @@ def _outer_status(db: Session, job: Job) -> str:
     """
     if job.gk2_status == "pending":
         return "Pending GK2 Approval"
+    if job.gk2_status == "irn_document_process":
+        return "IRN Document Process"
     if job.gk2_status == "preparing_erp":
         return "AI - Preparing for ERP"
     if job.gk2_status == "entering_erp":
@@ -1187,13 +1213,34 @@ def create_job(
     return _job_out(db, job)
 
 
-def _delete_job_cascade(db: Session, job: Job) -> None:
-    """Delete a job and everything that hangs off it - field values, documents. Does not
-    commit; the caller decides the transaction boundary (shared by the HTTP endpoint below
-    and custom_filter_pages.py's old-job sweep, so there is exactly one deletion path)."""
+def _delete_job_cascade(db: Session, job: Job) -> list[Path]:
+    """Delete a job and everything that hangs off it - field values, documents. Also,
+    unlike a single document's own removal (see _remove_document_file, which does this per
+    file), the actual files on disk for every one of them: without this, every job delete -
+    through this endpoint or custom_filter_pages.py's old-job sweep, the only two ways a job
+    is ever removed - left its uploaded documents, IRN supporting documents and (for a
+    mail-routed job) its saved original email and attachments sitting on disk forever (the
+    DB rows go: SupportingDocument cascades at the database's own FK, ON DELETE CASCADE; the
+    others are deleted explicitly below).
+
+    Deliberately does NOT delete anything from disk itself - same reasoning as
+    _remove_document_file: that is irreversible the instant it happens, while the caller's
+    own db.commit() can still fail or roll back afterward. Returns the directories to
+    delete, which the caller must only actually remove once its commit has succeeded. Does
+    not commit; the caller decides the transaction boundary."""
+    from app.core.job_email import job_email_dir
+    from app.models.supporting_document import SupportingDocument
+
+    dirs = [_job_doc_dir(jd.id)
+            for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all()]
+    dirs += [_supporting_doc_dir(sd.id)
+             for sd in db.query(SupportingDocument).filter(SupportingDocument.job_id == job.id).all()]
+    dirs.append(job_email_dir(job.id))
+
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
     db.query(JobDocument).filter(JobDocument.job_id == job.id).delete()
     db.delete(job)
+    return dirs
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1206,8 +1253,10 @@ def delete_job(
     """Delete a job and its documents/values. Operators may delete their own or the
     mail-routed jobs assigned to them; admins any job in scope."""
     job = _load_job(db, job_id, scope, user)
-    _delete_job_cascade(db, job)
+    dirs = _delete_job_cascade(db, job)
     db.commit()
+    for d in dirs:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # Server-side mirror of JobsOverview.tsx's own bucket math on the dashboard - both have to
@@ -1286,6 +1335,10 @@ def list_jobs(
     # shows exactly what the box counted - see _apply_dashboard_filter.
     group: str | None = None,
     bucket: str = "all",
+    # The IRN Pending list (frontend/src/pages/jobs/IrnPendingPage.tsx) passes this to show
+    # only jobs GK2 has parked in "IRN Document Process" - independent of group/bucket, which
+    # is why it is its own param rather than folded into _apply_dashboard_filter's presets.
+    gk2_status: str | None = None,
 ) -> list[JobOut]:
     query = scoped_query(db, Job, scope)
     # Operators see shared jobs (no owner) plus the mail-routed jobs assigned to them —
@@ -1345,6 +1398,8 @@ def list_jobs(
 
     if group is not None:
         query = _apply_dashboard_filter(query, group, bucket)
+    if gk2_status is not None:
+        query = query.filter(Job.gk2_status == gk2_status)
 
     query = query.order_by(Job.created_at.desc())
     if limit is not None:
@@ -1784,6 +1839,41 @@ def reopen_gk2_submission(
     return _build_detail(db, job)
 
 
+@router.post("/jobs/{job_id}/gk2/sync-status", response_model=JobDetailOut)
+def sync_gk2_status(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> JobDetailOut:
+    """Correct a stale gk2_status left over from an earlier attempt, on a job whose real outcome
+    (job.status) already reads "completed" - persist_run_outcome never touches gk2_status (see
+    its own docstring), so a job that later succeeded through a path other than gk2_approve's
+    own background thread (an Entry Browser rerun, for one) can be genuinely done while
+    _outer_status still reads off whatever gk2_status the run happened to be sitting on the
+    moment that path took over - "failed" from an earlier attempt, or an in-flight value like
+    "entering_erp" a rerun started from but never itself advanced, forever.
+
+    Narrow on purpose: only ever moves gk2_status to "submitted", and only once job.status
+    already says "completed" — it does not touch, retry, resubmit, or otherwise run anything.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job has not actually completed yet — there is nothing to sync.",
+        )
+    if job.gk2_status == "submitted":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="gk2_status already says \"submitted\", so there is nothing to fix here.",
+        )
+    job.gk2_status = "submitted"
+    db.commit()
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
 @router.post("/jobs/{job_id}/gk2/approve", response_model=JobDetailOut)
 def gk2_approve(
     job_id: str,
@@ -1842,6 +1932,27 @@ def gk2_approve(
             detail="This job is on hold — answer the required-documents question before submitting the entry.",
         )
 
+    # GK1 chose Approval for IRN (not Skip) on IRN Documents Upload - the real ERP submission
+    # does not run yet. Park the job in its own wait-state instead, next to the per-document
+    # DSC + IRN Number action (still a placeholder - see Job.irn_approval_requested). Skip
+    # (irn_approval_requested stays False, including for every job from before this existed)
+    # falls straight through to the real submission below, unchanged.
+    if job.irn_approval_requested:
+        job.gk2_status = "irn_document_process"
+        db.commit()
+        db.refresh(job)
+        return _build_detail(db, job)
+
+    _kick_off_real_erp_submission(db, job)
+    return _build_detail(db, job)
+
+
+def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
+    """The background-thread kickoff gk2_approve's own real-submission path uses - factored
+    out so the IRN-signing completion path (app/api/v1/public_irn.py's sign endpoint, once
+    every document header on a GK1-Approval-for-IRN job has its DSC-signed file + IRN number)
+    can trigger the exact same real ERP run rather than a second copy that could drift from
+    what GK2 pressing "Final Approve & Proceed" itself does."""
     grp = db.get(TemplateGroup, job.group_id)
     is_excel_entry = grp is not None and (grp.entry_mode or "fields") == "excel"
     job.gk2_status = "preparing_erp"
@@ -1863,6 +1974,8 @@ def gk2_approve(
 
     from app.db.session import SessionLocal
 
+    job_id = job.id
+
     def _go() -> None:
         # Building the workbook genuinely takes well under a second - too fast for anyone to
         # actually see "AI - Preparing for ERP" before it's already replaced by the outcome.
@@ -1876,7 +1989,6 @@ def gk2_approve(
             db2.close()
 
     threading.Thread(target=_go, daemon=True, name=f"gk2-erp-{job_id}").start()
-    return _build_detail(db, job)
 
 
 def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
@@ -2419,6 +2531,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         validation_approved=job.validation_approved,
         gk2_validation_approved=job.gk2_validation_approved,
         irn_documents_done=job.irn_documents_done,
+        irn_approval_requested=job.irn_approval_requested,
+        needs_reextraction=job.needs_reextraction,
         duplicate_of_job_id=job.duplicate_of_job_id,
         duplicate_of_reference=_duplicate_of_reference(db, job),
         eta_date=job.eta_date,
@@ -3017,10 +3131,41 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     # outcome - a run that got far enough to read it is exactly when it is needed.
     if result.get("captured"):
         job.erp_captured = {k: v for k, v in result["captured"].items() if v}
+    # A picture of where a FAILED run actually stopped, persisted the same way a successful
+    # run's own screenshot already is (captured["erp_success_screenshot"], written to disk
+    # by browser.py itself) - without this, the screen a failure happened on only ever
+    # existed in the single response that fired the run. The operator sees a text reason
+    # ("stuck too long", "Invalid Data Found") on every later visit, with no way to tell
+    # WHAT was actually on screen when it stopped, unlike a successful run's own
+    # screenshot, which survives every reload. Skipped for a clean "ok" outcome - that one
+    # already gets its own picture from browser.py, and writing a second, redundant file
+    # for every successful run would be pure waste.
+    if result.get("screenshot") and result.get("status") != "ok":
+        import base64
+
+        shot_dir = Path(get_settings().uploads_dir) / "jobs" / "_erp_captured" / job.id
+        try:
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            png_path = shot_dir / "erp-failure.png"
+            png_path.write_bytes(base64.b64decode(result["screenshot"]))
+            job.erp_captured = {
+                **(job.erp_captured or {}),
+                "erp_failure_screenshot": {
+                    "label": "Where the ERP entry stopped",
+                    "value": "",
+                    "kind": "image",
+                    "description": "What the ERP was showing when the entry failed.",
+                    "file": png_path.name,
+                    "usage": "both",
+                },
+            }
+        except Exception:  # noqa: BLE001 — a picture must never fail a run
+            logger.exception("could not save the failure screenshot for job %s", job.id)
     # PERSIST the run, don't just return it. The operator needs the rejected field to survive a
     # page reload: that is what gets highlighted in red so they can correct it and re-run.
     # Everything except the screenshot is stored (a base64 PNG per run per job would bloat the
-    # table; it is still returned for the immediate view).
+    # table; it is still returned for the immediate view) - the image itself now is too, just
+    # as a file rather than inline, exactly like the success screenshot already was.
     job.erp_status = result.get("status")
     job.erp_reason = result.get("reason")
     job.erp_diagnosis = result.get("ai_diagnosis")
@@ -3383,6 +3528,18 @@ def upload_job_document(
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
 ) -> JobDetailOut:
     job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        # run_extraction snapshots this job's documents ONCE, at the top, and never
+        # refreshes that list for the rest of its (multi-second to multi-minute) run - a
+        # file landing here mid-run is invisible to the loop that actually writes its
+        # fields, even though later steps that re-query fresh (custom-field computation)
+        # do see it. Found live: a job ended up with one document's marks entirely blank
+        # while everything else on it looked normal, because its file was uploaded while
+        # extraction on the rest of the job was still in flight.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
     existing = (
         db.query(JobDocument)
         .filter(JobDocument.job_id == job.id, JobDocument.template_document_id == template_document_id)
@@ -3497,9 +3654,10 @@ def upload_supporting_documents(
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
 ) -> dict:
     """One or many files under one label the uploader chose - IRN documents, or anything else
-    that needs to sit on the job with nothing done to it. Uploading here also ticks off GK1's
-    IRN Documents Upload stage (see /jobs/{job_id}/irn-documents/skip for the other way to
-    tick it off, when there is genuinely nothing to attach)."""
+    that needs to sit on the job with nothing done to it. Does NOT tick off GK1's IRN
+    Documents Upload stage by itself any more - that now always needs an explicit press of
+    Approval for IRN or Skip (see /jobs/{job_id}/irn-documents/approve and .../skip), even
+    after uploading something here, so the choice between those two is always on record."""
     from app.models.supporting_document import SupportingDocument
 
     job = _load_job(db, job_id, scope, user)
@@ -3534,7 +3692,6 @@ def upload_supporting_documents(
         shutil.rmtree(ddir, ignore_errors=True)
         raise HTTPException(status_code=422, detail="Every file selected was empty.")
     row.files = stored
-    job.irn_documents_done = True
     db.commit()
     db.refresh(row)
     return _supporting_document_out(row)
@@ -3582,7 +3739,29 @@ def delete_supporting_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     shutil.rmtree(_supporting_doc_dir(row.id), ignore_errors=True)
     db.delete(row)
+    # irn_documents_done is now only ever set by the explicit Approval-for-IRN/Skip endpoints
+    # (uploading no longer sets it - see upload_supporting_documents), so deleting a document
+    # here must never touch it: GK1's already-recorded choice does not depend on which files
+    # happen to still be attached afterward.
     db.commit()
+
+
+@router.post("/jobs/{job_id}/irn-documents/approve")
+def approve_irn_documents(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """One of GK1's two ways to tick off the IRN Documents Upload stage - said explicitly,
+    the same as Skip, but remembered as the OTHER choice (see Job.irn_approval_requested):
+    gk2_approve reads this to park the job in "IRN Document Process" instead of running the
+    real ERP submission once GK2 gives their final approval."""
+    job = _load_job(db, job_id, scope, user)
+    job.irn_documents_done = True
+    job.irn_approval_requested = True
+    db.commit()
+    return {"irn_documents_done": True, "irn_approval_requested": True}
 
 
 @router.post("/jobs/{job_id}/irn-documents/skip")
@@ -3663,11 +3842,16 @@ def download_prealert_attachment(
     return FileResponse(path, filename=match.get("name") or stored_as)
 
 
-def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> None:
+def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
     """Clear one uploaded file from a job document slot - the wrong invoice, uploaded by
     mistake, or (see custom_filter_pages.py's old-job sweep) a page content-matching an
-    admin's page filter. Removes any field values that came from it and its on-disk files.
-    Does not commit; the caller decides the transaction boundary."""
+    admin's page filter. Removes any field values that came from it. Does not commit, and
+    deliberately does NOT delete the file from disk - that is irreversible the instant it
+    happens, while the caller's own db.commit() can still fail or be rolled back afterward
+    (the sweep's own per-job try/except does exactly this on a later job's error). Returns
+    the directory the caller must delete ONLY after its commit has actually succeeded, or a
+    failure partway through a multi-document job (the sweep's normal shape) can leave a file
+    permanently gone from disk while the rolled-back database still believes it is there."""
     siblings = (
         db.query(JobDocument)
         .filter(JobDocument.job_id == job.id,
@@ -3678,20 +3862,41 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> None:
     # Anything read from this file goes with it, or the job keeps reporting values from a
     # document that is no longer attached to it.
     db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
-    shutil.rmtree(_job_doc_dir(jd.id), ignore_errors=True)
+    # Tenant CUSTOM fields (hardcoded/lookup/AI-computed) have no job_document_id of their
+    # own to key the delete above on - a field with no source_document_ids reads every
+    # document as its fallback, so there is no reliable way to tell "did this field actually
+    # depend on the file just removed" from the field's own config. A live job (JOB-7EED74)
+    # was found with EVERY mark-based value gone this way while its custom fields sat there
+    # untouched, computed from data that no longer existed, with nothing anywhere saying so.
+    # Only when this job has actually been extracted before (status != "draft") - losing an
+    # upload before the first Extract is an operator swapping files, nothing stale exists yet.
+    if job.status != "draft":
+        db.query(JobFieldValue).filter(
+            JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id.isnot(None)
+        ).delete()
+        job.needs_reextraction = True
+    doc_dir = _job_doc_dir(jd.id)
 
     if len(siblings) == 1:
-        # The last file in the slot: keep the slot itself, empty, so it still asks to be filled.
+        # The last file in the slot: keep the slot itself, empty, so it still asks to be
+        # filled. _slot_for_new_file reuses exactly this now-empty row for whatever gets
+        # uploaded next - so an approval left standing here would silently attach itself to
+        # a completely different, never-reviewed file the moment the slot is refilled,
+        # reading "already approved" to whichever reviewer opens it next. The content that
+        # was actually approved is gone; the approval must go with it.
         jd.file_path = None
         jd.page_count = 0
         jd.original_name = None
         jd.extracted_json = None
         jd.set_index = None
+        jd.approved = False
+        jd.gk2_approved = False
     else:
         db.delete(jd)
         db.flush()
         for i, d in enumerate(x for x in siblings if x.id != jd.id):
             d.file_index = i
+    return doc_dir
 
 
 @router.delete("/jobs/{job_id}/documents/{job_document_id}/file", response_model=JobDetailOut)
@@ -3712,8 +3917,9 @@ def delete_job_document_file(
     if jd is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on this job")
 
-    _remove_document_file(db, job, jd)
+    doc_dir = _remove_document_file(db, job, jd)
     db.commit()
+    shutil.rmtree(doc_dir, ignore_errors=True)
     db.refresh(job)
     return _build_detail(db, job)
 
@@ -3746,6 +3952,13 @@ def smart_upload(
     if is_extraction_paused(db):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
+    if job.status == "extracting":
+        # See the identical guard in upload_job_document (same file, above) - same race,
+        # same fix.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
     group = db.get(TemplateGroup, job.group_id)
     # `fields` lets a "Custom" document (no built-in content hint) still be classified,
     # by describing itself through the labels configured on it.
@@ -3879,6 +4092,50 @@ def smart_upload(
     return {"results": results, "detail": _build_detail(db, job).model_dump()}
 
 
+def _resolve_target_value(
+    db: Session, job_id: str, cf, value: str | None,
+) -> tuple[str | None, str | None]:
+    """Apply an is_target_value field's reference-table lookup to a freshly computed value.
+    Returns (value, raw_value) - raw_value is what a later operator correction gets learned
+    against (see correct_field_value's own remember_reference call).
+
+    Normally keyed on the field's OWN value - the raw extraction is never shown as-is, only
+    looked up in this field's own reference table, exactly like a mark ticked this way.
+    lookup_key_label (reused from the per-row "lookup" case, same meaning: which OTHER field
+    to key off) instead names a DIFFERENT field on this job to key off. "Erp Entry Name" has
+    nothing of its own to extract (kind="hardcoded", no fixed value) and is keyed entirely
+    off "Quotation Name" instead, so the same quotation's forwarder is only ever typed in
+    once, however many later jobs quote the same name. Shared by run_extraction's own loop
+    and recompute_custom_field, which must resolve a target-value field the same way a fresh
+    extraction would - two copies of this is how the two quietly drift apart.
+    """
+    if not getattr(cf, "is_target_value", False):
+        return value, value
+    from app.core.reference_cache import lookup_reference
+
+    key_field_label = (getattr(cf, "lookup_key_label", None) or "").strip()
+    if key_field_label:
+        key_fv = (
+            db.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job_id, JobFieldValue.label_name == key_field_label,
+                    JobFieldValue.row_index.is_(None))
+            .first()
+        )
+        key_value = (
+            (key_fv.corrected_value or key_fv.extracted_value or "").strip() if key_fv else ""
+        )
+        if not key_value:
+            return None, None
+        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[key_value],
+                                    fuzzy=getattr(cf, "fuzzy_match", False))
+        return (resolved or None), key_value
+    if not value:
+        return value, value
+    resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[value],
+                                fuzzy=getattr(cf, "fuzzy_match", False))
+    return (resolved or None), value
+
+
 def run_extraction(db: Session, job: Job) -> None:
     """Extract every marked field for a job's uploaded documents and set status to
     'extracted'. Reusable by the operator's Extract button AND the email auto-pull."""
@@ -3900,14 +4157,53 @@ def run_extraction(db: Session, job: Job) -> None:
                 .order_by(JobDocument.file_index).all()):
         docs_by_tdoc.setdefault(_jd.template_document_id, []).append(_jd)
 
+    # A "Re-run extraction" re-reads the documents, it does not mean "and throw away
+    # whatever a human already typed" - the ERP rerun button's own tooltip already promises
+    # exactly that ("Everything you have filled in is kept"), extraction's own re-run just
+    # never lived up to it. Snapshotted before the delete below wipes it; restored into the
+    # freshly-written rows further down (see the keyouted-snapshot loop). A field that
+    # didn't exist before this run (a newly-added document, say) has no matching key and is
+    # correctly left as freshly extracted - nobody has corrected it yet.
+    #
+    # Keyed on (mark_id, custom_field_id, job_document_id, row_index, set_index) - but
+    # set_index is folded to a constant for any row that also carries a job_document_id
+    # (every MARK-based row): that id alone already pins down the exact file, and its OWN
+    # set_index is not always stable across a re-run (adding a second file to an
+    # invoice-less slot like Bill of Lading can flip every file in that slot from the
+    # "one-file-per-slot, force set 1" shortcut to genuinely unpaired/None, even though
+    # neither existing file itself changed) - found by this fix's OWN test breaking. A
+    # PER-ROW CUSTOM field has no job_document_id at all (see the write loop further down),
+    # so its set_index is the only thing telling "row 1 of set 1" apart from "row 1 of set
+    # 2" - two genuinely different products - and that one IS what needs to stay part of
+    # the key.
+    def _correction_key(fv) -> tuple:
+        set_component = None if fv.job_document_id else fv.set_index
+        return (fv.mark_id, fv.custom_field_id, fv.job_document_id, fv.row_index, set_component)
+
+    old_corrections = {
+        _correction_key(fv): fv.corrected_value
+        for fv in db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.corrected_value.isnot(None))
+        .all()
+    }
+
     # Clear any prior run.
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
+    # A fresh extraction makes the job current again by definition - see
+    # Job.needs_reextraction / _remove_document_file for how it gets set.
+    job.needs_reextraction = False
     db.flush()
 
     doc_text_cache: dict[str, str] = {}  # keyed by JobDocument.id — per FILE, not per slot
     # Same key, this FILE's own OCR word boxes per (kept) page — see locate_value_bbox. Never
     # populated on the vision-fallback path (no OCR ran at all there, nothing to locate with).
     doc_tokens_cache: dict[str, list[tuple[int, list[dict]]]] = {}
+    # Same key: the row count Document AI's own table geometry detected for this file, summed
+    # across its (kept) pages - 0 when Document AI found no ruled/structured table anywhere in
+    # it (a borderless layout, or simply no line-item table on this document). See
+    # docai.py's _table_row_count/ocr_page_image and the multi-value cross-check below, which
+    # treats 0 as "no signal available" rather than "zero rows".
+    doc_table_row_count_cache: dict[str, int] = {}
     tdoc_by_id = {d.id: d for d in group.documents}
     custom_filter_texts = get_active_custom_filter_texts(db)
 
@@ -3922,6 +4218,7 @@ def run_extraction(db: Session, job: Job) -> None:
         tdoc_id = jdoc.template_document_id
         parts: list[str] = []
         tokens_by_page: dict[int, list[dict]] = {}
+        table_row_counts_by_page: dict[int, list[int]] = {}
         if jdoc and jdoc.file_path:
             for page in range(1, jdoc.page_count + 1):
                 try:
@@ -3931,9 +4228,18 @@ def run_extraction(db: Session, job: Job) -> None:
                     # stay columns and a multi-column page's two halves stay separate, rather
                     # than interleaving into one scrambled line. Falls back to the flat text
                     # for a processor response with nothing to group (see docai.py).
-                    parts.append(page_ocr.get("layout_text") or page_ocr.get("text", ""))
+                    # structured_text is layout_text's reading-order fix for genuine multi-column
+                    # regions (app/core/structure_engine.py); only used when the flag is on and
+                    # the engine actually found something to fix on this page, else identical.
+                    parts.append(
+                        (get_settings().structure_engine_enabled and page_ocr.get("structured_text"))
+                        or page_ocr.get("layout_text")
+                        or page_ocr.get("text", "")
+                    )
                     if page_ocr.get("tokens"):
                         tokens_by_page[page] = page_ocr["tokens"]
+                    if page_ocr.get("table_row_counts"):
+                        table_row_counts_by_page[page] = page_ocr["table_row_counts"]
                 except Exception:  # noqa: BLE001
                     # Never swallow this silently. A failure here empties the OCR text, which
                     # drops the whole job to reading page images — much less accurate — and
@@ -3956,6 +4262,13 @@ def run_extraction(db: Session, job: Job) -> None:
             (p, tokens_by_page[p]) for p in range(1, len(parts) + 1)
             if p not in dropped_pages and p in tokens_by_page
         ]
+        # Same drop list once more — a stripped page's table (if it even had one) never counts
+        # toward this document's detected row total. Summed across every table on every kept
+        # page: most documents have exactly one line-item table on exactly one page, but a
+        # table split across two pages must still add up to the printed whole.
+        doc_table_row_count_cache[jdoc.id] = sum(
+            sum(counts) for p, counts in table_row_counts_by_page.items() if p not in dropped_pages
+        )
         if jdoc is not None and parts:
             jdoc.extracted_json = {
                 "document": tdoc.name if tdoc else None,
@@ -4104,12 +4417,32 @@ def run_extraction(db: Session, job: Job) -> None:
             """A field that comes back IDENTICAL across every single row, despite several rows
             existing, is usually a header/section label bleeding into every row (a table's own
             "VVVF" heading misread as every row's own PO Number) rather than genuine per-row
-            data - a PO or part number can legitimately repeat for a couple of rows, but not for
-            every row in a table of three or more distinct products. Used to keep a read like
-            that from being trusted just because it happens to have more rows than another."""
+            data. Used to keep a read like that from being trusted just because it happens to
+            have more rows than another.
+
+            Skips identity/descriptive columns on purpose - a description, a material or part
+            code, a unit price, a unit-of-measure - because those CAN legitimately be identical
+            on every row of a real document: three PO numbers for the SAME product, at the SAME
+            price, correctly print the same description, material code and price on all three
+            rows (see JOB-290770 - three genuine rows, one product, three POs, correctly
+            identical on exactly those columns). This check used to flag that CORRECT read as
+            broken forever, because 3-of-3 identical is what RIGHT looks like for those fields,
+            not a header bleeding through - and once broken, every downstream cross-check that
+            depends on "not broken" (see sums_disagree and the printed-total check below) never
+            ran again for this document. PO numbers, quantities and amounts are never excluded -
+            those are per-transaction facts that essentially never coincide by chance on
+            genuinely different rows, so identical readings across three or more of THEM really
+            is the original warning sign this function exists to catch.
+            """
             if len(candidate_rows) < 3:
                 return False
+            identity_pattern = re.compile(
+                r"(description|material|part.?code|unit.?price|quantity.?type|uom|unit.?of.?measure)",
+                re.IGNORECASE,
+            )
             for label in labels:
+                if identity_pattern.search(label):
+                    continue
                 values = [r.get(label) for r in candidate_rows if r.get(label)]
                 if len(values) >= 3 and len(set(values)) == 1:
                     return True
@@ -4118,8 +4451,15 @@ def run_extraction(db: Session, job: Job) -> None:
         if multi_marks:
             row_specs = [_spec(m, inline_format=False) for m in multi_marks]
             row_labels = [f["label"] for f in row_specs]
+            # Document AI's own detected table geometry (see docai.py's _table_row_count) - 0
+            # when it found no ruled/structured table on this document at all, treated
+            # everywhere below as "no signal available", never as "zero rows". Passed into
+            # BOTH readers as a prompt hint (helps the FIRST pass, not just this cross-check)
+            # and used below as a third, independent source of truth for "how many rows are
+            # there really" - the two LLM reads otherwise only ever argue with each other.
+            detected_row_count = doc_table_row_count_cache.get(jd.id, 0)
             if not used_vision:
-                rows = extract_document_rows(ocr_text, row_specs)
+                rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None)
                 # Line-item tables are the highest-error part of extraction: a table whose OCR
                 # text doesn't preserve visual column order can make the model silently drop or
                 # merge rows (see ROW_IS_A_PRODUCT in extraction.py) no matter how the prompt is
@@ -4130,7 +4470,8 @@ def run_extraction(db: Session, job: Job) -> None:
                 # text read itself looks broken - but never prefer a candidate that itself looks
                 # broken just because it has a higher row count.
                 if image_paths:
-                    vision_rows = extract_document_rows_from_images(image_paths, row_specs)
+                    vision_rows = extract_document_rows_from_images(
+                        image_paths, row_specs, detected_row_count or None)
                     vision_broken = _row_read_looks_broken(vision_rows, row_labels)
                     text_broken = _row_read_looks_broken(rows, row_labels)
                     # Row counts can agree while the VALUES don't - see _row_sums_disagree for
@@ -4142,19 +4483,128 @@ def run_extraction(db: Session, job: Job) -> None:
                         not vision_broken and not text_broken and len(vision_rows) == len(rows)
                         and _row_sums_disagree(rows, vision_rows, row_labels)
                     )
-                    if vision_rows and not vision_broken and (text_broken or len(vision_rows) > len(rows) or sums_disagree):
+                    # Both reads agreeing on a count neither the printed total NOR Document
+                    # AI's own detected table corroborates is a failure mode nothing here can
+                    # actually fix (which row is missing/extra isn't knowable from a count
+                    # alone) - but it's exactly the kind of silent wrong answer that should at
+                    # least be visible in the logs instead of looking like agreement settled it.
+                    if (not vision_broken and not text_broken and len(vision_rows) == len(rows)
+                            and detected_row_count and len(rows) != detected_row_count):
+                        logger.warning(
+                            "multi-value on %s: text and image both read %d row(s), but "
+                            "Document AI's own table layout detected %d - neither reader "
+                            "matches; keeping the agreed-upon read since which row is "
+                            "missing/extra isn't knowable from a count alone",
+                            tdoc.name, len(rows), detected_row_count,
+                        )
+                    prefer_vision = bool(
+                        vision_rows and not vision_broken
+                        and (text_broken or len(vision_rows) > len(rows))
+                    )
+                    settled = False
+                    # A row-COUNT disagreement defaults to "more rows wins" above, on the
+                    # assumption a drop/merge losing a row is the only real failure mode - but
+                    # that assumption is exactly what a wrongly-INCLUDED total/subtotal row
+                    # breaks (a document with 20 real rows read as 22). Document AI's own
+                    # detected table row count is a genuine third, independent signal - neither
+                    # LLM read's own guess - so it settles a count disagreement ahead of
+                    # everything else whenever it's available and only one candidate matches it.
+                    if not vision_broken and not text_broken and len(vision_rows) != len(rows) and detected_row_count:
+                        text_matches_detected = len(rows) == detected_row_count
+                        vision_matches_detected = len(vision_rows) == detected_row_count
+                        if text_matches_detected != vision_matches_detected:
+                            prefer_vision = vision_matches_detected
+                            settled = True
+                            logger.warning(
+                                "multi-value on %s: %d row(s) from text vs %d from the image - "
+                                "settled by Document AI's own detected table row count (%d), "
+                                "which only %s matches",
+                                tdoc.name, len(rows), len(vision_rows), detected_row_count,
+                                "the image" if vision_matches_detected else "the text",
+                            )
+                    # A row-COUNT disagreement defaults to "more rows wins" above, on the
+                    # assumption a drop/merge losing a row is the only real failure mode - but
+                    # JOB-290770 disproved that: the image read invented a 4th row by mistaking
+                    # a PO number for a new product (item_quantity summed to 3304), while the
+                    # text read's 3 rows summed to exactly 5226 - this invoice's own printed
+                    # total_quantity. Where the template captures a column's own total as a
+                    # plain field alongside its row-level one, that total names which candidate
+                    # actually adds up, and settles it ahead of row count entirely. Skipped once
+                    # the detected-row-count check above already settled it.
+                    if not settled and not vision_broken and not text_broken and len(vision_rows) != len(rows):
+                        for label in row_labels:
+                            known_total = _numeric_total_field(extracted, label)
+                            if known_total is None:
+                                continue
+                            text_sum = numeric_total([r.get(label) for r in rows])
+                            vision_sum = numeric_total([r.get(label) for r in vision_rows])
+                            if text_sum is None or vision_sum is None:
+                                continue
+                            text_matches = math.isclose(text_sum, known_total, rel_tol=0.02, abs_tol=0.5)
+                            vision_matches = math.isclose(vision_sum, known_total, rel_tol=0.02, abs_tol=0.5)
+                            if text_matches != vision_matches:
+                                prefer_vision = vision_matches
+                                logger.warning(
+                                    "multi-value on %s: %d row(s) from text vs %d from the image - "
+                                    "settled by %r, whose printed total %s only %s's row sum matches",
+                                    tdoc.name, len(rows), len(vision_rows), label, known_total,
+                                    "the image" if vision_matches else "the text",
+                                )
+                                break
+                    if prefer_vision:
                         logger.warning(
                             "multi-value on %s: OCR text read %d row(s)%s but the page image "
-                            "read %d%s - using the image result",
+                            "read %d - using the image result",
                             tdoc.name, len(rows), " (looked broken)" if text_broken else "",
-                            len(vision_rows), " (numeric totals disagreed)" if sums_disagree else "",
+                            len(vision_rows),
                         )
                         rows = vision_rows
+                    elif sums_disagree:
+                        # SAME row count, at least one column's values genuinely disagree - but
+                        # a wholesale swap trades one column's accuracy for another's rather
+                        # than fixing the one that was actually wrong (JOB-290770 again: vision
+                        # finally got item_quantity right, matching total_quantity, but its
+                        # reading of the tiny material code and PO number was WORSE than text's
+                        # - swapping the whole row lost ground it didn't need to). Merge PER
+                        # COLUMN instead: a column with a matching printed total is settled by
+                        # it; a column with no total to check but a genuine numeric
+                        # disagreement keeps the existing default of trusting the image (the
+                        # rendered page doesn't suffer OCR's column-order scrambling - see the
+                        # comment above); a column neither numeric nor disagreeing (a
+                        # description, a material code) is left as text read it, on the
+                        # grounds that plain disagreement alone is no evidence THAT column was
+                        # the one that broke.
+                        for label in row_labels:
+                            text_col = [r.get(label) for r in rows]
+                            vision_col = [r.get(label) for r in vision_rows]
+                            text_sum = numeric_total(text_col)
+                            vision_sum = numeric_total(vision_col)
+                            if text_sum is None or vision_sum is None:
+                                continue
+                            known_total = _numeric_total_field(extracted, label)
+                            if known_total is not None:
+                                text_matches = math.isclose(text_sum, known_total, rel_tol=0.02, abs_tol=0.5)
+                                vision_matches = math.isclose(vision_sum, known_total, rel_tol=0.02, abs_tol=0.5)
+                                use_vision = vision_matches and not text_matches
+                                reason = f"its printed total {known_total!r}"
+                            elif not math.isclose(text_sum, vision_sum, rel_tol=0.02, abs_tol=0.5):
+                                use_vision = True
+                                reason = "text vs image disagreeing on this column alone"
+                            else:
+                                continue
+                            if use_vision:
+                                logger.warning(
+                                    "multi-value on %s: column %r settled by %s - using the "
+                                    "image's reading for that column only",
+                                    tdoc.name, label, reason,
+                                )
+                                for i, row in enumerate(rows):
+                                    row[label] = vision_col[i]
             else:
                 # Previously this branch required OCR text, so with none the line items were
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
-                rows = extract_document_rows_from_images(image_paths, row_specs)
+                rows = extract_document_rows_from_images(image_paths, row_specs, detected_row_count or None)
             logger.warning(
                 "multi-value on %s: %d row(s) from %s",
                 tdoc.name, len(rows), "page images" if used_vision else "OCR text",
@@ -4246,6 +4696,15 @@ def run_extraction(db: Session, job: Job) -> None:
     from app.models.custom_field import CustomField
 
     custom_fields = db.query(CustomField).filter(CustomField.group_id == group.id).all()
+    # A field with lookup_key_label reads ANOTHER field's value on this SAME job (see
+    # _resolve_target_value) - it must be computed AFTER whatever it depends on, or it reads
+    # that field's value from BEFORE this run instead of the one this run is about to write.
+    # "Erp Entry Name" (keyed on "Quotation Name") came back empty on a job whose Quotation
+    # Name had never been computed before, purely because a plain query has no ordering
+    # guarantee and this run happened to process Erp Entry Name first. Stable sort: fields
+    # with no lookup_key_label keep their original relative order and go first; fields that
+    # key off another field go last, after whatever they depend on has already run.
+    custom_fields = sorted(custom_fields, key=lambda cf: bool(getattr(cf, "lookup_key_label", None)))
 
     # How many line items this job actually has, taken from the rows extraction just wrote.
     # A per-row custom field gets exactly this many slots, so the CTH the operator types for
@@ -4434,16 +4893,7 @@ def run_extraction(db: Session, job: Job) -> None:
             from app.core.llm import compute_custom_field
 
             value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
-        # is_target_value: same rule as a mark ticked this way - the raw value is never shown
-        # as-is, only looked up in this field's own reference table (keyed on nothing but
-        # itself). A match replaces it, no match returns empty.
-        raw_value = value
-        if getattr(cf, "is_target_value", False) and value:
-            from app.core.reference_cache import lookup_reference
-
-            resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[value],
-                                        fuzzy=getattr(cf, "fuzzy_match", False))
-            value = resolved or None
+        value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
         # the per-row custom field loop's own comment for why.
         existing_cf_value = (
@@ -4467,6 +4917,11 @@ def run_extraction(db: Session, job: Job) -> None:
                     target_value_raw=raw_value if getattr(cf, "is_target_value", False) else None,
                 )
             )
+        # Flushed per field, not left to whatever the session's own autoflush setting
+        # happens to be - a lookup_key_label field sorted to run right after the field it
+        # depends on (see the sort above) still needs that field's row to actually be
+        # QUERYABLE, not merely pending, the moment its own turn comes.
+        db.flush()
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -4489,6 +4944,10 @@ def run_extraction(db: Session, job: Job) -> None:
         db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all(),
         key=lambda f: (f.set_index or 0, f.label_name, f.row_index or 0),
     ):
+        if old_corrections:
+            restored = old_corrections.get(_correction_key(fv))
+            if restored is not None:
+                fv.corrected_value = restored
         if fv.custom_field_id:
             bucket = "Custom"
         else:
@@ -4645,9 +5104,18 @@ def correct_field_value(
     if fv.target_value_raw and not (fv.extracted_value or "").strip():
         from app.core.reference_cache import remember_reference
 
+        fuzzy = False
+        if fv.custom_field_id:
+            from app.models.custom_field import CustomField as _CF
+            owner_cf = db.get(_CF, fv.custom_field_id)
+            fuzzy = bool(owner_cf and owner_cf.fuzzy_match)
+        elif fv.mark_id:
+            mark = db.get(FieldMark, fv.mark_id)
+            fuzzy = bool(mark and mark.fuzzy_match)
         remember_reference(
             db, custom_field_id=fv.custom_field_id, mark_id=fv.mark_id,
             match_values=[fv.target_value_raw], resolved_value=payload.corrected_value or "",
+            fuzzy=fuzzy,
         )
     db.commit()
     db.refresh(fv)
@@ -4686,18 +5154,24 @@ def recompute_custom_field(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(SUPER_ADMIN)),
 ) -> JobFieldValueOut:
-    """Backfill ONE AI-computed custom field on ONE already-extracted job, from documents
-    it has already read — nothing else on the job is touched.
+    """Backfill ONE custom field on ONE already-extracted job — nothing else on the job is
+    touched.
 
-    Built for a field added to a template AFTER a job was already extracted (a hardcoded
-    field turned into a real per-document reading, say): re-running /extract would answer
-    that, but it also rewrites every OTHER field on the job, resets every approval, and
-    kicks the job back to Data Extraction — unacceptable on a job someone has already
-    reviewed, approved, or submitted. This reuses each document's ALREADY-CACHED OCR (the
-    same on-disk cache get_page_ocr checks before ever calling Document AI again, or the
-    text already saved on job_documents.extracted_json) and writes exactly one
+    Built for a field added to a template AFTER a job was already extracted: re-running
+    /extract would answer that, but it also rewrites every OTHER field on the job, resets
+    every approval, and kicks the job back to Data Extraction — unacceptable on a job
+    someone has already reviewed, approved, or submitted. This writes exactly one
     JobFieldValue — job-level, row_index=None. Job status, stage, approvals and every
     other field value are left exactly as they were.
+
+    kind="ai": reuses each document's ALREADY-CACHED OCR (the same on-disk cache
+    get_page_ocr checks before ever calling Document AI again, or the text already saved
+    on job_documents.extracted_json) rather than reading anything fresh.
+
+    kind="hardcoded": no document to read at all - this is exactly how a "Manual Entry"
+    field from the ERP Script Recorder shows up. Without this, a field added there stayed
+    invisible on Additional Details for every job extracted before it existed, with no way
+    to backfill it short of a full re-extraction.
     """
     from app.models.custom_field import CustomField
 
@@ -4705,67 +5179,67 @@ def recompute_custom_field(
     cf = db.get(CustomField, custom_field_id)
     if cf is None or cf.group_id != job.group_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found on this job's template.")
-    if cf.kind != "ai":
+    if cf.kind not in ("ai", "hardcoded"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail='Only an AI-computed field ("ai") can be recomputed — hardcoded and lookup fields are not read off a document.')
+                            detail='Only an AI-computed or hardcoded field can be recomputed — a per-row lookup field is not read off a document.')
 
-    group = db.get(TemplateGroup, job.group_id)
-    docs_by_tdoc: dict[str, list[JobDocument]] = {}
-    for d in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
-              .order_by(JobDocument.file_index).all()):
-        docs_by_tdoc.setdefault(d.template_document_id, []).append(d)
-    custom_filter_texts = get_active_custom_filter_texts(db)
+    if cf.kind == "hardcoded":
+        value, raw_value = _resolve_target_value(db, job.id, cf, cf.hardcoded_value or "")
+    else:
+        group = db.get(TemplateGroup, job.group_id)
+        docs_by_tdoc: dict[str, list[JobDocument]] = {}
+        for d in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                  .order_by(JobDocument.file_index).all()):
+            docs_by_tdoc.setdefault(d.template_document_id, []).append(d)
+        custom_filter_texts = get_active_custom_filter_texts(db)
 
-    def text_for_doc(jdoc: JobDocument, tdoc_name: str) -> str:
-        # Reuse whatever run_extraction already saved rather than re-reading anything, if
-        # it is there.
-        cached = jdoc.extracted_json
-        if cached and cached.get("text") is not None:
-            return cached["text"]
-        parts: list[str] = []
-        if jdoc.file_path:
-            for page in range(1, jdoc.page_count + 1):
-                try:
-                    page_ocr = get_page_ocr(_job_doc_dir(jdoc.id), page)
-                    parts.append(page_ocr.get("layout_text") or page_ocr.get("text", ""))
-                except Exception:  # noqa: BLE001
-                    logger.exception("OCR unavailable for job doc %s page %d during recompute", jdoc.id, page)
-        kept, dropped_pages = filter_pages_with_custom(parts, custom_filter_texts, tdoc_name)
-        text = "\n".join(kept)
-        if parts:
-            jdoc.extracted_json = {
-                "document": tdoc_name, "page_count": len(parts),
-                "pages": parts, "excluded_pages": dropped_pages, "text": text,
-            }
-        return text
+        def text_for_doc(jdoc: JobDocument, tdoc_name: str) -> str:
+            # Reuse whatever run_extraction already saved rather than re-reading anything, if
+            # it is there.
+            cached = jdoc.extracted_json
+            if cached and cached.get("text") is not None:
+                return cached["text"]
+            parts: list[str] = []
+            if jdoc.file_path:
+                for page in range(1, jdoc.page_count + 1):
+                    try:
+                        page_ocr = get_page_ocr(_job_doc_dir(jdoc.id), page)
+                        parts.append(
+                            (get_settings().structure_engine_enabled and page_ocr.get("structured_text"))
+                            or page_ocr.get("layout_text")
+                            or page_ocr.get("text", "")
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("OCR unavailable for job doc %s page %d during recompute", jdoc.id, page)
+            kept, dropped_pages = filter_pages_with_custom(parts, custom_filter_texts, tdoc_name)
+            text = "\n".join(kept)
+            if parts:
+                jdoc.extracted_json = {
+                    "document": tdoc_name, "page_count": len(parts),
+                    "pages": parts, "excluded_pages": dropped_pages, "text": text,
+                }
+            return text
 
-    src_ids = cf.source_document_ids or [d.id for d in group.documents]
-    chunks = []
-    for did in src_ids:
-        tdoc = next((d for d in group.documents if d.id == did), None)
-        name = tdoc.name if tdoc else "DOC"
-        for jdoc in docs_by_tdoc.get(did, []):
-            if not jdoc.file_path:
-                continue
-            chunks.append(f"=== {name} ===\n{text_for_doc(jdoc, name)}")
-    docs_text = "\n\n".join(chunks)
+        src_ids = cf.source_document_ids or [d.id for d in group.documents]
+        chunks = []
+        for did in src_ids:
+            tdoc = next((d for d in group.documents if d.id == did), None)
+            name = tdoc.name if tdoc else "DOC"
+            for jdoc in docs_by_tdoc.get(did, []):
+                if not jdoc.file_path:
+                    continue
+                chunks.append(f"=== {name} ===\n{text_for_doc(jdoc, name)}")
+        docs_text = "\n\n".join(chunks)
 
-    # Every uploaded document's own record, same as a fresh extraction's records pass - a
-    # field scoped to only some documents still benefits from seeing all of them
-    # cross-referenced.
-    records = _document_records(db, job, group)
+        # Every uploaded document's own record, same as a fresh extraction's records pass - a
+        # field scoped to only some documents still benefits from seeing all of them
+        # cross-referenced.
+        records = _document_records(db, job, group)
 
-    from app.core.llm import compute_custom_field
+        from app.core.llm import compute_custom_field
 
-    value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
-
-    raw_value = value
-    if getattr(cf, "is_target_value", False) and value:
-        from app.core.reference_cache import lookup_reference
-
-        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[value],
-                                    fuzzy=getattr(cf, "fuzzy_match", False))
-        value = resolved or None
+        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+        value, raw_value = _resolve_target_value(db, job.id, cf, value)
 
     existing = (db.query(JobFieldValue)
                 .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
@@ -4840,7 +5314,11 @@ def recompute_mark(
         for page in range(1, jd.page_count + 1):
             try:
                 page_ocr = get_page_ocr(_job_doc_dir(jd.id), page)
-                parts.append(page_ocr.get("layout_text") or page_ocr.get("text", ""))
+                parts.append(
+                    (get_settings().structure_engine_enabled and page_ocr.get("structured_text"))
+                    or page_ocr.get("layout_text")
+                    or page_ocr.get("text", "")
+                )
                 if page_ocr.get("tokens"):
                     tokens_by_page[page] = page_ocr["tokens"]
             except Exception:  # noqa: BLE001

@@ -199,15 +199,20 @@ def _connect(email: str | None = None, app_password: str | None = None,
 
 
 def _operator_mailboxes(db: Session, tenant_id: str | None = None) -> list[dict]:
-    """Every active operator with their own mailbox connected, credentials decrypted and
-    ready to hand to _connect(). A mailbox that fails to decrypt (a rotated JWT secret, most
-    likely) is skipped rather than raised — the shared inbox and every other operator's
-    mailbox must still get polled."""
+    """Every active, non-paused operator with their own mailbox connected, credentials
+    decrypted and ready to hand to _connect(). A mailbox that fails to decrypt (a rotated JWT
+    secret, most likely) is skipped rather than raised — the shared inbox and every other
+    operator's mailbox must still get polled.
+
+    User.mail_paused (a per-mailbox switch, Super Admin's Settings page) is excluded here the
+    same way the system-wide email_pull_paused flag is checked before this function is ever
+    called — one mailbox can be stopped without touching anyone else's."""
     from app.models.user import OPERATOR, User
 
     query = db.query(User).filter(
         User.role == OPERATOR, User.is_active.is_(True),
         User.mail_email.isnot(None), User.mail_app_password_encrypted.isnot(None),
+        User.mail_paused.is_(False),
     )
     if tenant_id:
         query = query.filter(User.tenant_id == tenant_id)
@@ -259,15 +264,23 @@ def test_connection() -> dict:
 
 
 def _extract_attachments(msg: email.message.Message) -> list[tuple[str, bytes]]:
+    """Real attachments only - never an embedded signature image. The two conditions this
+    used to have were redundant with each other (the second unconditionally re-applied the
+    first's own extension check), so Content-Disposition was never actually consulted: any
+    part with a matching extension counted, including one marked "inline" - exactly how
+    Outlook/Gmail/Apple Mail embed a signature logo (filename="logo.png"). That meant a
+    routine signature image paid for a full OCR + AI classification pass on every matched
+    email, and could single-handedly stop an attachment-less email from taking the cheap
+    no_documents short-circuit."""
     files: list[tuple[str, bytes]] = []
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
         disp = (part.get("Content-Disposition") or "").lower()
+        if "inline" in disp:
+            continue
         fname = _decode(part.get_filename())
         if not fname:
-            continue
-        if "attachment" not in disp and Path(fname).suffix.lower() not in ATTACH_EXTS:
             continue
         if Path(fname).suffix.lower() not in ATTACH_EXTS:
             continue
@@ -523,7 +536,15 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
         return False, "claimed by another run"
     if existing.verdict != "working" and not steal:
         return False, f"already examined ({existing.verdict})"
-    if existing.verdict == "working" and not steal:
+    if existing.verdict == "working":
+        # `steal` only ever means "let reexamine reopen a FINISHED verdict" (the check
+        # above) - it must never also mean "take a claim that is actively being read right
+        # now, this instant". That used to be gated on `and not steal` too, so a reexamine
+        # call racing the background poller's own in-flight claim (0 minutes old, nowhere
+        # near CLAIM_STALE_MINUTES) stole it immediately - two runs reading the same
+        # message at once, which is the exact two-jobs-one-email bug this whole claim
+        # mechanism exists to prevent (see this function's own docstring). Staleness is
+        # unconditional for a "working" claim, steal or not.
         started = existing.updated_at or existing.created_at
         # The column stores UTC without a timezone on both SQLite and Postgres, so it comes
         # back naive; subtracting an aware "now" from it raises. Treat naive as the UTC it is.
@@ -586,6 +607,30 @@ def _unclaim(db: Session, message_id: str) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("could not clear the claim for %s after a deferred pull", message_id[:60])
         db.rollback()
+
+
+def _close_any_pending_email_for(db: Session, message_id: str, group_id: str, job_id: str) -> None:
+    """A message that just succeeded (matched a customer, built a job) may already have a
+    "pending" row from an EARLIER pull that couldn't place it - realistically, an
+    identifier missing at the time, later added, and the same message reexamined. Nothing
+    ever cross-referenced PendingEmail against a later success: the row sat there reading
+    "pending" forever, so a Super Admin working the Pending Emails queue could resolve it
+    by hand and build a SECOND job for the exact same original email - confirmed live.
+    Marks it resolved against the job that was actually just created, and removes its now-
+    redundant attachment files the same way a normal resolve/dismiss does."""
+    row = (
+        db.query(PendingEmail)
+        .filter(PendingEmail.message_id == message_id, PendingEmail.status == "pending")
+        .one_or_none()
+    )
+    if row is None:
+        return
+    import shutil
+
+    row.status = "resolved"
+    row.resolved_group_id = group_id
+    row.resolved_job_id = job_id
+    shutil.rmtree(Path(get_settings().uploads_dir) / "pending_email" / row.id, ignore_errors=True)
 
 
 def _save_pending_email(db: Session, message_id: str, sender: str, subject: str,
@@ -805,9 +850,10 @@ def _pull_one_mailbox(
     processed: list[dict] = []
     try:
         conn.select("INBOX")
-        # Only today's mail - midnight to midnight. SINCE/BEFORE are date-only (no time of
-        # day) and compare against the message's arrival date as the mail SERVER recorded it,
-        # so this is exactly "today" regardless of what time the poll happens to run.
+        # A routine poll only looks at today's mail - midnight to midnight. SINCE/BEFORE are
+        # date-only (no time of day) and compare against the message's arrival date as the
+        # mail SERVER recorded it, so this is exactly "today" regardless of what time the
+        # poll happens to run.
         #
         # UNSEEN normally, so a routine poll never re-reads mail a person has already opened
         # for their own reasons - but reexamine explicitly means "look again at something
@@ -816,13 +862,24 @@ def _pull_one_mailbox(
         # reexamine, since that flag only bypasses OUR OWN "already examined" record
         # (_claim), not this search. Widening to ALL here is what makes reexamine able to
         # reach it at all.
+        #
+        # The date bound must widen for reexamine too, not just the seen/unseen criterion -
+        # its whole documented purpose is reaching a message that arrived BEFORE today and
+        # was deliberately left unmatched (a customer's first email, sitting in Pending Mail
+        # until someone finishes configuring their template), and that is realistically
+        # discovered and re-triggered a day or more later, not within the same SINCE/BEFORE
+        # window still bounding it to "today" used to leave in place. max_messages below
+        # still caps how much a wide-open search can return.
         today = datetime.now().date()
         tomorrow = today + timedelta(days=1)
         date_fmt = "%d-%b-%Y"  # IMAP's required form, e.g. "01-Jan-2026"
         seen_criterion = "ALL" if reexamine else "UNSEEN"
-        typ, data = conn.search(
-            None, seen_criterion, "SINCE", today.strftime(date_fmt), "BEFORE", tomorrow.strftime(date_fmt)
-        )
+        if reexamine:
+            typ, data = conn.search(None, seen_criterion)
+        else:
+            typ, data = conn.search(
+                None, seen_criterion, "SINCE", today.strftime(date_fmt), "BEFORE", tomorrow.strftime(date_fmt)
+            )
         uids = data[0].split() if data and data[0] else []
         uids = uids[-max_messages:]
 
@@ -1183,6 +1240,7 @@ def _pull_one_mailbox(
                 conn.store(uid, "-FLAGS", "\\Seen")
             except Exception:  # noqa: BLE001
                 pass
+            _close_any_pending_email_for(db, mid, group.id, job.id)
             _record(db, mid, sender, subject, "matched",
                     tie_note or (who.get("reason") or ""), group_id=group.id, job_id=job.id,
                     evidence=who.get("evidence") or "")

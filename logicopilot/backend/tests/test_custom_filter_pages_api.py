@@ -343,6 +343,60 @@ def test_sweep_only_matches_the_given_reference_not_unrelated_text(db_session):
     assert jd.file_path is not None
 
 
+def test_sweep_never_deletes_a_document_where_only_some_pages_match(db_session):
+    """Found live: a real 2-page document with one boilerplate cover page mixed in with one
+    genuinely different, real page used to be deleted WHOLESALE the moment ANY page matched
+    - destroying the real page along with the junk one. The sweep must never do that; a
+    mixed document is left untouched for a human to look at instead."""
+    _, _, job, jd = _make_job_with_document(
+        db_session, page_texts=[REFERENCE_TEXT, NON_MATCHING_TEXT])
+    _sweep_old_jobs_for_reference(db_session, REFERENCE_TEXT)
+
+    db_session.refresh(jd)
+    assert jd.file_path == "fake/does-not-exist.pdf"
+    assert jd.page_count == 2
+
+
+def test_sweep_still_removes_a_document_whose_every_page_matches(db_session):
+    """The one case removal IS safe: nothing on the document is anything but the reference's
+    own content, so nothing real is lost. A second, non-matching document keeps the job
+    alive, so this checks the matched document's own cleared state in isolation."""
+    tenant, group, job, jd = _make_job_with_document(
+        db_session, page_texts=[REFERENCE_TEXT, REFERENCE_TEXT])
+    other_tdoc = _make_template_document(db_session, tenant, group, name="PackingList")
+    jd_real = JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=other_tdoc.id,
+                          file_path="fake/real.pdf", page_count=1, file_index=1,
+                          extracted_json={"pages": [NON_MATCHING_TEXT]})
+    db_session.add(jd_real)
+    db_session.commit()
+
+    _sweep_old_jobs_for_reference(db_session, REFERENCE_TEXT)
+
+    db_session.refresh(jd)
+    assert jd.file_path is None
+
+
+def test_sweep_skips_a_completed_job(db_session):
+    """A completed job's ERP entry has already gone through - the real, filed customs
+    record. Uploading an unrelated filter reference weeks later must never rewrite it."""
+    _, _, job, jd = _make_job_with_document(
+        db_session, page_texts=[REFERENCE_TEXT], job_status="completed")
+    _sweep_old_jobs_for_reference(db_session, REFERENCE_TEXT)
+
+    db_session.refresh(jd)
+    assert jd.file_path == "fake/does-not-exist.pdf"
+
+
+def test_sweep_skips_a_duplicate_job(db_session):
+    """Already reviewed and settled as a duplicate - not this sweep's business either."""
+    _, _, job, jd = _make_job_with_document(
+        db_session, page_texts=[REFERENCE_TEXT], job_status="duplicate")
+    _sweep_old_jobs_for_reference(db_session, REFERENCE_TEXT)
+
+    db_session.refresh(jd)
+    assert jd.file_path == "fake/does-not-exist.pdf"
+
+
 def test_upload_starts_the_background_sweep(client, db_session):
     _login_super_admin(client, db_session)
     with _mock_ocr("some reference text"), \

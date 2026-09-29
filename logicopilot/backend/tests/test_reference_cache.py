@@ -636,6 +636,82 @@ def test_fuzzy_similar_rejects_a_genuinely_different_company():
     assert _fuzzy_similar("", "KUEHNE+NAGEL") is False
 
 
+def test_fuzzy_similar_matches_spelled_out_corporate_suffixes():
+    # Found live: a job whose document spelled everything out ("AND"/"PRIVATE"/"LIMITED")
+    # failed to fuzzy-match the reference table's abbreviated spelling of the SAME company,
+    # and a manual correction would have gone on to add a near-duplicate row.
+    assert _fuzzy_similar("KUEHNE AND NAGEL PRIVATE LIMITED", "KUEHNE + NAGEL PVT LTD") is True
+    assert _fuzzy_similar("EVERGREEN SHIPPING AGENCY COMPANY LIMITED",
+                          "EVERGREEN SHIPPING AGENCY CO LTD") is True
+
+
+def test_remember_reference_fuzzy_updates_a_near_duplicate_instead_of_adding_a_row(db_session):
+    """The write side of the same fuzzy_match=True opt-in: a differently-spelled correction for
+    a key the reference table already fuzzy-recognises must update that row, not add a second
+    near-duplicate one for the same real company."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = _make_lookup_field(db_session, tenant, group)
+    remember_reference(db_session, cf.id, ["KUEHNE + NAGEL PVT. LTD."], "RFQ/0003/23-24")
+    db_session.commit()
+
+    remember_reference(db_session, cf.id, ["KUEHNE AND NAGEL PRIVATE LIMITED"],
+                       "RFQ/0003/23-24-UPDATED", fuzzy=True)
+    db_session.commit()
+
+    assert db_session.query(CustomFieldReferenceValue).count() == 1
+    assert lookup_reference(db_session, cf.id, ["KUEHNE+NAGEL"], fuzzy=True) == "RFQ/0003/23-24-UPDATED"
+
+
+def test_remember_reference_without_fuzzy_still_adds_a_duplicate(db_session):
+    """The default (fuzzy=False) behaviour is unchanged - only an opted-in field gets the
+    duplicate-avoiding write path."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = _make_lookup_field(db_session, tenant, group)
+    remember_reference(db_session, cf.id, ["KUEHNE + NAGEL PVT. LTD."], "RFQ/0003/23-24")
+    db_session.commit()
+
+    remember_reference(db_session, cf.id, ["KUEHNE AND NAGEL PRIVATE LIMITED"], "SOMETHING ELSE")
+    db_session.commit()
+
+    assert db_session.query(CustomFieldReferenceValue).count() == 2
+
+
+def test_correcting_a_spelling_variant_updates_the_existing_reference_row_not_a_new_one(client, db_session):
+    """End-to-end version of the bug report: the SAME real company keeps arriving with a
+    different spelling on every document, and each manual correction used to add its own row
+    instead of reusing the one the fuzzy reader already treats as a match."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Erp Entry Name",
+                     kind="hardcoded", is_target_value=True, fuzzy_match=True,
+                     ask_operator=True, ask_operator_required=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+    remember_reference(db_session, cf.id, ["KUEHNE + NAGEL PVT. LTD."], "KUEHNE+NAGEL PVT LTD")
+    db_session.commit()
+
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-FUZZY2", status="extracted")
+    db_session.add(job)
+    db_session.commit()
+    fv = JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=cf.id,
+                       label_name="Erp Entry Name", extracted_value="",
+                       target_value_raw="KUEHNE AND NAGEL PRIVATE LIMITED")
+    db_session.add(fv)
+    db_session.commit()
+    db_session.refresh(fv)
+
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-fuzzy2@example.com")
+    login(client, op.email)
+    resp = client.patch(f"/api/v1/job-field-values/{fv.id}",
+                        json={"corrected_value": "KUEHNE+NAGEL PVT LTD"})
+    assert resp.status_code == 200, resp.text
+
+    assert db_session.query(CustomFieldReferenceValue).filter_by(custom_field_id=cf.id).count() == 1
+
+
 def test_lookup_reference_default_stays_exact_even_for_a_near_miss(db_session):
     """The default (fuzzy=False) must never soften - this is the same lookup_reference a
     kind="lookup" CTH field calls, and that one must never fuzzy-match."""

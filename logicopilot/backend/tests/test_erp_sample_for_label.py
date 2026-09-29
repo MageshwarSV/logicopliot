@@ -46,6 +46,40 @@ def test_hardcoded_custom_field_uses_its_own_value(db_session):
     assert "hardcoded" in source
 
 
+def test_manual_entry_field_uses_its_example_value(db_session):
+    """A "Manual Entry" field from the recorder: ask_operator, no hardcoded_value of its own
+    (the real answer only ever comes from the operator, on a real job) - without an
+    example_value it has nothing to type but its own label, which is not a valid value on
+    any real ERP form."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    script = _make_script(db_session, tenant, group)
+    db_session.add(CustomField(
+        tenant_id=tenant.id, group_id=group.id, label_name="Sales Person Remarks",
+        kind="hardcoded", hardcoded_value=None, ask_operator=True, ask_operator_required=True,
+        example_value="Handled by Ravi",
+    ))
+    db_session.commit()
+
+    value, source = _sample_for_label(db_session, script, "Sales Person Remarks")
+    assert value == "Handled by Ravi"
+    assert "example" in source
+
+
+def test_manual_entry_field_with_no_example_yet_has_no_sample(db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    script = _make_script(db_session, tenant, group)
+    db_session.add(CustomField(
+        tenant_id=tenant.id, group_id=group.id, label_name="Sales Person Remarks",
+        kind="hardcoded", hardcoded_value=None, ask_operator=True, ask_operator_required=True,
+    ))
+    db_session.commit()
+
+    value, source = _sample_for_label(db_session, script, "Sales Person Remarks")
+    assert value == ""
+
+
 def test_target_value_ai_field_uses_a_learned_reference_value(db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)

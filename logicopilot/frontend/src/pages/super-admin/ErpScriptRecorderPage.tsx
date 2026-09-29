@@ -157,7 +157,16 @@ export function ErpScriptRecorderPage() {
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // value popup that opens when an input is touched
   const [pending, setPending] = useState<PendingInput | null>(null);
-  const [popMode, setPopMode] = useState<"field" | "literal" | "ai" | "pick" | "upload">("field");
+  const [popMode, setPopMode] = useState<"field" | "literal" | "ai" | "pick" | "upload" | "manual">("field");
+  /** "Manual Entry": a data field that does not exist yet — named right here, on the spot.
+   *  Created as an ordinary ask-the-operator field (same as Quotation Value etc.), so it
+   *  shows up on Additional Details with an input box before Submit Entry, exactly like
+   *  every other field this screen maps. */
+  const [manualLabel, setManualLabel] = useState("");
+  /** What gets typed into the ERP box live, WHILE RECORDING only — an operator-facing field
+   *  has no document to read a sample from, so without one the recorder would type the
+   *  field's own name (not a valid value on any real ERP), and the box would never validate. */
+  const [manualExample, setManualExample] = useState("");
   // "Pick data": read a value/text/document OUT of the ERP and show it to the operator.
   const [pickLabel, setPickLabel] = useState("");
   const [pickKind, setPickKind] = useState<"value" | "text" | "document">("value");
@@ -186,6 +195,10 @@ export function ErpScriptRecorderPage() {
    *  appended. Turned on when a replay stops part-way because the ERP has changed since the
    *  script was recorded: the missing action is done by hand and saved in the right place. */
   const [insertAt, setInsertAt] = useState<number | null>(null);
+  /** "Run to step N": the number typed into the manual-replay box, in Manual mode. Runs from
+   *  the top and stops exactly there — for landing on the one step that needs watching
+   *  without pressing Next through every ordinary one in front of it. */
+  const [runToStep, setRunToStep] = useState("");
   /** Set while a watched Auto replay is running, so Stop can interrupt it between steps. */
   const autoAbort = useRef(false);
   /** "Keep going": don't stop the replay at the first broken step — skip it and carry on, so
@@ -200,6 +213,20 @@ export function ErpScriptRecorderPage() {
    *  cannot be relied on here — the view is a relayed screenshot, so the first tap has already
    *  been sent and recorded by the time the second one is judged. Arming says it up front. */
   const [dblArmed, setDblArmed] = useState(false);
+  /** Armed "Search & Select": the next thing touched opens the value popup, but confirming it
+   *  records a click/double-click matched to whichever field's value is on screen — not a
+   *  fill. For a search popup's result row, where the recorded position is never trustworthy
+   *  (a different value returns a different number of rows) and only the row's own text can
+   *  find it reliably, live or on a real run alike. */
+  const [searchClickAction, setSearchClickAction] = useState<null | "click" | "double_click">(null);
+  // Search & Click / Search & Double-click's OWN value-source state — kept separate from the
+  // main touch popup's (popMode/popField/...) since the two can never be open at once but
+  // opening one should never show stale state left over from the other.
+  const [searchPopMode, setSearchPopMode] = useState<"field" | "literal" | "manual">("field");
+  const [searchField, setSearchField] = useState("");
+  const [searchLiteral, setSearchLiteral] = useState("");
+  const [searchManualLabel, setSearchManualLabel] = useState("");
+  const [searchManualExample, setSearchManualExample] = useState("");
   /** The click just recorded, so a second tap in the same spot can be promoted to a DOUBLE
    *  click. Recording the double directly is not possible: the first tap has already fired
    *  by the time the second arrives, so the step is upgraded in place instead. */
@@ -516,6 +543,37 @@ export function ErpScriptRecorderPage() {
       }
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Could not replay the recorded steps.");
+    } finally {
+      setReplaying(false);
+    }
+  }
+
+  /** "Run to step N": from the top, straight through to a chosen step, then stop and wait
+   *  there — one request, not N presses of Next. */
+  async function runReplayTo() {
+    if (!sid || steps.length === 0) return;
+    const n = parseInt(runToStep, 10);
+    if (!Number.isFinite(n) || n < 1) {
+      setError("Enter which step to run to (1 or more).");
+      return;
+    }
+    setReplaying(true);
+    setError(null);
+    try {
+      const res = await erpApi.recorderReplay(scriptId, sid, steps, {}, "to", Math.min(n, steps.length));
+      if (res.screenshot) setShot(res.screenshot);
+      absorbDialogs(res.dialogs);
+      setReplayAt({ index: res.index, total: res.total, next: res.next_label, done: res.done_label });
+      const failed = res.log.find((l) => l.includes("FAILED"));
+      if (failed) {
+        setError(`Stopped at step ${res.index + 1}: ${failed}`);
+      } else {
+        setStatus(
+          `Ran to step ${res.index} of ${res.total} and stopped there. Next up: ${res.next_label || "—"}`,
+        );
+      }
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Could not run to that step.");
     } finally {
       setReplaying(false);
     }
@@ -852,6 +910,8 @@ export function ErpScriptRecorderPage() {
         setPopField(suggested && fields.includes(suggested) ? suggested : "");
         setPopLiteral("");
         setPopPrompt("");
+        setManualLabel("");
+        setManualExample("");
         setSuggestions([]);
         setIsTypeahead(false);
         setPopOption(res.suggestion?.option ?? (el.options?.[0] ?? ""));
@@ -999,6 +1059,34 @@ export function ErpScriptRecorderPage() {
     });
   }
 
+  /** "Manual Entry": make sure a data field of this name exists (creating it as an ordinary
+   *  ask-the-operator field if it doesn't), so the rest of the flow can map to it exactly like
+   *  any other field. Returns false (and sets an error) if it could not be created. */
+  async function ensureManualField(label: string, exampleValue: string): Promise<boolean> {
+    if (fields.includes(label)) return true;
+    try {
+      await Promise.all(
+        (script?.template_ids ?? []).map((gid) =>
+          onboardingApi.createCustomField(gid, {
+            label_name: label,
+            kind: "hardcoded",
+            hardcoded_value: null,
+            ask_operator: true,
+            ask_operator_required: true,
+            per_row: false,
+            ask_operator_hint: "Typed in for this ERP entry — not read off any document.",
+            example_value: exampleValue.trim() || null,
+          }),
+        ),
+      );
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? "Could not create that field.");
+      return false;
+    }
+    setFields((f) => [...f, label]);
+    return true;
+  }
+
   async function confirmPopup() {
     if (!sid || !pending) return;
     const { x, y, element } = pending;
@@ -1070,9 +1158,16 @@ export function ErpScriptRecorderPage() {
           }
           pushStep({ action: "select", selector: sel, frames, value: popOption, options: element.options, description: desc });
         } else {
-          // Map a data field → the matching option is chosen at run time from the value.
-          if (!popField) { setError("Pick a data field, or choose a fixed option."); setBusy(false); return; }
-          const selStep: ErpStep = { action: "select", selector: sel, frames, field_label: popField, options: element.options, description: desc };
+          // Map a data field, or a freshly-named Manual Entry field → the matching option
+          // is chosen at run time from whichever the operator typed in on Additional Details.
+          const fieldForDropdown = popMode === "manual" ? manualLabel.trim() : popField;
+          if (popMode === "manual") {
+            if (!fieldForDropdown) { setError("Name this field — it's what the operator will see."); setBusy(false); return; }
+            if (!(await ensureManualField(fieldForDropdown, manualExample))) { setBusy(false); return; }
+          } else if (!fieldForDropdown) {
+            setError("Pick a data field, or choose a fixed option."); setBusy(false); return;
+          }
+          const selStep: ErpStep = { action: "select", selector: sel, frames, field_label: fieldForDropdown, options: element.options, description: desc };
           pushStep(selStep);
           // Same reason as the AI rule above: a dropdown left unset stops the ERP validating.
           const sr = await erpApi.recorderApplyStep(scriptId, sid, selStep);
@@ -1080,15 +1175,27 @@ export function ErpScriptRecorderPage() {
           if (sr.screenshot) setShot(sr.screenshot);
           setStatus(
             sr.ok
-              ? `Mapped ${popField} and selected "${sr.value ?? ""}".`
-              : `Mapped ${popField}, but the option could not be selected: ${sr.error ?? "unknown"}`,
+              ? `Mapped ${fieldForDropdown} and selected "${sr.value ?? ""}".`
+              : `Mapped ${fieldForDropdown}, but the option could not be selected: ${sr.error ?? "unknown"}`,
           );
+          if (popMode === "manual") { setManualLabel(""); setManualExample(""); }
         }
       } else if (popMode === "literal") {
         const res = await erpApi.recorderType(scriptId, sid, x, y, popLiteral);
         absorbDialogs(res.dialogs);
         if (res.screenshot) setShot(res.screenshot);
         pushStep({ action: "fill", selector: sel, frames, value: popLiteral, description: desc });
+      } else if (popMode === "manual") {
+        const label = manualLabel.trim();
+        if (!label) { setError("Name this field — it's what the operator will see."); setBusy(false); return; }
+        if (!(await ensureManualField(label, manualExample))) { setBusy(false); return; }
+        const res = await erpApi.recorderType(scriptId, sid, x, y, label, label);
+        absorbDialogs(res.dialogs);
+        if (res.screenshot) setShot(res.screenshot);
+        pushStep({ action: isTypeahead ? "autocomplete" : "fill", selector: sel, frames, field_label: label, description: desc });
+        setStatus(`"${label}" is now on Additional Details — the operator types it in there before Submit Entry.`);
+        setManualLabel("");
+        setManualExample("");
       } else {
         if (!popField) { setError("Pick a data field, or use a fixed value / AI rule."); setBusy(false); return; }
         const res = await erpApi.recorderType(scriptId, sid, x, y, popField, popField);
@@ -1102,6 +1209,54 @@ export function ErpScriptRecorderPage() {
       setError(err?.response?.data?.detail ?? "Could not set that value.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Confirm for Search & Click / Search & Double-click: no element to touch first — this
+   *  searches the WHOLE live screen for whatever holds the chosen field's value and clicks
+   *  (or double-clicks) it directly, right now, and records a step that does the same on
+   *  every real run. There is no recorded position at all to fall back on; a search
+   *  result's row is never at a fixed spot twice, so content is the only thing that can
+   *  ever find it. */
+  async function confirmSearchClick() {
+    if (!sid || !searchClickAction) return;
+    let fieldLabel: string | undefined;
+    let literalValue: string | undefined;
+    if (searchPopMode === "manual") {
+      const label = searchManualLabel.trim();
+      if (!label) { setError("Name this field — it's what the operator will see."); return; }
+      if (!(await ensureManualField(label, searchManualExample))) return;
+      fieldLabel = label;
+    } else if (searchPopMode === "literal") {
+      if (!searchLiteral.trim()) { setError("Enter the fixed value to search for."); return; }
+      literalValue = searchLiteral.trim();
+    } else {
+      if (!searchField) { setError("Pick a data field, or switch to Fixed value / Manual Entry."); return; }
+      fieldLabel = searchField;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const step: ErpStep = {
+        action: searchClickAction,
+        field_label: fieldLabel,
+        value: literalValue,
+        description: fieldLabel ? `search result: ${fieldLabel}` : `search result: ${literalValue}`,
+      };
+      const res = await erpApi.recorderApplyStep(scriptId, sid, step);
+      absorbDialogs(res.dialogs);
+      if (res.screenshot) setShot(res.screenshot);
+      pushStep(step);
+      const named = fieldLabel ?? literalValue ?? "";
+      setStatus(
+        res.ok
+          ? `Recorded a ${searchClickAction === "double_click" ? "double " : ""}click matched to ${named}${res.value ? ` — clicked "${res.value}"` : ""}.`
+          : `Recorded, but nothing matching ${named} could be found on screen: ${res.error ?? "unknown"}. The step is saved — make sure the ERP is showing results before trying again.`,
+      );
+    } finally {
+      setBusy(false);
+      setSearchClickAction(null);
+      setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
     }
   }
 
@@ -1637,6 +1792,37 @@ export function ErpScriptRecorderPage() {
                   >
                     ⌖ {dblArmed ? "Double click — armed" : "Double click"}
                   </button>
+                  {/* A search popup's result row is the one place a recorded CLICK position is
+                      never trustworthy — a different value returns a different number of
+                      rows. Press one of these to open a popup and pick which field decides
+                      the row; confirming it searches the WHOLE live screen for that field's
+                      value and clicks it directly — no need to touch the row yourself. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchClickAction("click");
+                      setSearchPopMode(fields.length > 0 ? "field" : "literal");
+                      setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
+                    }}
+                    disabled={busy}
+                    title="Search & Click: pick which field's value to search for on screen, then click whatever row holds it — for the row a search returns"
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    🔎 Search & Click
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchClickAction("double_click");
+                      setSearchPopMode(fields.length > 0 ? "field" : "literal");
+                      setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
+                    }}
+                    disabled={busy}
+                    title="Search & Double-click: same as Search & Click, but for a grid that only opens a row on a double click"
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    🔎 Search & Double-click
+                  </button>
                   {/* Pressed DURING recording, at the moment the login and navigation are done
                       and the entry screen is up. Marks the step just recorded, so everything
                       above it is setup. Same thing the per-step ⚑ does, but reachable without
@@ -1759,6 +1945,32 @@ export function ErpScriptRecorderPage() {
                             className="rounded-md px-1.5 py-1 text-xs text-indigo-600 hover:underline disabled:opacity-40 dark:text-indigo-300"
                           >
                             ⟲
+                          </button>
+                          {/* Run straight to a chosen step and stop there — the point of this
+                              box is skipping past however many ordinary steps sit in front of
+                              the one that actually needs watching, without pressing Next once
+                              per step to get there. */}
+                          <span className="mx-1 h-4 w-px bg-indigo-200 dark:bg-indigo-500/30" />
+                          <input
+                            type="number"
+                            min={1}
+                            max={steps.length}
+                            value={runToStep}
+                            onChange={(e) => setRunToStep(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") runReplayTo(); }}
+                            placeholder="step #"
+                            disabled={busy || replaying}
+                            title="Run to this step number and stop there"
+                            className="w-16 rounded-md border border-indigo-200 px-1.5 py-1 text-xs text-indigo-700 disabled:opacity-40 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-300"
+                          />
+                          <button
+                            type="button"
+                            onClick={runReplayTo}
+                            disabled={busy || replaying || !runToStep.trim()}
+                            title="Run from the top to that step, then stop and wait"
+                            className="rounded-md border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/20"
+                          >
+                            Run to ▶▶
                           </button>
                         </>
                       )}
@@ -2667,7 +2879,7 @@ export function ErpScriptRecorderPage() {
 
             {/* mode switch — three ways to decide this input's value. A file box has no
                 value at all, so none of them applies. */}
-            <div className={`grid grid-cols-3 gap-2 text-sm ${
+            <div className={`grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 ${
               popMode === "pick" || popMode === "upload" ? "hidden" : ""}`}>
               <button
                 type="button"
@@ -2689,6 +2901,13 @@ export function ErpScriptRecorderPage() {
                 className={`rounded-lg border px-2 py-2 text-xs font-medium ${popMode === "ai" ? "border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
               >
                 🤖 AI rule
+              </button>
+              <button
+                type="button"
+                onClick={() => setPopMode("manual")}
+                className={`rounded-lg border px-2 py-2 text-xs font-medium ${popMode === "manual" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+              >
+                📝 Manual Entry
               </button>
             </div>
 
@@ -2812,6 +3031,29 @@ export function ErpScriptRecorderPage() {
                   </label>
                 )}
               </div>
+            ) : popMode === "manual" ? (
+              <div className="space-y-2">
+                <Input
+                  label="Name this field — what the operator sees"
+                  value={manualLabel}
+                  onChange={(e) => setManualLabel(e.target.value)}
+                  placeholder="e.g. Sales Person Remarks"
+                  autoFocus
+                />
+                <Input
+                  label="Example value — typed here now, so the ERP accepts it and recording can continue"
+                  value={manualExample}
+                  onChange={(e) => setManualExample(e.target.value)}
+                  placeholder="e.g. a realistic sample the ERP will validate"
+                />
+                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
+                  There is no data field for this yet — naming it here creates one. On every real
+                  job, the operator will see "{manualLabel.trim() || "…"}" on Additional Details
+                  and type a value in before Submit Entry — that real answer is what lands here,
+                  never the example above. The example is only so this box validates right now,
+                  while you're recording, so the steps after it can be recorded too.
+                </p>
+              </div>
             ) : popMode === "ai" ? (
               <div>
                 <label className="mb-2 block text-xs font-medium text-slate-600 dark:text-slate-300">
@@ -2929,6 +3171,90 @@ export function ErpScriptRecorderPage() {
           </div>
           );
         })()}
+      </Modal>
+
+      {/* ---------- Search & Click / Search & Double-click popup ---------- */}
+      <Modal
+        open={!!searchClickAction}
+        onClose={() => setSearchClickAction(null)}
+        title={`🔎 Search & ${searchClickAction === "double_click" ? "Double-click" : "Click"}`}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            No need to touch anything in the browser first. Pick which field's value to search
+            for below — confirming searches the whole live screen for it and{" "}
+            {searchClickAction === "double_click" ? "double-clicks" : "clicks"} whatever holds
+            it, right now. The recorded step does the same on every real run, matched against
+            that job's own value.
+          </p>
+
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => setSearchPopMode("field")}
+              className={`rounded-lg border px-2 py-2 text-xs font-medium ${searchPopMode === "field" ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              Map a data field
+            </button>
+            <button
+              type="button"
+              onClick={() => setSearchPopMode("literal")}
+              className={`rounded-lg border px-2 py-2 text-xs font-medium ${searchPopMode === "literal" ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              Fixed value
+            </button>
+            <button
+              type="button"
+              onClick={() => setSearchPopMode("manual")}
+              className={`rounded-lg border px-2 py-2 text-xs font-medium ${searchPopMode === "manual" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              📝 Manual Entry
+            </button>
+          </div>
+
+          {searchPopMode === "field" ? (
+            <Select label="Data field" value={searchField} onChange={(e) => setSearchField(e.target.value)}>
+              <option value="">— choose a field —</option>
+              {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
+            </Select>
+          ) : searchPopMode === "literal" ? (
+            <Input
+              label="Fixed text to search for"
+              value={searchLiteral}
+              onChange={(e) => setSearchLiteral(e.target.value)}
+              placeholder="e.g. an exact reference number"
+              autoFocus
+            />
+          ) : (
+            <div className="space-y-2">
+              <Input
+                label="Name this field — what the operator sees"
+                value={searchManualLabel}
+                onChange={(e) => setSearchManualLabel(e.target.value)}
+                placeholder="e.g. Sales Person Remarks"
+                autoFocus
+              />
+              <Input
+                label="Example value — searched for here now, so a result actually shows up"
+                value={searchManualExample}
+                onChange={(e) => setSearchManualExample(e.target.value)}
+                placeholder="e.g. a realistic sample the search will find"
+              />
+              <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
+                There is no data field for this yet — naming it here creates one. On every real
+                job, the operator types the real value in on Additional Details; that's what
+                gets searched for and clicked then.
+              </p>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+            <Button variant="secondary" onClick={() => setSearchClickAction(null)}>Cancel</Button>
+            <Button onClick={confirmSearchClick} isLoading={busy}>
+              {searchClickAction === "double_click" ? "Search & double-click" : "Search & click"}
+            </Button>
+          </div>
+        </div>
       </Modal>
     </AppShell>
   );

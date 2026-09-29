@@ -15,6 +15,7 @@ from app.api.v1.entry_browser import router as entry_browser_router
 from app.api.v1.pending_mail import router as pending_mail_router
 from app.api.v1.system_settings import router as system_settings_router
 from app.api.v1.custom_filter_pages import router as custom_filter_pages_router
+from app.api.v1.public_irn import router as public_irn_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -32,3 +33,4 @@ api_router.include_router(entry_browser_router)
 api_router.include_router(pending_mail_router)
 api_router.include_router(system_settings_router)
 api_router.include_router(custom_filter_pages_router)
+api_router.include_router(public_irn_router)

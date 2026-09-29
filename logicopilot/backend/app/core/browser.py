@@ -499,6 +499,17 @@ _EVENTS_JS = r"""
     for (const e of els) {
       const r = e.getBoundingClientRect();
       if (!(r.width > 0 && r.height > 0 && e.offsetParent !== null)) continue;
+      // offsetParent !== null only catches display:none. A closed popup that this ERP's
+      // shell keeps laid out at all times (a "pick from list" dialog, present on nearly
+      // every screen, only ever toggled with visibility/opacity rather than display) has a
+      // real bounding box and a real offsetParent while it is closed - so it passed the
+      // check above and kept getting offered to the AI as a plausible click on screens that
+      // had nothing to do with it, on more than one job, at completely different points in
+      // completely different runs. Its own #DBList1_BtnOk "Apply" button was the one that
+      // came up both times. Playwright's own click() already refuses it ("element is not
+      // visible") - matching that same check here means the AI is never even offered it.
+      const cs = e.ownerDocument.defaultView.getComputedStyle(e);
+      if (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) continue;
       const tag = e.tagName.toLowerCase();
       const ity = ((e.getAttribute && e.getAttribute('type')) || '').toLowerCase();
       let text = (e.innerText || (e.getAttribute && (e.getAttribute('aria-label') || e.getAttribute('title'))) || '').replace(/\s+/g, ' ').trim().slice(0, 70);
@@ -1038,6 +1049,61 @@ def _row_selector(page, frames: list | None, text: str) -> str | None:
     return None
 
 
+def _row_click_offset(page, frames: list | None, row_selector: str, needle: str) -> dict:
+    """Where inside a matched ROW to click, so it lands on the cell that actually holds
+    `needle` - never the row's raw centre.
+
+    Playwright's default click targets the centre of the element's own bounding box, and a
+    multi-column row is rarely that simple: the middle column is often blank (as here - a
+    grid showing Name / Alias / Entity Type, matched on Name, with Alias empty), or holds
+    something else entirely. A manually-recorded double-click never had this problem - the
+    Super Admin's own click position was captured and is replayed exactly (see
+    _click_spot) - but a row found by CONTENT, with no click ever made against it, has no
+    such position to fall back on. Found live: the row highlighted (a plain onclick fired)
+    but the popup never closed (the ondblclick that actually confirms the row apparently
+    reads the clicked cell's own text, and the empty middle column was clicked instead).
+
+    Returns {} (the plain centre) if the cell holding the text cannot be worked out, which
+    is exactly the pre-existing fallback behaviour - this only ever narrows the target, it
+    never removes the safety net.
+    """
+    scope = page
+    for f in frames or []:
+        scope = scope.frame_locator(f)
+    try:
+        row = scope.locator(row_selector).first
+        result = row.evaluate(
+            """(row, needle) => {
+                const rowBox = row.getBoundingClientRect();
+                if (!rowBox.width || !rowBox.height) return null;
+                const upper = needle.toUpperCase();
+                let best = null;
+                for (const el of row.querySelectorAll('*')) {
+                    if (el.children.length) continue;   // leaf nodes only - the actual cell
+                    const t = (el.textContent || '').trim();
+                    if (!t) continue;
+                    if (t.toUpperCase().includes(upper) || upper.includes(t.toUpperCase())) {
+                        best = el;
+                        break;
+                    }
+                }
+                const target = best || row;
+                const box = target.getBoundingClientRect();
+                return {
+                    fx: (box.left + box.width / 2 - rowBox.left) / rowBox.width,
+                    fy: (box.top + box.height / 2 - rowBox.top) / rowBox.height,
+                };
+            }""",
+            needle,
+            timeout=2000,
+        )
+        if result and 0 <= result.get("fx", -1) <= 1 and 0 <= result.get("fy", -1) <= 1:
+            return {"click_fx": result["fx"], "click_fy": result["fy"]}
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def _text_selector(page, frames: list | None, text: str) -> str | None:
     """A selector that finds a clickable element by the TEXT it was recorded with.
 
@@ -1507,17 +1573,35 @@ def _control_state(loc) -> str | None:
 _DIALOG_ANSWERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
-def _dialog_answer(page) -> tuple[bool, str]:
+# An UN-RECORDED dialog (no `dialog` step ever armed an answer for it) whose own wording
+# describes losing/discarding something - accepting one of these is how a Save the ERP
+# actually REJECTED got read as "close the form?" and silently thrown away: the entry
+# vanished, a brand new blank form opened in its place, and the recorded script then spent
+# its whole run guessing at controls on a screen that had nothing to do with the job, before
+# finally giving up. Found live on two separate jobs, same wording both times.
+_DESTRUCTIVE_DIALOG_WORDS = ("close", "leave", "discard", "cancel", "unsaved", "lose")
+
+
+def _dialog_answer(page, message: str = "") -> tuple[bool, str]:
     """How the popup on this page should be answered: (accept?, text for a prompt).
 
     Defaults to accepting, which is what a person clicking through by hand would do and what
-    keeps the page - and the recorder screenshot - from freezing on an unanswered alert.
+    keeps the page - and the recorder screenshot - from freezing on an unanswered alert. The
+    one exception: an UN-ARMED dialog (see _DESTRUCTIVE_DIALOG_WORDS) whose own wording is
+    asking permission to close/leave/discard something defaults to DISMISS instead - the
+    safe read of "close the form?" is "no, don't", not "sure, go ahead", when nothing
+    recorded ever said otherwise.
     """
     try:
         cell = _DIALOG_ANSWERS.get(page) if page is not None else None
     except TypeError:      # not weak-referenceable
         cell = None
-    return (bool(cell[0]), cell[1]) if cell else (True, "")
+    if cell:
+        return bool(cell[0]), cell[1]
+    low = (message or "").lower()
+    if any(w in low for w in _DESTRUCTIVE_DIALOG_WORDS):
+        return False, ""
+    return True, ""
 
 
 # One DevTools session per page, reused. Opening one costs a round trip, and this is asked on
@@ -2619,6 +2703,32 @@ def _perform_step(page, step: dict, val: str) -> None:
             _press_held(page, step["_hover_opener"], loc, dbl=True)
         else:
             loc.dblclick(timeout=8000, **_click_spot(loc, step))
+            # A field_label-matched double-click (a search-result row - see _row_selector)
+            # sometimes dispatches cleanly by Playwright's own account but the ERP's own
+            # postback/close-the-popup handling hasn't caught up yet - found live: the
+            # step logged "ok" with no error, and the very next step still found the same
+            # popup on screen, unexpectedly. A person walking through by hand never hits
+            # this, because the natural pause between presses is enough time for it to
+            # settle; a real run has no such pause unless one is put here deliberately. A
+            # plain, positionally-recorded double-click never carries a field_label, so
+            # this never touches or slows down an ordinary step.
+            if step.get("field_label"):
+                # The whole block is best-effort and must never turn an already-successful
+                # click into a failure: some of this ERP's search popups are a SEPARATE TAB
+                # (see switch_tab) that self-closes back to the opener once a row is picked
+                # - found live: the very next call after a successful double-click raised
+                # "Target page, context or browser has been closed", because this closed
+                # tab is exactly what a correctly-completed selection looks like here. Any
+                # error anywhere in this verification - including that one - means there is
+                # nothing left to check or retry against, which is not a reason to fail a
+                # step whose own dblclick() above already returned without raising.
+                try:
+                    page.wait_for_timeout(400)
+                    if loc.first.is_visible(timeout=1000):
+                        page.wait_for_timeout(300)
+                        loc.dblclick(timeout=8000, **_click_spot(loc, step))
+                except Exception:  # noqa: BLE001
+                    pass
     elif action == "fill":
         # Type per-key (not fill) so type-ahead widgets fire their keyup/AJAX and open the
         # suggestion list. If a list appears, commit the fuzzy-best from it (some "plain"
@@ -2634,6 +2744,19 @@ def _perform_step(page, step: dict, val: str) -> None:
         for f in frames:
             scope = scope.frame_locator(f)
         _commit_typeahead(page, scope, loc, val, strict=True)
+        # Move focus off the field, same as a person tabbing to the next box. An ERP built on
+        # ASP.NET WebForms postbacks (see _validation_errors below) commonly runs its own
+        # validation, or opens a dependent popup, only on the field losing focus - never on
+        # keystrokes alone. "Initialization from Quotation" (asking whether to reload the
+        # importer/charges once a quotation number is entered) is exactly that: typing the
+        # value alone never triggered it, so it never appeared to be recorded as a step
+        # during recording, and would have been silently skipped on every real run too -
+        # not a dialog to answer, just an ordinary popup nothing ever gave a reason to open.
+        try:
+            loc.blur(timeout=3000)
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(300)
     elif action == "autocomplete":
         # Use the same component-agnostic chooser the JOB RUNNER uses. This branch used to
         # click the element and type into it, which works for a text field but does nothing at
@@ -2916,6 +3039,21 @@ class RecorderSession:
                         break
                     fn, holder = item
                     try:
+                        # The ERP itself closing the tab being driven - a popup form that
+                        # finishes and hands focus back to the tab that opened it is a common
+                        # pattern - used to leave self._page pointing at a dead Playwright
+                        # object with nothing to notice or recover. Every command after that
+                        # failed the same way forever, on a tab that no longer exists, and the
+                        # only way out was to stop and start the recording over. switch_tab
+                        # already follows FORWARD onto a tab the ERP just opened; this is the
+                        # same idea for the reverse direction, which the ERP does on its own
+                        # with no recorded step to say it is coming - so it has to be noticed
+                        # here, right before the command that would otherwise hit it.
+                        if self._page is not None and self._page.is_closed():
+                            opens = [q for q in (self._ctx.pages if self._ctx else [])
+                                    if not q.is_closed()]
+                            if opens:
+                                self._page = opens[-1]
                         # Resolved per command, not captured once — switch_tab moves it.
                         holder["result"] = fn(self._page)
                     except Exception as exc:  # noqa: BLE001
@@ -3132,6 +3270,15 @@ class RecorderSession:
                 pass
             p.keyboard.type(value)
             p.wait_for_timeout(200)
+            # Same reason as _perform_step's own "fill" branch: some dependent behaviour -
+            # validation, a popup like "Initialization from Quotation" - only runs once the
+            # field loses focus, and recording never blurred it, so that popup never showed
+            # up live to be recorded as a step in the first place.
+            try:
+                p.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+            except Exception:  # noqa: BLE001
+                pass
+            p.wait_for_timeout(300)
             return info
         return self.submit(_do)
 
@@ -3190,6 +3337,34 @@ class RecorderSession:
                 step["_uploads"] = uploads
             _settle(p)
             _settle_postback(p, frames=frames)
+            # A separate name, never reassigning `step` itself: doing so inside this closure
+            # would make Python treat `step` as local to _do from the top of the function
+            # down - including the _resolve_val call above, before any such assignment has
+            # run - and raise UnboundLocalError on every single call, matched or not.
+            run_step = step
+            # Same reason as play_steps's and _replay_span's own copies of this: a "search &
+            # select" style step's recorded position is never trustworthy, even while still
+            # sitting on the very screen it was just recorded on - the point of arming this in
+            # the first place is clicking whatever row holds a VALUE, not a position. Live
+            # here too, so the click the Super Admin sees happen while recording is the same
+            # one a real run will make later.
+            if (step.get("action") or "") in ("click", "double_click") and step.get("field_label") and val:
+                is_dbl = step.get("action") == "double_click"
+                found = _row_selector(p, frames, val) if is_dbl else _text_selector(p, frames, val)
+                if found:
+                    run_step = {**step, "selector": found}
+                    # A matched ROW's own centre is not safe to click blind - see
+                    # _row_click_offset. A single-element match from _text_selector doesn't
+                    # need this: that always finds something genuinely clickable-sized, not
+                    # a wide multi-column row.
+                    if is_dbl:
+                        run_step.update(_row_click_offset(p, frames, found, val))
+                elif not step.get("selector"):
+                    # Search & Click/Search & Double-click has no recorded position to fall
+                    # back on at all - the whole point is that one was never touched by hand.
+                    # Say plainly that nothing on screen holds this value yet, rather than
+                    # letting _perform_step fail confusingly on a missing selector.
+                    raise RuntimeError(f"nothing on screen holds {val!r} yet")
             # Was this exact click ALREADY made, by the touch that opened the popup? Then doing
             # it again is not "applying the step", it is a second press of the same control -
             # and a second press of a dropdown button, a checkbox or any other toggle undoes
@@ -3198,13 +3373,13 @@ class RecorderSession:
             already = self._pressed
             self._pressed = None
             if (already
-                    and (step.get("action") or "").strip().lower() == "click"
-                    and step.get("selector") == already.get("selector")
+                    and (run_step.get("action") or "").strip().lower() == "click"
+                    and run_step.get("selector") == already.get("selector")
                     and list(frames) == list(already.get("frames") or [])):
                 logger.info("apply_step: %s was already pressed by the touch, not pressing "
                             "again", already.get("selector"))
                 return val
-            _perform_step(p, step, val)
+            _perform_step(p, run_step, val)
             _settle(p)
             _settle_postback(p, frames=frames)
             return val
@@ -3305,7 +3480,24 @@ class RecorderSession:
         # and everything after it belongs to that tab. Holding the original page would run the
         # rest of the script against the screen we just left.
         page = p
+
+        def _heal() -> None:
+            """The ERP closing THIS tab on its own - a search popup that fills the opener
+            and self-closes once a row is picked is a real, recorded pattern here (see
+            _row_selector) - leaves `page` pointing at a dead Playwright object for every
+            step after it. Re-point at whatever tab is still open, the same recovery
+            play_steps uses for a real job run. Called before touching `page` again, both
+            at the top of an iteration (staleness left over from the step before) and right
+            after a step's own action (a closure that step just caused itself)."""
+            nonlocal page
+            if page is not None and page.is_closed():
+                opens = [q for q in (self._ctx.pages if self._ctx else []) if not q.is_closed()]
+                if opens:
+                    page = opens[-1]
+                    self._page = page
+
         while i < end:
+            _heal()
             # Guarded: a caller may still hand in a plain list, and timing is a nicety,
             # never a reason for a replay to fail.
             if hasattr(log, "step_begins"):
@@ -3384,6 +3576,25 @@ class RecorderSession:
 
                     use, note = st, ""
                     sel = st.get("selector")
+                    # Same reason as play_steps's own copy of this: a "search & select" style
+                    # step's recorded position is never trustworthy, even when something is
+                    # still sitting there, because a different sample value returns a
+                    # different number of results. Checked before the ordinary present()/
+                    # repair path below, which only reaches for text-matching once the
+                    # recorded selector has already failed outright.
+                    if act in ("click", "double_click") and st.get("field_label"):
+                        step_val = _resolve_val(st, values)
+                        if step_val:
+                            is_dbl = act == "double_click"
+                            found = _row_selector(page, frames, step_val) if is_dbl else _text_selector(page, frames, step_val)
+                            if found:
+                                use = {**st, "selector": found}
+                                # A matched ROW's own centre is not safe to click blind - see
+                                # _row_click_offset.
+                                if is_dbl:
+                                    use.update(_row_click_offset(page, frames, found, step_val))
+                                sel = found
+                                note = f" — matched the row/element holding {step_val!r}"
                     if sel and act != "scroll":
                         # An optional step is for a screen that only shows up sometimes, so it
                         # gets a short look rather than the full wait — there is usually
@@ -3480,6 +3691,7 @@ class RecorderSession:
                         and _present(page, _peek["selector"], _peek.get("frames") or [],
                                      timeout=GLANCE_MS))
                     _perform_step(page, use, val)
+                    _heal()
 
                     # 4b. A FLOAT MENU shuts itself a moment after it opens. If this click just
                     #     revealed the next step's target, press it NOW - before any settling.
@@ -3499,6 +3711,7 @@ class RecorderSession:
                             and _present(page, nxt["selector"], nxt.get("frames") or [],
                                          timeout=600)):
                         _perform_step(page, nxt, _resolve_val(nxt, values or {}))
+                        _heal()
                         log.append(f"{i + 2}. {nxt.get('action')} ok — pressed straight after "
                                    f"step {i + 1}, before the menu could close")
                         # Advancing the cursor is what records it as done - _replay_span
@@ -3519,6 +3732,7 @@ class RecorderSession:
                     #    password.
                     if act == "fill" and val and not _value_present(page, use, val):
                         _perform_step(page, use, val)
+                        _heal()
                         _settle(page)
                         if not _value_present(page, use, val):
                             raise RuntimeError(
@@ -3635,6 +3849,30 @@ class RecorderSession:
                 return log
             self._replay_idx = self._replay_span(p, steps, values or {}, 0, target, log,
                                                  uploads)
+            return log
+        log = self.submit(_do, timeout=600)
+        return self._replay_result(steps, log)
+
+    def replay_to(self, steps: list, target_index: int, values: dict | None = None,
+                 keep_going: bool = False, uploads: dict | None = None) -> dict:
+        """AUTO, but stop at a chosen step instead of running to the end.
+
+        Starts over from the top, same as replay() does, and runs only steps[0:target] -
+        then waits there instead of continuing. Watching a run land exactly on the step
+        that needs attention used to mean either pressing Next fifteen times past the
+        ordinary ones in front of it, or running the whole draft straight past the point
+        that actually matters and losing the screen it left on.
+        """
+        steps = prefetch_ai(steps or [], values or {})
+        total = len(steps or [])
+        target = max(0, min(int(target_index), total))
+
+        def _do(p):
+            log = _TimedLog()
+            if not self._goto_start(p, log):
+                return log
+            self._replay_idx = self._replay_span(p, steps, values or {}, 0, target, log,
+                                                 uploads, keep_going)
             return log
         log = self.submit(_do, timeout=600)
         return self._replay_result(steps, log)
@@ -4542,9 +4780,21 @@ def play_steps(
             # "you are logged in from another portal, kill the other session?" got a silent No,
             # and the login stopped there. This listener consults the armed answer at the
             # moment the popup appears and accepts when nothing has been armed yet, which is
-            # what a person clicking through would do and what the recorder already did.
+            # what a person clicking through would do and what the recorder already did -
+            # except for an un-armed dialog that is itself asking to close/discard something
+            # (see _DESTRUCTIVE_DIALOG_WORDS), which defaults to dismiss instead.
+            # Set the moment a destructive-sounding dialog (see _DESTRUCTIVE_DIALOG_WORDS) gets
+            # dismissed - "close the form?" right after a Save the ERP actually rejected is the
+            # live case this was built for. The natural recovery a person reaches for here is
+            # not to go hunting the screen for something new to click - it is to press Save
+            # again, now that the interrupting popup is out of the way. The main loop consumes
+            # this flag once, before it falls back to the generic AI screen-reading guesswork.
+            dismissed_destructive: dict = {"flag": False}
+
             def _answer_dialog(d):
-                accept, reply = _dialog_answer(getattr(d, "page", None))
+                accept, reply = _dialog_answer(getattr(d, "page", None), d.message)
+                if not accept:
+                    dismissed_destructive["flag"] = True
                 # Unlike the recorder's own _remember_dialog, this one used to answer the
                 # popup and say nothing about it - so "Quotation is mandatory for job", the
                 # ERP's own validation message, was accepted and thrown away with no trace.
@@ -4643,6 +4893,23 @@ def play_steps(
                 except Exception:  # noqa: BLE001
                     return False
 
+            def _heal_page() -> None:
+                """The ERP itself closing the tab this run is driving - a popup form that
+                finishes and hands focus back to the tab that opened it is a common pattern -
+                used to leave `page` pointing at a dead Playwright object for every step after
+                that, each failing the same way, on a run with no recorded switch_tab to say
+                this was coming (the ERP does it on its own). switch_tab already follows
+                FORWARD onto a tab the ERP just opened; this is the same idea for the reverse
+                direction. Called both before a step (catching staleness left over from an
+                earlier one) and right after perform() returns (catching a closure the step
+                just performed caused itself - _settle() right after perform() hit exactly
+                this, live, on a double-click whose ERP popup was its own tab)."""
+                nonlocal page
+                if page is not None and page.is_closed():
+                    opens = [q for q in (ctx.pages or []) if not q.is_closed()]
+                    if opens:
+                        page = opens[-1]
+
             def perform(step, val) -> None:
                 """Run one element-bound step (element assumed present).
 
@@ -4651,6 +4918,7 @@ def play_steps(
                 near-identical copies of 120 lines, and every time they drifted a step quietly
                 did nothing on one path while working on the other.
                 """
+                _heal_page()
                 action = step.get("action")
                 if action in ("get_text", "assert_text"):
                     # These two read the page rather than drive it, and get_text has to reach
@@ -4751,6 +5019,11 @@ def play_steps(
             blocked: dict | None = None  # set if the form locks (duplicate/blocked entry)
             value_error: dict | None = None  # set if a field won't keep its value after 3 tries
             entered_fields: list[dict] = []  # every value field we filled — re-checked before submit
+            # The most recent click/submit step that actually ran, kept up to date as the recorded
+            # sequence advances - NOT just steps[i - 1], which stops meaning "the button that just
+            # triggered this popup" the moment the step right after it (e.g. "Proceed") ALSO fails
+            # to appear and the cursor moves past it too. See dismissed_destructive's own retry.
+            last_click_step: dict = {"step": None}
 
             def reverify_entered() -> dict | None:
                 """Before committing (submit), re-check every value we entered is STILL there.
@@ -5092,6 +5365,31 @@ def play_steps(
                     # its own. The same script walked through by hand in 44 seconds and "got
                     # stuck" as a job. Only a step that is genuinely absent pays this: present()
                     # returns the moment the element is visible.
+                    # A "search & select" style step: not "click whatever sits at this
+                    # recorded position" but "click whatever now HOLDS the job's own value" -
+                    # a search-results row is the one place the recorded position is never
+                    # trustworthy even when something happens to still be there, because a
+                    # different job's value returns a different number of rows. Checked
+                    # before the ordinary present()/repair path below, which only reaches for
+                    # text-matching once the recorded selector has already failed outright -
+                    # not good enough here, since the WRONG row can easily still be sitting at
+                    # that same recorded spot.
+                    if action in ("click", "double_click") and step.get("field_label") and val:
+                        is_dbl = action == "double_click"
+                        found = _row_selector(page, frames, val) if is_dbl else _text_selector(page, frames, val)
+                        if found:
+                            step = {**step, "selector": found}
+                            # A matched ROW's own centre is not safe to click blind - see
+                            # _row_click_offset. Not needed for a single-element match from
+                            # _text_selector, which always finds something genuinely
+                            # clickable-sized, not a wide multi-column row.
+                            if is_dbl:
+                                step.update(_row_click_offset(page, frames, found, val))
+                            sel = found
+                            log.append(f"step {i + 1} {action}: matched the row/element holding {val!r}")
+                        else:
+                            log.append(f"step {i + 1} {action}: nothing on screen holds {val!r} "
+                                       "yet — falling back to the recorded position")
                     here = present(sel, frames, timeout=REPLAY_WAIT_MS) if sel else False
                     if sel and not here:
                         # The SAME element, somewhere else. This ERP loads screen after screen
@@ -5208,6 +5506,7 @@ def play_steps(
 
                             for rn, rv in enumerate(row_vals, start=1):
                                 perform(step, rv)
+                                _heal_page()
                                 _settle(page)
                                 _settle_postback(page, frames=step.get("frames") or [])
                                 for rs in row_block:
@@ -5221,11 +5520,13 @@ def play_steps(
                                         )
                                         break
                                     perform(rs, row_value(rs, rn - 1))
+                                    _heal_page()
                                     page.wait_for_timeout(200)
                             for es in step.get("end_steps") or []:
                                 if es.get("action") == "scroll" or present(
                                         es.get("selector"), es.get("frames") or [], timeout=4000):
                                     perform(es, resolve(es.get("value")))
+                                    _heal_page()
                                     page.wait_for_timeout(200)
                             log.append(
                                 f"step {i + 1} {action}: entered {len(row_vals)} row(s) for "
@@ -5250,6 +5551,7 @@ def play_steps(
                             and present(_peek["selector"], _peek.get("frames") or [],
                                         timeout=GLANCE_MS))
                         perform(step, val)
+                        _heal_page()
                         # A FLOAT MENU shuts itself a moment after it opens. If this click just
                         # revealed the NEXT step's target, press it NOW - before any settling.
                         # The settle immediately below is exactly what closed the Standard
@@ -5266,6 +5568,7 @@ def play_steps(
                                 and present(nxt["selector"], nxt.get("frames") or [],
                                             timeout=600)):
                             perform(nxt, resolve(nxt.get("value")))
+                            _heal_page()
                             log.append(f"step {i + 2} {nxt.get('action')} ok — pressed straight "
                                        f"after step {i + 1}, before the menu could close")
                             executed.add(i + 1)
@@ -5281,6 +5584,7 @@ def play_steps(
                             attempts = 0
                             while not _value_present(page, step, val) and attempts < 3:
                                 perform(step, val)
+                                _heal_page()
                                 _settle(page)
                                 _settle_postback(page, frames=step.get("frames") or [])
                                 attempts += 1
@@ -5297,11 +5601,22 @@ def play_steps(
                             entered_fields.append({"step": step, "val": val, "field_label": step.get("field_label"), "intent": intent})
                         log.append(f"step {i + 1} {action} ok")
                         executed.add(i)
+                        if action in ("click", "submit"):
+                            last_click_step["step"] = step
                         # The chained step above was really performed, so the cursor must pass
                         # it - otherwise the menu item gets pressed a second time.
                         if chained:
                             i += 1
-                        if action in ("fill", "select", "autocomplete", "submit"):
+                        # "click" is here too, not just "submit": a Save/Apply/OK button is
+                        # very often recorded as a plain click, and an ASP.NET validator writes
+                        # its rejection into the page rather than raising anything Playwright's
+                        # own click() would notice - so a Save that the ERP silently refused
+                        # (a missing/invalid field for THIS job) used to be logged "ok" and the
+                        # run sailed on into whatever screen came next, which was never the one
+                        # recorded after a real save. That is exactly what stranded step 35/36
+                        # of JOB-290770: Save logged "ok", nothing had actually been saved, and
+                        # the two next recorded elements never appeared.
+                        if action in ("click", "fill", "select", "autocomplete", "submit"):
                             blocked = check_blocked()
                             if blocked:
                                 log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
@@ -5313,7 +5628,46 @@ def play_steps(
                     # the recorded step (the break point) reappears, then hand control back
                     # to the recorded ERP script and continue in order from there.
                     resumed = False
-                    for attempt in range(ai_attempts):
+                    # A "close the form?" popup was just dismissed - the natural recovery is to
+                    # press the SAME button again (the ERP's own Save, most often), not to send
+                    # the AI hunting the screen for something unrelated to click. Try that first,
+                    # once, before falling back to the generic loop below.
+                    if dismissed_destructive["flag"]:
+                        dismissed_destructive["flag"] = False
+                        # The button that actually triggered this popup - NOT necessarily
+                        # steps[i - 1], which stops being that button the moment the step right
+                        # after it (e.g. "Proceed") ALSO fails to appear and gets skipped, moving
+                        # the cursor past it too. This stays pointed at the real Save click.
+                        prev_step = last_click_step["step"]
+                        if prev_step and prev_step.get("action") in ("click", "submit") and prev_step.get("selector"):
+                            prev_desc = prev_step.get("description") or prev_step.get("selector")
+                            log.append(f"step {i + 1} {action}: a 'close the form?' popup was just "
+                                      f"dismissed - retrying {prev_desc!r} instead of guessing")
+                            try:
+                                if present(prev_step["selector"], prev_step.get("frames") or [], timeout=4000):
+                                    perform(prev_step, resolve(prev_step.get("value")))
+                                    _heal_page()
+                                    _settle(page)
+                                    _settle_postback(page, frames=prev_step.get("frames") or [])
+                            except Exception:  # noqa: BLE001
+                                pass
+                            if present(sel, frames, timeout=5000):
+                                perform(step, val)
+                                _heal_page()
+                                _settle(page)
+                                _settle_postback(page, frames=step.get("frames") or [])
+                                log.append(f"step {i + 1} {action} ok (recorded script resumed "
+                                          f"after retrying {prev_desc!r})")
+                                executed.add(i)
+                                if action in ("click", "submit"):
+                                    last_click_step["step"] = step
+                                if action in ("click", "fill", "select", "autocomplete", "submit"):
+                                    blocked = check_blocked()
+                                    if blocked:
+                                        log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
+                                i += 1
+                                resumed = True
+                    for attempt in (range(ai_attempts) if not resumed else ()):
                         msg = ai_takeover(
                             f"An unexpected screen/dialog is blocking the recorded flow (e.g. an "
                             f"'already logged in, continue?' prompt, a cookie/confirmation dialog, a "
@@ -5321,16 +5675,25 @@ def play_steps(
                             f"flow (continue/yes/ok/proceed/confirm/close). Context: {intent}."
                         )
                         log.append(f"step {i + 1} {action}: unexpected screen -> AI ({attempt + 1}): {msg}")
+                        # The AI's own click can be the thing that closes this tab (the same
+                        # self-closing popup pattern as a recorded double-click) - heal before
+                        # touching `page` again, or _settle below throws on a dead page.
+                        _heal_page()
                         _settle(page)
                         # Did the recorded step (the break point) come back? If so, resume it.
                         if present(sel, frames, timeout=5000):
                             perform(step, val)
+                            _heal_page()
                             _settle(page)
                             _settle_postback(page, frames=step.get("frames") or [])
                             log.append(f"step {i + 1} {action} ok (recorded script resumed at break point)")
                             executed.add(i)
-                            if action in ("fill", "select", "autocomplete", "submit"):
+                            if action in ("click", "submit"):
+                                last_click_step["step"] = step
+                            if action in ("click", "fill", "select", "autocomplete", "submit"):
                                 blocked = check_blocked()
+                                if blocked:
+                                    log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
                             i += 1
                             resumed = True
                             break
@@ -5338,6 +5701,12 @@ def play_steps(
                         if not msg.startswith("AI clicked"):
                             break
                     if resumed:
+                        # A block found on the resumed step must stop the run right here - not
+                        # get silently overwritten by whatever the NEXT step's own check_blocked()
+                        # call happens to see (which used to erase it back to None, since this
+                        # was the same outer `blocked` variable the loop checks after it exits).
+                        if blocked:
+                            break
                         continue
                     # The break-point element never reappeared, so this step isn't part of
                     # this run (e.g. the login form when a session already exists). Skip ONLY

@@ -69,6 +69,22 @@ def test_group_pending_bucket_today_excludes_completed_and_old_jobs(client, db_s
     assert ids == {today_job.id}
 
 
+def test_gk2_status_filter_returns_only_matching_jobs(client, db_session):
+    """The IRN Pending list's own filter - independent of group/bucket."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    admin = make_user(db_session, role="super_admin", email="sa-filter2@example.com")
+    parked = _make_job(db_session, tenant, group, "JOB-PARKED", gk2_status="irn_document_process")
+    _make_job(db_session, tenant, group, "JOB-PENDING", gk2_status="pending")
+    _make_job(db_session, tenant, group, "JOB-NONE")
+    login(client, admin.email)
+
+    resp = client.get("/api/v1/jobs", params={"gk2_status": "irn_document_process"}).json()
+    ids = {j["id"] for j in resp}
+    assert ids == {parked.id}
+    assert resp[0]["gk2_status"] == "irn_document_process"
+
+
 def test_group_pending_bucket_all_includes_everything_not_completed(client, db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)

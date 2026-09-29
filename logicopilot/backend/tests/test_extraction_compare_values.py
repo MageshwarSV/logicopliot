@@ -32,6 +32,35 @@ def test_month_day_year_used_only_when_day_first_cannot_parse():
     assert compare_values("04/17/2026", "2026-04-17") == "match"
 
 
+# ---- negative numbers ---------------------------------------------------------------------
+# _normalize strips ALL punctuation, including a leading minus sign - "-50" and "50" used to
+# both normalize to "50" and match at the very first equality check, before the strict
+# numeric comparison further down ever ran. A credit-note/adjustment figure's sign was
+# silently lost.
+
+def test_a_negative_number_is_not_mistaken_for_its_positive_counterpart():
+    assert compare_values("-50", "50") == "mismatch"
+    assert compare_values("50", "-50") == "mismatch"
+
+
+def test_two_equal_negative_numbers_still_match():
+    assert compare_values("-50", "-50") == "match"
+
+
+def test_two_different_negative_numbers_are_still_a_mismatch():
+    assert compare_values("-50", "-60") == "mismatch"
+
+
+def test_a_hyphenated_identifier_is_unaffected_by_the_negative_number_fix():
+    # The hyphens here are separators, not a sign - must not be reinterpreted as one.
+    assert compare_values("INV-2026-001", "INV-2026-001") == "match"
+
+
+def test_numeric_total_keeps_a_negative_sign():
+    assert numeric_total(["-50", "50"]) == 0.0
+    assert numeric_total(["-50", "-1,500.00"]) == -1550.0
+
+
 # ---- numeric_total -----------------------------------------------------------------------
 
 def test_numeric_total_sums_a_plain_numeric_column():

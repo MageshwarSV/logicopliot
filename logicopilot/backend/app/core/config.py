@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     docai_processor_id: str = ""
     google_application_credentials: str = "google-credentials.json"
     uploads_dir: str = "uploads"
+    # Verified live against real jobs (Cisco commercial invoice Seller/Ship-From splice, and
+    # JOB-92F564's Bill of Lading Shipper-vs-carrier-letterhead splice) before enabling: 22/22
+    # fields correct afterward vs 19/22 before, zero regressions found. On: run_extraction and
+    # the mark/custom-field recompute paths (app/api/v1/jobs.py) prefer docai.py's
+    # structured_text over layout_text for a page where the structure engine
+    # (app/core/structure_engine.py) found a genuine multi-column region to fix - falling back
+    # to layout_text untouched for every other page. See structure_engine.py's own docstring
+    # for what this does and why.
+    structure_engine_enabled: bool = True
 
     # Email auto-pull (IMAP). Documents arrive as attachments; matched to a customer
     # by the sender/recipient address configured per template as `pull_email`.

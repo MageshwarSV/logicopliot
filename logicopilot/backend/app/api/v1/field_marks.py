@@ -213,6 +213,25 @@ def delete_mark(
     db.commit()
 
 
+def _rename_field_in_group_excel_config(db: Session, document_id: str, old_label: str, new_label: str) -> None:
+    """A mark's rename needs one extra hop (document -> group) that a custom field's own
+    group_id already has directly - see edit_custom_field's own inline call. See
+    rename_field_in_excel_config's own docstring for why this matters."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.excel_entry import rename_field_in_excel_config
+    from app.models.template_group import TemplateGroup
+
+    document = db.get(TemplateDocument, document_id)
+    if document is None:
+        return
+    group = db.get(TemplateGroup, document.group_id)
+    if group is None or not group.excel_config:
+        return
+    if rename_field_in_excel_config(group.excel_config, old_label, new_label):
+        flag_modified(group, "excel_config")
+
+
 @router.patch("/marks/{mark_id}", response_model=MarkOut)
 def edit_mark(
     mark_id: str,
@@ -225,6 +244,7 @@ def edit_mark(
     mark = db.get(FieldMark, mark_id)
     if mark is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mark not found")
+    old_label = mark.label_name
     updates = payload.model_dump(exclude_unset=True)
     if "anchor_variations" in updates and updates["anchor_variations"] is not None:
         # de-dupe, drop blanks, keep order
@@ -238,6 +258,9 @@ def edit_mark(
         updates["anchor_variations"] = cleaned
     for field, value in updates.items():
         setattr(mark, field, value)
+    new_label = updates.get("label_name")
+    if new_label and new_label != old_label:
+        _rename_field_in_group_excel_config(db, mark.document_id, old_label, new_label)
     db.commit()
     db.refresh(mark)
     return MarkOut.model_validate(mark)
@@ -593,6 +616,7 @@ def create_custom_field(
         lookup_return_column=payload.lookup_return_column,
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
+        example_value=payload.example_value,
     )
     db.add(cf)
     db.commit()
@@ -619,6 +643,7 @@ def edit_custom_field(
     cf = db.get(CustomField, field_id)
     if cf is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    old_label = cf.label_name
     updates = payload.model_dump(exclude_unset=True)
     # A silent pop is the wrong way to reject a value: "lookup" was dropped here for a while and
     # the request still answered 200, so the wizard's tick box did nothing and there was nothing
@@ -646,6 +671,17 @@ def edit_custom_field(
         updates["source_document_ids"] = []
     for field, value in updates.items():
         setattr(cf, field, value)
+    new_label = updates.get("label_name")
+    if new_label and new_label != old_label and cf.group_id:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.core.excel_entry import rename_field_in_excel_config
+        from app.models.template_group import TemplateGroup
+
+        group = db.get(TemplateGroup, cf.group_id)
+        if group is not None and group.excel_config:
+            if rename_field_in_excel_config(group.excel_config, old_label, new_label):
+                flag_modified(group, "excel_config")
     db.commit()
     db.refresh(cf)
     return CustomFieldOut.model_validate(cf)
@@ -1003,6 +1039,17 @@ def delete_cross_doc_link(
 def test_extract(
     document_id: str,
     file: UploadFile = File(...),
+    # Opt-in only, for side-by-side verification of the structure engine (app/core/
+    # structure_engine.py) before its own settings.structure_engine_enabled flag is ever
+    # turned on for real jobs. False (the default, and every real caller's behavior) is
+    # today's production reading exactly - the actual "Test extraction" button never sends
+    # this, so this parameter changes nothing for it.
+    use_structure_engine: bool = False,
+    # Same verification-only purpose as use_structure_engine above: returns the exact
+    # ocr_text the fields were read from instead of leaving it internal, so a real
+    # discrepancy can be inspected directly rather than guessed at from the field values
+    # alone. Never sent by the real "Test extraction" button.
+    debug: bool = False,
     db: Session = Depends(get_db),
     _=Depends(require_role(SUPER_ADMIN)),
 ) -> DemoResult:
@@ -1039,6 +1086,7 @@ def test_extract(
         original.write_bytes(content)
         text_parts: list[str] = []
         image_paths: list[Path] = []
+        debug_blocks: list[list[dict]] = []
         with fitz.open(original) as doc:
             for i, page in enumerate(doc, start=1):
                 png = tdir / f"page_{i}.png"
@@ -1046,7 +1094,13 @@ def test_extract(
                 image_paths.append(png)
                 try:
                     page_ocr = ocr_page_image(png)
-                    text_parts.append(page_ocr.get("layout_text") or page_ocr.get("text", ""))
+                    text_parts.append(
+                        (use_structure_engine and page_ocr.get("structured_text"))
+                        or page_ocr.get("layout_text")
+                        or page_ocr.get("text", "")
+                    )
+                    if debug:
+                        debug_blocks.append(page_ocr.get("debug_blocks") or [])
                 except Exception:  # noqa: BLE001 — OCR (Document AI) unavailable; vision fallback below
                     logger.warning("OCR unavailable for test doc page %s; will try vision fallback", i)
         ocr_text = "\n".join(text_parts)
@@ -1092,4 +1146,9 @@ def test_extract(
                 matched_anchor=m.detected_anchor,
             )
         )
-    return DemoResult(document_id=document_id, results=results)
+    return DemoResult(
+        document_id=document_id,
+        results=results,
+        debug_text=ocr_text if debug else None,
+        debug_blocks=debug_blocks if debug else None,
+    )

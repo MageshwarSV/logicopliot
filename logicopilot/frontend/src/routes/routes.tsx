@@ -16,6 +16,8 @@ import { ManagerDashboard } from "../pages/manager/DashboardShell";
 import { JobsPage } from "../pages/jobs/JobsPage";
 import { JobRunPage } from "../pages/jobs/JobRunPage";
 import { EDocketPage } from "../pages/jobs/EDocketPage";
+import { IrnPendingListPage } from "../pages/irn/IrnPendingListPage";
+import { IrnPendingDetailPage } from "../pages/irn/IrnPendingDetailPage";
 import { CustomerListPage } from "../pages/tenant-admin/CustomerListPage";
 import { DataTransformationPage } from "../pages/super-admin/DataTransformationPage";
 import { DataTransformationDetailPage } from "../pages/super-admin/DataTransformationDetailPage";
@@ -197,6 +199,12 @@ export function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      {/* Standalone and deliberately UNPROTECTED - no login screen. Reachable only by pasting
+          this exact link (it must carry ?key=...) - see app/api/v1/public_irn.py on the
+          backend for what actually gates access. Never linked from the normal job screens or
+          any sidebar navigation. */}
+      <Route path="/irn-pending" element={<IrnPendingListPage />} />
+      <Route path="/irn-pending/:jobId" element={<IrnPendingDetailPage />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>

@@ -55,7 +55,17 @@ def _is_numeric_value(value: str | None) -> bool:
 
 
 def _numbers(value: str | None) -> list[float | str]:
-    raw = re.findall(r"\d+(?:\.\d+)?", (value or "").replace(",", ""))
+    # A leading "-" counts as a sign only when it is NOT itself preceded by a letter/digit/
+    # underscore - the negative lookbehind is what keeps "INV-2026-001" reading as [2026,
+    # 1], the same two positive numbers it always has, rather than [-2026, -1] the moment
+    # minus-sign support was added: those hyphens are separators inside an identifier, not
+    # a sign, and the one thing telling the two apart is what sits immediately before the
+    # "-". A genuine negative ("-50.00", or one appearing after a space/colon/anything
+    # else that isn't a word character, as in "Adjustment: -50.00") is unaffected. Found
+    # live: compare_values("-50", "50") read as a match, and numeric_total(["-50", "50"])
+    # came out 100.0 instead of 0.0 - any credit-note/adjustment figure with a minus sign
+    # was silently losing it.
+    raw = re.findall(r"(?<!\w)-?\d+(?:\.\d+)?", (value or "").replace(",", ""))
     out: list[float | str] = []
     for x in raw:
         try:
@@ -129,6 +139,17 @@ def compare_values(a: str | None, b: str | None, *, party: bool = False) -> str:
     na, nb = _normalize(a), _normalize(b)
     if not na or not nb:
         return "missing"
+    # _normalize strips ALL punctuation, including a leading minus sign - "-50" and "50"
+    # would otherwise reach the equality check right below as the identical "50" and
+    # incorrectly report "match", losing a credit-note/adjustment figure's sign entirely.
+    # Checked first, and narrowly: only when exactly one side actually starts with a minus
+    # (so "-50" vs "-60", where the shortcut below was never going to fire wrongly in the
+    # first place, is untouched, and an ordinary hyphenated identifier like "INV-2026-001"
+    # or a date is unaffected either way, since this only ever returns early when both
+    # sides are ALSO classified as numeric).
+    if ((a or "").strip().startswith("-") != (b or "").strip().startswith("-")
+            and _is_numeric_value(a) and _is_numeric_value(b)):
+        return "match" if _numbers(a) == _numbers(b) else "mismatch"
     if na == nb:
         return "match"
 
@@ -224,7 +245,177 @@ ONLY_THE_VALUE = (
     "strip any caption that has come along with it - its own or a neighbouring field's. "
     "'CHENNAI Port of Discharge' is 'CHENNAI'. '( USD )' is 'USD'. 'Invoice No E26000505' is "
     "'E26000505'. Keep a unit only when it is genuinely part of the value, as in a weight. "
-    "Never return the surrounding sentence when a single value was asked for."
+    "Never return the surrounding sentence when a single value was asked for. "
+    # A container line printed '1x 20GP CONTAINER   1020 KG   SNBU2369717' came back as
+    # '2SNBU2369717' - the leading digit of the NEARBY count/size phrase ('1x20GP') got glued
+    # onto the front of the real container number, which is always exactly 4 letters then 7
+    # digits. Generalized: whenever a field's format is stated (a fixed length, a fixed
+    # pattern), a candidate that runs longer or shorter than that shape almost always means a
+    # neighbouring word or number was captured along with it, not that this value is an
+    # exception to its own format.
+    "WHEN A FORMAT IS GIVEN, MATCH IT EXACTLY. A container number is always 4 letters then 7 "
+    "digits - never more, never fewer. Any other field with a stated length or pattern works "
+    "the same way: an extra character stuck to either end is evidence it was fused with "
+    "unrelated adjacent text (a count, a size, a neighbouring code), not a value that merely "
+    "runs a little long. Trim a candidate back to its own stated shape rather than return it "
+    "exactly as it happened to print. "
+    # Asked for a Port of Loading's 5-character UN/LOCODE - the prompt's own worked examples
+    # list included 'Hong Kong HKHKG' - the reader still answered 'HK', the port's 2-letter
+    # COUNTRY code, one that happens to be the first two letters of its own longer UN/LOCODE.
+    # This is the SAME shape of error as the container number above (an answer shorter than
+    # its stated length), just in the other direction: not an extra character glued on, but a
+    # more specific code truncated down to a shorter, more general one that merely starts the
+    # same way.
+    "THIS CUTS BOTH WAYS: an answer SHORTER than its stated length is just as wrong as one "
+    "too long, and often means a more general code (a country code, a prefix) was returned in "
+    "place of the specific one asked for. A field asking for a 5-character UN/LOCODE is never "
+    "satisfied by a 2-character country code, even when the two happen to share their first "
+    "letters - Hong Kong's UN/LOCODE is HKHKG, not HK; HK is only its country code. Always "
+    "count the characters in what you are about to return against the stated length before "
+    "answering."
+)
+
+# A voyage number printed 'O45E' (the LETTER O) came back as '045E' (the DIGIT 0) - one mark's
+# own prompt already warned about exactly this ('keep it a letter, never rewrite it as the
+# digit 0'), and it still happened. The same confusion recurs on any alphanumeric code, not
+# only a voyage number, and repeating the warning inside one field's own prompt text was not
+# enough to make it reliable - it needed to be said once, with authority, for every field.
+LETTERS_ARE_NOT_DIGITS = (
+    "IN ANY CODE OR REFERENCE NUMBER, NEVER SWAP A LETTER FOR A DIGIT THAT LOOKS SIMILAR, OR "
+    "BACK. The letter O is not the digit 0, the letter I is not the digit 1, the letter S is "
+    "not the digit 5, the letter B is not the digit 8, the letter Z is not the digit 2, and the "
+    "letter G is not the digit 6 - in either direction. A voyage number, a reference code, a "
+    "waybill number or any other identifier keeps exactly the letters and digits it was printed "
+    "with. TECHNIQUE ONLY, not real data: a voyage number printed 'O45E' stays O45E, never "
+    "045E - the first character is the LETTER O because it sits among other letters in a code, "
+    "not the number zero, however similar the two look printed."
+)
+
+# The exact worked example inside one field's own prompt ('a date written 6/12/2026 means 6
+# December 2026, NOT 12 June') was still answered backwards, AND in the wrong output format
+# entirely - a per-field instruction repeated on several different date marks word-for-word
+# was not enough on its own. Promoted to a shared, authoritative rule every date field gets,
+# rather than depending on each mark's own prompt text carrying the same warning reliably.
+DATE_DAY_FIRST_ISO = (
+    "ANY DATE FIELD IS READ DAY FIRST, THEN MONTH, THEN YEAR, AND RETURNED AS YYYY-MM-DD. This "
+    "applies whether the printed date uses a slash, a dash or a dot as its separator. TECHNIQUE "
+    "ONLY, not real data: a date printed 6/12/2026 is the 6th of December 2026 - day 6, month "
+    "12 - and is returned as 2026-12-06, never as 2026-06-06 and never in any other format such "
+    "as '12-Jun-2026' or '06/12/2026'. When the first number is greater than 12 the order is "
+    "unambiguous either way - use it as printed. Always return the ISO form YYYY-MM-DD, never "
+    "the month name, never the original punctuation, whatever format the question's own wording "
+    "uses to describe the field."
+)
+
+# An invoice printed 'SELLER  Cisco Systems, Inc. / 170 W Tasman Dr / San Jose CA 95134 /
+# United States' beside 'SHIP FROM  Schenker Singapore Pte Ltd / 20 Alps Avenue, Level 4 /
+# Singapore 498747' - two side-by-side address blocks. The FIRST fix for this (treat the two
+# blocks as sealed, non-overlapping units) still failed on the REAL document, because OCR did
+# not print one block then the other - it printed the page row-band by row-band ACROSS both
+# columns, and a THIRD, unrelated caption pair ('PAYMENT TERMS' / 'ORDER TYPE') shared a
+# row-band with these two addresses, landing its own values physically BETWEEN the street
+# line and the city line of both addresses, before the two addresses' own country line ('UNITED
+# STATES' / 'SINGAPORE') finally appeared at the very end of the whole cluster. Confirmed
+# against this exact document's own real OCR text before writing this version.
+TWIN_BLOCKS_STAY_WHOLE = (
+    "A CLUSTER OF SEVERAL CAPTION/VALUE PAIRS CAN BE STACKED TOGETHER AND READ ROW-BAND BY "
+    "ROW-BAND ACROSS TWO COLUMNS AT ONCE - not one caption's whole block, then the next "
+    "caption's whole block, but a LEFT value, a RIGHT value, a LEFT value, a RIGHT value, and "
+    "so on, row by row down the page. When this happens, a caption's own later lines (a city, "
+    "a postal code, a country) can be separated from its earlier lines (its name, its street) "
+    "by one or more ENTIRELY UNRELATED caption/value pairs that merely happen to share a "
+    "row-band with it - those unrelated pairs' values must be skipped, never stitched into the "
+    "address you are assembling.\n"
+    "THE FIX: identify which column (left or right) belongs to the caption you were asked "
+    "about, then follow that SAME column down through the WHOLE cluster, collecting only ITS "
+    "OWN lines in the order they appear and skipping every line that belongs to the other "
+    "column or to a different, unrelated caption pair in between - even when that means "
+    "reaching several lines further down the page than where the caption itself was printed, "
+    "and even past an unrelated pair's own values sitting in the middle. A cluster like this "
+    "only ends where a genuinely NEW section heading begins (e.g. 'BILL TO' / 'SHIP TO' "
+    "starting the NEXT cluster) - not at the first unrelated pair encountered inside it.\n"
+    "TECHNIQUE ONLY, not real data: a cluster printed as 'SELLER   SHIP FROM / Acme Corp   "
+    "Global Freight Ltd / 100 Main St   5 Dock Rd / PAYMENT TERMS   ORDER TYPE / Boston MA   "
+    "Rotterdam / NET 30   DOMESTIC / UNITED STATES   NETHERLANDS' has the Seller's COMPLETE "
+    "address as '100 Main St, Boston MA, United States' - built from the LEFT column's three "
+    "address lines only, skipping straight over the 'PAYMENT TERMS' / 'NET 30' pair in the "
+    "middle, which belongs to a completely different field. Never '100 Main St, 5 Dock Rd, "
+    "Boston MA, United States' or any other blend that borrows so much as one line from the "
+    "right column or from the unrelated pair between them."
+)
+
+# A run of Air Import jobs kept returning null for Importer/Supplier/MAWB/HAWB/weight/HS-code
+# fields even though the job plainly had a document attached - because that document was not
+# the carrier's air waybill or the supplier's own invoice, but the clearing agent's OWN
+# internally-generated customs-filing summary ('CheckList - BILL OF ENTRY'), restating the same
+# facts as plain Label / Value lines in a completely different layout. Every field's prompt
+# above is written for the ORIGINAL document (a real air waybill's Shipper/Consignee boxes, a
+# real invoice's header and item table) and found nothing on this substitute, even though the
+# same information was sitting right there under a different heading. This document type
+# recurs constantly - any clearing agent's own back-office system can generate one - so it
+# needs the same standing recognition as a real waybill or invoice, not a fix on one job.
+CHECKLIST_SUBSTITUTE_DOCUMENT = (
+    "SOME DOCUMENTS ARE A CLEARING/CUSTOMS AGENT'S OWN SUMMARY, NOT THE ORIGINAL PAPERWORK. A "
+    "page headed 'CheckList - BILL OF ENTRY' (or similarly titled) is the clearing agent's own "
+    "internally-generated customs-filing summary standing in for the carrier's waybill and the "
+    "supplier's invoice - it is not itself a waybill or an invoice, but it restates the SAME "
+    "facts as plain 'Label   Value' lines, and is just as valid a source for every field below "
+    "as the original document it stands in for. On a page shaped like this, match these labels "
+    "to their equivalent field, and do not apply a rule written for a REAL waybill's own boxes "
+    "or a REAL invoice's own header - this page already states everything plainly under its own "
+    "labels instead: 'Importer Detail' (the company named under it) is the importer/consignee; "
+    "'Supplier Name' and 'Supplier Addr' are the supplier's name and address exactly as "
+    "labelled, with no shipper/consignee box to tell apart; 'Supplier Country' is the "
+    "supplier's country; 'MAWB No.' and 'HAWB No.' are the master and house air waybill "
+    "numbers, each followed by its own 'dt. <date>' issue date; 'Port Of Loading' is the port/"
+    "airport of loading; 'Gross Weight' is the shipment's gross weight; 'No Of Pkgs' is the "
+    "package count; 'Cntry Of Origin' is the country of origin of the goods; 'Invoice Detail' / "
+    "'Inv No & Date' is the invoice number and date; 'Invoice Value' is the invoice/total "
+    "amount; 'TOI' is the incoterm. Its own 'ITEM DETAILS' table lists one product per row "
+    "under columns headed 'SI No', 'RITC' (the HS/tariff code), 'Description', 'Qty', 'Unit', "
+    "'Product Value', 'Unit Price' and 'Assessable Value' - read a line-item field from there "
+    "exactly as you would from a commercial invoice's own item table."
+)
+
+# A Bill of Lading printed 'BOOKING NUMBER' then 'SEA WAYBILL NUMBER' as two captions in a row
+# with no value between them, followed later by their two values in a row - the OCR text had
+# lost the table's column lines, so neither value sits directly beside its own caption. Asked
+# for the Sea Waybill Number, the reader returned the FIRST of the two values every time: the
+# Booking Number, a wrong customs reference filed as the right one. This can strand ANY
+# field's label away from its value on a document like this, not only this one pair.
+SEPARATED_LABELS_AND_VALUES = (
+    "WHEN LABELS AND VALUES HAVE BEEN SEPARATED BY OCR, PAIR THEM BY POSITION. A table whose "
+    "column lines were lost often prints as several CAPTION lines in a row, with nothing "
+    "between them, followed later by the SAME NUMBER of VALUE lines in a row - a value is "
+    "never directly beside its own caption in this shape. Count the captions, count the "
+    "values, and pair them by position: the 1st caption's value is the 1st of the values that "
+    "follow, the 2nd caption's value is the 2nd, and so on - never just the first or the most "
+    "plausible-looking value in the group, and never one borrowed from a DIFFERENT caption "
+    "group elsewhere on the page. TECHNIQUE ONLY, not real data: text reading 'BOOKING NUMBER "
+    "  SEA WAYBILL NUMBER   ABCD1234567   WXYZ7654321' has two captions then two values in the "
+    "same order - Booking Number pairs with ABCD1234567 (the 1st value), Sea Waybill Number "
+    "pairs with WXYZ7654321 (the 2nd value). Asked for the Sea Waybill Number here, the answer "
+    "is WXYZ7654321, never ABCD1234567, however similar the two codes look."
+)
+
+# A Bill of Lading's table printed 'GROSS WEIGHT (KGS)' then 'MEASUREMENT (CBM)' as two column
+# captions, then '3244   39.6' as their two values, then 'KGS   CBM' as the units - OCR had
+# split each number from its own unit and printed the units together, afterward, in the same
+# order. Asked for the Gross Weight, the reader returned 39.6 - the Measurement/CBM figure -
+# because nothing told it a number's OWN unit is the one printed at its shared position in that
+# separated unit list, not the field whose caption merely sounds similar or sits nearby.
+UNIT_LABELS_PAIR_BY_POSITION = (
+    "WHEN A FIELD'S LABEL NAMES A UNIT (Gross Weight in KGS, Measurement/Volume in CBM, a "
+    "quantity in PCS, and so on), CONFIRM THE NUMBER YOU RETURN CARRIES THAT SAME UNIT. A table "
+    "can print several numbers together and their units together, separately, in the same "
+    "order - 'KGS' is always a weight, never a volume; 'CBM'/'M3' is always a volume, never a "
+    "weight - so pair the Nth number with the Nth unit abbreviation and use THAT to decide "
+    "which field it answers, not proximity on the page or which caption it happens to sit "
+    "nearest. TECHNIQUE ONLY, not real data: a table printing 'GROSS WEIGHT (KGS)  "
+    "MEASUREMENT (CBM)' as captions, then '3244   39.6' as values, then 'KGS   CBM' as units, "
+    "has the 1st number (3244) paired with the 1st unit (KGS) and the 2nd number (39.6) paired "
+    "with the 2nd unit (CBM) - Gross Weight is 3244, never 39.6, because 39.6 carries CBM, a "
+    "volume unit, and a weight field can never be answered with a volume figure."
 )
 
 
@@ -325,6 +516,12 @@ def extract_document_fields(ocr_text: str, fields: list[dict]) -> dict[str, str 
                         "mapping each requested field name to the raw value found (string).\n"
                         + ABSENT_MEANS_NULL
                         + ONLY_THE_VALUE
+                        + LETTERS_ARE_NOT_DIGITS
+                        + DATE_DAY_FIRST_ISO
+                        + TWIN_BLOCKS_STAY_WHOLE
+                        + SEPARATED_LABELS_AND_VALUES
+                        + UNIT_LABELS_PAIR_BY_POSITION
+                        + CHECKLIST_SUBSTITUTE_DOCUMENT
                     ),
                 },
                 {
@@ -432,17 +629,95 @@ ROW_IS_A_PRODUCT = (
     "count you expected. A row whose value genuinely cannot be found on the document returns "
     "null for that row instead; a plausible-looking wrong number (the table's own total, a "
     "neighbouring row's value) is worse than admitting the value is missing, because it looks "
-    "exactly like a real answer and nothing downstream can tell the difference."
+    "exactly like a real answer and nothing downstream can tell the difference. "
+    # A Vietnamese supplier's invoice printed Descriptions | PO No | Quantity | Unit Price |
+    # Amount - one product shipped under three different PO numbers, one row per PO, all
+    # three sharing the SAME description and material code. The PO No column sits AFTER the
+    # description, so it read like a chain of per-row identifiers worth counting one row per
+    # distinct value the same way a serial number would be - a fourth, phantom row got
+    # invented from what was really that column's own entry, and quantities and PO numbers
+    # were shuffled between the genuine rows in the process. The table had a plain "No."
+    # column the whole time (1, 2, 3) that named the true row count exactly.
+    "A COLUMN OF DISTINCT-LOOKING ALPHANUMERIC CODES AFTER THE DESCRIPTION - a PO Number, an "
+    "order reference, a batch number - IS NOT A SAFE ROW ANCHOR EITHER, for the same reason a "
+    "part number is not (see above): the SAME product can legitimately ship under several "
+    "different PO numbers, one row per PO, all sharing one description and one material code. "
+    "Never count one row per distinct value in a column like this. When the table ALSO prints "
+    "a genuine SERIAL/ITEM NUMBER column (SI.No, Sl.No, No., Item No), that count is "
+    "authoritative - use it, however many different PO/order values appear alongside it, and "
+    "never invent an extra row just because one more distinct code showed up than rows you had "
+    "already counted. TECHNIQUE ONLY, not real data: rows printed as '1 / Widget A / PO-100 / "
+    "300 PCS / 4.50' then '2 / Widget A / PO-200 / 500 PCS / 4.50' are TWO rows (No. 1 and No. "
+    "2) - never a third, and never let the PO column's own value bleed into the quantity or "
+    "material-code field of a neighbouring row just because both are alphanumeric codes. "
+    # The SAME Vietnamese supplier's invoice, confirmed against the actual page image: its
+    # Net Weight, Gross Weight, Carton count, a packing remark ("6pcs/sheet") and a Layer
+    # count were each printed ONCE for the three PO rows of that one product, visually
+    # centred next to the MIDDLE row rather than repeated on every row - real merged cells,
+    # because those packing details are per-PRODUCT, not per-PO/line. Rows 1 and 3 print
+    # nothing at all in those columns of their own. That lone "4" and that "6" each turned
+    # up as a DIFFERENT row's quantity - the model, finding rows 1 and 3 "missing" a value
+    # in what it expected to be a filled-in column, borrowed the nearest number on the page
+    # instead of returning null.
+    "A COLUMN CAN BE MERGED ACROSS SEVERAL ROWS AND PRINTED ONLY ONCE - typically a packing "
+    "detail (net/gross weight, carton count, a packing remark, a layer count) that applies to "
+    "the whole PRODUCT rather than to one specific PO/line, shown visually centred next to the "
+    "middle of the rows it covers rather than repeated on each one. A row with no printed "
+    "value of its own for a column like this returns null for that column - it does NOT borrow "
+    "the merged value that was printed next to a DIFFERENT row, and that merged value must "
+    "NEVER be used to fill a gap in a totally different field (a missing quantity, a missing PO "
+    "number) on ANY row just because it is the nearest number on the page. Each row's own "
+    "quantity, unit price, PO number and amount are printed once PER ROW, right there on that "
+    "row - a merged cell that really belongs to a neighbouring row, or to the product as a "
+    "whole, is never a substitute for one of those. "
+    # A packing list with 20 real line items came back with 22: the last two "rows" were its
+    # own SUBTOTAL and GRAND TOTAL lines, printed as one more ruled line each at the bottom of
+    # the exact same table, with numbers sitting in the same columns quantity/amount do on a
+    # real row - nothing marked them as different at a glance, only their own wording did.
+    "A ROW THAT SUMS THE ROWS ABOVE IT IS NEVER A PRODUCT ROW, however table-shaped it looks. "
+    "Recognise one by EITHER of two signs: (1) its first non-empty cell reads TOTAL, SUBTOTAL, "
+    "GRAND TOTAL, NET AMOUNT, or AMOUNT IN WORDS (in any case, with or without a colon) - this "
+    "is true even when every other cell on that line is filled with numbers that look exactly "
+    "like a row's own quantity/price/amount; or (2) every cell on the line is empty except one, "
+    "which holds a number - a total figure sitting alone in the table's rightmost/amount column "
+    "with no description, no code, no quantity beside it. TECHNIQUE ONLY, not real data: a "
+    "table with SI.No rows 1 through 18, the last one reading '18 / WIDGET-R / 40 PCS / 9.00 / "
+    "360.00', followed by one more line reading 'GRAND TOTAL / / / / 4,820.00' with no SI.No of "
+    "its own, is EIGHTEEN product rows - not nineteen. The GRAND TOTAL line is never a 19th "
+    "row, however many digits it has, and COUNT THE PRODUCT ROWS FIRST above must never include "
+    "it in that count."
 )
 
 
-def extract_document_rows(ocr_text: str, fields: list[dict]) -> list[dict[str, str | None]]:
+def _row_count_hint(expected_row_count: int | None) -> str:
+    """The one extra sentence expected_row_count adds to a row-extraction prompt - empty
+    string (no change at all to the prompt) when it's None, which is every call site that
+    doesn't have Document AI's own detected table geometry to offer."""
+    if not expected_row_count:
+        return ""
+    return (
+        f"\n\nThis document's table layout was independently detected to contain exactly "
+        f"{expected_row_count} data row(s) (not counting any total/summary row). Return "
+        f"exactly {expected_row_count} row-object(s)."
+    )
+
+
+def extract_document_rows(
+    ocr_text: str, fields: list[dict], expected_row_count: int | None = None,
+) -> list[dict[str, str | None]]:
     """Pull a REPEATING table out of a document: one dict per row, aligned across fields.
 
     Used for fields the admin ticked as "multiple values in this document" — a packing list
     or invoice line-item table. Alignment matters more than any single cell: row 3's
     description, quantity and price must come from the same physical row, so every field is
     requested in ONE call and the model is told to keep the arrays the same length.
+
+    expected_row_count: the row count Document AI's own table geometry independently detected
+    for this document (see app/core/docai.py's _table_row_count) — passed through by
+    run_extraction when known, so the model reads with the same anchor a human proofreader
+    would have (the actual printed row count), rather than guessing it purely from context.
+    None (the default, and always the case for a chunked pass below — see _chunks) reproduces
+    the exact prompt this function has always sent.
 
     Returns [] when OpenAI is unavailable or the document has no such table.
     """
@@ -461,6 +736,10 @@ def extract_document_rows(ocr_text: str, fields: list[dict]) -> list[dict[str, s
         # collected is dropped. Two genuinely identical lines on the same invoice are rare, and
         # losing one of those is far better than inventing a duplicate line item on a customs
         # entry - a repeat is a quantity error, a gap is a missing product somebody notices.
+        #
+        # expected_row_count is deliberately NOT passed through to these per-chunk calls: it
+        # names the WHOLE document's row count, and no single chunk knows how many of those
+        # rows are its own - passing it down would tell every chunk to return the full count.
         logger.info("Row extraction: reading %d chars in %d passes",
                     len(ocr_text or ""), len(pieces))
         collected: list[dict[str, str | None]] = []
@@ -499,6 +778,10 @@ def extract_document_rows(ocr_text: str, fields: list[dict]) -> list[dict[str, s
                         + "Use null for a field a row does not "
                         "have. Do NOT include the TOTAL/summary row. Do NOT merge rows. Do NOT "
                         "invent rows. If the document has no repeating table, return an empty list."
+                        + LETTERS_ARE_NOT_DIGITS
+                        + DATE_DAY_FIRST_ISO
+                        + TWIN_BLOCKS_STAY_WHOLE
+                        + CHECKLIST_SUBSTITUTE_DOCUMENT
                     ),
                 },
                 {
@@ -508,6 +791,7 @@ def extract_document_rows(ocr_text: str, fields: list[dict]) -> list[dict[str, s
                         + "\n".join(_field_lines(fields))
                         + "\n\nReturn {\"rows\": [...]} where each object has exactly these keys: "
                         + ", ".join(labels)
+                        + _row_count_hint(expected_row_count)
                         + "\n\n--- OCR TEXT ---\n"
                         + ocr_text
                     ),
@@ -607,6 +891,10 @@ def extract_document_fields_from_images(image_paths: list[Path], fields: list[di
                     # guessing - and it had the weaker wording of the two.
                     + ABSENT_MEANS_NULL
                     + ONLY_THE_VALUE
+                    + LETTERS_ARE_NOT_DIGITS
+                    + DATE_DAY_FIRST_ISO
+                    + TWIN_BLOCKS_STAY_WHOLE
+                    + CHECKLIST_SUBSTITUTE_DOCUMENT
                     + "\n\nFields:\n"
                     + "\n".join(_field_lines(fields))
                     + "\n\nReturn a JSON object keyed by exactly these field names: "
@@ -639,8 +927,12 @@ def extract_document_fields_from_images(image_paths: list[Path], fields: list[di
         return {label: None for label in labels}
 
 
-def extract_document_rows_from_images(image_paths: list[Path], fields: list[dict]) -> list[dict[str, str | None]]:
-    """Vision fallback for a LINE-ITEM TABLE. Same contract as extract_document_rows.
+def extract_document_rows_from_images(
+    image_paths: list[Path], fields: list[dict], expected_row_count: int | None = None,
+) -> list[dict[str, str | None]]:
+    """Vision fallback for a LINE-ITEM TABLE. Same contract as extract_document_rows, including
+    expected_row_count (see its docstring there) - None reproduces the exact prompt this
+    function has always sent.
 
     Single fields have had an image fallback since the beginning, but rows did not: when OCR
     returned nothing, every line item was dropped with no error anywhere, while the single
@@ -667,10 +959,16 @@ def extract_document_rows_from_images(image_paths: list[Path], fields: list[dict
                     "PHYSICAL ROW — values in the same object must come from the same row. "
                     + ROW_IS_A_PRODUCT
                     + "Use null for a field a row does not have. Do NOT include the TOTAL/summary "
-                    "row. Do NOT merge rows. Do NOT invent rows.\n\nFields to read from each row:\n"
+                    "row. Do NOT merge rows. Do NOT invent rows."
+                    + LETTERS_ARE_NOT_DIGITS
+                    + DATE_DAY_FIRST_ISO
+                    + TWIN_BLOCKS_STAY_WHOLE
+                    + CHECKLIST_SUBSTITUTE_DOCUMENT
+                    + "\n\nFields to read from each row:\n"
                     + "\n".join(_field_lines(fields))
                     + "\n\nEach row object uses exactly these keys: "
                     + ", ".join(labels)
+                    + _row_count_hint(expected_row_count)
                 ),
             }
         ]

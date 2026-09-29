@@ -390,6 +390,13 @@ def _sample_for_label(db: Session, script: ErpScript, label: str) -> tuple[str, 
     if cf is not None:
         if cf.kind == "hardcoded" and (cf.hardcoded_value or "").strip():
             return cf.hardcoded_value.strip(), "hardcoded custom field"
+        # An ask_operator field with no hardcoded_value of its own - a "Manual Entry" field
+        # created straight from this recorder, most often - has nothing else to type here.
+        # Falling through to the label (below) used to type the field's own NAME into the
+        # ERP box, which is not a valid value on any real form and stopped the field from
+        # ever validating during recording.
+        if (cf.example_value or "").strip():
+            return cf.example_value.strip(), "example value"
         # A target-value field (Quotation Value, say) is still an AI rule, but its own
         # reference table already holds real, previously-learned answers - "RFQ/0003/23-24"
         # for one forwarder, "RFQ/0003/24-25" for another. Typing the field's own LABEL
@@ -749,6 +756,8 @@ class ReplaySteps(BaseModel):
     #         frontend that sends no mode keeps working)
     # next  — apply just the next recorded step
     # prev  — step one back (re-runs from the start with one step fewer)
+    # to    — run from the start up to (not including) step `index`, then stop and wait
+    #         there — auto, bounded at a chosen step instead of the end of the draft
     # reset — start over: cursor to zero and back to the first page
     # seek  — set the cursor to `index` without touching the browser, for when a step was
     #         inserted mid-draft and performed by hand
@@ -802,6 +811,8 @@ def recorder_replay(
     elif mode in ("prev", "back"):
         at = int(getattr(s, "replay_index", 0) or 0)
         needed = all_steps[:max(0, at - 1)]
+    elif mode == "to":
+        needed = all_steps[:max(0, min(int(body.index or 0), len(all_steps)))]
     else:
         needed = all_steps
     if script is not None:
@@ -823,6 +834,9 @@ def recorder_replay(
         res = s.replay_back(body.steps, body.values, uploads=uploads)
     elif mode == "reset":
         res = s.replay_reset(body.steps)
+    elif mode == "to":
+        res = s.replay_to(body.steps, body.index if body.index is not None else 0,
+                          body.values, keep_going=body.keep_going, uploads=uploads)
     elif mode == "seek":
         res = s.replay_seek(body.steps, body.index if body.index is not None else 0)
     else:

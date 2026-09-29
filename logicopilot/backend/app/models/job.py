@@ -56,10 +56,26 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #                       thread - a placeholder for now, not a real ERP run)
     gk2_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # GK1's IRN Documents Upload stage (see app/models/supporting_document.py): set once an
-    # operator has either uploaded at least one supporting document there, or explicitly
-    # skipped it - the stage is optional, but one of those two actions is what ticks it off,
-    # and unlike the old client-only "irnApproved" state this survives a page reload.
+    # operator explicitly presses Approval for IRN or Skip - the stage is optional, but one
+    # of those two actions is what ticks it off, and unlike the old client-only "irnApproved"
+    # state this survives a page reload. Uploading a document on its own no longer sets this.
     irn_documents_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Which of the two IRN Documents Upload actions GK1 actually pressed: True for Approval
+    # for IRN, False for Skip (and for every job that finished this stage before this column
+    # existed, which is exactly the "nothing special, run the real ERP submission" behaviour
+    # Skip already means). Read by gk2_approve to decide whether Final Approve & Proceed runs
+    # the real ERP submission (Skip) or parks the job in "IRN Document Process" instead
+    # (Approval) - see gk2_approve's own docstring.
+    irn_approval_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # True whenever one of this job's already-extracted documents was removed (an operator
+    # deleting the wrong file, or custom_filter_pages.py's background sweep stripping a
+    # document that turned out to be entirely a newly-uploaded junk-page reference's own
+    # content) - see _remove_document_file. Tenant custom fields have no document of their
+    # own to key a targeted cleanup on, so ALL of them are cleared rather than left stranded
+    # with stale values computed from data that no longer exists; this flag is what tells
+    # anyone that happened and the job wants a fresh Extract. run_extraction clears it again
+    # on its own next run.
+    needs_reextraction: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # A GK1-set target date for this job - "YYYY-MM-DD", plain calendar date with no time
     # component (a job has no timezone of its own). Set from the Jobs list; drives the ETA
     # boxes on the operator dashboard. None = no target date set.

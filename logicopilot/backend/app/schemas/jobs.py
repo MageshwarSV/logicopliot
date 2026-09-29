@@ -53,6 +53,13 @@ class JobOut(BaseModel):
     # GK1-set target date ("YYYY-MM-DD"), edited from the Jobs list - drives the ETA boxes on
     # the operator dashboard. None = no target date set.
     eta_date: str | None = None
+    # See Job.gk2_status - exposed here (unlike before) so the IRN Pending list can be filtered
+    # to and recognise "irn_document_process" without opening each job individually.
+    gk2_status: str | None = None
+    # See Job.needs_reextraction - surfaced on the list too so a job silently missing its
+    # extracted data (a document was removed after the fact) doesn't only show up once
+    # someone happens to open it.
+    needs_reextraction: bool = False
 
 
 class JobEventOut(BaseModel):
@@ -200,6 +207,13 @@ class JobDetailOut(BaseModel):
     gk2_validation_approved: bool = False
     # GK1's IRN Documents Upload stage - see Job.irn_documents_done.
     irn_documents_done: bool = False
+    # Which of the two IRN Documents Upload actions GK1 pressed - see Job.irn_approval_requested.
+    irn_approval_requested: bool = False
+    # See Job.needs_reextraction - a document was removed after this job was already
+    # extracted (an operator deleting the wrong file, or the custom-filter-page sweep
+    # stripping one that turned out to be junk-reference content); its stale custom fields
+    # were cleared, and pressing Extract again is what this is asking for.
+    needs_reextraction: bool = False
     # See JobOut - same meaning, for the single-job screen's own duplicate popup.
     duplicate_of_job_id: str | None = None
     duplicate_of_reference: str | None = None

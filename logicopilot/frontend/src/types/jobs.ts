@@ -25,6 +25,9 @@ export interface Job {
   duplicate_of_reference?: string | null;
   /** A GK1-set target date ("YYYY-MM-DD"), edited from the Jobs list. null = not set. */
   eta_date?: string | null;
+  /** See JobDetail - surfaced on the list too so a job silently missing its extracted data
+   *  doesn't only show up once someone happens to open it. */
+  needs_reextraction?: boolean;
 }
 
 /** One line of a job's history - what the Last updated popup lists. */
@@ -150,10 +153,19 @@ export interface JobDetail {
   /** GK2's OWN independent approval of Data Validation — separate from GK1's
    *  `validation_approved`. */
   gk2_validation_approved?: boolean;
-  /** GK1's IRN Documents Upload stage - set once an operator has uploaded at least one
-   *  supporting document there, or explicitly skipped it. Persisted, unlike the old
-   *  client-only "irnApproved" state. */
+  /** GK1's IRN Documents Upload stage - set once an operator explicitly presses Approval for
+   *  IRN or Skip. Persisted, unlike the old client-only "irnApproved" state. */
   irn_documents_done?: boolean;
+  /** Which of the two IRN Documents Upload actions GK1 pressed - True for Approval for IRN,
+   *  False for Skip (and for every job finished before this field existed). Drives whether
+   *  the per-document DSC + IRN Number placeholder shows, and whether GK2's Final Approve &
+   *  Proceed runs the real ERP submission or parks the job in "IRN Document Process". */
+  irn_approval_requested?: boolean;
+  /** A document was removed after this job was already extracted (an operator deleting the
+   *  wrong file, or the custom-filter-page sweep stripping one that turned out to be junk-
+   *  reference content) - its stale custom fields were cleared, and this asks for a fresh
+   *  Extract. Cleared automatically the next time extraction runs. */
+  needs_reextraction?: boolean;
   /** See Job - same meaning, for this job's own duplicate popup. */
   duplicate_of_job_id?: string | null;
   duplicate_of_reference?: string | null;

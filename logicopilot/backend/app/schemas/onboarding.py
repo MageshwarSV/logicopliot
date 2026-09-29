@@ -104,6 +104,8 @@ class CustomFieldOut(BaseModel):
     # match replaces it, no match returns empty. See CustomFieldReferenceValue.custom_field_id.
     is_target_value: bool = False
     fuzzy_match: bool = False
+    # Typed live into the ERP while recording a script - see FieldMark.example_value.
+    example_value: str | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -126,6 +128,7 @@ class CustomFieldCreate(BaseModel):
     lookup_return_column: str | None = None
     is_target_value: bool = False
     fuzzy_match: bool = False
+    example_value: str | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -152,6 +155,7 @@ class CustomFieldEdit(BaseModel):
     is_target_value: bool | None = None
     fuzzy_match: bool | None = None
     verify_with_other_document: bool | None = None
+    example_value: str | None = None
 
 
 class DocumentDetailOut(DocumentOut):
@@ -272,3 +276,12 @@ class DemoFieldResult(BaseModel):
 class DemoResult(BaseModel):
     document_id: str
     results: list[DemoFieldResult]
+    # Only populated when test_extract's own debug=true is passed (structure-engine
+    # verification only - see field_marks.py) - the exact ocr_text the fields above were
+    # read from, so the admin API can inspect it directly instead of guessing why a value
+    # came out wrong.
+    debug_text: str | None = None
+    # Same debug=true gate: the raw paragraph/table bounding boxes (x0/y0/x1/y1/text/kind)
+    # docai.py's structure engine actually saw, one list per page - lets a real page's
+    # geometry be inspected directly rather than inferred from its text alone.
+    debug_blocks: list[list[dict]] | None = None

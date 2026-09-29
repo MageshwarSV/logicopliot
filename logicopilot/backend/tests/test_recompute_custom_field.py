@@ -1,7 +1,7 @@
 """POST /jobs/{job_id}/custom-fields/{custom_field_id}/recompute — backfilling one
-AI-computed custom field on an already-extracted job, added to the template AFTER that job
-was extracted, without re-running extraction (which would rewrite every other field and
-reset every approval)."""
+AI-computed or hardcoded custom field on an already-extracted job, added to the template
+AFTER that job was extracted, without re-running extraction (which would rewrite every
+other field and reset every approval)."""
 from unittest.mock import patch
 
 from app.models.custom_field import CustomField
@@ -157,18 +157,111 @@ def test_renaming_the_field_after_a_row_exists_updates_the_label_on_recompute(cl
     assert row.label_name == "New Name"
 
 
-def test_rejects_a_hardcoded_field(client, db_session):
+def test_backfills_a_hardcoded_field_from_its_own_value(client, db_session):
+    """A hardcoded field needs no document at all - the value IS its own hardcoded_value.
+    This is exactly how a "Manual Entry" field created straight from the ERP Script
+    Recorder shows up on a job that was already extracted before that field existed: it
+    has ask_operator on and no hardcoded_value, so this backfill leaves it correctly blank
+    (still asked for on Additional Details), rather than 400ing and leaving no way to get
+    it onto the job short of a full re-extraction."""
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
     job = _make_extracted_job(db_session, tenant, group, tdoc)
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Fixed Thing",
                      kind="hardcoded", hardcoded_value="X")
+    manual_cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Erp Entry Name",
+                            kind="hardcoded", hardcoded_value=None, ask_operator=True,
+                            ask_operator_required=True)
+    db_session.add_all([cf, manual_cf])
+    db_session.commit()
+    db_session.refresh(cf)
+    db_session.refresh(manual_cf)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa4@example.com")
+    login(client, "sa4@example.com")
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["extracted_value"] == "X"
+
+    resp2 = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{manual_cf.id}/recompute")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["extracted_value"] == ""
+    row = (db_session.query(JobFieldValue)
+           .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == manual_cf.id)
+           .one())
+    assert row.label_name == "Erp Entry Name"
+
+
+def test_target_value_field_keyed_off_a_different_field(client, db_session):
+    """"Erp Entry Name" has nothing of its own to extract (kind="hardcoded", no fixed
+    value) - it is keyed entirely off "Quotation Name", a separate field on the same job,
+    via lookup_key_label. No reference learned yet -> empty, exactly the same "still asked
+    for on Additional Details" outcome a plain hardcoded field with no value gets. Once an
+    operator's correction is learned (via PATCH /job-field-values/{id}, the normal
+    Additional Details save path), the SAME quotation name - even spelled differently,
+    since fuzzy_match is on - resolves automatically on a later job without asking again."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    manual_cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Erp Entry Name",
+                            kind="hardcoded", hardcoded_value=None, ask_operator=True,
+                            ask_operator_required=True, is_target_value=True, fuzzy_match=True,
+                            lookup_key_label="Quotation Name")
+    db_session.add(manual_cf)
+    db_session.commit()
+    db_session.refresh(manual_cf)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa4c@example.com")
+    login(client, "sa4c@example.com")
+
+    # Job 1: has a Quotation Name, nothing learned for it yet.
+    job1 = _make_extracted_job(db_session, tenant, group, tdoc, reference="JOB-TV1")
+    qn1 = JobFieldValue(tenant_id=tenant.id, job_id=job1.id, label_name="Quotation Name",
+                        extracted_value="KUEHNE + NAGEL PVT. LTD.")
+    db_session.add(qn1)
+    db_session.commit()
+
+    resp1 = client.post(f"/api/v1/jobs/{job1.id}/custom-fields/{manual_cf.id}/recompute")
+    assert resp1.status_code == 200, resp1.text
+    assert not resp1.json()["extracted_value"]
+    row1 = (db_session.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job1.id, JobFieldValue.custom_field_id == manual_cf.id)
+            .one())
+    assert row1.target_value_raw == "KUEHNE + NAGEL PVT. LTD."
+
+    # The operator answers it once - the normal Additional Details save path.
+    resp_correct = client.patch(f"/api/v1/job-field-values/{row1.id}",
+                                json={"corrected_value": "KUEHNE+NAGEL PVT LTD"})
+    assert resp_correct.status_code == 200, resp_correct.text
+
+    # Job 2: the SAME quotation name, spelled differently (OCR/punctuation noise) - fuzzy
+    # match finds job 1's learned answer without asking again.
+    job2 = _make_extracted_job(db_session, tenant, group, tdoc, reference="JOB-TV2")
+    qn2 = JobFieldValue(tenant_id=tenant.id, job_id=job2.id, label_name="Quotation Name",
+                        extracted_value="Kuehne & Nagel Pvt Ltd")
+    db_session.add(qn2)
+    db_session.commit()
+
+    resp2 = client.post(f"/api/v1/jobs/{job2.id}/custom-fields/{manual_cf.id}/recompute")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["extracted_value"] == "KUEHNE+NAGEL PVT LTD"
+
+
+def test_rejects_a_lookup_field(client, db_session):
+    """A per-row lookup field (the CTH/HS code) is keyed on another field of the same LINE
+    and has no meaning at job level - it is not something this endpoint (job-level,
+    row_index=None) can backfill."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="CTH Code",
+                     kind="lookup", per_row=True)
     db_session.add(cf)
     db_session.commit()
     db_session.refresh(cf)
 
-    make_user(db_session, role=SUPER_ADMIN, email="sa4@example.com")
-    login(client, "sa4@example.com")
+    make_user(db_session, role=SUPER_ADMIN, email="sa4b@example.com")
+    login(client, "sa4b@example.com")
 
     resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
     assert resp.status_code == 400

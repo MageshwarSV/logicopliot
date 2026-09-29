@@ -5,9 +5,12 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
+import { Toggle } from "../../components/ui/Toggle";
 import * as systemSettingsApi from "../../api/systemSettings";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
+
+const PROVIDER_LABEL: Record<string, string> = { gmail: "Gmail", zoho: "Zoho" };
 
 /** Two live kill switches for AI-dependent work - NOT a backend shutdown. Everything else
  *  keeps running: viewing jobs, correcting values already extracted, ERP submission for
@@ -37,6 +40,11 @@ export function SettingsPage() {
   const [busyWorkers, setBusyWorkers] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerSaved, setWorkerSaved] = useState(false);
+  const [mailboxesOpen, setMailboxesOpen] = useState(false);
+  const [mailboxes, setMailboxes] = useState<systemSettingsApi.Mailbox[] | null>(null);
+  const [mailboxesLoading, setMailboxesLoading] = useState(false);
+  const [mailboxesError, setMailboxesError] = useState<string | null>(null);
+  const [busyMailboxId, setBusyMailboxId] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -71,6 +79,38 @@ export function SettingsPage() {
       setError("Could not update email pull.");
     } finally {
       setBusyEmail(false);
+    }
+  }
+
+  async function toggleMailboxesOpen() {
+    const next = !mailboxesOpen;
+    setMailboxesOpen(next);
+    if (next && mailboxes === null) {
+      setMailboxesLoading(true);
+      setMailboxesError(null);
+      try {
+        setMailboxes(await systemSettingsApi.listMailboxes());
+      } catch {
+        setMailboxesError("Could not load connected mailboxes.");
+      } finally {
+        setMailboxesLoading(false);
+      }
+    }
+  }
+
+  async function toggleMailboxPaused(box: systemSettingsApi.Mailbox) {
+    if (!mailboxes) return;
+    setBusyMailboxId(box.user_id);
+    setMailboxesError(null);
+    try {
+      const result = await systemSettingsApi.setMailboxPaused(box.user_id, !box.mail_paused);
+      setMailboxes(
+        mailboxes.map((m) => (m.user_id === box.user_id ? { ...m, mail_paused: result.mail_paused } : m)),
+      );
+    } catch {
+      setMailboxesError(`Could not update ${box.mail_email}.`);
+    } finally {
+      setBusyMailboxId(null);
     }
   }
 
@@ -184,23 +224,113 @@ export function SettingsPage() {
 
         {settings && (
           <div className="flex flex-col gap-4 p-5 sm:flex-row">
-            <div className="flex flex-1 items-center justify-between rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800">
-              <div>
-                <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Email work</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {settings.email_pull_paused
-                    ? "Paused — no mailbox is being checked."
-                    : "Running — mailboxes are checked on schedule."}
-                </p>
-              </div>
-              <Button
-                size="sm"
-                variant={settings.email_pull_paused ? "primary" : "danger"}
-                onClick={toggleEmailPull}
-                disabled={busyEmail}
+            <div className="flex-1 rounded-xl border border-slate-200 dark:border-slate-800">
+              {/* A <div>, not a <button>, because it wraps a REAL button (Pause/Resume) -
+                  nesting a <button> inside a <button> is invalid HTML and browsers will
+                  silently break the inner one. Keyboard/AT users still get a proper toggle
+                  via role="button" + tabIndex + onKeyDown below. */}
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={toggleMailboxesOpen}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleMailboxesOpen();
+                  }
+                }}
+                aria-expanded={mailboxesOpen}
+                className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left"
               >
-                {settings.email_pull_paused ? "Resume Email Work" : "Stop Email Work"}
-              </Button>
+                <div className="flex items-center gap-2">
+                  <svg
+                    className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${mailboxesOpen ? "rotate-90" : ""}`}
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Email work</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {settings.email_pull_paused
+                        ? "Paused — no mailbox is being checked."
+                        : "Running — mailboxes are checked on schedule."}
+                      {" "}Click to see connected mailboxes.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant={settings.email_pull_paused ? "primary" : "danger"}
+                  disabled={busyEmail}
+                  onClick={(e) => {
+                    // Stop this from also toggling the mailbox list open/closed - Pause/
+                    // Resume and expand/collapse are two independent actions on this card.
+                    e.stopPropagation();
+                    toggleEmailPull();
+                  }}
+                >
+                  {settings.email_pull_paused ? "Resume Email Work" : "Stop Email Work"}
+                </Button>
+              </div>
+
+              {mailboxesOpen && (
+                <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+                  {mailboxesLoading && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Loading mailboxes…</p>
+                  )}
+                  {mailboxesError && (
+                    <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                      {mailboxesError}
+                    </p>
+                  )}
+                  {!mailboxesLoading && mailboxes && mailboxes.length === 0 && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      No operator has connected a mailbox yet.
+                    </p>
+                  )}
+                  {!mailboxesLoading && mailboxes && mailboxes.length > 0 && (
+                    <ul className="flex flex-col gap-2">
+                      {mailboxes.map((box) => (
+                        <li
+                          key={box.user_id}
+                          className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-slate-900 dark:text-slate-100">
+                              {box.mail_email}
+                              <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                                {PROVIDER_LABEL[box.mail_provider ?? ""] ?? box.mail_provider ?? "—"}
+                              </span>
+                            </p>
+                            <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                              {box.full_name}
+                              {box.tenant_name ? ` · ${box.tenant_name}` : ""}
+                              {!box.is_active ? " · account inactive" : ""}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                              {box.mail_paused ? "Off" : "On"}
+                            </span>
+                            <Toggle
+                              checked={!box.mail_paused}
+                              disabled={busyMailboxId === box.user_id}
+                              onChange={() => toggleMailboxPaused(box)}
+                              label={`Poll ${box.mail_email}`}
+                            />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex flex-1 items-center justify-between rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800">
               <div>

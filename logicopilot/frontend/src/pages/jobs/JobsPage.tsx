@@ -114,7 +114,7 @@ export function JobsPage() {
     // empty while `loading` is true, so the whole page is short enough to put it in the
     // viewport before loadFirstPage has even resolved. Without this guard that races
     // loadFirstPage's own fetch and appends a duplicate first page on top of it.
-    if (loading || loadingMore || !hasMore) return;
+    if (loading || loadingMore || !hasMore || pastDateWindow) return;
     setLoadingMore(true);
     try {
       const more = await jobsApi.listJobs({
@@ -193,8 +193,10 @@ export function JobsPage() {
     );
     observer.observe(el);
     return () => observer.disconnect();
+    // quick/dateFrom/dateTo: so a filter change re-captures loadMore's CURRENT pastDateWindow
+    // guard immediately, rather than only once jobs.length/hasMore/etc happen to change too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs.length, hasMore, loading, loadingMore, tenantFilter, group, bucket]);
+  }, [jobs.length, hasMore, loading, loadingMore, tenantFilter, group, bucket, quick, dateFrom, dateTo]);
 
   async function checkEmail() {
     setCheckingMail(true);
@@ -362,6 +364,25 @@ export function JobsPage() {
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
   }
+
+  // Jobs arrive newest-first (the server sorts by created_at desc). The quick/date-range,
+  // customer and status filters below are applied client-side, on top of whatever has been
+  // fetched so far — the server-side pagination knows nothing about them. Without this guard,
+  // a narrow filter (the DEFAULT "Today" view, most of all) leaves very few visible rows, so
+  // the infinite-scroll sentinel never leaves view and the loader keeps paging through the
+  // WHOLE unfiltered history in the background, one page at a time — "Loading more…" blinking
+  // long after the filtered view already shows everything it ever will.
+  // Once the OLDEST job fetched so far is already older than the active date filter's own
+  // start, every job the server would send next is older still (same descending sort), so a
+  // "from" date filter can never gain anything from further pages — the search has already
+  // gone further back than it needs to. A "to"-only filter has no such shortcut (the pages
+  // still being skipped are the newest ones, and older pages may yet fall inside the window),
+  // so it is deliberately left to page normally.
+  const pastDateWindow = useMemo(() => {
+    if (!quickRange.from || jobs.length === 0) return false;
+    const oldest = dayKey(jobs[jobs.length - 1]?.created_at);
+    return oldest !== "" && oldest < quickRange.from;
+  }, [jobs, quickRange.from]);
 
   const visibleJobs = useMemo(() => {
     return jobs.filter((j) => {

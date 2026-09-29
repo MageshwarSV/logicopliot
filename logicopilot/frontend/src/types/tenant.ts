@@ -10,4 +10,7 @@ export interface Tenant {
   /** Set on the "Masters" page: {"operator": bool, "gk2": bool} — false locks that role's
    *  users in this tenant to read-only. A missing key or null column means read-and-write. */
   role_write_enabled?: Record<string, boolean> | null;
+  /** Gates this tenant's own IRN Pending link (see app/api/v1/public_irn.py) - null until a
+   *  Super Admin presses "Generate Link" for them. Never rotates on its own. */
+  irn_pending_access_key?: string | null;
 }

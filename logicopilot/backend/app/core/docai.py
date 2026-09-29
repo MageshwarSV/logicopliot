@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.structure_engine import build_structured_text
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,59 @@ def _segments(layout) -> list[tuple[int, int]]:
 def _top_y(layout) -> float:
     verts = layout.bounding_poly.normalized_vertices
     return min((v.y for v in verts), default=0.0)
+
+
+def _bbox(layout) -> tuple[float, float, float, float]:
+    """(x0, y0, x1, y1), normalized 0..1 - the full box, not just its top edge (_top_y
+    above only ever needed that one value; structure_engine.py needs all four)."""
+    verts = layout.bounding_poly.normalized_vertices
+    xs = [v.x for v in verts]
+    ys = [v.y for v in verts]
+    if not xs or not ys:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+_SUMMARY_ROW_WORDS = re.compile(
+    r"^(total|sub.?total|grand.?total|net amount|amount in words)\b", re.IGNORECASE
+)
+
+
+def _looks_numeric(text: str) -> bool:
+    return bool(re.search(r"\d", text)) and not re.search(r"[a-zA-Z]{3,}", text)
+
+
+def _is_summary_row(cells: list[str]) -> bool:
+    """A table's own TOTAL/SUBTOTAL row, printed as one more ruled row of the same table
+    Document AI detected - structurally indistinguishable from a product row at the layout
+    level, so this is the one place actually deciding "is this a row of DATA or a row that
+    SUMS the data above it", from the row's own text alone (no LLM call). Two shapes: the
+    row's first non-empty cell literally says Total/Subtotal/Grand Total/Net Amount, or every
+    cell but the last is blank while the last cell holds a number (a total printed in the
+    table's rightmost/amount column with nothing else on that line)."""
+    non_empty = [c for c in cells if c.strip()]
+    if not non_empty:
+        return False
+    if _SUMMARY_ROW_WORDS.match(non_empty[0].strip()):
+        return True
+    if len(non_empty) == 1 and cells and cells[-1].strip() and _looks_numeric(cells[-1]):
+        return True
+    return False
+
+
+def _table_row_count(table, full_text: str) -> int:
+    """How many real DATA rows this Document AI table actually has - the layout analyser: a
+    cheap, deterministic geometry check (not another LLM call) that gives run_extraction's
+    text-vs-vision row cross-check (app/api/v1/jobs.py) a third, independent source of truth
+    for "how many rows are there really", instead of two LLM reads only ever arguing with each
+    other. Excludes a trailing summary row Document AI's own table detection has no concept of
+    (see _is_summary_row) - it only ever looks at the LAST row, since a genuine total line is
+    always the table's final row, never a row in the middle."""
+    body = table.body_rows
+    if not body:
+        return 0
+    last_cells = [_layout_text(c.layout, full_text).strip() for c in body[-1].cells]
+    return len(body) - 1 if _is_summary_row(last_cells) else len(body)
 
 
 def _table_markdown(table, full_text: str) -> str:
@@ -122,6 +176,51 @@ def _page_layout_text(page, full_text: str) -> str:
         return ""
 
 
+def _page_blocks(page, full_text: str) -> list[dict]:
+    """The same paragraphs/tables _page_layout_text reads, as plain dicts with their own
+    bounding box - structure_engine.py's input. Kept separate from _page_layout_text itself
+    (which stays exactly as it was) rather than folding the two together, so the existing,
+    already-relied-upon function is never at risk from this addition."""
+    blocks: list[dict] = []
+    table_spans: list[tuple[int, int]] = []
+    for table in page.tables:
+        md = _table_markdown(table, full_text)
+        if not md:
+            continue
+        x0, y0, x1, y1 = _bbox(table.layout)
+        blocks.append({"kind": "table", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": md})
+        table_spans.extend(_segments(table.layout))
+
+    def _inside_a_table(paragraph) -> bool:
+        for start, end in _segments(paragraph.layout):
+            mid = (start + end) // 2
+            if any(t_start <= mid < t_end for t_start, t_end in table_spans):
+                return True
+        return False
+
+    for para in page.paragraphs:
+        if _inside_a_table(para):
+            continue
+        text = _layout_text(para.layout, full_text).strip()
+        if not text:
+            continue
+        x0, y0, x1, y1 = _bbox(para.layout)
+        blocks.append({"kind": "paragraph", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text})
+    return blocks
+
+
+def _table_row_counts_for_page(page, full_text: str) -> list[int]:
+    """One entry per Document AI table detected on this page - see _table_row_count. Empty
+    list when the page has no tables (a borderless/whitespace-aligned layout Document AI's
+    table detector never turns into a `table` object at all) or on any failure - this is a
+    bonus signal, same fail-safe contract as _page_layout_text, never a hard dependency."""
+    try:
+        return [_table_row_count(t, full_text) for t in page.tables]
+    except Exception:  # noqa: BLE001
+        logger.exception("table row count failed; falling back to no detected-row signal")
+        return []
+
+
 _OCR_MAX_SIDE = 2500
 _OCR_REENCODE_BYTES = 8 * 1024 * 1024
 
@@ -163,6 +262,9 @@ def ocr_page_image(image_path: Path) -> dict:
 
     tokens = []
     layout_text = ""
+    table_row_counts: list[int] = []
+    structured_text: str | None = None
+    debug_blocks: list[dict] = []
     for page in doc.pages:
         for token in page.tokens:
             text = _layout_text(token.layout, doc.text).strip()
@@ -180,7 +282,33 @@ def ocr_page_image(image_path: Path) -> dict:
         # still written inside the loop rather than assuming pages[0], in case a future
         # caller ever passes a multi-page image through.
         layout_text += _page_layout_text(page, doc.text)
-    return {"text": doc.text, "tokens": tokens, "layout_text": layout_text or doc.text}
+        table_row_counts.extend(_table_row_counts_for_page(page, doc.text))
+        # Computed from the SAME paragraph/table objects layout_text already reads - see
+        # structure_engine.py. None whenever it found nothing worth reordering (the common
+        # case); a caller reading this must fall back to layout_text in that case, exactly as
+        # documented there.
+        page_blocks = _page_blocks(page, doc.text)
+        debug_blocks.extend(page_blocks)
+        page_structured = build_structured_text(page_blocks)
+        if page_structured:
+            structured_text = (structured_text or "") + page_structured
+    return {
+        "text": doc.text, "tokens": tokens, "layout_text": layout_text or doc.text,
+        # One int per Document AI table detected on this page - the actual row count the
+        # LAYOUT itself reports, excluding a trailing TOTAL/summary row (see
+        # _table_row_count). Empty when Document AI found no ruled/structured table here
+        # (a borderless layout, or a non-table page) - callers treat that as "no signal",
+        # never as "zero rows".
+        "table_row_counts": table_row_counts,
+        # None unless the structure engine actually found and fixed a genuine multi-column
+        # region on this page - see structure_engine.py's own docstring for why a page it
+        # cannot help returns None rather than a redundant copy of layout_text.
+        "structured_text": structured_text,
+        # The exact paragraph/table geometry structured_text was computed from - never read
+        # by any real caller, only by field_marks.py's own debug=true test-extract path, to
+        # inspect real bounding boxes directly instead of guessing at them.
+        "debug_blocks": debug_blocks,
+    }
 
 
 def _normalize_for_match(text: str) -> str:
@@ -232,12 +360,14 @@ def get_page_ocr(document_dir: Path, page_number: int) -> dict:
     cache_file = document_dir / "ocr" / f"page_{page_number}.json"
     if cache_file.exists():
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
-        if "layout_text" in cached:
+        if "layout_text" in cached and "table_row_counts" in cached and "structured_text" in cached:
             return cached
-        # A cache written before layout-aware formatting existed. Re-read this one page
-        # rather than serving every already-processed document its old flat text forever -
-        # the whole point is that jobs already in the system get the improvement too.
-        logger.info("%s page %d: OCR cache predates layout formatting, re-reading",
+        # A cache written before layout-aware formatting (or table_row_counts, or
+        # structured_text) existed. Re-read this one page rather than serving every
+        # already-processed document its old data forever - the whole point is that jobs
+        # already in the system get the improvement too.
+        logger.info("%s page %d: OCR cache predates layout formatting, table row counts, "
+                    "or the structure engine, re-reading",
                     document_dir.name, page_number)
 
     image_path = document_dir / "pages" / f"page_{page_number}.png"
