@@ -768,6 +768,20 @@ export function JobRunPage() {
   // Fields the Super Admin ticked "ask the operator": each must be explicitly confirmed
   // (a saved corrected value) before the ERP entry may run.
   const askFields = job?.field_values.filter((fv) => fv.ask_operator) ?? [];
+  // A field the system worked out itself (a custom field, computed rather than read verbatim
+  // off one document) used to render duplicated on whichever document tab happened to list it
+  // in its own (often default-to-every-document) source_document_ids, framed as "worked out
+  // from THIS document" even when it was not read from that document at all. It belongs once,
+  // here under Additional Details, common to the whole job - see the same exclusion
+  // ExtractionReview's own isSelfVerifyingLabel used to apply for these fields.
+  const isSelfVerifyingLabel = (label: string) => {
+    const l = label.toLowerCase();
+    return l.includes("verification") || l.trim().endsWith("(calculated)");
+  };
+  const commonComputedFields =
+    job?.field_values.filter(
+      (fv) => fv.origin === "computed" && fv.row_index == null && !isSelfVerifyingLabel(fv.label_name),
+    ) ?? [];
   // What Manual Data Entry actually asks for. Reference-sheet fields are asked too — the CTH
   // and RITC are marked "ask the operator" so a part missing from the sheet gets typed — but
   // they have their own screen, Dump Data, which shows them and refuses to pass while one is
@@ -2045,6 +2059,23 @@ export function JobRunPage() {
                 </p>
               </Card>
 
+              {commonComputedFields.length > 0 && (
+                <Card className="p-5">
+                  <h3 className="mb-1 text-sm font-semibold text-slate-900 dark:text-slate-50">
+                    Worked out for this job
+                  </h3>
+                  <p className="mb-3 text-xs text-slate-400">
+                    These aren't printed as-is on any single document — the system looked at
+                    everything on this job and filled them in for you. Please check each one.
+                  </p>
+                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                    {commonComputedFields.map((fv) => (
+                      <ExtractedField key={fv.id} fv={fv} readOnly={!canEditValues} reload={load} tone="computed" />
+                    ))}
+                  </div>
+                </Card>
+              )}
+
               {manualFields.filter((fv) => fv.row_index == null).length > 0 && (
                 <Card className="p-5">
                   <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
@@ -3173,31 +3204,6 @@ function ExtractionReview({
   }, [job.field_values, active]);
 
 
-  // Computed fields that were told to read THIS document. They have no mark and no document
-  // of their own, so nothing showed them: Data Extraction skipped them as "not read off the
-  // page" and Dump Data only carries reference-sheet lookups. A dozen of nokia's fields were
-  // invisible everywhere. They belong beside the document they were computed from.
-  //
-  // EXCEPT a field whose own label says "...Verification" or "...(Calculated)" - the same
-  // naming convention the backend's _self_verifying_findings uses. Those now have their own
-  // home on Document Cross-Verification (as a real row with a match/mismatch/review badge),
-  // and showing them a second time here, as a plain editable box with no such context, is
-  // just duplication.
-  const isSelfVerifyingLabel = (label: string) => {
-    const l = label.toLowerCase();
-    return l.includes("verification") || l.trim().endsWith("(calculated)");
-  };
-  const computed = useMemo(() => {
-    if (!active) return [];
-    return job.field_values.filter(
-      (fv) =>
-        fv.origin === "computed" &&
-        fv.row_index == null &&
-        !isSelfVerifyingLabel(fv.label_name) &&
-        (fv.source_document_ids ?? []).includes(active.template_document_id),
-    );
-  }, [job.field_values, active]);
-
   // Which document's copy of a field actually reaches the entry.
   //
   // A field marked on four documents is read from all four so they can be cross-checked, but
@@ -3346,29 +3352,6 @@ function ExtractionReview({
                   );
                 })}
               </div>
-
-              {computed.length > 0 && (
-                <div className="mt-6">
-                  <p className="mb-1 text-xs font-medium uppercase tracking-wider text-slate-500">
-                    Worked out from this document
-                  </p>
-                  <p className="mb-2 text-[11px] text-slate-400">
-                    Not printed anywhere on the page — read from it and decided.
-                  </p>
-                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                    {computed.map((fv) => (
-                      <ExtractedField
-                        key={fv.id}
-                        fv={fv}
-                        readOnly={readOnly}
-                        reload={reload}
-                        tone="computed"
-                        onFocusField={setFocusedFv}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {lineRows.length > 0 && (
                 <div className="mt-6">

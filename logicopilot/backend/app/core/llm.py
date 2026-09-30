@@ -16,11 +16,68 @@ never hard-fails on the network.
 
 import json
 import logging
+import re
+import time
 from dataclasses import dataclass
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# OpenAI's own suggested wait ("Please try again in 372ms." / "in 1.844s.") isn't exposed as
+# a separate field on the exception - only inside its message text - so it's parsed out here.
+_RETRY_WAIT_RE = re.compile(r"try again in ([\d.]+)\s*(ms|s)\b")
+_MAX_RATE_LIMIT_RETRIES = 4
+
+
+def _rate_limit_wait_seconds(exc: Exception) -> float | None:
+    """None means "raise immediately, do not retry": either this isn't a rate-limit error at
+    all, or it's the one 429 that retrying can never fix - an exhausted prepaid balance
+    (`exc.code == "credit_balance_exhausted"`) stays exhausted no matter how long you wait.
+    Only a genuine `code == "rate_limit_exceeded"` (a per-minute token/request cap, which
+    resets on its own) gets a wait, taken from OpenAI's own suggested delay in its error
+    message - `.code` is the SDK's own parse of the response body's "code" field, confirmed
+    by reading openai._client.OpenAI._make_status_error rather than assumed."""
+    if getattr(exc, "code", None) != "rate_limit_exceeded":
+        return None
+    match = _RETRY_WAIT_RE.search(str(exc))
+    if not match:
+        return 1.0
+    value, unit = match.groups()
+    return float(value) / 1000.0 if unit == "ms" else float(value)
+
+
+def create_chat_completion_with_retry(client, **kwargs):
+    """The one place every OpenAI chat-completion call in this codebase goes through, instead
+    of calling `client.chat.completions.create(**kwargs)` directly. Every caller here used to
+    catch ANY exception from that bare call and silently degrade to an empty/default value,
+    with no retry at all - exactly right for a genuine error (a bad request, an empty
+    balance, a real outage), but wrong for a rate_limit_exceeded 429: a routine,
+    SELF-CORRECTING condition (the per-minute token budget resets within seconds) that this
+    codebase's own call volume can trigger under ordinary load - one job's custom fields
+    alone can fire 70+ separate chat-completion calls in quick succession. Found live: on a
+    real job, several fields were silently written as empty because their calls happened to
+    land in exactly such a window - indistinguishable in the UI from "the AI found nothing on
+    the document" (see _rate_limit_wait_seconds's own docstring for how this is told apart
+    from an error no retry can fix).
+
+    Retries up to `_MAX_RATE_LIMIT_RETRIES` times, waiting the exact time OpenAI's own error
+    message suggests each time, and ONLY for a genuine rate_limit_exceeded - every other
+    error, including insufficient_quota/credit_balance_exhausted, is raised immediately
+    exactly as before this existed."""
+    from openai import RateLimitError
+
+    last_exc: RateLimitError | None = None
+    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except RateLimitError as exc:
+            wait = _rate_limit_wait_seconds(exc)
+            if wait is None or attempt == _MAX_RATE_LIMIT_RETRIES:
+                raise
+            last_exc = exc
+            time.sleep(wait)
+    raise last_exc  # pragma: no cover - the loop above always returns or raises
 
 
 @dataclass
@@ -66,7 +123,8 @@ def evaluate_ruling(
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -144,7 +202,8 @@ def describe_failure_screen(screenshot_b64: str, log_tail: list[str] | None = No
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         tail = "\n".join((log_tail or [])[-6:])
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             temperature=0,
             max_tokens=220,
@@ -183,7 +242,8 @@ def ai_classify_outcome(page_text: str, field_stats: dict | None = None) -> dict
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=20)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -248,7 +308,8 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -313,7 +374,8 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             temperature=0,
             max_tokens=1500,
@@ -396,7 +458,8 @@ def suggest_field_mapping(
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=20)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -473,7 +536,8 @@ def ai_choose_action(goal: str, elements: list[dict], values: dict[str, str] | N
         listing = "\n".join(
             f"{i}: <{e.get('tag')}> \"{(e.get('text') or '').strip()}\"" for i, e in enumerate(elements)
         )
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -535,7 +599,8 @@ def resolve_ai_value(prompt: str, values: dict[str, str], options: list[str] | N
             if options
             else ""
         )
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -608,7 +673,8 @@ def build_field_profile(
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=30)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as

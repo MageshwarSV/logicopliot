@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.llm import create_chat_completion_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -498,7 +499,8 @@ def extract_document_fields(ocr_text: str, fields: list[dict]) -> dict[str, str 
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -757,7 +759,8 @@ def extract_document_rows(
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key, timeout=90)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -906,7 +909,8 @@ def extract_document_fields_from_images(image_paths: list[Path], fields: list[di
             b64 = base64.b64encode(path.read_bytes()).decode()
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -976,7 +980,8 @@ def extract_document_rows_from_images(
             b64 = base64.b64encode(path.read_bytes()).decode()
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            client,
             model=settings.openai_model,
             temperature=0,
             max_tokens=3000,
