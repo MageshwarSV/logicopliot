@@ -3098,62 +3098,65 @@ function ExtractedField({
   );
 }
 
-/** "Dump CTH Number" (the customer's reference-sheet lookup) vs "Document CTH" (read
- * straight off a document) for one product line - exactly one of the two is ever the real
- * answer for that line, and picking one sets it as Dump CTH Number's own corrected value,
- * since that is the field the ERP/IRN export actually reads (see the excel_config mapping -
- * it names Dump CTH Number, not Document CTH). RITC is usually the same code as the CTH (see
- * that field's own ask_operator_hint), so a pick here is applied to it too rather than left
- * to drift out of sync with whichever source was actually chosen.
+/** Any two already-configured custom fields paired together (see the backend's
+ * CustomField.paired_custom_field_id) - exactly one is ever the real answer for one product
+ * line, and picking one sets it as `primary`'s own corrected value, since that is the field
+ * name whatever export reads was built against. `primary` is the field the pairing is
+ * configured ON; `other` is whichever field it names in its own paired_custom_field_id.
+ * `syncTargets` (primary's own sync_field_ids, resolved to this row's values) also get set
+ * to the SAME picked value - e.g. RITC following a CTH pick, because the two usually carry
+ * the same code but are tracked as separate fields.
  *
- * Dump CTH Number's OWN value is captured ONCE, on mount, into a ref - never re-read from
+ * `primary`'s OWN value is captured ONCE, on mount, into a ref - never re-read from
  * extracted_value after that. A row's real answer can live entirely in corrected_value with
- * an EMPTY extracted_value (a material master with nothing for this part, backfilled by a
- * manual correction at some point) - picking Document CTH and then picking Dump CTH Number
- * back, if that "restore" used extracted_value, silently overwrote the real answer with that
- * empty string. Captured once up front, switching back always restores the value this field
- * actually held before this picker ever touched it.
+ * an EMPTY extracted_value (nothing in a reference sheet, backfilled by a manual correction
+ * at some point) - picking `other` and then picking `primary` back, if that "restore" used
+ * extracted_value, would silently overwrite the real answer with that empty string. Captured
+ * once up front, switching back always restores the value this field actually held before
+ * this picker ever touched it.
  *
- * When Document CTH has nothing for this line there is nothing to pick between, so the
- * caller renders Dump CTH Number's own box alone and skips this entirely. */
-function CthSourcePicker({
-  dumpCth,
-  documentCth,
-  ritc,
+ * When `other` has nothing for this line there is nothing to pick between, so the caller
+ * renders `primary`'s own box alone and skips this entirely. */
+function DualSourcePicker({
+  primary,
+  other,
+  syncTargets,
   readOnly,
   reload,
 }: {
-  dumpCth: JobFieldValue;
-  documentCth: JobFieldValue | undefined;
-  ritc: JobFieldValue | undefined;
+  primary: JobFieldValue;
+  other: JobFieldValue | undefined;
+  syncTargets: JobFieldValue[];
   readOnly: boolean;
   reload: () => Promise<void>;
 }) {
-  const documentValue = (documentCth?.corrected_value ?? documentCth?.extracted_value ?? "").trim();
+  const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
   const [saving, setSaving] = useState(false);
 
-  const ownDumpValueRef = useRef<string | null>(null);
-  if (ownDumpValueRef.current === null) {
-    ownDumpValueRef.current = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
+  const ownPrimaryValueRef = useRef<string | null>(null);
+  if (ownPrimaryValueRef.current === null) {
+    ownPrimaryValueRef.current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
   }
-  const dumpValue = ownDumpValueRef.current;
+  const primaryValue = ownPrimaryValueRef.current;
 
-  const [selected, setSelected] = useState<"dump" | "document">(() => {
-    const current = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
-    return current === documentValue && documentValue !== "" && dumpValue !== documentValue
-      ? "document"
-      : "dump";
+  const [selected, setSelected] = useState<"primary" | "other">(() => {
+    const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+    return current === otherValue && otherValue !== "" && primaryValue !== otherValue
+      ? "other"
+      : "primary";
   });
 
-  if (!documentValue) return null;
+  if (!other || !otherValue) return null;
 
-  const choose = async (which: "dump" | "document") => {
+  const choose = async (which: "primary" | "other") => {
     if (readOnly || saving || which === selected) return;
-    const value = which === "dump" ? dumpValue : documentValue;
+    const value = which === "primary" ? primaryValue : otherValue;
     setSaving(true);
     try {
-      await jobsApi.correctFieldValue(dumpCth.id, value);
-      if (ritc) await jobsApi.correctFieldValue(ritc.id, value);
+      await jobsApi.correctFieldValue(primary.id, value);
+      for (const target of syncTargets) {
+        await jobsApi.correctFieldValue(target.id, value);
+      }
       setSelected(which);
       await reload();
     } finally {
@@ -3161,7 +3164,7 @@ function CthSourcePicker({
     }
   };
 
-  const Option = ({ id, label, value }: { id: "dump" | "document"; label: string; value: string }) => (
+  const Option = ({ id, label, value }: { id: "primary" | "other"; label: string; value: string }) => (
     <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
       <input
         type="checkbox"
@@ -3169,7 +3172,7 @@ function CthSourcePicker({
         disabled={readOnly || saving}
         onChange={() => void choose(id)}
       />
-      <span className="w-28 shrink-0 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+      <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
         {label}
       </span>
       <input
@@ -3189,11 +3192,11 @@ function CthSourcePicker({
   return (
     <div>
       <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-        CTH — pick which one is right for this line
+        {primary.picker_heading?.trim() || "Pick which one is right for this line"}
       </p>
       <div className="flex flex-col gap-1.5">
-        <Option id="dump" label="Dump CTH Number" value={dumpValue} />
-        <Option id="document" label="Document CTH" value={documentValue} />
+        <Option id="primary" label={primary.label_name} value={primaryValue} />
+        <Option id="other" label={other.label_name} value={otherValue} />
       </div>
       {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
     </div>
@@ -3410,18 +3413,24 @@ function ExtractionReview({
   // Dump Data - a part code and the classification looked up for it belong on one card.
   const lookedUpByRow = useMemo(() => {
     const rows = new Map<number, JobFieldValue[]>();
+    // A custom per-row field carries no job_document_id of its own (only set_index/row_index -
+    // see the backend's own per-row write loop), so on a job with several invoices "row 1"
+    // alone is ambiguous: set 1's row 1 and set 3's row 1 are two different products. Scoped
+    // to the SAME invoice-set as the active document, the same normalization (blank = 1) the
+    // backend itself uses when writing these rows.
+    const activeSet = active?.set_index ?? 1;
     for (const fv of job.field_values) {
-      // "Document CTH" isn't self_filled (it's read by a prompt, not a reference-sheet
-      // lookup) but belongs on the same card as "Dump CTH Number" - the two are compared
-      // and picked between right here, not shown on two unrelated screens.
-      const belongs = fv.self_filled === true || fv.label_name === "Document CTH";
-      if (!belongs || fv.row_index == null) continue;
+      // Any row-indexed CUSTOM field belongs on this card - a reference-sheet lookup
+      // (self_filled), an AI-computed per-row value, one half of a picker pair, whatever -
+      // a mark-based per-row field is already shown via `cells` above (it has a mark_id).
+      if (!fv.custom_field_id || fv.row_index == null) continue;
+      if ((fv.set_index ?? 1) !== activeSet) continue;
       const arr = rows.get(fv.row_index) ?? [];
       arr.push(fv);
       rows.set(fv.row_index, arr);
     }
     return rows;
-  }, [job.field_values]);
+  }, [job.field_values, active]);
 
   if (!files.length) {
     return (
@@ -3568,12 +3577,26 @@ function ExtractionReview({
                   <div className="flex flex-col gap-2">
                     {lineRows.map(([n, cells]) => {
                       const lookedUp = lookedUpByRow.get(n) ?? [];
-                      const dumpCth = lookedUp.find((fv) => fv.label_name === "Dump CTH Number");
-                      const documentCth = lookedUp.find((fv) => fv.label_name === "Document CTH");
-                      const ritc = lookedUp.find((fv) => fv.label_name === "RITC No.");
-                      const rest = lookedUp.filter(
-                        (fv) => fv.label_name !== "Dump CTH Number" && fv.label_name !== "Document CTH",
-                      );
+                      // Any field whose own config names a pairing (primary) gets matched, on
+                      // THIS row, to the field it names (other) and whatever it lists as sync
+                      // targets - by custom_field_id, never by label text, since a Super Admin
+                      // can name these fields however they like.
+                      const byCustomFieldId = new Map(lookedUp.map((fv) => [fv.custom_field_id, fv]));
+                      const pairs = lookedUp
+                        .filter((fv) => fv.paired_custom_field_id)
+                        .map((primary) => ({
+                          primary,
+                          other: byCustomFieldId.get(primary.paired_custom_field_id!),
+                          syncTargets: (primary.sync_field_ids ?? [])
+                            .map((id) => byCustomFieldId.get(id))
+                            .filter((fv): fv is JobFieldValue => !!fv),
+                        }));
+                      const pairedIds = new Set<string>();
+                      pairs.forEach(({ primary, other }) => {
+                        pairedIds.add(primary.id);
+                        if (other) pairedIds.add(other.id);
+                      });
+                      const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       return (
                         <div
                           key={n}
@@ -3607,15 +3630,18 @@ function ExtractionReview({
                               />
                             ))}
                           </div>
-                          {dumpCth && (
-                            <div className="mt-3">
-                              <CthSourcePicker
-                                dumpCth={dumpCth}
-                                documentCth={documentCth}
-                                ritc={ritc}
-                                readOnly={readOnly}
-                                reload={reload}
-                              />
+                          {pairs.length > 0 && (
+                            <div className="mt-3 flex flex-col gap-3">
+                              {pairs.map(({ primary, other, syncTargets }) => (
+                                <DualSourcePicker
+                                  key={primary.id}
+                                  primary={primary}
+                                  other={other}
+                                  syncTargets={syncTargets}
+                                  readOnly={readOnly}
+                                  reload={reload}
+                                />
+                              ))}
                             </div>
                           )}
                         </div>

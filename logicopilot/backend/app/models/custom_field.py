@@ -97,3 +97,22 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # a valid quotation number, PO number, etc. on the live ERP).
     example_value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Links this field to ANOTHER already-fully-configured custom field (of any kind) into a
+    # picker pair - e.g. a reference-sheet "Dump CTH Number" paired with a document-read
+    # "Document CTH". Deliberately not a new kind: each half keeps computing its own value
+    # exactly as its own kind already does (hardcoded/ai/lookup, unchanged); pairing only adds
+    # a UI picker on top and a write-through onto THIS field's own corrected value, which is
+    # the one export actually reads. Set on the field the operator's pick writes INTO - the
+    # other half is read from, never written to, by the picker itself.
+    paired_custom_field_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("custom_fields.id", ondelete="SET NULL"), nullable=True
+    )
+    # The heading shown above the two options, e.g. "CTH - pick which one is right for this
+    # line". Blank falls back to a generic "Pick which one is right for this line".
+    picker_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Other custom_field ids (usually just one, e.g. "RITC No.") that also get set to whichever
+    # value the operator picks, on the same row - fields that are supposed to carry the same
+    # answer as this one but are tracked separately (their own reference-sheet lookup, their
+    # own export column) rather than silently falling out of sync with it.
+    sync_field_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+

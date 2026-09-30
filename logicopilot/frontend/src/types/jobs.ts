@@ -71,6 +71,9 @@ export interface JobDocument {
 
 export interface JobFieldValue {
   id: string;
+  /** null for a value read straight off a document (identified by mark_id instead) - only a
+   *  custom/computed field carries this. Used to find a PAIRED field's own value by id. */
+  custom_field_id?: string | null;
   mark_id: string;
   template_document_id: string;
   document_name: string;
@@ -116,6 +119,16 @@ export interface JobFieldValue {
   found_y?: number | null;
   found_width?: number | null;
   found_height?: number | null;
+  /** This custom field is paired with another one - the operator picks which one is right
+   *  per row, and the pick writes into THIS field's own corrected value. See the backend's
+   *  CustomField.paired_custom_field_id for the full picture. null = not paired. */
+  paired_custom_field_id?: string | null;
+  /** Heading shown above the two options, e.g. "CTH - pick which one is right for this
+   *  line". Falls back to a generic heading when null/blank. */
+  picker_heading?: string | null;
+  /** Other custom_field ids that also get set to whichever value is picked, on the same
+   *  row (e.g. RITC following the CTH pick). */
+  sync_field_ids?: string[] | null;
 }
 
 export type VerificationStatus = "match" | "mismatch" | "missing" | "review";

@@ -319,6 +319,11 @@ export function TemplateCreationWizard() {
   const [cfTargetValue, setCfTargetValue] = useState(false);
   // Target-value only: same as fuzzyMatch above, for a custom field.
   const [cfFuzzyMatch, setCfFuzzyMatch] = useState(false);
+  // Pairs this field with another already-configured one into a picker - see
+  // CustomField.paired_custom_field_id. "" = not paired.
+  const [cfPairedFieldId, setCfPairedFieldId] = useState("");
+  const [cfPickerHeading, setCfPickerHeading] = useState("");
+  const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   const [crossFieldPopup, setCrossFieldPopup] = useState<{ customFieldId: string; label: string } | null>(null);
   const [crossFieldTargets, setCrossFieldTargets] = useState<string[]>([]);
   // Custom ruling (decides which documents a job requires)
@@ -379,6 +384,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]);
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -399,6 +405,9 @@ export function TemplateCreationWizard() {
     setCfVerify(!!cf.verify_with_other_document);
     setCfTargetValue(!!cf.is_target_value);
     setCfFuzzyMatch(!!cf.fuzzy_match);
+    setCfPairedFieldId(cf.paired_custom_field_id ?? "");
+    setCfPickerHeading(cf.picker_heading ?? "");
+    setCfSyncFieldIds(cf.sync_field_ids ?? []);
     setError(null);
     setCustomOpen(true);
   }
@@ -431,6 +440,9 @@ export function TemplateCreationWizard() {
         ask_operator_hint: cfAskOperator ? cfAskHint.trim() || null : null,
         is_target_value: cfKind === "ai" ? cfTargetValue : false,
         fuzzy_match: cfKind === "ai" && cfTargetValue ? cfFuzzyMatch : false,
+        paired_custom_field_id: cfPairedFieldId || null,
+        picker_heading: cfPairedFieldId ? cfPickerHeading.trim() || null : null,
+        sync_field_ids: cfPairedFieldId ? cfSyncFieldIds : [],
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -2317,6 +2329,83 @@ export function TemplateCreationWizard() {
               )}
             </div>
           )}
+
+          <div className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 p-3 text-sm dark:border-fuchsia-500/20 dark:bg-fuchsia-500/10">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={!!cfPairedFieldId}
+                onChange={(e) => {
+                  if (!e.target.checked) { setCfPairedFieldId(""); return; }
+                  const first = (group?.custom_fields ?? []).find((f) => f.id !== cfEditId);
+                  setCfPairedFieldId(first?.id ?? "");
+                }}
+              />
+              <span className="text-fuchsia-800 dark:text-fuchsia-300">
+                <b>Pair with another field?</b><br />
+                <span className="text-xs">
+                  Tick to let the operator pick between THIS field and another already-configured
+                  one, per product line — e.g. a reference-sheet lookup vs. a value read straight
+                  off a document. Each keeps computing its own value exactly as it already does;
+                  whichever the operator picks is written as THIS field's own value (the one
+                  exports actually read).
+                </span>
+              </span>
+            </label>
+            {!!cfPairedFieldId && (
+              <div className="mt-3 flex flex-col gap-3 pl-6">
+                <div>
+                  <label className="block text-xs font-medium text-fuchsia-900 dark:text-fuchsia-200">
+                    Pair with
+                  </label>
+                  <select
+                    value={cfPairedFieldId}
+                    onChange={(e) => setCfPairedFieldId(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                  >
+                    {(group?.custom_fields ?? [])
+                      .filter((f) => f.id !== cfEditId)
+                      .map((f) => (
+                        <option key={f.id} value={f.id}>{f.label_name}</option>
+                      ))}
+                  </select>
+                </div>
+                <Input
+                  label="Picker heading (optional)"
+                  value={cfPickerHeading}
+                  onChange={(e) => setCfPickerHeading(e.target.value)}
+                  placeholder='e.g. "CTH — pick which one is right for this line"'
+                />
+                <div>
+                  <label className="block text-xs font-medium text-fuchsia-900 dark:text-fuchsia-200">
+                    Also update these fields when picked (optional)
+                  </label>
+                  <div className="mt-1 flex flex-col gap-1 rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+                    {(group?.custom_fields ?? [])
+                      .filter((f) => f.id !== cfEditId && f.id !== cfPairedFieldId)
+                      .map((f) => (
+                        <label key={f.id} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                          <input
+                            type="checkbox"
+                            checked={cfSyncFieldIds.includes(f.id)}
+                            onChange={(e) =>
+                              setCfSyncFieldIds((prev) =>
+                                e.target.checked ? [...prev, f.id] : prev.filter((id) => id !== f.id),
+                              )
+                            }
+                          />
+                          {f.label_name}
+                        </label>
+                      ))}
+                    {(group?.custom_fields ?? []).filter((f) => f.id !== cfEditId && f.id !== cfPairedFieldId).length === 0 && (
+                      <p className="text-xs text-slate-400">No other fields on this template yet.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
           <label className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm dark:border-sky-500/20 dark:bg-sky-500/10">
             <input type="checkbox" className="mt-0.5" checked={cfAskOperator} onChange={(e) => setCfAskOperator(e.target.checked)} />

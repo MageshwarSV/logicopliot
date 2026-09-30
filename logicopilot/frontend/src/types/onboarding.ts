@@ -107,6 +107,16 @@ export interface CustomField {
   /** Typed live into the ERP while recording a script — see Mark.example_value. Never the
    *  field's real answer on any actual job. */
   example_value?: string | null;
+  /** Links this field to another already-configured custom field into a picker pair - each
+   *  half keeps computing its own value exactly as its own kind already does; pairing only
+   *  adds a UI picker + a write-through onto THIS field's own corrected value. */
+  paired_custom_field_id?: string | null;
+  /** Heading shown above the two options, e.g. "CTH - pick which one is right for this
+   *  line". Blank falls back to a generic heading. */
+  picker_heading?: string | null;
+  /** Other custom_field ids that also get set to whichever value is picked, on the same row
+   *  (e.g. RITC following the CTH pick). */
+  sync_field_ids?: string[] | null;
 }
 
 /** A customer's reference sheet — their own export, used to answer what the documents cannot.

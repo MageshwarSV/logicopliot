@@ -69,6 +69,9 @@ export async function createCustomField(
     is_target_value?: boolean;
     fuzzy_match?: boolean;
     example_value?: string | null;
+    paired_custom_field_id?: string | null;
+    picker_heading?: string | null;
+    sync_field_ids?: string[] | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -358,6 +361,9 @@ export async function updateCustomField(
     verify_with_other_document: boolean;
     is_target_value: boolean;
     fuzzy_match: boolean;
+    paired_custom_field_id: string | null;
+    picker_heading: string | null;
+    sync_field_ids: string[] | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

@@ -2400,6 +2400,11 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                else "computed" if c.kind == "ai" else "fixed")
         for c in cf_rows
     }
+    # Picker-pairing config, denormalized onto every value of the field it's set on - see
+    # CustomField.paired_custom_field_id's own docstring.
+    cf_paired = {c.id: c.paired_custom_field_id for c in cf_rows}
+    cf_picker_heading = {c.id: c.picker_heading for c in cf_rows}
+    cf_sync_ids = {c.id: list(c.sync_field_ids or []) or None for c in cf_rows}
     # id -> the guidance the Super Admin wrote for the operator
     hints: dict[str, str] = {}
     for m in db.query(FieldMark).join(TemplateDocument, TemplateDocument.id == FieldMark.document_id).filter(
@@ -2436,6 +2441,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         field_values.append(
             JobFieldValueOut(
                 id=fv.id,
+                custom_field_id=fv.custom_field_id,
                 mark_id=fv.mark_id,
                 template_document_id=fv.template_document_id,
                 document_name=(
@@ -2473,6 +2479,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 found_y=fv.found_y,
                 found_width=fv.found_width,
                 found_height=fv.found_height,
+                paired_custom_field_id=cf_paired.get(fv.custom_field_id),
+                picker_heading=cf_picker_heading.get(fv.custom_field_id),
+                sync_field_ids=cf_sync_ids.get(fv.custom_field_id),
             )
         )
 

@@ -106,6 +106,11 @@ class CustomFieldOut(BaseModel):
     fuzzy_match: bool = False
     # Typed live into the ERP while recording a script - see FieldMark.example_value.
     example_value: str | None = None
+    # Links this field to another already-configured custom field into a picker pair - see
+    # CustomField.paired_custom_field_id's own docstring.
+    paired_custom_field_id: str | None = None
+    picker_heading: str | None = None
+    sync_field_ids: list[str] | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -129,6 +134,9 @@ class CustomFieldCreate(BaseModel):
     is_target_value: bool = False
     fuzzy_match: bool = False
     example_value: str | None = None
+    paired_custom_field_id: str | None = None
+    picker_heading: str | None = None
+    sync_field_ids: list[str] | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -156,6 +164,9 @@ class CustomFieldEdit(BaseModel):
     fuzzy_match: bool | None = None
     verify_with_other_document: bool | None = None
     example_value: str | None = None
+    paired_custom_field_id: str | None = None
+    picker_heading: str | None = None
+    sync_field_ids: list[str] | None = None
 
 
 class DocumentDetailOut(DocumentOut):

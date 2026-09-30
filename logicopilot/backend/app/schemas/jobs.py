@@ -108,6 +108,11 @@ class JobDocumentOut(BaseModel):
 
 class JobFieldValueOut(BaseModel):
     id: str
+    # None for a value read straight off a document (identified by mark_id instead) - only
+    # a custom/computed field carries this. Needed so the frontend can find a PAIRED field's
+    # own value by id (see paired_custom_field_id below) rather than guessing from label text,
+    # which a Super Admin can name however they like.
+    custom_field_id: str | None = None
     mark_id: str | None = None
     template_document_id: str | None = None
     document_name: str
@@ -161,6 +166,12 @@ class JobFieldValueOut(BaseModel):
     found_y: float | None = None
     found_width: float | None = None
     found_height: float | None = None
+    # This custom field is paired with another one (see CustomField.paired_custom_field_id) -
+    # denormalized onto every value of THIS field so the frontend can render the picker
+    # without a separate lookup. None for a field that isn't paired with anything.
+    paired_custom_field_id: str | None = None
+    picker_heading: str | None = None
+    sync_field_ids: list[str] | None = None
 
 
 class VerificationRow(BaseModel):
