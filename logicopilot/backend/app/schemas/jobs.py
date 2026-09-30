@@ -41,6 +41,10 @@ class JobOut(BaseModel):
     # routed it to — the list column is for Admin/Super Admin only, so they can see which
     # operator a job actually belongs to without opening it.
     operator_name: str | None = None
+    # Who actually emailed this job in, while it is still genuinely unassigned - the Assigned
+    # To column's own informational hint, never a stand-in for a real operator assignment and
+    # never shown once one exists (see _pulled_from_sender in api/v1/jobs.py).
+    pulled_from_sender: str | None = None
     # The operator's list shows when a job last moved, so these have to leave the API. They
     # exist on the row already - they simply were never returned.
     created_at: datetime | None = None

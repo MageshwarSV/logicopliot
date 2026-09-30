@@ -1,6 +1,7 @@
-"""Every new job starts Unassigned, whoever creates it - assignment is now always a
-deliberate action from the Jobs list' own dropdown, never an automatic side effect of who
-created it."""
+"""An operator creating their own job already IS its owner - the Assigned To dropdown says
+so from the start (see create_job's own comment for why this isn't the deliberate-only rule
+it used to be). A Super Admin/Admin creating a job on someone else's behalf is different -
+that job stays genuinely unassigned until a real operator is picked via the dropdown."""
 
 from app.models.job import Job
 from app.models.template_group import TemplateGroup
@@ -16,7 +17,7 @@ def _make_group(db_session, tenant):
     return group
 
 
-def test_operator_created_job_starts_unassigned(client, db_session):
+def test_operator_created_job_is_assigned_to_its_creator(client, db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="creator@example.com")
@@ -26,15 +27,14 @@ def test_operator_created_job_starts_unassigned(client, db_session):
     assert resp.status_code == 201, resp.text
 
     job = db_session.query(Job).filter(Job.id == resp.json()["id"]).one()
-    assert job.assigned_operator_id is None
+    assert job.assigned_operator_id == op.id
     assert job.created_by_id == op.id
 
 
-def test_two_operators_sharing_a_template_both_see_an_unassigned_manual_job(client, db_session):
-    # Assignment is now always deliberate (the Jobs list' own dropdown), never an automatic
-    # side effect of who created a job - so a manually-created job, being unassigned like
-    # every other new job, is visible to every operator with access to its template, not
-    # just its creator.
+def test_a_manually_created_job_leaves_the_shared_template_queue_for_its_creators_teammate(client, db_session):
+    # Accepted tradeoff (confirmed with the user): a job assigned straight to its creator is
+    # no longer "unassigned", so it drops out of a teammate's shared-template view the same
+    # way any other assigned job would - the creator owns it outright.
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     priya = make_user(db_session, role="operator", tenant=tenant, email="priya2@example.com")
@@ -50,11 +50,12 @@ def test_two_operators_sharing_a_template_both_see_an_unassigned_manual_job(clie
 
     login(client, arun.email)
     arun_jobs = client.get("/api/v1/jobs").json()
-    assert len(arun_jobs) == 1  # Unassigned, so visible to any operator sharing the template
+    assert len(arun_jobs) == 0  # Assigned to priya now, not visible in arun's own queue
 
     login(client, priya.email)
     priya_jobs = client.get("/api/v1/jobs").json()
     assert len(priya_jobs) == 1
+    assert priya_jobs[0]["assigned_operator_id"] == priya.id
 
 
 def test_admin_created_job_is_unassigned(client, db_session):

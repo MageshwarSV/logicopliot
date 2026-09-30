@@ -55,9 +55,9 @@ def test_backfills_from_already_cached_ocr_text(client, db_session):
     with patch("app.core.llm.compute_custom_field", return_value="NOKIA SOLUTIONS AND NETWORKS INDIA PVT LTD") as mock_compute:
         resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["extracted_value"] == "NOKIA SOLUTIONS AND NETWORKS INDIA PVT LTD"
-    assert resp.json()["is_custom"] is True
-    assert resp.json()["origin"] == "computed"
+    assert resp.json()[0]["extracted_value"] == "NOKIA SOLUTIONS AND NETWORKS INDIA PVT LTD"
+    assert resp.json()[0]["is_custom"] is True
+    assert resp.json()[0]["origin"] == "computed"
 
     # The prompt actually reached the mocked call, built from the CACHED text - no OCR call.
     docs_text_arg = mock_compute.call_args.args[1]
@@ -83,7 +83,7 @@ def test_second_call_updates_the_same_row_not_a_new_one(client, db_session):
         resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
 
     assert resp.status_code == 200
-    assert resp.json()["extracted_value"] == "Second Value"
+    assert resp.json()[0]["extracted_value"] == "Second Value"
     rows = (db_session.query(JobFieldValue)
             .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all())
     assert len(rows) == 1
@@ -143,7 +143,7 @@ def test_renaming_the_field_after_a_row_exists_updates_the_label_on_recompute(cl
 
     with patch("app.core.llm.compute_custom_field", return_value="Some Value"):
         resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
-    assert resp.json()["label_name"] == "Old Name"
+    assert resp.json()[0]["label_name"] == "Old Name"
 
     cf.label_name = "New Name"
     db_session.commit()
@@ -151,7 +151,7 @@ def test_renaming_the_field_after_a_row_exists_updates_the_label_on_recompute(cl
     with patch("app.core.llm.compute_custom_field", return_value="Some Value"):
         resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["label_name"] == "New Name"
+    assert resp.json()[0]["label_name"] == "New Name"
     row = (db_session.query(JobFieldValue)
            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).one())
     assert row.label_name == "New Name"
@@ -182,11 +182,11 @@ def test_backfills_a_hardcoded_field_from_its_own_value(client, db_session):
 
     resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["extracted_value"] == "X"
+    assert resp.json()[0]["extracted_value"] == "X"
 
     resp2 = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{manual_cf.id}/recompute")
     assert resp2.status_code == 200, resp2.text
-    assert resp2.json()["extracted_value"] == ""
+    assert resp2.json()[0]["extracted_value"] == ""
     row = (db_session.query(JobFieldValue)
            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == manual_cf.id)
            .one())
@@ -223,7 +223,7 @@ def test_target_value_field_keyed_off_a_different_field(client, db_session):
 
     resp1 = client.post(f"/api/v1/jobs/{job1.id}/custom-fields/{manual_cf.id}/recompute")
     assert resp1.status_code == 200, resp1.text
-    assert not resp1.json()["extracted_value"]
+    assert not resp1.json()[0]["extracted_value"]
     row1 = (db_session.query(JobFieldValue)
             .filter(JobFieldValue.job_id == job1.id, JobFieldValue.custom_field_id == manual_cf.id)
             .one())
@@ -244,7 +244,7 @@ def test_target_value_field_keyed_off_a_different_field(client, db_session):
 
     resp2 = client.post(f"/api/v1/jobs/{job2.id}/custom-fields/{manual_cf.id}/recompute")
     assert resp2.status_code == 200, resp2.text
-    assert resp2.json()["extracted_value"] == "KUEHNE+NAGEL PVT LTD"
+    assert resp2.json()[0]["extracted_value"] == "KUEHNE+NAGEL PVT LTD"
 
 
 def test_rejects_a_lookup_field(client, db_session):
@@ -305,6 +305,157 @@ def test_tenant_admin_cannot_call_it(client, db_session):
     assert resp.status_code == 403
 
 
+def test_per_row_field_backfills_one_value_per_existing_line(client, db_session):
+    """A field switched to per_row AFTER a job was already extracted still had only its one
+    old job-level slot. Recompute should create one JobFieldValue per (set_index, row_index)
+    the job's own line-item marks already established, using the field's hardcoded_value for
+    every line - the same fallback run_extraction's own per-row loop uses for a non-lookup
+    field."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    # Two invoice sets' worth of line items already on the job, from marks extracted before
+    # this field existed.
+    for set_index, row_index in [(1, 1), (1, 2), (2, 1)]:
+        db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
+                                     label_name="item_material_code", extracted_value="X",
+                                     set_index=set_index, row_index=row_index))
+    db_session.commit()
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
+                     kind="hardcoded", hardcoded_value="17", per_row=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-perrow@example.com")
+    login(client, "sa-perrow@example.com")
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert len(rows) == 3
+    assert all(r["extracted_value"] == "17" for r in rows)
+    assert sorted((r["set_index"], r["row_index"]) for r in rows) == [(1, 1), (1, 2), (2, 1)]
+
+    db_values = (db_session.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all())
+    assert len(db_values) == 3
+    assert all(v.row_index is not None for v in db_values)
+
+
+def test_per_row_field_second_call_updates_the_same_rows_not_new_ones(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
+                                 label_name="item_material_code", extracted_value="X",
+                                 set_index=1, row_index=1))
+    db_session.commit()
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Basic_NotnSrNo",
+                     kind="hardcoded", hardcoded_value=None, per_row=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-perrow2@example.com")
+    login(client, "sa-perrow2@example.com")
+
+    client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    cf.hardcoded_value = "56"
+    db_session.commit()
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()[0]["extracted_value"] == "56"
+
+    rows = (db_session.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all())
+    assert len(rows) == 1
+    assert rows[0].extracted_value == "56"
+
+
+def test_per_row_field_drops_a_stale_job_level_row_left_from_before_the_switch(client, db_session):
+    """A field flipped to per_row AFTER it already had a single job-level answer must not
+    leave that old row_index=None row behind - the operator would see the same field twice,
+    once in "For the whole job" and once per product line."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
+                                 label_name="item_material_code", extracted_value="X",
+                                 set_index=1, row_index=1))
+    db_session.commit()
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
+                     kind="hardcoded", hardcoded_value="17", per_row=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+    # The stale job-level row from before this field became per_row.
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=cf.id,
+                                 label_name="AIDC_LevyNotnSrNo", extracted_value="17"))
+    db_session.commit()
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-perrow4@example.com")
+    login(client, "sa-perrow4@example.com")
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 200, resp.text
+
+    rows = (db_session.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all())
+    assert len(rows) == 1
+    assert rows[0].row_index == 1
+
+
+def test_per_row_field_keeps_a_stale_job_level_row_if_it_was_actually_corrected(client, db_session):
+    """A real operator correction on the old job-level row is never silently dropped - there
+    is no single line it can be automatically reassigned to."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
+                                 label_name="item_material_code", extracted_value="X",
+                                 set_index=1, row_index=1))
+    db_session.commit()
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
+                     kind="hardcoded", hardcoded_value="17", per_row=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=cf.id,
+                                 label_name="AIDC_LevyNotnSrNo", extracted_value="17",
+                                 corrected_value="19"))
+    db_session.commit()
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-perrow5@example.com")
+    login(client, "sa-perrow5@example.com")
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 200, resp.text
+
+    rows = (db_session.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all())
+    assert len(rows) == 2
+    stale = next(r for r in rows if r.row_index is None)
+    assert stale.corrected_value == "19"
+
+
+def test_per_row_field_with_no_line_items_yet_is_rejected(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_extracted_job(db_session, tenant, group, tdoc)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
+                     kind="hardcoded", hardcoded_value="17", per_row=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-perrow3@example.com")
+    login(client, "sa-perrow3@example.com")
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
+    assert resp.status_code == 400
+
+
 def test_falls_back_to_ocr_when_nothing_cached_yet(client, db_session):
     """An old job extracted before extracted_json existed as a feature - the fallback path
     still has to work, calling get_page_ocr the same way a real extraction would."""
@@ -326,6 +477,6 @@ def test_falls_back_to_ocr_when_nothing_cached_yet(client, db_session):
         resp = client.post(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/recompute")
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["extracted_value"] == "Freshly Read Co"
+    assert resp.json()[0]["extracted_value"] == "Freshly Read Co"
     docs_text_arg = mock_compute.call_args.args[1]
     assert "Freshly Read Co" in docs_text_arg

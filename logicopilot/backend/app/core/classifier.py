@@ -50,13 +50,37 @@ _NAME_HINTS = (
 )
 
 
-def _hint_from_name(name: str) -> str:
-    """The built-in hint for whatever the customer called this slot, or ''."""
+def _key_from_name(name: str) -> str | None:
+    """Which of the 4 built-in types this slot's own NAME reads as, or None. Shared by
+    _hint_from_name (the description shown to the model) and _effective_doc_type (which
+    signature table entry a "Custom"-typed slot should still be checked against) - the same
+    slot called "Fright Certificate" must mean the same thing to both, or a slot could get a
+    Freight hint in its description while never actually being checked against the Freight
+    keyword backstop, which is exactly the gap that let a real arrival notice go unrescued."""
     low = (name or "").lower()
     for words, key in _NAME_HINTS:
         if any(w in low for w in words):
-            return DOC_TYPE_HINTS.get(key, "")
-    return ""
+            return key
+    return None
+
+
+def _hint_from_name(name: str) -> str:
+    """The built-in hint for whatever the customer called this slot, or ''."""
+    key = _key_from_name(name)
+    return DOC_TYPE_HINTS.get(key, "") if key else ""
+
+
+def _effective_doc_type(candidate: dict) -> str | None:
+    """Which _TYPE_SIGNATURES entry this slot should be checked against for the keyword
+    backstop - its own structured doc_type when that is already one of the 4 built-in types,
+    otherwise whatever its NAME reads as (a "Custom"-typed slot named "Fright Certificate" is
+    still, for this purpose, a Freight slot - see _key_from_name). A slot whose type is
+    genuinely bespoke and whose name matches nothing returns None, same as before: it is
+    simply never checked, exactly like "BL" (no signature exists) already is not."""
+    doc_type = candidate.get("doc_type")
+    if doc_type in _TYPE_SIGNATURES:
+        return doc_type
+    return _key_from_name(candidate.get("name") or "")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -91,6 +115,24 @@ _TYPE_SIGNATURES: dict[str, dict] = {
             r"total\s*(invoice\s*)?value", r"\bhsn\b", r"terms\s*of\s*payment",
         ],
         "min_supporting": 2,
+    },
+    "Freight": {
+        # A real freight certificate/invoice states an actual freight CHARGE line, not just
+        # the word "freight" in passing (a bill of lading's own "Freight Payable at
+        # Destination" box, say, is not this). A forwarder's own arrival notice very often
+        # carries this same charge line under its own heading, with no page ever printed
+        # "freight certificate" - so a specific dollar-figure charge line is the required
+        # signal, not the document's own title.
+        "required": [
+            r"ocean\s*freight", r"freight\s*charges?", r"freight\s*amount",
+            r"origin\s*charges", r"destination\s*charges", r"freight\s*certificate",
+            r"freight\s*invoice",
+        ],
+        "supporting": [
+            r"\bthc\b", r"\bbaf\b", r"handling\s*charges", r"chargeable\s*weight",
+            r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}", r"tracking\s*no",
+        ],
+        "min_supporting": 1,
     },
 }
 
@@ -171,35 +213,58 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
 
 def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                                       claims: list[list[dict]]) -> None:
-    """Mutates `claims` in place: for each file the model already matched to at least one
-    type, checks whether its own text ALSO carries a strong, specific signature of a
-    DIFFERENT type this template has a slot for, and were not already claimed. The added
-    claim covers the SAME pages the file was already matched on - a combined document's
-    second type lives on the same page, not somewhere else in the file.
+    """Mutates `claims` in place: for each file, checks whether its own text carries a
+    strong, specific signature of a type this template has a slot for, that the model's own
+    call did not already claim for it. Runs for a file with at least one existing claim (a
+    combined document's SECOND type - covers the same pages already matched, since a combined
+    document's second type lives on the same page, not somewhere else in the file) AND for a
+    file with NO claims at all: a single classification call can simply miss a type that is
+    plainly there (a forwarder's arrival notice stating real freight charges, matched to
+    nothing, was exactly this) - regex evidence does not need the model to have gotten
+    anything else right first. A rescued zero-match file claims every page it has, since
+    there is no partial match to anchor a narrower page range to.
 
-    Regex first (free, instant, and enough for wording already seen); a file that matches
-    nothing by regex but did match some OTHER type falls back to a narrow, targeted AI check
-    (_ai_verify_second_type) - so a genuinely combined document is not missed just because its
-    particular company's wording is not yet in the pattern list.
+    Regex first (free, instant, and enough for wording already seen); a file that already
+    matched something else but matches nothing by regex for the remaining type falls back to
+    a narrow, targeted AI check (_ai_verify_second_type) - so a genuinely combined document is
+    not missed just because its particular company's wording is not yet in the pattern list.
+    That second-opinion call is deliberately NOT attempted for a zero-match file: its own
+    wording ("this file was already found to contain X, does it ALSO contain Y") assumes an
+    existing match to anchor to, which a zero-match file has none of.
+
+    Signature lookups here go through _effective_doc_type, not a candidate's raw doc_type -
+    a slot typed "Custom" but named "Fright Certificate" must still be checked against the
+    Freight signature, exactly as its own description already gets the Freight hint from that
+    same name (_hint_from_name). Keying this purely off the structured field silently checked
+    nothing for any tenant whose slot was ever set up this way, which is most of them.
     """
-    key_to_doctype = {c["key"]: c["doc_type"] for c in candidates}
-    cand_by_doctype: dict[str, dict] = {c["doc_type"]: c for c in candidates}
+    key_to_doctype = {c["key"]: _effective_doc_type(c) for c in candidates}
+    cand_by_doctype: dict[str, dict] = {
+        et: c for c in candidates if (et := _effective_doc_type(c)) is not None
+    }
     doctype_to_keys: dict[str, list[str]] = {}
     for c in candidates:
-        doctype_to_keys.setdefault(c["doc_type"], []).append(c["key"])
+        et = _effective_doc_type(c)
+        if et is not None:
+            doctype_to_keys.setdefault(et, []).append(c["key"])
 
     for i, (item, ms) in enumerate(zip(files, claims)):
         text = item.get("text") or ""
-        if not text.strip() or not ms:
+        if not text.strip():
             continue
         claimed_doctypes = {key_to_doctype.get(m["key"]) for m in ms}
-        matched_pages = sorted({p for m in ms for p in m["pages"]})
+        matched_pages = (
+            sorted({p for m in ms for p in m["pages"]})
+            if ms
+            else list(range(1, (item.get("page_count") or 1) + 1))
+        )
         for doc_type, keys in doctype_to_keys.items():
             if doc_type in claimed_doctypes:
                 continue
-            # Only types this feature actually covers - a template's OTHER unclaimed slots
-            # (BL, Freight, ...) were never part of "combined document" detection and must
-            # not trigger an AI call just because they happen to still be unclaimed.
+            # Only types this feature actually covers by regex (PackingList, Invoice,
+            # Freight) - a template's OTHER unclaimed slots (BL, a bespoke Custom type, ...)
+            # have no pattern list to check and must not trigger an AI call just because they
+            # happen to still be unclaimed.
             if doc_type not in _TYPE_SIGNATURES:
                 continue
             is_match, hits = _keyword_signature_match(text, doc_type)
@@ -208,14 +273,19 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                     "key": keys[0], "pages": matched_pages,
                     "evidence": f"keyword signature ({hits} supporting markers): the "
                                 f"document's own text carries strong {doc_type} markers "
-                                f"alongside its other content",
+                                + ("alongside its other content" if ms else
+                                   "that the model's own classification call missed entirely"),
                 })
                 logger.info(
-                    "classify %s: added %s by keyword backstop (%d supporting markers) - "
-                    "the model's own call only recognised the other type on this page",
-                    item.get("name"), doc_type, hits)
+                    "classify %s: added %s by keyword backstop (%d supporting markers)%s",
+                    item.get("name"), doc_type, hits,
+                    "" if ms else " - the model's own call matched nothing at all for this file")
                 continue
 
+            if not ms:
+                # No existing match to anchor "does it ALSO contain" to - see the function's
+                # own docstring for why the AI second-opinion call is skipped here.
+                continue
             verified = _ai_verify_second_type(
                 item.get("name") or "", text, item.get("image"),
                 cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t))
@@ -546,6 +616,24 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
         "an invoice number, unit values and a total payable is an Invoice ONLY, even when a "
         "\"Net Weight\"/\"Gross Weight\" field sits on the same page - do not also return "
         "\"PackingList\" for it on that basis alone.\n\n"
+        "A THIRD SPECIFIC TRAP: a ONE-ROW cargo summary - marks & numbers, a package count, ONE "
+        "gross weight, ONE measurement figure, all on a single line - is NOT, by itself, "
+        "evidence of a packing list. This exact one-row summary is COMMON to many different "
+        "documents in the same shipment's paperwork: a bill of lading's own \"Particulars "
+        "Furnished by Shipper\" box has it, and so, separately, does a forwarder's arrival "
+        "notice, a checklist, or a delivery order - often quoting the very same figures copied "
+        "from one document to another, because they describe the same shipment, not because "
+        "either one IS a packing list. A genuine packing list is defined by a PER-CARTON OR "
+        "PER-LINE breakdown - several rows, each its own package with its own weight - never by "
+        "a single shipment-level total, wherever that total is printed.\n\n"
+        "This cuts BOTH ways: do not return \"PackingList\" for a page on the strength of its "
+        "own one-row cargo summary alone, AND do not use that same one-row summary as evidence "
+        "that a page IS the Bill of Lading either - an arrival notice or checklist carrying the "
+        "identical figures is not the bill of lading just because it repeats them. Identify the "
+        "Bill of Lading itself by ITS OWN distinguishing structure - a Shipper and Consignee "
+        "box, a Notify Party, the carrier's own terms/clauses of carriage, a document actually "
+        "titled Bill of Lading, Sea Waybill or Waybill - never by the cargo summary line alone, "
+        "since other documents in the same shipment routinely repeat that exact line.\n\n"
         "Return one entry per PHYSICALLY DISTINCT document you find in the file, not one per "
         "type. A file can hold several documents of the very same type - three invoices scanned "
         "into one PDF is three entries with key=\"Invoice\", not one entry covering all their "

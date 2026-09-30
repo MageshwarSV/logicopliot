@@ -453,7 +453,11 @@ export function JobsPage() {
           header: "Assigned To",
           render: (j: Job) => {
             if (!canAssign) {
-              return <span className="text-slate-600 dark:text-slate-300">{j.operator_name ?? "—"}</span>;
+              return (
+                <span className="text-slate-600 dark:text-slate-300">
+                  {j.operator_name ?? j.pulled_from_sender ?? "—"}
+                </span>
+              );
             }
             const eligible = operators.filter(
               (o) => o.role === "operator" && (o.modes ?? []).includes(j.mode ?? ""),
@@ -466,18 +470,32 @@ export function JobsPage() {
               ? [current, ...eligible]
               : eligible;
             return (
-              <select
-                value={j.assigned_operator_id ?? ""}
-                disabled={savingAssignId === j.id}
-                onClick={(e) => e.stopPropagation()}
-                onChange={(e) => handleAssignChange(j, e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-              >
-                <option value="">Unassigned</option>
-                {options.map((o) => (
-                  <option key={o.id} value={o.id}>{o.full_name}</option>
-                ))}
-              </select>
+              <div>
+                <select
+                  value={j.assigned_operator_id ?? ""}
+                  disabled={savingAssignId === j.id}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => handleAssignChange(j, e.target.value)}
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <option value="">Unassigned</option>
+                  {options.map((o) => (
+                    <option key={o.id} value={o.id}>{o.full_name}</option>
+                  ))}
+                </select>
+                {/* A hint for who this job likely belongs to, not a pick of its own - the
+                    dropdown above is still the real assignment, and stays "Unassigned" so a
+                    manually-created job is still visible to any teammate sharing its
+                    template (see list_jobs' own OPERATOR visibility rule). Whoever emailed
+                    it in, or failing that whoever actually created it - operator_name
+                    already carries the creator (see _operator_name in jobs.py), the
+                    dropdown just never showed it. */}
+                {!j.assigned_operator_id && (j.pulled_from_sender || j.operator_name) && (
+                  <div className="mt-0.5 truncate text-[11px] italic text-slate-400 dark:text-slate-500">
+                    {j.pulled_from_sender ? `from ${j.pulled_from_sender}` : `created by ${j.operator_name}`}
+                  </div>
+                )}
+              </div>
             );
           },
         } as Column<Job>]

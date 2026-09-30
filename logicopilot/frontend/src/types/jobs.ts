@@ -16,6 +16,10 @@ export interface Job {
   mode?: string | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;
+  /** Who actually emailed this job in, while it is still genuinely unassigned - an
+   *  informational hint for the Assigned To column, never a real assignment. Null the
+   *  moment a real operator is assigned. */
+  pulled_from_sender?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   /** Set when status is "possible_duplicate" - the job this one's extracted data matched.

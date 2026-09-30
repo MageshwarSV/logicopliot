@@ -973,6 +973,28 @@ def _customer_name(db: Session, job: Job) -> str | None:
     return None
 
 
+def _pulled_from_sender(job: Job) -> str | None:
+    """Who actually emailed this job in, for the Assigned To column - NOT a substitute
+    reading for Importer/Exporter (a person is not the consignee; putting one there just
+    trades one wrong answer shown under the wrong heading for another, confusing the two
+    completely different questions "who is this shipment for" and "who sent us this
+    paperwork"). Only worth showing at all while the job is genuinely unassigned - the
+    moment a real operator is assigned, _operator_name already answers this column, and a
+    stale sender name sitting behind it would be misleading once someone real owns the job.
+    """
+    if job.created_by_id or job.assigned_operator_id:
+        return None
+    try:
+        from app.core.job_email import read_email_meta
+
+        sender = (read_email_meta(job.id) or {}).get("sender") or ""
+        if "@" in sender:
+            return sender.split("@", 1)[0]
+    except Exception:  # noqa: BLE001 — a name is never worth failing the list over
+        pass
+    return None
+
+
 def _just_the_name(val: str) -> str:
     """The company's name, dropping the address that was marked along with it.
 
@@ -1134,6 +1156,7 @@ def _job_out(db: Session, job: Job) -> JobOut:
     out.customer_name = _customer_name(db, job)
     out.mode = _shipment_mode(db, job)
     out.operator_name = _operator_name(db, job)
+    out.pulled_from_sender = _pulled_from_sender(job)
     out.duplicate_of_reference = _duplicate_of_reference(db, job)
     return out
 
@@ -1192,10 +1215,17 @@ def create_job(
         reference=(payload.reference or "").strip() or generate_job_no(),
         status="draft",
         created_by_id=user.id,
-        # Every new job starts Unassigned, whoever creates it - assignment is now always a
-        # deliberate action from the Jobs list' own dropdown, never an automatic side effect
-        # of who happened to create or pull it in.
-        assigned_operator_id=None,
+        # An operator uploading their own job's documents already IS its owner - the Jobs
+        # list' own Assigned To dropdown says so from the start now, not just the read-only
+        # name a non-admin used to see (_operator_name already fell back to created_by_id
+        # there, but the admin dropdown only ever reflected THIS field, so an admin viewing
+        # the same job saw "Unassigned" for a job someone was plainly already working).
+        # Confirmed with the user: this does take the job out of every OTHER operator's
+        # shared-template queue (see list_jobs' own OPERATOR visibility rule) - accepted
+        # tradeoff, not an oversight. A Super Admin/Admin creating a job on someone else's
+        # behalf is a different case - that job stays genuinely unassigned until a real
+        # operator is picked, same as before.
+        assigned_operator_id=user.id if user.role == OPERATOR else None,
     )
     db.add(job)
     db.flush()
@@ -2615,6 +2645,33 @@ def get_captured_file(
     return FileResponse(path, filename=file_name)
 
 
+@router.get("/jobs/{job_id}/erp-debug-shots")
+def get_erp_debug_shots(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """The screen an AI takeover decided from, for every AI-driven click a run had to make
+    (see browser.py's ai_takeover) - diagnostic only, never shown to an operator. The final
+    failure screenshot (erp_screenshot) only ever shows where a run gave up; this is what it
+    was actually looking at each time the recorded script lost its place and the AI had to
+    guess, which the text log alone cannot show."""
+    import base64
+
+    job = _load_job(db, job_id, scope, user)
+    shot_dir = Path(get_settings().uploads_dir) / "jobs" / "_erp_captured" / job.id
+    if not shot_dir.is_dir():
+        return {"shots": []}
+    shots = []
+    for path in sorted(shot_dir.glob("ai-takeover-*.png")):
+        shots.append({
+            "name": path.name,
+            "data_url": "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii"),
+        })
+    return {"shots": shots}
+
+
 class RulingRequest(BaseModel):
     answer: str | None = None
 
@@ -3931,6 +3988,12 @@ CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 def smart_upload(
     job_id: str,
     files_in: list[UploadFile] = File(..., alias="files"),
+    # Verification-only: returns each file's own OCR text and full per-claim evidence
+    # alongside the ordinary result, instead of collapsing straight to matched slot names.
+    # Never sent by the real Smart Upload UI - added to directly diagnose a real
+    # misclassification (a bill of lading and an arrival notice swapping identities) without
+    # guessing at what the classifier actually saw.
+    debug: bool = False,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
@@ -4082,7 +4145,11 @@ def smart_upload(
                                                   skip=item.get("drop_pages"))
                 jd.file_path = str(dorig)
                 matched_names.append(next(c["name"] for c in candidates if c["key"] == key))
-            results.append({"filename": item["name"], "matched": matched_names or None})
+            result_row = {"filename": item["name"], "matched": matched_names or None}
+            if debug:
+                result_row["debug_text"] = item["text"][:6000]
+                result_row["debug_claims"] = claims
+            results.append(result_row)
         db.commit()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -5146,21 +5213,21 @@ def correct_field_value(
     )
 
 
-@router.post("/jobs/{job_id}/custom-fields/{custom_field_id}/recompute", response_model=JobFieldValueOut)
+@router.post("/jobs/{job_id}/custom-fields/{custom_field_id}/recompute", response_model=list[JobFieldValueOut])
 def recompute_custom_field(
     job_id: str,
     custom_field_id: str,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(SUPER_ADMIN)),
-) -> JobFieldValueOut:
+) -> list[JobFieldValueOut]:
     """Backfill ONE custom field on ONE already-extracted job — nothing else on the job is
     touched.
 
     Built for a field added to a template AFTER a job was already extracted: re-running
     /extract would answer that, but it also rewrites every OTHER field on the job, resets
     every approval, and kicks the job back to Data Extraction — unacceptable on a job
-    someone has already reviewed, approved, or submitted. This writes exactly one
+    someone has already reviewed, approved, or submitted. Ordinarily writes exactly one
     JobFieldValue — job-level, row_index=None. Job status, stage, approvals and every
     other field value are left exactly as they were.
 
@@ -5172,6 +5239,14 @@ def recompute_custom_field(
     field from the ERP Script Recorder shows up. Without this, a field added there stayed
     invisible on Additional Details for every job extracted before it existed, with no way
     to backfill it short of a full re-extraction.
+
+    per_row=True: a field switched to per-row AFTER a job was already extracted still had
+    only its one old job-level slot — the operator saw a single box instead of one per
+    product line, with no way to fill the rest short of a full re-extraction. Backfills one
+    JobFieldValue per (set_index, row_index) the job's own line-item marks already
+    established — same keys, same "hardcoded/kind='ai' non-lookup falls back to
+    hardcoded_value" rule run_extraction's own per-row loop uses — so this never drifts
+    from what a fresh extraction would have written.
     """
     from app.models.custom_field import CustomField
 
@@ -5182,6 +5257,58 @@ def recompute_custom_field(
     if cf.kind not in ("ai", "hardcoded"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail='Only an AI-computed or hardcoded field can be recomputed — a per-row lookup field is not read off a document.')
+
+    if getattr(cf, "per_row", False):
+        line_keys: list[tuple[int, int]] = sorted({
+            ((r[0] or 1), r[1])
+            for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+            .distinct().all()
+        })
+        if not line_keys:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="This job has no line items yet — a per-row field has nothing to backfill into.")
+        value = cf.hardcoded_value or ""
+        rows: list[JobFieldValue] = []
+        for set_index, row_index in line_keys:
+            existing = (
+                db.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                        JobFieldValue.set_index == set_index, JobFieldValue.row_index == row_index)
+                .first()
+            )
+            if existing is None:
+                existing = JobFieldValue(
+                    tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
+                    label_name=cf.label_name, set_index=set_index, row_index=row_index,
+                )
+                db.add(existing)
+            existing.label_name = cf.label_name
+            existing.extracted_value = value
+            rows.append(existing)
+        # A field turned per_row AFTER it already had a single job-level answer (row_index
+        # None) leaves that old slot stranded once the per-line ones above take over - the
+        # operator would see the SAME field twice, once in "For the whole job" and once per
+        # line. Safe to drop only when nobody actually typed an answer into it; a real
+        # correction has no single line to fall back into automatically, so it is left alone
+        # rather than silently discarded.
+        stale = (db.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                        JobFieldValue.row_index.is_(None))
+                .first())
+        if stale is not None and not (stale.corrected_value or "").strip():
+            db.delete(stale)
+        db.commit()
+        results = []
+        for row in rows:
+            db.refresh(row)
+            results.append(JobFieldValueOut(
+                id=row.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
+                label_name=row.label_name, extracted_value=row.extracted_value,
+                corrected_value=row.corrected_value, value=row.value, is_custom=True,
+                origin="computed", set_index=row.set_index, row_index=row.row_index,
+            ))
+        return results
 
     if cf.kind == "hardcoded":
         value, raw_value = _resolve_target_value(db, job.id, cf, cf.hardcoded_value or "")
@@ -5256,12 +5383,12 @@ def recompute_custom_field(
     existing.target_value_raw = raw_value if getattr(cf, "is_target_value", False) else None
     db.commit()
     db.refresh(existing)
-    return JobFieldValueOut(
+    return [JobFieldValueOut(
         id=existing.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
         label_name=existing.label_name, extracted_value=existing.extracted_value,
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
         origin="computed",
-    )
+    )]
 
 
 @router.post("/jobs/{job_id}/marks/{mark_id}/recompute", response_model=list[JobFieldValueOut])

@@ -1582,7 +1582,7 @@ _DIALOG_ANSWERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _DESTRUCTIVE_DIALOG_WORDS = ("close", "leave", "discard", "cancel", "unsaved", "lose")
 
 
-def _dialog_answer(page, message: str = "") -> tuple[bool, str]:
+def _dialog_answer(page, message: str = "", assume_pick_confirm: bool = False) -> tuple[bool, str]:
     """How the popup on this page should be answered: (accept?, text for a prompt).
 
     Defaults to accepting, which is what a person clicking through by hand would do and what
@@ -1591,6 +1591,11 @@ def _dialog_answer(page, message: str = "") -> tuple[bool, str]:
     asking permission to close/leave/discard something defaults to DISMISS instead - the
     safe read of "close the form?" is "no, don't", not "sure, go ahead", when nothing
     recorded ever said otherwise.
+
+    assume_pick_confirm flips that one exception back to accept: the live run passes it when
+    a double_click (always a list-picker row selection here, never anything else) just ran -
+    the popup confirming it wants to close right after a row was picked IS the pick, not a
+    warning about losing work.
     """
     try:
         cell = _DIALOG_ANSWERS.get(page) if page is not None else None
@@ -1600,7 +1605,7 @@ def _dialog_answer(page, message: str = "") -> tuple[bool, str]:
         return bool(cell[0]), cell[1]
     low = (message or "").lower()
     if any(w in low for w in _DESTRUCTIVE_DIALOG_WORDS):
-        return False, ""
+        return assume_pick_confirm, ""
     return True, ""
 
 
@@ -4791,8 +4796,21 @@ def play_steps(
             # this flag once, before it falls back to the generic AI screen-reading guesswork.
             dismissed_destructive: dict = {"flag": False}
 
+            # A "close the form?" popup firing right after a double_click is not the same
+            # question as one firing after a Save - a double_click in this replay engine only
+            # ever means "pick this row from a list-picker popup" (see the field_label/val
+            # row-matching in the main loop below), and the picker asking to confirm closing
+            # itself immediately after a row was picked IS that pick completing, not a warning
+            # about losing work. Found live on JOB-BCE250: the default dismiss (built for the
+            # Save case) left an Organization picker stuck open, and the AI's own recovery
+            # clicks then wandered onto an unrelated "New Organization" screen instead of the
+            # one the script expected next. Set the moment a double_click actually runs;
+            # overwritten by whatever action runs after it.
+            last_action_was_double_click: dict = {"flag": False}
+
             def _answer_dialog(d):
-                accept, reply = _dialog_answer(getattr(d, "page", None), d.message)
+                accept, reply = _dialog_answer(getattr(d, "page", None), d.message,
+                                               assume_pick_confirm=last_action_was_double_click["flag"])
                 if not accept:
                     dismissed_destructive["flag"] = True
                 # Unlike the recorder's own _remember_dialog, this one used to answer the
@@ -4856,9 +4874,28 @@ def play_steps(
                             "reason": "The ERP rejected the entry: " + " | ".join(errs[:3])}
                 return None
 
+            _ai_takeover_count: dict = {"n": 0}
+
             def ai_takeover(goal_text: str) -> str:
                 """AI reads the current page's clickable elements and clicks the one that
-                best moves the flow toward `goal_text`. Returns a log line."""
+                best moves the flow toward `goal_text`. Returns a log line.
+
+                Photographs the screen it decided FROM, not just the outcome - the existing
+                final failure screenshot only ever shows where a run gave up, never what the
+                AI was actually looking at the moment it guessed wrong. Found live on
+                JOB-BCE250: the AI clicked "Save & Close" twice on what turned out to be an
+                empty organization sub-form the recorded script never expected, and there was
+                no way to tell from the text log alone what that screen really was."""
+                _ai_takeover_count["n"] += 1
+                if downloads_dir:
+                    try:
+                        shot_dir = pathlib.Path(downloads_dir)
+                        shot_dir.mkdir(parents=True, exist_ok=True)
+                        png = shot_dir / f"ai-takeover-{_ai_takeover_count['n']}.png"
+                        png.write_bytes(page.screenshot(type="png", full_page=False))
+                        log.append(f"        (what AI saw: {png.name})")
+                    except Exception:  # noqa: BLE001 — never fail a run over a picture
+                        logger.exception("could not photograph the screen before an AI takeover")
                 try:
                     els = page.evaluate(_EVENTS_JS) or []
                 except Exception:  # noqa: BLE001
@@ -5550,6 +5587,7 @@ def play_steps(
                             _peek and _peek.get("selector")
                             and present(_peek["selector"], _peek.get("frames") or [],
                                         timeout=GLANCE_MS))
+                        last_action_was_double_click["flag"] = (action == "double_click")
                         perform(step, val)
                         _heal_page()
                         # A FLOAT MENU shuts itself a moment after it opens. If this click just

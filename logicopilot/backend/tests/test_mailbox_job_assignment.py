@@ -1,7 +1,10 @@
 """Every new job starts Unassigned, even one pulled from an operator's own connected
 mailbox - assignment is now always a deliberate action from the Jobs list' own dropdown,
-never an automatic side effect of whose mailbox it arrived in or the template's
-pull_operator_id."""
+never an automatic side effect of WHICH MAILBOX it arrived in or the template's
+pull_operator_id. The one exception: the message's own SENDER is themselves a real,
+already-registered operator (their login email or their own connected mailbox) - there the
+job already has an unambiguous owner the moment it lands, and leaving it Unassigned just
+made that operator hunt through the shared list for what they had just sent in."""
 
 import email
 import io
@@ -10,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import fitz
 
-from app.core.email_puller import _pull_one_mailbox
+from app.core.email_puller import _operator_matching_sender, _pull_one_mailbox
 from app.models.custom_field import CustomField
 from app.models.job import Job
 from app.models.template_document import TemplateDocument
@@ -26,10 +29,10 @@ def _pdf_bytes() -> bytes:
     return data
 
 
-def _fake_message(message_id: str) -> bytes:
+def _fake_message(message_id: str, sender: str = "customer@example.com") -> bytes:
     msg = EmailMessage()
     msg["Message-ID"] = message_id
-    msg["From"] = "customer@example.com"
+    msg["From"] = sender
     msg["Subject"] = "Shipment docs"
     msg.set_content("Please find attached.")
     msg.add_attachment(_pdf_bytes(), maintype="application", subtype="pdf", filename="bl.pdf")
@@ -81,6 +84,41 @@ def test_job_from_personal_mailbox_starts_unassigned_regardless_of_pull_operator
     # A successfully processed message is left UNREAD on purpose (removes \Seen, never
     # adds it) - re-processing is prevented separately, by EmailSeen, not by this flag.
     conn.store.assert_called_once_with(b"1", "-FLAGS", "\\Seen")
+
+
+def test_job_auto_assigns_when_the_sender_is_themselves_a_registered_operator(db_session):
+    tenant = make_tenant(db_session)
+    mailbox_owner = make_user(db_session, role="operator", tenant=tenant, email="owner@example.com")
+    # The actual sender - a DIFFERENT operator than whoever's mailbox pulled the message,
+    # e.g. forwarded into a shared inbox, or CC'd on their own submission.
+    real_sender = make_user(db_session, role="operator", tenant=tenant, email="muthu@4slogistics.com")
+
+    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="ready")
+    db_session.add(group)
+    db_session.flush()
+    doc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="BL", doc_type="BL", order_index=0)
+    db_session.add(doc)
+    db_session.add(CustomField(tenant_id=tenant.id, group_id=group.id, label_name="consignee",
+                               kind="hardcoded", hardcoded_value="Test Consignee Co"))
+    db_session.commit()
+
+    raw = _fake_message("<sender-match@example.com>", sender=real_sender.email)
+    conn = _mock_conn_with_one_message(raw)
+
+    with patch("app.core.email_puller._connect", return_value=conn), \
+         patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
+         patch("app.core.classifier.identify_customer",
+               return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
+         patch("app.core.classifier.assign_documents_detailed",
+               return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=mailbox_owner.id,
+                                   mail_email=mailbox_owner.mail_email or "owner@zoho.com",
+                                   mail_app_password="whatever", mail_host="imap.zoho.com")
+
+    assert result["ok"] is True, result
+    jobs = db_session.query(Job).filter(Job.group_id == group.id).all()
+    assert len(jobs) == 1
+    assert jobs[0].assigned_operator_id == real_sender.id
 
 
 def test_single_template_mailbox_routes_without_any_customer_identifier_configured(db_session):
@@ -149,3 +187,48 @@ def test_operator_with_two_templates_still_requires_content_identification(db_se
     assert result["ok"] is True, result
     mock_identify.assert_called_once()
     assert db_session.query(Job).filter(Job.group_id.in_([group_a.id, group_b.id])).count() == 0
+
+
+def test_operator_matching_sender_matches_by_login_email(db_session):
+    tenant = make_tenant(db_session)
+    op = make_user(db_session, role="operator", tenant=tenant, email="malar@example.com")
+
+    assert _operator_matching_sender(db_session, tenant.id, "MALAR@example.com") == op.id
+
+
+def test_operator_matching_sender_matches_by_connected_mailbox(db_session):
+    tenant = make_tenant(db_session)
+    op = make_user(db_session, role="operator", tenant=tenant, email="internal-login@example.com")
+    op.mail_email = "malar@zoho.com"
+    db_session.commit()
+
+    assert _operator_matching_sender(db_session, tenant.id, "malar@zoho.com") == op.id
+
+
+def test_operator_matching_sender_returns_none_for_an_unregistered_address(db_session):
+    tenant = make_tenant(db_session)
+    make_user(db_session, role="operator", tenant=tenant, email="malar@example.com")
+
+    assert _operator_matching_sender(db_session, tenant.id, "stranger@example.com") is None
+
+
+def test_operator_matching_sender_does_not_cross_tenants(db_session):
+    tenant_a = make_tenant(db_session, name="Tenant A")
+    tenant_b = make_tenant(db_session, name="Tenant B")
+    make_user(db_session, role="operator", tenant=tenant_a, email="shared-name@example.com")
+
+    assert _operator_matching_sender(db_session, tenant_b.id, "shared-name@example.com") is None
+
+
+def test_operator_matching_sender_ignores_an_inactive_operator(db_session):
+    tenant = make_tenant(db_session)
+    make_user(db_session, role="operator", tenant=tenant, email="left@example.com", is_active=False)
+
+    assert _operator_matching_sender(db_session, tenant.id, "left@example.com") is None
+
+
+def test_operator_matching_sender_ignores_non_operator_roles(db_session):
+    tenant = make_tenant(db_session)
+    make_user(db_session, role="tenant_admin", tenant=tenant, email="admin@example.com")
+
+    assert _operator_matching_sender(db_session, tenant.id, "admin@example.com") is None

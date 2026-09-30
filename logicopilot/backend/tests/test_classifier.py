@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 from app.core.classifier import _keyword_signature_match, assign_documents, assign_documents_detailed, classify_document
 
 
-def _file(name, text=""):
-    return {"name": name, "text": text, "image": None}
+def _file(name, text="", page_count=1):
+    return {"name": name, "text": text, "image": None, "page_count": page_count}
 
 
 def _claim(key, pages, evidence="some evidence text"):
@@ -225,13 +225,21 @@ def test_keyword_backstop_adds_invoice_on_a_real_combined_challan_the_model_only
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
 
 
+def _only_packinglist_verified(filename, text, image_path, candidate, already_types):
+    # CANDIDATES now also has a Freight slot ("frt"), so a file matching neither PackingList
+    # nor Freight by regex triggers an AI check for BOTH remaining types - a real fixture must
+    # distinguish which one it is verifying, not return the same verdict for either.
+    if candidate["doc_type"] == "PackingList":
+        return {"pages": [1], "evidence": "a per-package weight breakdown"}
+    return None
+
+
 def test_ai_fallback_adds_the_second_type_when_regex_does_not_recognise_the_wording():
     # A company whose wording matches NEITHER regex pattern at all (a "Despatch Note" that is
     # also the commercial paperwork) - the AI fallback is the only thing that can catch this.
     files = [_file("despatch.pdf", text="DESPATCH NOTE\nSome wording regex has never seen.")]
     claims = [[_claim("inv", [1], evidence="invoice fields present")]]
-    with patch("app.core.classifier._ai_verify_second_type",
-               return_value={"pages": [1], "evidence": "a per-package weight breakdown"}):
+    with patch("app.core.classifier._ai_verify_second_type", side_effect=_only_packinglist_verified):
         result = _run(files, claims)
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
     added = next(m for m in result[0] if m["key"] == "pl")
@@ -243,11 +251,14 @@ def test_ai_fallback_is_not_called_when_regex_already_matched():
 
     files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
     claims = [[_claim("inv", [1], evidence="invoice fields present")]]
-    mock_ai = Mock()
+    mock_ai = Mock(return_value=None)
     with patch("app.core.classifier._ai_verify_second_type", mock_ai):
         result = _run(files, claims)
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
-    mock_ai.assert_not_called()
+    # PackingList was already caught by regex, so the AI fallback is never consulted for it -
+    # it may still be called for the OTHER remaining type (Freight), which regex also rejects.
+    for call in mock_ai.call_args_list:
+        assert call.args[3]["doc_type"] != "PackingList"
 
 
 def test_ai_fallback_returning_not_present_adds_nothing():
@@ -265,6 +276,9 @@ def test_ai_fallback_is_not_called_when_every_slot_is_already_claimed():
     claims = [[
         _claim("inv", [1], evidence="invoice fields present"),
         _claim("pl", [1], evidence="packing list fields present"),
+        # "bl" has no signature at all (never checked either way) - "frt" DOES have one, so
+        # it must be claimed too for "every slot" to actually be true among covered types.
+        _claim("frt", [1], evidence="freight fields present"),
     ]]
     mock_ai = Mock()
     with patch("app.core.classifier._ai_verify_second_type", mock_ai):
@@ -390,13 +404,57 @@ def test_keyword_backstop_never_fires_for_a_doc_type_with_no_signature_defined()
     assert "bl" not in {m["key"] for m in result[0]}
 
 
-def test_keyword_backstop_does_not_augment_a_file_the_model_matched_to_nothing():
-    # If the model found NO type at all for a file, the backstop does not step in and
-    # invent one from keywords alone - it only ever ADDS a missing type alongside one the
-    # model already found, never creates the first claim on its own.
-    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
+def test_keyword_backstop_rescues_a_file_the_model_matched_to_nothing():
+    # A real bug this reproduces: the model's own classification call can simply miss a type
+    # that is plainly there (an arrival notice stating real freight charges, matched to
+    # nothing). Regex evidence does not need the model to have gotten anything else right
+    # first - a file with strong signals for a covered type is rescued even from zero claims.
+    files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT, page_count=1)]
+    result = _run(files, [[]])
+    keys = {m["key"] for m in result[0]}
+    assert keys == {"pl", "inv"}
+    for m in result[0]:
+        assert m["pages"] == [1]  # no partial match to anchor to - claims every page it has
+
+
+def test_keyword_backstop_does_not_invent_a_type_for_a_file_with_no_real_signal():
+    # A zero-match file whose text carries no strong signature for any covered type must stay
+    # empty - the rescue is not a licence to guess whenever the model returns nothing.
+    files = [_file("combined.pdf", text="Dear Sir, please find attached as requested.\nRegards,")]
     result = _run(files, [[]])
     assert result[0] == []
+
+
+def test_keyword_backstop_reaches_a_custom_typed_slot_named_for_freight():
+    # The exact real production shape: most tenants' freight slot is set up as doc_type
+    # "Custom" with a name like "Fright Certificate" (their own spelling), never doc_type
+    # "Freight" outright. Keying the backstop off the raw doc_type field checked nothing for
+    # any of them - this is the same name-matching _hint_from_name already uses to describe
+    # the slot to the model in the first place.
+    candidates_custom_freight = [
+        {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
+        {"key": "frt", "name": "Fright Certificate", "doc_type": "Custom", "fields": []},
+    ]
+    text = "ARRIVAL NOTICE\nORIGIN CHARGES : USD 216.74\nOCEAN FREIGHT : USD 143.415\n"
+    files = [_file("arrival_notice.pdf", text=text, page_count=2)]
+    with patch("app.core.classifier.classify_document", side_effect=[[]]):
+        result = assign_documents_detailed(files, candidates_custom_freight)
+    assert [m["key"] for m in result[0]] == ["frt"]
+    assert result[0][0]["pages"] == [1, 2]
+
+
+def test_keyword_backstop_rescues_a_freight_document_the_model_missed():
+    # The exact real case: a forwarder's own arrival notice, correctly the customer's sample
+    # for their "Freight Certificate" slot, states real freight charges but was matched to
+    # nothing by the model's own call.
+    text = (
+        "ARRIVAL NOTICE\nTRACKING NO. 1077238006\n"
+        "ORIGIN CHARGES : USD 216.74\nOCEAN FREIGHT : USD 143.415\n"
+    )
+    files = [_file("arrival_notice.pdf", text=text, page_count=2)]
+    result = _run(files, [[]])
+    assert [m["key"] for m in result[0]] == ["frt"]
+    assert result[0][0]["pages"] == [1, 2]
 
 
 # --------------------------------------------------------------------------- #
@@ -470,8 +528,25 @@ def test_signature_match_real_sansera_challan_neither_required_phrase_uses_the_w
 
 
 def test_signature_match_unknown_doc_type_returns_false_without_crashing():
-    is_match, hits = _keyword_signature_match("packing list net weight gross weight", "Freight")
+    # "BL" has no entry in the signature table at all (see
+    # test_keyword_backstop_never_fires_for_a_doc_type_with_no_signature_defined).
+    is_match, hits = _keyword_signature_match("packing list net weight gross weight", "BL")
     assert (is_match, hits) == (False, 0)
+
+
+def test_signature_match_freight_real_arrival_notice_text():
+    text = "ARRIVAL NOTICE\nORIGIN CHARGES : USD 216.74\nOCEAN FREIGHT : USD 143.415\n"
+    is_match, hits = _keyword_signature_match(text, "Freight")
+    assert is_match is True
+    assert hits >= 1
+
+
+def test_signature_match_freight_required_phrase_missing():
+    # A bill of lading's own "Freight Payable at Destination" box mentions "freight" only in
+    # passing - it must not, on its own, satisfy the Freight signature.
+    text = "Freight Payable at Destination\nPort of Discharge: Chennai"
+    is_match, _ = _keyword_signature_match(text, "Freight")
+    assert is_match is False
 
 
 def test_signature_match_none_and_empty_text_do_not_crash():

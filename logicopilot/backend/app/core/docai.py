@@ -205,7 +205,16 @@ def _page_blocks(page, full_text: str) -> list[dict]:
         if not text:
             continue
         x0, y0, x1, y1 = _bbox(para.layout)
-        blocks.append({"kind": "paragraph", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text})
+        # Document AI's own read on how sure it is of this paragraph - structure_engine.py's
+        # anomaly detection uses this (alongside geometry) to flag a likely-garbled block,
+        # rather than inferring "this looks wrong" from geometry alone. None when the API
+        # response doesn't carry it (older responses, or a paragraph with no layout
+        # confidence set) - anomaly detection treats that as "signal unavailable", not "zero".
+        confidence = getattr(para.layout, "confidence", None)
+        blocks.append({
+            "kind": "paragraph", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text,
+            "confidence": confidence,
+        })
     return blocks
 
 

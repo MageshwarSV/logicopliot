@@ -35,6 +35,7 @@ from email.header import decode_header
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -45,6 +46,7 @@ from app.models.job import Job, JobDocument
 from app.models.pending_email import PendingEmail
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
+from app.models.user import OPERATOR, User
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +235,28 @@ def _operator_mailboxes(db: Session, tenant_id: str | None = None) -> list[dict]
             "host": u.mail_host or _imap_host_for(u.mail_provider),
         })
     return out
+
+
+def _operator_matching_sender(db: Session, tenant_id: str, sender: str) -> str | None:
+    """The active operator this message's SENDER actually is, if any - matched against
+    either their login email or their own connected mailbox (User.mail_email; see
+    _operator_mailboxes above), whichever the message came from. Not a mailbox-routing
+    rule (see the job-creation comment this feeds): a shared inbox forwarding six
+    importers' mail is never "one operator's" jobs, but a message FROM a real operator's
+    own address unambiguously already has one.
+    """
+    sender = (sender or "").strip().lower()
+    if not sender:
+        return None
+    u = (
+        db.query(User)
+        .filter(
+            User.tenant_id == tenant_id, User.role == OPERATOR, User.is_active.is_(True),
+            (func.lower(User.email) == sender) | (func.lower(User.mail_email) == sender),
+        )
+        .first()
+    )
+    return u.id if u else None
 
 
 def test_connection() -> dict:
@@ -1073,16 +1097,20 @@ def _pull_one_mailbox(
                     continue
 
                 # ---- the job
-                # Every new job starts Unassigned, even a mail-pulled one - assignment is now
-                # always a deliberate action from the Jobs list' own dropdown, never an
-                # automatic side effect of whose mailbox it happened to arrive in.
+                # Assignment is a deliberate action from the Jobs list' own dropdown, never a
+                # side effect of WHICH MAILBOX a job happened to arrive in - a forwarding agent
+                # mails for six importers from one shared address, and none of them is "the"
+                # operator for all six. The one exception: the SENDER is themselves a real,
+                # already-registered operator account (their own email, not a shared inbox) -
+                # there the job already has a genuine, unambiguous owner the moment it lands,
+                # and leaving it Unassigned just made someone hunt for what they already sent.
                 job = Job(
                     tenant_id=group.tenant_id,
                     group_id=group.id,
                     reference=generate_job_no(),
                     status="draft",
                     created_by_id=None,
-                    assigned_operator_id=None,
+                    assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
                 )
                 db.add(job)
                 db.flush()
