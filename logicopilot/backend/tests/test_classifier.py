@@ -619,3 +619,93 @@ def test_classify_document_still_calls_openai_when_real_text_is_present():
 
     mock_openai_cls.assert_called_once()
     assert [m["key"] for m in result] == ["inv"]
+
+
+# ---------------------------------------------------------------------------
+# Deterministic evidence outranks the breadth heuristic
+# ---------------------------------------------------------------------------
+
+def test_a_keyword_signature_claim_survives_the_specificity_rule():
+    """The rule must not strip a well-evidenced claim and keep a guess.
+
+    Seen in production on a forwarder's arrival notice. The model claimed it as an
+    Invoice - it carries "Total Payable" and a charge table - and the keyword
+    backstop claimed it as Freight, which is what it actually is. Holding two
+    slots made it "broad", so the specificity rule stripped Freight in favour of a
+    file holding one slot, and left the Invoice claim standing because only the
+    evidenced claim was eligible to be stripped.
+
+    The arrival notice then sat in the Invoice slot. Breadth is a heuristic about
+    how widely a file claimed; a keyword signature is the document's own words
+    matching a required phrase plus supporting markers. Where they disagree, the
+    evidence wins.
+    """
+    from app.core.classifier import assign_documents_detailed
+
+    candidates = [
+        {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
+        {"key": "frt", "name": "Fright Certificate", "doc_type": "Custom", "fields": []},
+    ]
+    # Two claims on the arrival notice: a broad model guess, and the backstop's
+    # signature. The competing file claims one slot, so the rule would normally
+    # strip the arrival notice's Freight claim.
+    claims = [
+        [
+            {"key": "inv", "pages": [1], "evidence": "total payable", "source": "model"},
+            {"key": "frt", "pages": [1], "evidence": "ocean freight usd 1,250.00",
+             "source": "signature"},
+        ],
+        [{"key": "frt", "pages": [1], "evidence": "freight certificate", "source": "model"}],
+    ]
+
+    import app.core.classifier as mod
+
+    original = mod.classify_document
+    mod.classify_document = lambda *a, **k: claims.pop(0)
+    try:
+        files = [
+            {"name": "arrival_notice.pdf", "text": "x", "image": None, "page_count": 1},
+            {"name": "freight_cert.pdf", "text": "y", "image": None, "page_count": 1},
+        ]
+        result = assign_documents_detailed(files, candidates)
+    finally:
+        mod.classify_document = original
+
+    arrival_keys = {m["key"] for m in result[0]}
+    assert "frt" in arrival_keys, "the evidenced Freight claim was stripped"
+
+
+def test_an_unevidenced_claim_is_still_stripped():
+    """The exemption must not disable the rule it is an exception to.
+
+    A file claiming a slot only because the model said so still loses that slot to
+    a file that claimed it more specifically - that is the rule's whole purpose,
+    and it is what stops one invoice also filling the packing list slot.
+    """
+    from app.core.classifier import assign_documents_detailed
+    import app.core.classifier as mod
+
+    candidates = [
+        {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
+        {"key": "pl", "name": "Packing List", "doc_type": "PackingList", "fields": []},
+    ]
+    claims = [
+        [
+            {"key": "inv", "pages": [1], "evidence": "invoice no 1", "source": "model"},
+            {"key": "pl", "pages": [1], "evidence": "vague packing wording", "source": "model"},
+        ],
+        [{"key": "pl", "pages": [1], "evidence": "packing list", "source": "model"}],
+    ]
+    original = mod.classify_document
+    mod.classify_document = lambda *a, **k: claims.pop(0)
+    try:
+        files = [
+            {"name": "broad.pdf", "text": "x", "image": None, "page_count": 1},
+            {"name": "packing_list.pdf", "text": "y", "image": None, "page_count": 1},
+        ]
+        result = assign_documents_detailed(files, candidates)
+    finally:
+        mod.classify_document = original
+
+    assert {m["key"] for m in result[0]} == {"inv"}, "the broad claimant kept a slot it should have lost"
+    assert {m["key"] for m in result[1]} == {"pl"}
