@@ -2370,8 +2370,9 @@ export function TemplateCreationWizard() {
                   "multiple values in this document", or create another per-line custom tag, first.
                 </p>
               )}
-              <div className="flex gap-2">
+              <div className="flex items-end gap-2">
                 <Input
+                  label="Add a fixed value"
                   value={cfCompositeFixedInput}
                   onChange={(e) => setCfCompositeFixedInput(e.target.value)}
                   placeholder="Fixed value, e.g. a dash -"
