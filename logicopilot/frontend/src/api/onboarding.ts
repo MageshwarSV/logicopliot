@@ -57,7 +57,7 @@ export async function createCustomField(
   groupId: string,
   payload: {
     label_name: string;
-    kind: "hardcoded" | "ai";
+    kind: "hardcoded" | "ai" | "composite";
     hardcoded_value?: string | null;
     ai_prompt?: string | null;
     source_document_ids?: string[];
@@ -72,6 +72,7 @@ export async function createCustomField(
     paired_custom_field_id?: string | null;
     picker_heading?: string | null;
     sync_field_ids?: string[] | null;
+    composite_source_labels?: string[] | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -364,6 +365,7 @@ export async function updateCustomField(
     paired_custom_field_id: string | null;
     picker_heading: string | null;
     sync_field_ids: string[] | null;
+    composite_source_labels: string[] | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

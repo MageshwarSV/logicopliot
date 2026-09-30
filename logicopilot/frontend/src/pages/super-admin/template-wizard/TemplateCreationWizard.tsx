@@ -295,7 +295,7 @@ export function TemplateCreationWizard() {
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
   const [cfLabel, setCfLabel] = useState("");
-  const [cfKind, setCfKind] = useState<"hardcoded" | "ai">("ai");
+  const [cfKind, setCfKind] = useState<"hardcoded" | "ai" | "composite">("ai");
   const [cfValue, setCfValue] = useState("");
   const [cfPrompt, setCfPrompt] = useState("");
   const [cfDocs, setCfDocs] = useState<string[]>([]);
@@ -324,6 +324,9 @@ export function TemplateCreationWizard() {
   const [cfPairedFieldId, setCfPairedFieldId] = useState("");
   const [cfPickerHeading, setCfPickerHeading] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
+  // kind="composite": ordered label_names of other fields on the same product line, joined
+  // with a single space to become this field's own value - see CustomField.composite_source_labels.
+  const [cfCompositeLabels, setCfCompositeLabels] = useState<string[]>([]);
   const [crossFieldPopup, setCrossFieldPopup] = useState<{ customFieldId: string; label: string } | null>(null);
   const [crossFieldTargets, setCrossFieldTargets] = useState<string[]>([]);
   // Custom ruling (decides which documents a job requires)
@@ -375,6 +378,20 @@ export function TemplateCreationWizard() {
     [group, activeDocId],
   );
 
+  // Every already-existing per-line field a composite field could be built from: a mark that
+  // repeats down a document's own table (item_material_code, product_description, ...) or
+  // another custom field already asked once per line. Excludes the field being edited itself.
+  const compositeSourceOptions = useMemo(() => {
+    const markLabels = (group?.documents ?? [])
+      .flatMap((d) => d.marks)
+      .filter((m) => m.is_multi_value)
+      .map((m) => m.label_name);
+    const fieldLabels = (group?.custom_fields ?? [])
+      .filter((f) => f.per_row && f.id !== cfEditId)
+      .map((f) => f.label_name);
+    return Array.from(new Set([...markLabels, ...fieldLabels])).sort((a, b) => a.localeCompare(b));
+  }, [group, cfEditId]);
+
   async function reloadGroup(id: string) {
     const g = await api.getGroup(id);
     setGroup(g);
@@ -384,7 +401,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]);
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]);
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -393,7 +410,7 @@ export function TemplateCreationWizard() {
   function editCustom(cf: CustomField) {
     setCfEditId(cf.id);
     setCfLabel(cf.label_name);
-    setCfKind(cf.kind === "hardcoded" ? "hardcoded" : "ai");
+    setCfKind(cf.kind === "hardcoded" ? "hardcoded" : cf.kind === "composite" ? "composite" : "ai");
     setCfValue(cf.hardcoded_value ?? "");
     setCfPrompt(cf.ai_prompt ?? "");
     setCfDocs(cf.source_document_ids?.length ? cf.source_document_ids : group?.documents.map((d) => d.id) ?? []);
@@ -408,6 +425,7 @@ export function TemplateCreationWizard() {
     setCfPairedFieldId(cf.paired_custom_field_id ?? "");
     setCfPickerHeading(cf.picker_heading ?? "");
     setCfSyncFieldIds(cf.sync_field_ids ?? []);
+    setCfCompositeLabels(cf.composite_source_labels ?? []);
     setError(null);
     setCustomOpen(true);
   }
@@ -425,6 +443,10 @@ export function TemplateCreationWizard() {
       return;
     }
     if (cfKind === "ai" && !cfPrompt.trim()) { setError("Describe what the AI should compute."); return; }
+    if (cfKind === "composite" && cfCompositeLabels.length === 0) {
+      setError("Choose at least one piece to combine.");
+      return;
+    }
     setCfSaving(true); setError(null);
     try {
       const payload = {
@@ -435,7 +457,9 @@ export function TemplateCreationWizard() {
         source_document_ids: cfKind === "ai" ? cfDocs : [],
         ask_operator: cfAskOperator,
         ask_operator_required: cfAskOperator ? cfAskRequired : true,
-        per_row: cfAskOperator ? cfPerRow : false,
+        // A composite field is inherently per-line (it joins other line fields) - always
+        // per-row regardless of whether the operator is also asked to confirm it.
+        per_row: cfKind === "composite" ? true : (cfAskOperator ? cfPerRow : false),
         multi_value_from_document: cfKind === "ai" ? cfMultiValue : false,
         ask_operator_hint: cfAskOperator ? cfAskHint.trim() || null : null,
         is_target_value: cfKind === "ai" ? cfTargetValue : false,
@@ -443,6 +467,7 @@ export function TemplateCreationWizard() {
         paired_custom_field_id: cfPairedFieldId || null,
         picker_heading: cfPairedFieldId ? cfPickerHeading.trim() || null : null,
         sync_field_ids: cfPairedFieldId ? cfSyncFieldIds : [],
+        composite_source_labels: cfKind === "composite" ? cfCompositeLabels : null,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -2241,9 +2266,101 @@ export function TemplateCreationWizard() {
             >
               🤖 AI-computed
             </button>
+            <button
+              type="button"
+              onClick={() => setCfKind("composite")}
+              className={`flex-1 rounded-lg border px-3 py-2 font-medium ${cfKind === "composite" ? "border-teal-500 bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              🧩 Combine fields
+            </button>
           </div>
 
-          {cfKind === "hardcoded" ? (
+          {cfKind === "composite" ? (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Pieces, in order</p>
+              <p className="text-[11px] text-slate-400">
+                Each product line's value here is these pieces' OWN values for that same line, in
+                this order, joined with a single space — a line with nothing for one piece just
+                skips it rather than leaving a stray gap. Applies to every product line the same
+                way.
+              </p>
+              {cfCompositeLabels.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400 dark:border-slate-700">
+                  No pieces chosen yet.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {cfCompositeLabels.map((label, i) => (
+                    <div
+                      key={label}
+                      className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm dark:border-teal-500/20 dark:bg-teal-500/10"
+                    >
+                      <span className="w-5 text-center text-xs font-semibold text-teal-700 dark:text-teal-300">{i + 1}</span>
+                      <span className="flex-1 text-teal-900 dark:text-teal-200">{label}</span>
+                      <button
+                        type="button"
+                        disabled={i === 0}
+                        onClick={() =>
+                          setCfCompositeLabels((arr) => {
+                            const next = [...arr];
+                            [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                            return next;
+                          })
+                        }
+                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        title="Move earlier"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={i === cfCompositeLabels.length - 1}
+                        onClick={() =>
+                          setCfCompositeLabels((arr) => {
+                            const next = [...arr];
+                            [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                            return next;
+                          })
+                        }
+                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        title="Move later"
+                      >
+                        ▼
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCfCompositeLabels((arr) => arr.filter((_, idx) => idx !== i))}
+                        className="rounded px-1.5 py-0.5 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
+                        title="Remove"
+                      >
+                        −
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setCfCompositeLabels((arr) => [...arr, e.target.value]);
+                }}
+                className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+              >
+                <option value="">+ Add a piece…</option>
+                {compositeSourceOptions
+                  .filter((l) => !cfCompositeLabels.includes(l))
+                  .map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+              </select>
+              {compositeSourceOptions.length === 0 && (
+                <p className="text-xs text-slate-400">
+                  No other per-line fields exist yet on this template to combine — mark a field
+                  "multiple values in this document", or create another per-line custom tag, first.
+                </p>
+              )}
+            </div>
+          ) : cfKind === "hardcoded" ? (
             <div>
               <Input
                 label={

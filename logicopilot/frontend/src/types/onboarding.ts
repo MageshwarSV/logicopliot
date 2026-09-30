@@ -117,6 +117,10 @@ export interface CustomField {
   /** Other custom_field ids that also get set to whichever value is picked, on the same row
    *  (e.g. RITC following the CTH pick). */
   sync_field_ids?: string[] | null;
+  /** kind="composite": ordered label_names of other fields on the same product line, joined
+   *  with a single space (blank pieces skipped) to become this field's own value - e.g.
+   *  Description + Part No + Material Code combined into one "product_description". */
+  composite_source_labels?: string[] | null;
 }
 
 /** A customer's reference sheet — their own export, used to answer what the documents cannot.

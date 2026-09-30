@@ -111,6 +111,9 @@ class CustomFieldOut(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
+    # kind="composite": ordered label_names of other fields on the same line, joined with a
+    # single space (blank pieces skipped) - see CustomField.composite_source_labels.
+    composite_source_labels: list[str] | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -137,6 +140,7 @@ class CustomFieldCreate(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
+    composite_source_labels: list[str] | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -167,6 +171,7 @@ class CustomFieldEdit(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
+    composite_source_labels: list[str] | None = None
 
 
 class DocumentDetailOut(DocumentOut):

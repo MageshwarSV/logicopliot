@@ -8,7 +8,7 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 # The kinds a custom field can be. Kept here, next to the column, because a whitelist that
 # lived only in the edit route fell out of step the moment "lookup" was added: the route dropped
 # the value, answered 200, and the screen quietly did nothing.
-CUSTOM_FIELD_KINDS = ("hardcoded", "ai", "lookup")
+CUSTOM_FIELD_KINDS = ("hardcoded", "ai", "lookup", "composite")
 
 
 class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -115,4 +115,12 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # answer as this one but are tracked separately (their own reference-sheet lookup, their
     # own export column) rather than silently falling out of sync with it.
     sync_field_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # kind="composite" only: an ORDERED list of other label_names (marks or custom fields,
+    # whatever this line already has a value for) whose values get read for the SAME line and
+    # joined with a single space, skipping any piece that is blank for that line. No AI prompt
+    # and no reference sheet - purely a join over data already extracted/computed elsewhere.
+    # Order matters (this is a list, unlike sync_field_ids above, which is an unordered set) -
+    # it is exactly the sequence the pieces are concatenated in.
+    composite_source_labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
 

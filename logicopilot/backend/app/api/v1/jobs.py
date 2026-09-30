@@ -2384,11 +2384,15 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     ask_ids |= {
         c.id for c in db.query(_CF).filter(_CF.group_id == group.id, _CF.ask_operator.is_(True)).all()
     }
-    # Fields that answer themselves from the customer's reference sheet. The submit gate lets
-    # these through on their own value; every other asked field wants a typed confirmation.
-    # Sent to the screen so it applies the same rule — see JobFieldValueOut.self_filled.
+    # Fields that answer themselves — from the customer's reference sheet, or by joining other
+    # fields this job already has — rather than needing anyone to type or confirm anything. The
+    # submit gate lets these through on their own value; every other asked field wants a typed
+    # confirmation. Sent to the screen so it applies the same rule — see
+    # JobFieldValueOut.self_filled. Also drives which per-row fields show on the per-document
+    # Product Detail card (see lookedUpByRow on the frontend) rather than nowhere at all.
     self_fill_ids = {
-        c.id for c in db.query(_CF).filter(_CF.group_id == group.id, _CF.kind == "lookup").all()
+        c.id for c in db.query(_CF).filter(
+            _CF.group_id == group.id, _CF.kind.in_(("lookup", "composite"))).all()
     }
     # A computed field has no mark and no document of its own, so the screens had nowhere to
     # put it and showed it nowhere at all. These say which documents it was told to read and
@@ -2397,7 +2401,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_sources = {c.id: list(c.source_document_ids or []) for c in cf_rows}
     cf_origin = {
         c.id: ("reference" if c.kind == "lookup"
-               else "computed" if c.kind == "ai" else "fixed")
+               else "computed" if c.kind in ("ai", "composite") else "fixed")
         for c in cf_rows
     }
     # Picker-pairing config, denormalized onto every value of the field it's set on - see
@@ -4779,8 +4783,17 @@ def run_extraction(db: Session, job: Job) -> None:
     # Name had never been computed before, purely because a plain query has no ordering
     # guarantee and this run happened to process Erp Entry Name first. Stable sort: fields
     # with no lookup_key_label keep their original relative order and go first; fields that
-    # key off another field go last, after whatever they depend on has already run.
-    custom_fields = sorted(custom_fields, key=lambda cf: bool(getattr(cf, "lookup_key_label", None)))
+    # key off another field go last, after whatever they depend on has already run. A
+    # composite field can name ANY other field (mark or custom field) as one of its pieces, so
+    # it is held back the same way - last of all, after every other kind has already written
+    # its own per-row value for this run.
+    custom_fields = sorted(
+        custom_fields,
+        key=lambda cf: (
+            getattr(cf, "kind", None) == "composite",
+            bool(getattr(cf, "lookup_key_label", None)),
+        ),
+    )
 
     # How many line items this job actually has, taken from the rows extraction just wrote.
     # A per-row custom field gets exactly this many slots, so the CTH the operator types for
@@ -4915,6 +4928,18 @@ def run_extraction(db: Session, job: Job) -> None:
                 )
                 for key, answer in zip(line_keys, answers):
                     looked_up[key] = answer
+            elif cf.kind == "composite":
+                # Pure join over data this job already has for the line - no prompt, no
+                # reference sheet. Each piece is read by label_name, so it can be a mark
+                # (item_material_code, product_description, ...) or another custom field
+                # (already computed earlier this same run - see the sort above), whichever the
+                # wizard was pointed at. Blank pieces are skipped entirely rather than leaving
+                # a stray double space where a line has nothing for one piece.
+                labels = getattr(cf, "composite_source_labels", None) or []
+                piece_values = {label: _line_values(label) for label in labels}
+                for key in line_keys:
+                    pieces = [piece_values[label].get(key, "") for label in labels]
+                    looked_up[key] = " ".join(p for p in pieces if p)
             for key in line_keys:
                 value = looked_up.get(key) or cf.hardcoded_value or ""
                 # Idempotent on purpose: the top-of-function delete means this is normally a
@@ -4944,6 +4969,12 @@ def run_extraction(db: Session, job: Job) -> None:
                             row_index=key[1],
                         )
                     )
+            # Autoflush is off on this session (see SessionLocal) - without an explicit flush
+            # here, a composite field processed later in this same loop would query for this
+            # field's label via _line_values and see nothing, because these adds are still only
+            # pending. A composite field is the first kind that genuinely reads ANOTHER custom
+            # field's value from the same run rather than just a mark's.
+            db.flush()
             continue
         if cf.kind == "hardcoded":
             value = cf.hardcoded_value or ""
@@ -5312,9 +5343,15 @@ def recompute_custom_field(
     cf = db.get(CustomField, custom_field_id)
     if cf is None or cf.group_id != job.group_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found on this job's template.")
-    if cf.kind not in ("ai", "hardcoded"):
+    if cf.kind not in ("ai", "hardcoded", "composite"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail='Only an AI-computed or hardcoded field can be recomputed — a per-row lookup field is not read off a document.')
+                            detail='Only an AI-computed, hardcoded, or composite field can be recomputed — a per-row lookup field is not read off a document.')
+    if cf.kind == "composite" and not getattr(cf, "per_row", False):
+        # A composite field only makes sense per line (it is a join of OTHER line fields);
+        # a job-level one has no per-row pieces to read and no per-row AI prompt to fall
+        # back to either, so recomputing it would silently run the wrong code path below.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="A composite field must be per-row.")
 
     if getattr(cf, "per_row", False):
         line_keys: list[tuple[int, int]] = sorted({
@@ -5405,6 +5442,12 @@ def recompute_custom_field(
             ]
             answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
             computed = dict(zip(line_keys, answers))
+        elif cf.kind == "composite":
+            labels = getattr(cf, "composite_source_labels", None) or []
+            piece_values = {label: _row_values(label) for label in labels}
+            for key in line_keys:
+                pieces = [piece_values[label].get(key, "") for label in labels]
+                computed[key] = " ".join(p for p in pieces if p)
 
         rows: list[JobFieldValue] = []
         for set_index, row_index in line_keys:
