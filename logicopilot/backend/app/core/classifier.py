@@ -271,6 +271,9 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
             if is_match:
                 claims[i].append({
                     "key": keys[0], "pages": matched_pages,
+                    # Deterministic evidence, not a judgement call - see the
+                    # specificity rule, which refuses to strip a claim carrying this.
+                    "source": "signature",
                     "evidence": f"keyword signature ({hits} supporting markers): the "
                                 f"document's own text carries strong {doc_type} markers "
                                 + ("alongside its other content" if ms else
@@ -293,6 +296,7 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 continue
             claims[i].append({
                 "key": keys[0], "pages": verified["pages"] or matched_pages,
+                "source": "ai_second",
                 "evidence": f"AI-verified combined document: {verified['evidence']}",
             })
             logger.info(
@@ -691,7 +695,8 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
                             filename, key)
                 continue
             pages = [int(p) for p in (m.get("pages") or []) if str(p).isdigit()]
-            out.append({"key": key, "pages": pages or [1], "evidence": ev[:300]})
+            out.append({"key": key, "pages": pages or [1], "evidence": ev[:300],
+                        "source": "model"})
         if not out:
             logger.info("classify %s: no slot's document is present in this file (%s chars of "
                         "text, %s slots offered)", filename, len(ocr_text or ""),
@@ -764,6 +769,18 @@ def assign_documents_detailed(files: list[dict], candidates: list[dict]) -> list
     #    and only one of them kept. Keeping every EQUALLY specific claimant fixes that without
     #    reopening the original bug, where one invoice filled the packing list slot as well and
     #    the real packing list was dropped.
+    #    One exception, and it matters: a claim the keyword backstop added is NOT stripped
+    #    here. Breadth is a heuristic about how broadly a file claimed; a keyword signature is
+    #    the document's own words matching a required phrase plus supporting markers. When
+    #    those disagree the evidence wins.
+    #
+    #    Without the exception this rule did the opposite of its job. A forwarder's arrival
+    #    notice was wrongly claimed as an Invoice by the model (it carries "Total Payable" and
+    #    a charge table) and correctly claimed as Freight by the backstop. Holding two slots
+    #    made it "broad", so it lost Freight to a file holding one - and kept the Invoice
+    #    claim, the wrong one, because only the well-evidenced claim was eligible to be
+    #    stripped. The arrival notice then sat in the Invoice slot and the real invoice had to
+    #    share it. Stripping the evidenced claim and keeping the guess is exactly backwards.
     breadth = [len({m["key"] for m in ms}) for ms in claims]
     for cand in candidates:
         key = cand["key"]
@@ -774,6 +791,13 @@ def assign_documents_detailed(files: list[dict], candidates: list[dict]) -> list
         winners = [i for i in holders if breadth[i] == keenest]
         for i in holders:
             if i not in winners:
+                if any(m["key"] == key and m.get("source") == "signature"
+                       for m in claims[i]):
+                    logger.info(
+                        "classify: %s keeps %r despite claiming %s slot(s) - its own text "
+                        "carries the keyword signature for it",
+                        files[i].get("name"), cand.get("name"), breadth[i])
+                    continue
                 claims[i] = [m for m in claims[i] if m["key"] != key]
                 logger.info("classify: %s loses %r (it claimed %s slot(s); %s claimed only %s)",
                             files[i].get("name"), cand.get("name"), breadth[i],
