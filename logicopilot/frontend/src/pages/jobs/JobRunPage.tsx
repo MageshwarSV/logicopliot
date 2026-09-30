@@ -3419,15 +3419,35 @@ function ExtractionReview({
     // to the SAME invoice-set as the active document, the same normalization (blank = 1) the
     // backend itself uses when writing these rows.
     const activeSet = active?.set_index ?? 1;
+    // Group every per-row custom field by (set, row) FIRST, so a pairing can be resolved
+    // within its own row before deciding what belongs on this card - "is this field the
+    // OTHER half of some other field's pairing" can't be answered by looking at one field
+    // alone.
+    const bySetRow = new Map<string, JobFieldValue[]>();
     for (const fv of job.field_values) {
-      // Any row-indexed CUSTOM field belongs on this card - a reference-sheet lookup
-      // (self_filled), an AI-computed per-row value, one half of a picker pair, whatever -
-      // a mark-based per-row field is already shown via `cells` above (it has a mark_id).
       if (!fv.custom_field_id || fv.row_index == null) continue;
-      if ((fv.set_index ?? 1) !== activeSet) continue;
-      const arr = rows.get(fv.row_index) ?? [];
+      const key = `${fv.set_index ?? 1}:${fv.row_index}`;
+      const arr = bySetRow.get(key) ?? [];
       arr.push(fv);
-      rows.set(fv.row_index, arr);
+      bySetRow.set(key, arr);
+    }
+    for (const [key, fvs] of bySetRow) {
+      const [setPart, rowPart] = key.split(":");
+      if (Number(setPart) !== activeSet) continue;
+      const byId = new Map(fvs.map((fv) => [fv.custom_field_id, fv]));
+      const pairedIds = new Set<string>();
+      for (const fv of fvs) {
+        if (!fv.paired_custom_field_id) continue;
+        pairedIds.add(fv.id);
+        const other = byId.get(fv.paired_custom_field_id);
+        if (other) pairedIds.add(other.id);
+      }
+      // A reference-sheet lookup (self_filled) or either half of a picker pairing belongs
+      // here. A plain "ask the operator" per-row field with no pairing of its own (a duty
+      // notification number, say) belongs ONLY on Additional Details' "One value per
+      // product line" - showing it here too is the same box in two places.
+      const belongs = fvs.filter((fv) => fv.self_filled === true || pairedIds.has(fv.id));
+      if (belongs.length) rows.set(Number(rowPart), belongs);
     }
     return rows;
   }, [job.field_values, active]);
