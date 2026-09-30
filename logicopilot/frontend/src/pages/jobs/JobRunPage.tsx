@@ -3102,41 +3102,59 @@ function ExtractedField({
  * straight off a document) for one product line - exactly one of the two is ever the real
  * answer for that line, and picking one sets it as Dump CTH Number's own corrected value,
  * since that is the field the ERP/IRN export actually reads (see the excel_config mapping -
- * it names Dump CTH Number, not Document CTH). When Document CTH has nothing for this line
- * there is nothing to pick between, so the caller renders Dump CTH Number's own box alone
- * and skips this entirely. */
+ * it names Dump CTH Number, not Document CTH). RITC is usually the same code as the CTH (see
+ * that field's own ask_operator_hint), so a pick here is applied to it too rather than left
+ * to drift out of sync with whichever source was actually chosen.
+ *
+ * Dump CTH Number's OWN value is captured ONCE, on mount, into a ref - never re-read from
+ * extracted_value after that. A row's real answer can live entirely in corrected_value with
+ * an EMPTY extracted_value (a material master with nothing for this part, backfilled by a
+ * manual correction at some point) - picking Document CTH and then picking Dump CTH Number
+ * back, if that "restore" used extracted_value, silently overwrote the real answer with that
+ * empty string. Captured once up front, switching back always restores the value this field
+ * actually held before this picker ever touched it.
+ *
+ * When Document CTH has nothing for this line there is nothing to pick between, so the
+ * caller renders Dump CTH Number's own box alone and skips this entirely. */
 function CthSourcePicker({
   dumpCth,
   documentCth,
+  ritc,
   readOnly,
   reload,
 }: {
   dumpCth: JobFieldValue;
   documentCth: JobFieldValue | undefined;
+  ritc: JobFieldValue | undefined;
   readOnly: boolean;
   reload: () => Promise<void>;
 }) {
-  const dumpValue = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
   const documentValue = (documentCth?.corrected_value ?? documentCth?.extracted_value ?? "").trim();
   const [saving, setSaving] = useState(false);
 
-  if (!documentValue) return null;
+  const ownDumpValueRef = useRef<string | null>(null);
+  if (ownDumpValueRef.current === null) {
+    ownDumpValueRef.current = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
+  }
+  const dumpValue = ownDumpValueRef.current;
 
-  // Which one is CURRENTLY in effect: Document CTH only if Dump CTH Number's own current
-  // value was actually set to match it - an operator who typed something else entirely
-  // into Dump CTH Number's own box has already overridden both options, and neither shows
-  // selected.
-  const selected: "dump" | "document" =
-    dumpCth.corrected_value != null && dumpCth.corrected_value.trim() === documentValue
+  const [selected, setSelected] = useState<"dump" | "document">(() => {
+    const current = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
+    return current === documentValue && documentValue !== "" && dumpValue !== documentValue
       ? "document"
       : "dump";
+  });
+
+  if (!documentValue) return null;
 
   const choose = async (which: "dump" | "document") => {
     if (readOnly || saving || which === selected) return;
-    const value = which === "dump" ? (dumpCth.extracted_value ?? "") : documentValue;
+    const value = which === "dump" ? dumpValue : documentValue;
     setSaving(true);
     try {
       await jobsApi.correctFieldValue(dumpCth.id, value);
+      if (ritc) await jobsApi.correctFieldValue(ritc.id, value);
+      setSelected(which);
       await reload();
     } finally {
       setSaving(false);
@@ -3144,24 +3162,27 @@ function CthSourcePicker({
   };
 
   const Option = ({ id, label, value }: { id: "dump" | "document"; label: string; value: string }) => (
-    <label
-      className={`flex items-start gap-2 rounded-lg border p-2 text-[11px] transition-colors ${
-        selected === id
-          ? "border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10"
-          : "border-slate-200 dark:border-slate-700"
-      } ${readOnly ? "cursor-default" : "cursor-pointer"}`}
-    >
+    <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
       <input
         type="checkbox"
         checked={selected === id}
         disabled={readOnly || saving}
         onChange={() => void choose(id)}
-        className="mt-0.5"
       />
-      <span className="min-w-0">
-        <span className="block font-medium text-slate-600 dark:text-slate-300">{label}</span>
-        <span className="block truncate text-slate-900 dark:text-slate-100">{value || "—"}</span>
+      <span className="w-28 shrink-0 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+        {label}
       </span>
+      <input
+        type="text"
+        value={value}
+        readOnly
+        placeholder="—"
+        className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs placeholder:italic placeholder:text-slate-400 ${
+          selected === id
+            ? "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
+            : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
+        }`}
+      />
     </label>
   );
 
@@ -3170,7 +3191,7 @@ function CthSourcePicker({
       <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
         CTH — pick which one is right for this line
       </p>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="flex flex-col gap-1.5">
         <Option id="dump" label="Dump CTH Number" value={dumpValue} />
         <Option id="document" label="Document CTH" value={documentValue} />
       </div>
@@ -3549,6 +3570,7 @@ function ExtractionReview({
                       const lookedUp = lookedUpByRow.get(n) ?? [];
                       const dumpCth = lookedUp.find((fv) => fv.label_name === "Dump CTH Number");
                       const documentCth = lookedUp.find((fv) => fv.label_name === "Document CTH");
+                      const ritc = lookedUp.find((fv) => fv.label_name === "RITC No.");
                       const rest = lookedUp.filter(
                         (fv) => fv.label_name !== "Dump CTH Number" && fv.label_name !== "Document CTH",
                       );
@@ -3590,6 +3612,7 @@ function ExtractionReview({
                               <CthSourcePicker
                                 dumpCth={dumpCth}
                                 documentCth={documentCth}
+                                ritc={ritc}
                                 readOnly={readOnly}
                                 reload={reload}
                               />
