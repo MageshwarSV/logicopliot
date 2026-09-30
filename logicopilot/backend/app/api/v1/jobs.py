@@ -5614,7 +5614,15 @@ def composite_fields_for_job(
         .filter(TemplateDocument.group_id == job.group_id, FieldMark.is_multi_value.is_(True)).all()
     ]
     cf_rows = db.query(CustomField).filter(CustomField.group_id == job.group_id).all()
-    field_labels = [c.label_name for c in cf_rows if c.per_row]
+    # Only a per-row custom field that ACTUALLY shows on the Product Detail card - the same
+    # rule the frontend's own lookedUpByRow uses (self_filled, i.e. kind="lookup"/"composite",
+    # or paired with one). A plain ask_operator per-row field with no pairing (a duty
+    # notification number, say) never appears there at all - only on Additional Details - so it
+    # has no business being offered as a "piece" here either.
+    field_labels = [
+        c.label_name for c in cf_rows
+        if c.per_row and (c.kind in ("lookup", "composite") or c.paired_custom_field_id)
+    ]
     available = sorted(set(mark_labels) | set(field_labels))
     composite_rows = [c for c in cf_rows if c.kind == "composite" and c.per_row]
     existing_cf = (

@@ -66,6 +66,32 @@ def test_get_composite_fields_lists_available_labels_and_no_existing_field(clien
     assert body["existing"] is None
 
 
+def test_available_labels_excludes_per_row_fields_that_never_show_on_product_detail(client, db_session):
+    """A plain ask_operator per-row field with no pairing (a duty notification number, say)
+    only ever shows on Additional Details, never on Product Detail - so it must not be
+    offerable as a "piece" to combine into a field that DOES show there. Only a self-filled
+    (lookup/composite) or paired per-row field belongs in available_labels."""
+    tenant = make_tenant(db_session)
+    group, _tdoc = _make_template(db_session, tenant)
+    duty_field = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Basic_NotnSrNo",
+                             kind="hardcoded", per_row=True, ask_operator=True)
+    lookup_field = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="RITC No.",
+                               kind="lookup", per_row=True)
+    db_session.add_all([duty_field, lookup_field])
+    db_session.commit()
+    job = _make_job_with_lines(db_session, tenant, group, _tdoc, "JOB-CFJ6",
+                               rows=[{"product_description": "WIDGET"}])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cfj6@example.com")
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}/composite-fields")
+    assert resp.status_code == 200, resp.text
+    labels = set(resp.json()["available_labels"])
+    assert "RITC No." in labels
+    assert "Basic_NotnSrNo" not in labels
+
+
 def test_operator_can_create_and_apply_a_composite_field_from_the_job_screen(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
