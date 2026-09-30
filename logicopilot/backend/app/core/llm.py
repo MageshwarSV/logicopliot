@@ -416,6 +416,94 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
         return []
 
 
+def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: list[dict],
+                                  records: list[dict] | None = None) -> list[str]:
+    """Like compute_custom_field_rows, but for a per-row field whose ROWS are already known -
+    this job's own product lines, each already carrying whatever OTHER per-row fields (a part
+    code, a description, a quantity) extraction already found for it. Returns exactly
+    `len(row_context)` values, in the SAME order, one per row - a blank ("") answer for a row
+    with nothing found is kept in place, never dropped.
+
+    This is the opposite trade-off from compute_custom_field_rows on purpose.
+    compute_custom_field_rows exists for "find every X on the page, however many there are" -
+    a container number, a line with no mark of its own - where there is no such thing as a
+    known slot count, so a miss simply isn't in the list. A field asked for a value PER
+    EXISTING PRODUCT LINE is different: the slot count is already fixed by the job's own real
+    line items (see `row_context`), a genuinely blank answer for line 3 is still line 3's
+    answer, and dropping it would silently shift every later line's value up by one row - for
+    a customs classification code specifically, a value that lands on the wrong product line
+    is not a rounding error, it is a wrong customs declaration for the RIGHT product with the
+    WRONG code and the WRONG product with none at all.
+    """
+    settings = get_settings()
+    if not row_context:
+        return []
+    if not settings.openai_api_key:
+        return [""] * len(row_context)
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
+        resp = create_chat_completion_with_retry(
+            client,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You compute ONE field for EACH of this job's own product lines, "
+                        "following an instruction that describes what to look for. You are "
+                        "given the instruction, the exact list of product lines to answer for "
+                        "(each already carrying whatever this job's own extraction already "
+                        "found for it - a part code, a description, a quantity - use these to "
+                        "recognise which physical row on the document a line refers to), one "
+                        "JSON record per uploaded document, and the raw text behind them.\n\n"
+                        "You MUST return exactly one answer per line in row_context, in the "
+                        "SAME order, even when a line has nothing to report - use an empty "
+                        "string for that line rather than omitting it. The number of answers "
+                        "you return must equal the number of lines given, always. Never invent "
+                        "a value, never reuse one line's answer for another, and never answer "
+                        "from a reference sheet or prior knowledge - only from what a document "
+                        "actually, visibly states for that exact line.\n\n"
+                        'Reply with JSON: {"values": [<string>, ...]} - the list length equal '
+                        "to the number of lines in row_context, in the same order."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Instruction: {prompt}\n\n"
+                        f"Product lines to answer for, in order ({len(row_context)} line(s)):\n"
+                        f"{json.dumps(row_context, ensure_ascii=False)}\n\n"
+                        + (f"Documents on this job ({len(records)} record(s), all of them):\n"
+                           f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
+                        + f"Raw document text (supporting evidence, may be shortened):\n"
+                        + documents_text[:40000]
+                    ),
+                },
+            ],
+        )
+        values = json.loads(resp.choices[0].message.content or "{}").get("values", [])
+        if not isinstance(values, list):
+            values = []
+        out = [str(v).strip() for v in values]
+        # Defensive padding/truncation against a slightly-off count, rather than trust the
+        # model's count blindly - a short reply pads with blanks at the END (the tail is
+        # where an overlooked last line would fall), a long one is truncated, so a real
+        # off-by-one never SHIFTS an earlier line's own correct answer into the wrong slot.
+        if len(out) < len(row_context):
+            out = out + [""] * (len(row_context) - len(out))
+        elif len(out) > len(row_context):
+            out = out[: len(row_context)]
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("compute_custom_field_per_row failed: %s", exc)
+        return [""] * len(row_context)
+
+
 def suggest_field_mapping(
     element_label: str,
     element_options: list[str] | None,

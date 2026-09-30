@@ -4857,6 +4857,55 @@ def run_extraction(db: Session, job: Job) -> None:
                             "from previously-learned values (%s keys, returning %r)",
                             cf.label_name, job.reference, hits, line_count, cache_hits, len(master),
                             getattr(cf, "lookup_return_column", None) or "the code column")
+            elif cf.kind == "ai" and line_count > 0:
+                # A per-row field computed from a PROMPT rather than a lookup sheet or a fixed
+                # value - e.g. a CTH actually PRINTED on a document for that specific line, as
+                # opposed to one looked up from a reference sheet. Built from this job's own
+                # real product lines (their part code/description/quantity, whatever this
+                # job's own extraction already found), in the SAME row order, so a blank
+                # answer stays that line's answer rather than silently shifting every later
+                # line's value up by one row - see compute_custom_field_per_row's own
+                # docstring for why that distinction matters specifically for a field like
+                # this one. One batched call for the whole field, not one call per row, same
+                # as every other AI-computed field here.
+                from app.core.llm import compute_custom_field_per_row
+
+                src_ids = cf.source_document_ids or [d.id for d in group.documents]
+
+                def _files_in_row(did: str) -> int:
+                    return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
+
+                n_files = sum(_files_in_row(did) for did in src_ids)
+                share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
+                chunks = []
+                for did in src_ids:
+                    name = next((d.name for d in group.documents if d.id == did), "DOC")
+                    text = text_for(did)
+                    allow = share * _files_in_row(did)
+                    if len(text) > allow:
+                        text = text[:allow] + "\n…[document truncated]"
+                    chunks.append(f"=== {name} ===\n{text}")
+                docs_text = "\n\n".join(chunks)
+                chosen = set(src_ids)
+                records = [r for r in doc_records if r["template_document_id"] in chosen]
+
+                descs = _line_values("product_description")
+                codes = _line_values("item_material_code")
+                qtys = _line_values("item_quantity")
+                row_context = [
+                    {
+                        "row": i + 1,
+                        "part_code": codes.get(key, ""),
+                        "description": descs.get(key, ""),
+                        "quantity": qtys.get(key, ""),
+                    }
+                    for i, key in enumerate(line_keys)
+                ]
+                answers = compute_custom_field_per_row(
+                    cf.ai_prompt or "", docs_text, row_context, records=records,
+                )
+                for key, answer in zip(line_keys, answers):
+                    looked_up[key] = answer
             for key in line_keys:
                 value = looked_up.get(key) or cf.hardcoded_value or ""
                 # Idempotent on purpose: the top-of-function delete means this is normally a
@@ -5268,9 +5317,89 @@ def recompute_custom_field(
         if not line_keys:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="This job has no line items yet — a per-row field has nothing to backfill into.")
-        value = cf.hardcoded_value or ""
+
+        # A per-row field's VALUE depends on its own kind exactly the way run_extraction's own
+        # per-row loop does - a lookup field reads the reference sheet, an AI field reads the
+        # document(s) it was told to, keyed to this job's own real product lines; only a
+        # genuinely hardcoded field has one fixed answer for every line. This endpoint used to
+        # apply `cf.hardcoded_value` unconditionally regardless of kind, so recomputing a
+        # per-row lookup or AI field here (e.g. a CTH) silently blanked every line instead of
+        # actually recomputing it - found while wiring up a second per-row AI field and
+        # confirming this same endpoint would need to handle it too.
+        def _row_values(label: str) -> dict[tuple[int, int], str]:
+            out: dict[tuple[int, int], str] = {}
+            for fv in db.query(JobFieldValue).filter(
+                    JobFieldValue.job_id == job.id,
+                    JobFieldValue.row_index.isnot(None),
+                    JobFieldValue.label_name == label).all():
+                out[((fv.set_index or 1), fv.row_index)] = (
+                    fv.corrected_value or fv.extracted_value or "").strip()
+            return out
+
+        computed: dict[tuple[int, int], str] = {}
+        if cf.kind == "lookup":
+            from app.core.material_master import load_master, lookup_cth, material_from
+            from app.core.reference_cache import lookup_reference
+
+            master = load_master(
+                job.group_id,
+                match_columns=getattr(cf, "lookup_match_columns", None),
+                return_column=getattr(cf, "lookup_return_column", None),
+            )
+            key_label = (getattr(cf, "lookup_key_label", None) or "").strip()
+            keys = _row_values(key_label) if key_label else {}
+            codes = keys or _row_values("item_material_code")
+            descs = _row_values("product_description")
+            for key in line_keys:
+                desc = descs.get(key, "")
+                material = material_from(codes.get(key, ""), desc)
+                code = lookup_cth(material, master, description=desc)
+                if not code and (material or desc):
+                    code = lookup_reference(db, cf.id, [material, desc]) or ""
+                computed[key] = code
+        elif cf.kind == "ai":
+            from app.core.llm import compute_custom_field_per_row
+
+            group = db.get(TemplateGroup, job.group_id)
+            docs_by_tdoc: dict[str, list[JobDocument]] = {}
+            for d in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                      .order_by(JobDocument.file_index).all()):
+                docs_by_tdoc.setdefault(d.template_document_id, []).append(d)
+
+            src_ids = cf.source_document_ids or [d.id for d in group.documents]
+            chunks = []
+            for did in src_ids:
+                tdoc = next((d for d in group.documents if d.id == did), None)
+                name = tdoc.name if tdoc else "DOC"
+                for jdoc in docs_by_tdoc.get(did, []):
+                    if not jdoc.file_path:
+                        continue
+                    cached = jdoc.extracted_json
+                    text = cached.get("text", "") if cached else ""
+                    chunks.append(f"=== {name} ===\n{text}")
+            docs_text = "\n\n".join(chunks)
+            records = _document_records(db, job, group)
+            chosen = set(src_ids)
+            records = [r for r in records if r["template_document_id"] in chosen]
+
+            descs = _row_values("product_description")
+            codes = _row_values("item_material_code")
+            qtys = _row_values("item_quantity")
+            row_context = [
+                {
+                    "row": i + 1,
+                    "part_code": codes.get(key, ""),
+                    "description": descs.get(key, ""),
+                    "quantity": qtys.get(key, ""),
+                }
+                for i, key in enumerate(line_keys)
+            ]
+            answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
+            computed = dict(zip(line_keys, answers))
+
         rows: list[JobFieldValue] = []
         for set_index, row_index in line_keys:
+            value = computed.get((set_index, row_index), cf.hardcoded_value or "")
             existing = (
                 db.query(JobFieldValue)
                 .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,

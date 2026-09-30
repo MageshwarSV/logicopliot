@@ -3098,6 +3098,87 @@ function ExtractedField({
   );
 }
 
+/** "Dump CTH Number" (the customer's reference-sheet lookup) vs "Document CTH" (read
+ * straight off a document) for one product line - exactly one of the two is ever the real
+ * answer for that line, and picking one sets it as Dump CTH Number's own corrected value,
+ * since that is the field the ERP/IRN export actually reads (see the excel_config mapping -
+ * it names Dump CTH Number, not Document CTH). When Document CTH has nothing for this line
+ * there is nothing to pick between, so the caller renders Dump CTH Number's own box alone
+ * and skips this entirely. */
+function CthSourcePicker({
+  dumpCth,
+  documentCth,
+  readOnly,
+  reload,
+}: {
+  dumpCth: JobFieldValue;
+  documentCth: JobFieldValue | undefined;
+  readOnly: boolean;
+  reload: () => Promise<void>;
+}) {
+  const dumpValue = (dumpCth.corrected_value ?? dumpCth.extracted_value ?? "").trim();
+  const documentValue = (documentCth?.corrected_value ?? documentCth?.extracted_value ?? "").trim();
+  const [saving, setSaving] = useState(false);
+
+  if (!documentValue) return null;
+
+  // Which one is CURRENTLY in effect: Document CTH only if Dump CTH Number's own current
+  // value was actually set to match it - an operator who typed something else entirely
+  // into Dump CTH Number's own box has already overridden both options, and neither shows
+  // selected.
+  const selected: "dump" | "document" =
+    dumpCth.corrected_value != null && dumpCth.corrected_value.trim() === documentValue
+      ? "document"
+      : "dump";
+
+  const choose = async (which: "dump" | "document") => {
+    if (readOnly || saving || which === selected) return;
+    const value = which === "dump" ? (dumpCth.extracted_value ?? "") : documentValue;
+    setSaving(true);
+    try {
+      await jobsApi.correctFieldValue(dumpCth.id, value);
+      await reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const Option = ({ id, label, value }: { id: "dump" | "document"; label: string; value: string }) => (
+    <label
+      className={`flex items-start gap-2 rounded-lg border p-2 text-[11px] transition-colors ${
+        selected === id
+          ? "border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10"
+          : "border-slate-200 dark:border-slate-700"
+      } ${readOnly ? "cursor-default" : "cursor-pointer"}`}
+    >
+      <input
+        type="checkbox"
+        checked={selected === id}
+        disabled={readOnly || saving}
+        onChange={() => void choose(id)}
+        className="mt-0.5"
+      />
+      <span className="min-w-0">
+        <span className="block font-medium text-slate-600 dark:text-slate-300">{label}</span>
+        <span className="block truncate text-slate-900 dark:text-slate-100">{value || "—"}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <div>
+      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+        CTH — pick which one is right for this line
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        <Option id="dump" label="Dump CTH Number" value={dumpValue} />
+        <Option id="document" label="Document CTH" value={documentValue} />
+      </div>
+      {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
+    </div>
+  );
+}
+
 /** Data Extraction — the document on the left, what was read out of it on the right.
  *
  * Shows `extracted_value`: what the reader took OFF the page, before any operator
@@ -3309,7 +3390,11 @@ function ExtractionReview({
   const lookedUpByRow = useMemo(() => {
     const rows = new Map<number, JobFieldValue[]>();
     for (const fv of job.field_values) {
-      if (fv.self_filled !== true || fv.row_index == null) continue;
+      // "Document CTH" isn't self_filled (it's read by a prompt, not a reference-sheet
+      // lookup) but belongs on the same card as "Dump CTH Number" - the two are compared
+      // and picked between right here, not shown on two unrelated screens.
+      const belongs = fv.self_filled === true || fv.label_name === "Document CTH";
+      if (!belongs || fv.row_index == null) continue;
       const arr = rows.get(fv.row_index) ?? [];
       arr.push(fv);
       rows.set(fv.row_index, arr);
@@ -3462,6 +3547,11 @@ function ExtractionReview({
                   <div className="flex flex-col gap-2">
                     {lineRows.map(([n, cells]) => {
                       const lookedUp = lookedUpByRow.get(n) ?? [];
+                      const dumpCth = lookedUp.find((fv) => fv.label_name === "Dump CTH Number");
+                      const documentCth = lookedUp.find((fv) => fv.label_name === "Document CTH");
+                      const rest = lookedUp.filter(
+                        (fv) => fv.label_name !== "Dump CTH Number" && fv.label_name !== "Document CTH",
+                      );
                       return (
                         <div
                           key={n}
@@ -3484,7 +3574,7 @@ function ExtractionReview({
                                 code on this same line - left blank rather than guessed when
                                 the sheet does not carry it, same as everywhere else this
                                 colour appears. */}
-                            {lookedUp.map((fv) => (
+                            {rest.map((fv) => (
                               <ExtractedField
                                 key={fv.id}
                                 fv={fv}
@@ -3495,6 +3585,16 @@ function ExtractionReview({
                               />
                             ))}
                           </div>
+                          {dumpCth && (
+                            <div className="mt-3">
+                              <CthSourcePicker
+                                dumpCth={dumpCth}
+                                documentCth={documentCth}
+                                readOnly={readOnly}
+                                reload={reload}
+                              />
+                            </div>
+                          )}
                         </div>
                       );
                     })}
