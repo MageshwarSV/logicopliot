@@ -81,6 +81,7 @@ export function JobsPage() {
   const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => (group ? "all" : "today"));
   const [customer, setCustomer] = useState<string>(QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(QUICK_ALL);
+  const [assignedTo, setAssignedTo] = useState<string>(QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
 
@@ -348,6 +349,19 @@ export function JobsPage() {
     return [...s].sort();
   }, [jobs]);
 
+  // Same rule as statuses above: exactly the string the Assigned To column itself shows
+  // (operator name, else who it was pulled from, else nothing) - never a raw operator id,
+  // which the operator picking from this list would have no way to recognise or match.
+  const assignedToLabel = (j: Job) => j.operator_name ?? j.pulled_from_sender ?? "";
+  const assignees = useMemo(() => {
+    const s = new Set<string>();
+    for (const j of jobs) {
+      const label = assignedToLabel(j);
+      if (label) s.add(label);
+    }
+    return [...s].sort();
+  }, [jobs]);
+
   // The window the quick filter means, unless explicit dates override it.
   const quickRange = useMemo(() => {
     if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
@@ -389,12 +403,13 @@ export function JobsPage() {
       if (showModeTabs && activeModeTab !== "All" && j.mode !== activeModeTab) return false;
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
       if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
+      if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
       const d = dayKey(j.created_at);
       if (quickRange.from && d && d < quickRange.from) return false;
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, quickRange]);
+  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, quickRange]);
 
   const columns: Column<Job>[] = [
     {
@@ -683,7 +698,20 @@ export function JobsPage() {
               ))}
             </select>
           </div>
-          {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || quick !== "today") && (
+          <div className="min-w-0 flex-1">
+            <label className="mb-1 block text-xs font-medium text-slate-500">Assigned To</label>
+            <select
+              className={`${quickField} w-full`}
+              value={assignedTo}
+              onChange={(e) => setAssignedTo(e.target.value)}
+            >
+              <option value={QUICK_ALL}>All assignees</option>
+              {assignees.map((a) => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+          </div>
+          {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || assignedTo !== QUICK_ALL || quick !== "today") && (
             <button
               type="button"
               onClick={() => {
@@ -692,6 +720,7 @@ export function JobsPage() {
                 setDateTo("");
                 setCustomer(QUICK_ALL);
                 setStatusFilter(QUICK_ALL);
+                setAssignedTo(QUICK_ALL);
               }}
               className="pb-2 text-xs text-slate-500 hover:underline dark:text-slate-400"
             >
