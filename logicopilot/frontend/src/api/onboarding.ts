@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type {
+  CompositePiece,
   CrossDocLink,
   DemoResult,
   DocumentDeclaration,
@@ -72,7 +73,7 @@ export async function createCustomField(
     paired_custom_field_id?: string | null;
     picker_heading?: string | null;
     sync_field_ids?: string[] | null;
-    composite_source_labels?: string[] | null;
+    composite_source_labels?: CompositePiece[] | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -365,7 +366,7 @@ export async function updateCustomField(
     paired_custom_field_id: string | null;
     picker_heading: string | null;
     sync_field_ids: string[] | null;
-    composite_source_labels: string[] | null;
+    composite_source_labels: CompositePiece[] | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

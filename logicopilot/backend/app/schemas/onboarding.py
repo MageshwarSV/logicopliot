@@ -113,7 +113,9 @@ class CustomFieldOut(BaseModel):
     sync_field_ids: list[str] | None = None
     # kind="composite": ordered label_names of other fields on the same line, joined with a
     # single space (blank pieces skipped) - see CustomField.composite_source_labels.
-    composite_source_labels: list[str] | None = None
+    # Each piece is either another field's label_name (a string) or a fixed literal value
+    # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
+    composite_source_labels: list[str | dict[str, str]] | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -140,7 +142,9 @@ class CustomFieldCreate(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
-    composite_source_labels: list[str] | None = None
+    # Each piece is either another field's label_name (a string) or a fixed literal value
+    # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
+    composite_source_labels: list[str | dict[str, str]] | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -171,7 +175,9 @@ class CustomFieldEdit(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
-    composite_source_labels: list[str] | None = None
+    # Each piece is either another field's label_name (a string) or a fixed literal value
+    # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
+    composite_source_labels: list[str | dict[str, str]] | None = None
 
 
 class DocumentDetailOut(DocumentOut):

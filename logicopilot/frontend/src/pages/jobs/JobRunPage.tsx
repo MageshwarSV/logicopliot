@@ -3463,8 +3463,9 @@ function ExtractionReview({
   const [compositeSaving, setCompositeSaving] = useState(false);
   const [compositeError, setCompositeError] = useState<string | null>(null);
   const [compositeAvailable, setCompositeAvailable] = useState<string[]>([]);
-  const [compositeChosen, setCompositeChosen] = useState<string[]>([]);
+  const [compositeChosen, setCompositeChosen] = useState<jobsApi.CompositePiece[]>([]);
   const [compositeLabel, setCompositeLabel] = useState("Combined Description");
+  const [compositeFixedInput, setCompositeFixedInput] = useState("");
 
   async function openComposite() {
     setCompositeOpen(true);
@@ -3786,13 +3787,22 @@ function ExtractionReview({
                 </p>
               ) : (
                 <div className="flex flex-col gap-1.5">
-                  {compositeChosen.map((label, i) => (
+                  {compositeChosen.map((piece, i) => (
                     <div
-                      key={label}
+                      key={i}
                       className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm dark:border-teal-500/20 dark:bg-teal-500/10"
                     >
                       <span className="w-5 text-center text-xs font-semibold text-teal-700 dark:text-teal-300">{i + 1}</span>
-                      <span className="flex-1 text-teal-900 dark:text-teal-200">{label}</span>
+                      {typeof piece === "string" ? (
+                        <span className="flex-1 text-teal-900 dark:text-teal-200">{piece}</span>
+                      ) : (
+                        <span className="flex-1 text-teal-900 dark:text-teal-200">
+                          <span className="rounded bg-teal-200/60 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 dark:bg-teal-500/20 dark:text-teal-200">
+                            Fixed
+                          </span>{" "}
+                          "{piece.fixed}"
+                        </span>
+                      )}
                       <button
                         type="button"
                         disabled={i === 0}
@@ -3849,6 +3859,27 @@ function ExtractionReview({
                     <option key={l} value={l}>{l}</option>
                   ))}
               </select>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={compositeFixedInput}
+                  onChange={(e) => setCompositeFixedInput(e.target.value)}
+                  placeholder="Fixed value, e.g. a dash -"
+                  className="flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const text = compositeFixedInput.trim();
+                    if (!text) return;
+                    setCompositeChosen((arr) => [...arr, { fixed: text }]);
+                    setCompositeFixedInput("");
+                  }}
+                >
+                  + Add fixed value
+                </Button>
+              </div>
             </>
           )}
           {compositeError && <Alert>{compositeError}</Alert>}

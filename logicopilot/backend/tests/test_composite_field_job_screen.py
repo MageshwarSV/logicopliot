@@ -188,3 +188,71 @@ def test_operator_cannot_reach_the_admin_only_custom_field_routes_through_this(c
     login(client, "sa-cfj5@example.com")
     resp = client.patch(f"/api/v1/custom-fields/{cf.id}", json={"kind": "ai", "ai_prompt": "hacked"})
     assert resp.status_code == 200
+
+
+def test_fixed_value_piece_is_the_same_literal_text_on_every_line(client, db_session):
+    """A piece doesn't have to be another field - {"fixed": "<text>"} is a literal typed
+    straight in, joined in at that position on every line the same way."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_job_with_lines(db_session, tenant, group, tdoc, "JOB-CFJ7", rows=[
+        {"Customer Part code": "MC1", "product_description": "WIDGET 1"},
+        {"Customer Part code": "MC2", "product_description": "WIDGET 2"},
+    ])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cfj7@example.com")
+    login(client, op.email)
+
+    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["Customer Part code", {"fixed": "-"}, "product_description"],
+    })
+    assert resp.status_code == 200, resp.text
+    values = {r["row_index"]: r["value"] for r in resp.json()}
+    assert values[1] == "MC1 - WIDGET 1"
+    assert values[2] == "MC2 - WIDGET 2"
+
+    cf = db_session.query(CustomField).filter(CustomField.group_id == group.id, CustomField.kind == "composite").one()
+    assert cf.composite_source_labels == ["Customer Part code", {"fixed": "-"}, "product_description"]
+
+
+def test_fixed_value_piece_cannot_be_blank(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job = _make_job_with_lines(db_session, tenant, group, tdoc, "JOB-CFJ8",
+                               rows=[{"product_description": "WIDGET"}])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cfj8@example.com")
+    login(client, op.email)
+
+    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["product_description", {"fixed": "  "}],
+    })
+    assert resp.status_code == 400
+
+
+def test_available_labels_excludes_the_composite_fields_own_label(client, db_session):
+    """A composite field can't usefully combine itself - offering its own label as a
+    choosable piece would let an operator build a circular reference."""
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Combined Description",
+                     kind="composite", per_row=True, composite_source_labels=["product_description"])
+    db_session.add(cf)
+    db_session.commit()
+    job = _make_job_with_lines(db_session, tenant, group, tdoc, "JOB-CFJ9",
+                               rows=[{"product_description": "WIDGET"}])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cfj9@example.com")
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}/composite-fields")
+    assert resp.status_code == 200, resp.text
+    assert "Combined Description" not in resp.json()["available_labels"]
+
+    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["Combined Description"],
+    })
+    assert resp.status_code == 400

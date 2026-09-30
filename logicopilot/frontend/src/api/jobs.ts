@@ -309,10 +309,15 @@ export async function correctFieldValue(valueId: string, correctedValue: string)
   return data;
 }
 
+/** One piece of a composite field's value: either another field's own label_name (a plain
+ *  string) or a fixed literal value typed straight in - the SAME text on every product line
+ *  rather than something read off the job (e.g. a separator, a fixed prefix). */
+export type CompositePiece = string | { fixed: string };
+
 export interface CompositeFieldConfig {
   id: string;
   label_name: string;
-  composite_source_labels: string[];
+  composite_source_labels: CompositePiece[];
 }
 
 export interface CompositeFieldsForJob {
@@ -336,7 +341,7 @@ export async function getCompositeFieldsForJob(jobId: string): Promise<Composite
 export async function setCompositeFieldOrder(
   jobId: string,
   labelName: string,
-  sourceLabels: string[],
+  sourceLabels: CompositePiece[],
 ): Promise<void> {
   await apiClient.put(`/jobs/${jobId}/composite-fields`, {
     label_name: labelName,

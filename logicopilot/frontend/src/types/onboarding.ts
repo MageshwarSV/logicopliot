@@ -117,11 +117,16 @@ export interface CustomField {
   /** Other custom_field ids that also get set to whichever value is picked, on the same row
    *  (e.g. RITC following the CTH pick). */
   sync_field_ids?: string[] | null;
-  /** kind="composite": ordered label_names of other fields on the same product line, joined
-   *  with a single space (blank pieces skipped) to become this field's own value - e.g.
-   *  Description + Part No + Material Code combined into one "product_description". */
-  composite_source_labels?: string[] | null;
+  /** kind="composite": ordered pieces, joined with a single space (blank pieces skipped) to
+   *  become this field's own value for each product line - e.g. Description + Part No +
+   *  Material Code combined into one "product_description". Each piece is either another
+   *  field's label_name (a string) or a fixed literal value typed straight in
+   *  ({"fixed": "<text>"}) - the same text on every line. */
+  composite_source_labels?: CompositePiece[] | null;
 }
+
+/** One piece of a composite field's value - see CustomField.composite_source_labels. */
+export type CompositePiece = string | { fixed: string };
 
 /** A customer's reference sheet — their own export, used to answer what the documents cannot.
  *  For Nokia it is 22,000 material codes against the CTH each one is declared under. */

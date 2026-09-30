@@ -4216,6 +4216,23 @@ def _resolve_target_value(
     return (resolved or None), value
 
 
+def _composite_piece_value(piece, piece_values: dict[str, dict], key) -> str:
+    """One piece of a composite field's value, for one line.
+
+    A piece is either a plain string (another field's own label_name - read from
+    piece_values, keyed exactly the way _line_values/_row_values already return per-line
+    values) or {"fixed": "<literal text>"} - a fixed/literal piece the Super Admin or an
+    operator typed in directly (e.g. a separator, a fixed prefix), the SAME text on every
+    line rather than something read off the job. Shared by run_extraction's per-row loop and
+    _recompute_per_row_custom_field so the two never drift on what a "piece" can be.
+    """
+    if isinstance(piece, str):
+        return piece_values.get(piece, {}).get(key, "")
+    if isinstance(piece, dict):
+        return str(piece.get("fixed") or "")
+    return ""
+
+
 def run_extraction(db: Session, job: Job) -> None:
     """Extract every marked field for a job's uploaded documents and set status to
     'extracted'. Reusable by the operator's Extract button AND the email auto-pull."""
@@ -4930,15 +4947,17 @@ def run_extraction(db: Session, job: Job) -> None:
                     looked_up[key] = answer
             elif cf.kind == "composite":
                 # Pure join over data this job already has for the line - no prompt, no
-                # reference sheet. Each piece is read by label_name, so it can be a mark
-                # (item_material_code, product_description, ...) or another custom field
-                # (already computed earlier this same run - see the sort above), whichever the
-                # wizard was pointed at. Blank pieces are skipped entirely rather than leaving
-                # a stray double space where a line has nothing for one piece.
-                labels = getattr(cf, "composite_source_labels", None) or []
-                piece_values = {label: _line_values(label) for label in labels}
+                # reference sheet. Each piece is either another field's label_name (a mark
+                # like item_material_code/product_description, or another custom field
+                # already computed earlier this same run - see the sort above) or a fixed
+                # literal value typed straight in - see _composite_piece_value. Blank pieces
+                # are skipped entirely rather than leaving a stray double space where a line
+                # has nothing for one piece.
+                pieces_cfg = getattr(cf, "composite_source_labels", None) or []
+                field_labels = [p for p in pieces_cfg if isinstance(p, str)]
+                piece_values = {label: _line_values(label) for label in field_labels}
                 for key in line_keys:
-                    pieces = [piece_values[label].get(key, "") for label in labels]
+                    pieces = [_composite_piece_value(p, piece_values, key) for p in pieces_cfg]
                     looked_up[key] = " ".join(p for p in pieces if p)
             for key in line_keys:
                 value = looked_up.get(key) or cf.hardcoded_value or ""
@@ -5396,10 +5415,11 @@ def _recompute_per_row_custom_field(db: Session, job: Job, cf: "CustomField") ->
         answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
-        labels = getattr(cf, "composite_source_labels", None) or []
-        piece_values = {label: _row_values(label) for label in labels}
+        pieces_cfg = getattr(cf, "composite_source_labels", None) or []
+        field_labels = [p for p in pieces_cfg if isinstance(p, str)]
+        piece_values = {label: _row_values(label) for label in field_labels}
         for key in line_keys:
-            pieces = [piece_values[label].get(key, "") for label in labels]
+            pieces = [_composite_piece_value(p, piece_values, key) for p in pieces_cfg]
             computed[key] = " ".join(p for p in pieces if p)
 
     rows: list[JobFieldValue] = []
@@ -5583,7 +5603,9 @@ def recompute_custom_field(
 class CompositeFieldOut(BaseModel):
     id: str
     label_name: str
-    composite_source_labels: list[str]
+    # Each piece is either another field's label_name (a string) or a fixed literal value
+    # typed straight in ({"fixed": "<text>"}) - see _composite_piece_value's own docstring.
+    composite_source_labels: list[str | dict[str, str]]
 
 
 class CompositeFieldsOut(BaseModel):
@@ -5623,12 +5645,16 @@ def composite_fields_for_job(
         c.label_name for c in cf_rows
         if c.per_row and (c.kind in ("lookup", "composite") or c.paired_custom_field_id)
     ]
-    available = sorted(set(mark_labels) | set(field_labels))
     composite_rows = [c for c in cf_rows if c.kind == "composite" and c.per_row]
     existing_cf = (
         next((c for c in composite_rows if c.label_name == "Combined Description"), None)
         or (composite_rows[0] if composite_rows else None)
     )
+    available = sorted(set(mark_labels) | set(field_labels))
+    if existing_cf is not None:
+        # A composite field can't usefully combine ITSELF - offering its own label as a
+        # choosable piece would let an operator build a circular reference.
+        available = [l for l in available if l != existing_cf.label_name]
     existing = None
     if existing_cf is not None:
         existing = CompositeFieldOut(
@@ -5640,7 +5666,9 @@ def composite_fields_for_job(
 
 class CompositeFieldUpdate(BaseModel):
     label_name: str = "Combined Description"
-    source_labels: list[str]
+    # Each piece is either another field's label_name (a string) or a fixed literal value
+    # typed straight in ({"fixed": "<text>"}) - see _composite_piece_value's own docstring.
+    source_labels: list[str | dict[str, str]]
 
 
 @router.put("/jobs/{job_id}/composite-fields", response_model=list[JobFieldValueOut])
@@ -5670,6 +5698,10 @@ def set_composite_field_order(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the field a label.")
     if not payload.source_labels:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose at least one piece to combine.")
+    for piece in payload.source_labels:
+        if isinstance(piece, dict) and not (piece.get("fixed") or "").strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="A fixed-value piece cannot be empty.")
 
     composite_rows = (
         db.query(CustomField)
@@ -5686,6 +5718,9 @@ def set_composite_field_order(
             label_name=label, kind="composite", per_row=True,
         )
         db.add(cf)
+    if any(isinstance(p, str) and p == cf.label_name for p in payload.source_labels):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="A field cannot combine itself.")
     cf.composite_source_labels = payload.source_labels
     db.commit()
     db.refresh(cf)

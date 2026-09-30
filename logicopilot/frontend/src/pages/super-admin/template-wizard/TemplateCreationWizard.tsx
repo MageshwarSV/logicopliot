@@ -11,7 +11,7 @@ import { Alert } from "../../../components/ui/Alert";
 import * as tenantsApi from "../../../api/tenants";
 import * as api from "../../../api/onboarding";
 import type { Tenant } from "../../../types/tenant";
-import type { CustomField, DemoResult, Mark, TemplateGroupDetail } from "../../../types/onboarding";
+import type { CompositePiece, CustomField, DemoResult, Mark, TemplateGroupDetail } from "../../../types/onboarding";
 import { DOC_TYPES, MARK_COLORS, MODES } from "../../../types/onboarding";
 import { MarkCanvas, type DraftBox } from "./MarkCanvas";
 
@@ -326,7 +326,8 @@ export function TemplateCreationWizard() {
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
-  const [cfCompositeLabels, setCfCompositeLabels] = useState<string[]>([]);
+  const [cfCompositeLabels, setCfCompositeLabels] = useState<CompositePiece[]>([]);
+  const [cfCompositeFixedInput, setCfCompositeFixedInput] = useState("");
   const [crossFieldPopup, setCrossFieldPopup] = useState<{ customFieldId: string; label: string } | null>(null);
   const [crossFieldTargets, setCrossFieldTargets] = useState<string[]>([]);
   // Custom ruling (decides which documents a job requires)
@@ -401,7 +402,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]);
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -426,6 +427,7 @@ export function TemplateCreationWizard() {
     setCfPickerHeading(cf.picker_heading ?? "");
     setCfSyncFieldIds(cf.sync_field_ids ?? []);
     setCfCompositeLabels(cf.composite_source_labels ?? []);
+    setCfCompositeFixedInput("");
     setError(null);
     setCustomOpen(true);
   }
@@ -2290,13 +2292,22 @@ export function TemplateCreationWizard() {
                 </p>
               ) : (
                 <div className="flex flex-col gap-1.5">
-                  {cfCompositeLabels.map((label, i) => (
+                  {cfCompositeLabels.map((piece, i) => (
                     <div
-                      key={label}
+                      key={i}
                       className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm dark:border-teal-500/20 dark:bg-teal-500/10"
                     >
                       <span className="w-5 text-center text-xs font-semibold text-teal-700 dark:text-teal-300">{i + 1}</span>
-                      <span className="flex-1 text-teal-900 dark:text-teal-200">{label}</span>
+                      {typeof piece === "string" ? (
+                        <span className="flex-1 text-teal-900 dark:text-teal-200">{piece}</span>
+                      ) : (
+                        <span className="flex-1 text-teal-900 dark:text-teal-200">
+                          <span className="rounded bg-teal-200/60 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 dark:bg-teal-500/20 dark:text-teal-200">
+                            Fixed
+                          </span>{" "}
+                          "{piece.fixed}"
+                        </span>
+                      )}
                       <button
                         type="button"
                         disabled={i === 0}
@@ -2359,6 +2370,26 @@ export function TemplateCreationWizard() {
                   "multiple values in this document", or create another per-line custom tag, first.
                 </p>
               )}
+              <div className="flex gap-2">
+                <Input
+                  value={cfCompositeFixedInput}
+                  onChange={(e) => setCfCompositeFixedInput(e.target.value)}
+                  placeholder="Fixed value, e.g. a dash -"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const text = cfCompositeFixedInput.trim();
+                    if (!text) return;
+                    setCfCompositeLabels((arr) => [...arr, { fixed: text }]);
+                    setCfCompositeFixedInput("");
+                  }}
+                >
+                  + Add fixed value
+                </Button>
+              </div>
             </div>
           ) : cfKind === "hardcoded" ? (
             <div>
