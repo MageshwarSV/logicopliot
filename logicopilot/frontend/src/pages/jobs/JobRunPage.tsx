@@ -3145,6 +3145,46 @@ function ExtractionReview({
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const approvedCount = files.filter(isApproved).length;
 
+  // Delete/Reupload for the file on screen. Reupload is delete-then-upload into the SAME
+  // slot rather than a raw upload over the existing file: the upload endpoint adds a new
+  // file alongside whatever is already in a slot (a job can genuinely carry several files
+  // per document type), so replacing the old one first is what makes this a true swap
+  // rather than a second, duplicate file next to it.
+  const [docActionBusy, setDocActionBusy] = useState(false);
+  const [docActionError, setDocActionError] = useState<string | null>(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const reuploadInputRef = useRef<HTMLInputElement>(null);
+
+  const deleteActiveDocument = async () => {
+    if (!active) return;
+    setDocActionError(null);
+    setDocActionBusy(true);
+    try {
+      await jobsApi.deleteJobDocumentFile(jobId, active.id);
+      await reload();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setDocActionError(err.response?.data?.detail ?? "Could not delete that document.");
+    } finally {
+      setDocActionBusy(false);
+      setConfirmDeleteOpen(false);
+    }
+  };
+
+  const reuploadActiveDocument = async (file: File) => {
+    if (!active) return;
+    setDocActionError(null);
+    setDocActionBusy(true);
+    try {
+      await jobsApi.deleteJobDocumentFile(jobId, active.id);
+      await jobsApi.uploadJobDocument(jobId, active.template_document_id, file);
+      await reload();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setDocActionError(err.response?.data?.detail ?? "Reupload failed.");
+    } finally {
+      setDocActionBusy(false);
+    }
+  };
+
   // Which extracted value is focused, so the document preview can jump to and highlight its
   // mark. Cleared on switching documents — a field focused on one file's tab has no business
   // being drawn over a completely different file's page.
@@ -3306,13 +3346,74 @@ function ExtractionReview({
             against the document is impossible if the document scrolls away while you read
             the twentieth field. */}
         <Card className="p-5 lg:sticky lg:top-4">
-          <h2 className="mb-3 font-semibold text-indigo-600 dark:text-indigo-400">
-            Document Preview
-          </h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="font-semibold text-indigo-600 dark:text-indigo-400">
+              Document Preview
+            </h2>
+            {!readOnly && active && (
+              <div className="flex items-center gap-2">
+                <input
+                  ref={reuploadInputRef}
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void reuploadActiveDocument(file);
+                  }}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={docActionBusy || job.status === "extracting"}
+                  isLoading={docActionBusy}
+                  onClick={() => reuploadInputRef.current?.click()}
+                >
+                  Reupload
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={docActionBusy || job.status === "extracting"}
+                  onClick={() => setConfirmDeleteOpen(true)}
+                >
+                  Delete Document
+                </Button>
+              </div>
+            )}
+          </div>
+          {docActionError && (
+            <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">{docActionError}</p>
+          )}
           {active && (
             <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} highlight={highlight} />
           )}
         </Card>
+
+        <Modal
+          open={confirmDeleteOpen}
+          onClose={() => setConfirmDeleteOpen(false)}
+          title="Delete this document?"
+        >
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            This removes {active?.name ?? "this document"}'s uploaded file and every value read
+            off it. Once a replacement is uploaded, re-run extraction to fill those values back
+            in.
+          </p>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteOpen(false)}
+              className="text-xs text-slate-500 hover:underline dark:text-slate-400"
+            >
+              Cancel
+            </button>
+            <Button variant="danger" isLoading={docActionBusy} onClick={() => void deleteActiveDocument()}>
+              Delete document
+            </Button>
+          </div>
+        </Modal>
 
         <Card className="p-5">
           <h2 className="mb-1 font-semibold text-indigo-600 dark:text-indigo-400">
