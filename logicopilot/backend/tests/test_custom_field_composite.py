@@ -192,6 +192,27 @@ def test_composite_field_value_is_self_filled_on_the_job(client, db_session):
     assert fv["self_filled"] is True
 
 
+def test_create_endpoint_honours_composite_source_labels_at_creation(client, db_session):
+    """Bug found while verifying this feature live: the create route built the CustomField
+    without paired_custom_field_id/picker_heading/sync_field_ids/composite_source_labels at
+    all, so a brand-new composite field lost its recipe silently unless immediately
+    followed by a second PATCH."""
+    tenant = make_tenant(db_session)
+    group, _tdoc = _make_template(db_session, tenant)
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-composite4@example.com")
+    login(client, "sa-composite4@example.com")
+
+    resp = client.post(f"/api/v1/template-groups/{group.id}/custom-fields", json={
+        "label_name": "Combined",
+        "kind": "composite",
+        "per_row": True,
+        "composite_source_labels": ["item_material_code", "product_description"],
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["composite_source_labels"] == ["item_material_code", "product_description"]
+
+
 def test_edit_endpoint_can_set_and_clear_composite_source_labels(client, db_session):
     tenant = make_tenant(db_session)
     group, _tdoc = _make_template(db_session, tenant)

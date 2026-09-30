@@ -617,6 +617,10 @@ def create_custom_field(
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
         example_value=payload.example_value,
+        paired_custom_field_id=payload.paired_custom_field_id,
+        picker_heading=payload.picker_heading,
+        sync_field_ids=payload.sync_field_ids,
+        composite_source_labels=payload.composite_source_labels,
     )
     db.add(cf)
     db.commit()
