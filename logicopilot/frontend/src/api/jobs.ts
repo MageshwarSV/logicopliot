@@ -309,6 +309,41 @@ export async function correctFieldValue(valueId: string, correctedValue: string)
   return data;
 }
 
+export interface CompositeFieldConfig {
+  id: string;
+  label_name: string;
+  composite_source_labels: string[];
+}
+
+export interface CompositeFieldsForJob {
+  available_labels: string[];
+  existing: CompositeFieldConfig | null;
+}
+
+/** What "Combine fields" on the job screen's Product Detail card has to offer - every
+ *  already-existing per-line field on this job's template, plus the current combination (if
+ *  one is already set up). Same underlying mechanism as the Super Admin wizard's "🧩 Combine
+ *  fields" custom tag kind - this is a narrower, job-screen-reachable door onto it. */
+export async function getCompositeFieldsForJob(jobId: string): Promise<CompositeFieldsForJob> {
+  const { data } = await apiClient.get<CompositeFieldsForJob>(`/jobs/${jobId}/composite-fields`);
+  return data;
+}
+
+/** Sets the piece order for the template's composite field and recomputes it on THIS job
+ *  immediately. Still a template-wide setting under the hood - every job of this template
+ *  reads the same combination from now on, not just this one. Caller reloads the job afterward
+ *  to pick up the new value(s) - the response here isn't shaped like the job's own field_values. */
+export async function setCompositeFieldOrder(
+  jobId: string,
+  labelName: string,
+  sourceLabels: string[],
+): Promise<void> {
+  await apiClient.put(`/jobs/${jobId}/composite-fields`, {
+    label_name: labelName,
+    source_labels: sourceLabels,
+  });
+}
+
 /** Sets (or clears, with null) a job's GK1-set target date — drives the ETA boxes on the
  *  operator dashboard. */
 export async function setJobEta(jobId: string, etaDate: string | null): Promise<JobDetail> {

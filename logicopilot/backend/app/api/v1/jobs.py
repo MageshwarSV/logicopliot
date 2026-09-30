@@ -5302,6 +5302,149 @@ def correct_field_value(
     )
 
 
+def _recompute_per_row_custom_field(db: Session, job: Job, cf: "CustomField") -> list[JobFieldValueOut]:
+    """The per-row half of recompute_custom_field's own logic, pulled out so a second,
+    narrower entry point (an operator picking a composite field's piece order from the job
+    screen - see composite_fields_for_job/set_composite_field_order below) can reuse it
+    without duplicating it, rather than only ever being reachable from that endpoint."""
+    line_keys: list[tuple[int, int]] = sorted({
+        ((r[0] or 1), r[1])
+        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+        .distinct().all()
+    })
+    if not line_keys:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="This job has no line items yet — a per-row field has nothing to backfill into.")
+
+    # A per-row field's VALUE depends on its own kind exactly the way run_extraction's own
+    # per-row loop does - a lookup field reads the reference sheet, an AI field reads the
+    # document(s) it was told to, keyed to this job's own real product lines; only a
+    # genuinely hardcoded field has one fixed answer for every line. This endpoint used to
+    # apply `cf.hardcoded_value` unconditionally regardless of kind, so recomputing a
+    # per-row lookup or AI field here (e.g. a CTH) silently blanked every line instead of
+    # actually recomputing it - found while wiring up a second per-row AI field and
+    # confirming this same endpoint would need to handle it too.
+    def _row_values(label: str) -> dict[tuple[int, int], str]:
+        out: dict[tuple[int, int], str] = {}
+        for fv in db.query(JobFieldValue).filter(
+                JobFieldValue.job_id == job.id,
+                JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name == label).all():
+            out[((fv.set_index or 1), fv.row_index)] = (
+                fv.corrected_value or fv.extracted_value or "").strip()
+        return out
+
+    computed: dict[tuple[int, int], str] = {}
+    if cf.kind == "lookup":
+        from app.core.material_master import load_master, lookup_cth, material_from
+        from app.core.reference_cache import lookup_reference
+
+        master = load_master(
+            job.group_id,
+            match_columns=getattr(cf, "lookup_match_columns", None),
+            return_column=getattr(cf, "lookup_return_column", None),
+        )
+        key_label = (getattr(cf, "lookup_key_label", None) or "").strip()
+        keys = _row_values(key_label) if key_label else {}
+        codes = keys or _row_values("item_material_code")
+        descs = _row_values("product_description")
+        for key in line_keys:
+            desc = descs.get(key, "")
+            material = material_from(codes.get(key, ""), desc)
+            code = lookup_cth(material, master, description=desc)
+            if not code and (material or desc):
+                code = lookup_reference(db, cf.id, [material, desc]) or ""
+            computed[key] = code
+    elif cf.kind == "ai":
+        from app.core.llm import compute_custom_field_per_row
+
+        group = db.get(TemplateGroup, job.group_id)
+        docs_by_tdoc: dict[str, list[JobDocument]] = {}
+        for d in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                  .order_by(JobDocument.file_index).all()):
+            docs_by_tdoc.setdefault(d.template_document_id, []).append(d)
+
+        src_ids = cf.source_document_ids or [d.id for d in group.documents]
+        chunks = []
+        for did in src_ids:
+            tdoc = next((d for d in group.documents if d.id == did), None)
+            name = tdoc.name if tdoc else "DOC"
+            for jdoc in docs_by_tdoc.get(did, []):
+                if not jdoc.file_path:
+                    continue
+                cached = jdoc.extracted_json
+                text = cached.get("text", "") if cached else ""
+                chunks.append(f"=== {name} ===\n{text}")
+        docs_text = "\n\n".join(chunks)
+        records = _document_records(db, job, group)
+        chosen = set(src_ids)
+        records = [r for r in records if r["template_document_id"] in chosen]
+
+        descs = _row_values("product_description")
+        codes = _row_values("item_material_code")
+        qtys = _row_values("item_quantity")
+        row_context = [
+            {
+                "row": i + 1,
+                "part_code": codes.get(key, ""),
+                "description": descs.get(key, ""),
+                "quantity": qtys.get(key, ""),
+            }
+            for i, key in enumerate(line_keys)
+        ]
+        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
+        computed = dict(zip(line_keys, answers))
+    elif cf.kind == "composite":
+        labels = getattr(cf, "composite_source_labels", None) or []
+        piece_values = {label: _row_values(label) for label in labels}
+        for key in line_keys:
+            pieces = [piece_values[label].get(key, "") for label in labels]
+            computed[key] = " ".join(p for p in pieces if p)
+
+    rows: list[JobFieldValue] = []
+    for set_index, row_index in line_keys:
+        value = computed.get((set_index, row_index), cf.hardcoded_value or "")
+        existing = (
+            db.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                    JobFieldValue.set_index == set_index, JobFieldValue.row_index == row_index)
+            .first()
+        )
+        if existing is None:
+            existing = JobFieldValue(
+                tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
+                label_name=cf.label_name, set_index=set_index, row_index=row_index,
+            )
+            db.add(existing)
+        existing.label_name = cf.label_name
+        existing.extracted_value = value
+        rows.append(existing)
+    # A field turned per_row AFTER it already had a single job-level answer (row_index
+    # None) leaves that old slot stranded once the per-line ones above take over - the
+    # operator would see the SAME field twice, once in "For the whole job" and once per
+    # line. Safe to drop only when nobody actually typed an answer into it; a real
+    # correction has no single line to fall back into automatically, so it is left alone
+    # rather than silently discarded.
+    stale = (db.query(JobFieldValue)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                    JobFieldValue.row_index.is_(None))
+            .first())
+    if stale is not None and not (stale.corrected_value or "").strip():
+        db.delete(stale)
+    db.commit()
+    results = []
+    for row in rows:
+        db.refresh(row)
+        results.append(JobFieldValueOut(
+            id=row.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
+            label_name=row.label_name, extracted_value=row.extracted_value,
+            corrected_value=row.corrected_value, value=row.value, is_custom=True,
+            origin="computed", set_index=row.set_index, row_index=row.row_index,
+        ))
+    return results
+
+
 @router.post("/jobs/{job_id}/custom-fields/{custom_field_id}/recompute", response_model=list[JobFieldValueOut])
 def recompute_custom_field(
     job_id: str,
@@ -5354,142 +5497,7 @@ def recompute_custom_field(
                             detail="A composite field must be per-row.")
 
     if getattr(cf, "per_row", False):
-        line_keys: list[tuple[int, int]] = sorted({
-            ((r[0] or 1), r[1])
-            for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-            .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
-            .distinct().all()
-        })
-        if not line_keys:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="This job has no line items yet — a per-row field has nothing to backfill into.")
-
-        # A per-row field's VALUE depends on its own kind exactly the way run_extraction's own
-        # per-row loop does - a lookup field reads the reference sheet, an AI field reads the
-        # document(s) it was told to, keyed to this job's own real product lines; only a
-        # genuinely hardcoded field has one fixed answer for every line. This endpoint used to
-        # apply `cf.hardcoded_value` unconditionally regardless of kind, so recomputing a
-        # per-row lookup or AI field here (e.g. a CTH) silently blanked every line instead of
-        # actually recomputing it - found while wiring up a second per-row AI field and
-        # confirming this same endpoint would need to handle it too.
-        def _row_values(label: str) -> dict[tuple[int, int], str]:
-            out: dict[tuple[int, int], str] = {}
-            for fv in db.query(JobFieldValue).filter(
-                    JobFieldValue.job_id == job.id,
-                    JobFieldValue.row_index.isnot(None),
-                    JobFieldValue.label_name == label).all():
-                out[((fv.set_index or 1), fv.row_index)] = (
-                    fv.corrected_value or fv.extracted_value or "").strip()
-            return out
-
-        computed: dict[tuple[int, int], str] = {}
-        if cf.kind == "lookup":
-            from app.core.material_master import load_master, lookup_cth, material_from
-            from app.core.reference_cache import lookup_reference
-
-            master = load_master(
-                job.group_id,
-                match_columns=getattr(cf, "lookup_match_columns", None),
-                return_column=getattr(cf, "lookup_return_column", None),
-            )
-            key_label = (getattr(cf, "lookup_key_label", None) or "").strip()
-            keys = _row_values(key_label) if key_label else {}
-            codes = keys or _row_values("item_material_code")
-            descs = _row_values("product_description")
-            for key in line_keys:
-                desc = descs.get(key, "")
-                material = material_from(codes.get(key, ""), desc)
-                code = lookup_cth(material, master, description=desc)
-                if not code and (material or desc):
-                    code = lookup_reference(db, cf.id, [material, desc]) or ""
-                computed[key] = code
-        elif cf.kind == "ai":
-            from app.core.llm import compute_custom_field_per_row
-
-            group = db.get(TemplateGroup, job.group_id)
-            docs_by_tdoc: dict[str, list[JobDocument]] = {}
-            for d in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
-                      .order_by(JobDocument.file_index).all()):
-                docs_by_tdoc.setdefault(d.template_document_id, []).append(d)
-
-            src_ids = cf.source_document_ids or [d.id for d in group.documents]
-            chunks = []
-            for did in src_ids:
-                tdoc = next((d for d in group.documents if d.id == did), None)
-                name = tdoc.name if tdoc else "DOC"
-                for jdoc in docs_by_tdoc.get(did, []):
-                    if not jdoc.file_path:
-                        continue
-                    cached = jdoc.extracted_json
-                    text = cached.get("text", "") if cached else ""
-                    chunks.append(f"=== {name} ===\n{text}")
-            docs_text = "\n\n".join(chunks)
-            records = _document_records(db, job, group)
-            chosen = set(src_ids)
-            records = [r for r in records if r["template_document_id"] in chosen]
-
-            descs = _row_values("product_description")
-            codes = _row_values("item_material_code")
-            qtys = _row_values("item_quantity")
-            row_context = [
-                {
-                    "row": i + 1,
-                    "part_code": codes.get(key, ""),
-                    "description": descs.get(key, ""),
-                    "quantity": qtys.get(key, ""),
-                }
-                for i, key in enumerate(line_keys)
-            ]
-            answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
-            computed = dict(zip(line_keys, answers))
-        elif cf.kind == "composite":
-            labels = getattr(cf, "composite_source_labels", None) or []
-            piece_values = {label: _row_values(label) for label in labels}
-            for key in line_keys:
-                pieces = [piece_values[label].get(key, "") for label in labels]
-                computed[key] = " ".join(p for p in pieces if p)
-
-        rows: list[JobFieldValue] = []
-        for set_index, row_index in line_keys:
-            value = computed.get((set_index, row_index), cf.hardcoded_value or "")
-            existing = (
-                db.query(JobFieldValue)
-                .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
-                        JobFieldValue.set_index == set_index, JobFieldValue.row_index == row_index)
-                .first()
-            )
-            if existing is None:
-                existing = JobFieldValue(
-                    tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
-                    label_name=cf.label_name, set_index=set_index, row_index=row_index,
-                )
-                db.add(existing)
-            existing.label_name = cf.label_name
-            existing.extracted_value = value
-            rows.append(existing)
-        # A field turned per_row AFTER it already had a single job-level answer (row_index
-        # None) leaves that old slot stranded once the per-line ones above take over - the
-        # operator would see the SAME field twice, once in "For the whole job" and once per
-        # line. Safe to drop only when nobody actually typed an answer into it; a real
-        # correction has no single line to fall back into automatically, so it is left alone
-        # rather than silently discarded.
-        stale = (db.query(JobFieldValue)
-                .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
-                        JobFieldValue.row_index.is_(None))
-                .first())
-        if stale is not None and not (stale.corrected_value or "").strip():
-            db.delete(stale)
-        db.commit()
-        results = []
-        for row in rows:
-            db.refresh(row)
-            results.append(JobFieldValueOut(
-                id=row.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
-                label_name=row.label_name, extracted_value=row.extracted_value,
-                corrected_value=row.corrected_value, value=row.value, is_custom=True,
-                origin="computed", set_index=row.set_index, row_index=row.row_index,
-            ))
-        return results
+        return _recompute_per_row_custom_field(db, job, cf)
 
     if cf.kind == "hardcoded":
         value, raw_value = _resolve_target_value(db, job.id, cf, cf.hardcoded_value or "")
@@ -5570,6 +5578,110 @@ def recompute_custom_field(
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
         origin="computed",
     )]
+
+
+class CompositeFieldOut(BaseModel):
+    id: str
+    label_name: str
+    composite_source_labels: list[str]
+
+
+class CompositeFieldsOut(BaseModel):
+    # Every already-existing per-line field (mark or custom field) this job's template could
+    # combine into one - a Super Admin-free view of just enough of the template to build the
+    # picker, never its prompts/hardcoded values/reference sheet setup.
+    available_labels: list[str]
+    existing: CompositeFieldOut | None = None
+
+
+@router.get("/jobs/{job_id}/composite-fields", response_model=CompositeFieldsOut)
+def composite_fields_for_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> CompositeFieldsOut:
+    """What this job's own "Combine fields" button (Product Detail, job screen) has to offer -
+    see set_composite_field_order below for what pressing Apply there actually does."""
+    from app.models.custom_field import CustomField
+    from app.models.field_mark import FieldMark
+    from app.models.template_document import TemplateDocument
+
+    job = _load_job(db, job_id, scope, user)
+    mark_labels = [
+        m.label_name for m in db.query(FieldMark)
+        .join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
+        .filter(TemplateDocument.group_id == job.group_id, FieldMark.is_multi_value.is_(True)).all()
+    ]
+    cf_rows = db.query(CustomField).filter(CustomField.group_id == job.group_id).all()
+    field_labels = [c.label_name for c in cf_rows if c.per_row]
+    available = sorted(set(mark_labels) | set(field_labels))
+    composite_rows = [c for c in cf_rows if c.kind == "composite" and c.per_row]
+    existing_cf = (
+        next((c for c in composite_rows if c.label_name == "Combined Description"), None)
+        or (composite_rows[0] if composite_rows else None)
+    )
+    existing = None
+    if existing_cf is not None:
+        existing = CompositeFieldOut(
+            id=existing_cf.id, label_name=existing_cf.label_name,
+            composite_source_labels=list(existing_cf.composite_source_labels or []),
+        )
+    return CompositeFieldsOut(available_labels=available, existing=existing)
+
+
+class CompositeFieldUpdate(BaseModel):
+    label_name: str = "Combined Description"
+    source_labels: list[str]
+
+
+@router.put("/jobs/{job_id}/composite-fields", response_model=list[JobFieldValueOut])
+def set_composite_field_order(
+    job_id: str,
+    payload: CompositeFieldUpdate,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2)),
+) -> list[JobFieldValueOut]:
+    """Let anyone reviewing a job set the piece order for the template's composite field, from
+    the job screen itself rather than the Super Admin wizard.
+
+    This is still a TEMPLATE-wide setting - the same CustomField row every job of this group
+    reads - pressing Apply here changes it for every job of this template, not only the one on
+    screen; only THIS job is recomputed immediately so the change is visible right away, other
+    jobs pick it up next time they are themselves recomputed or re-extracted. Deliberately
+    narrow: this never touches kind, prompts, hardcoded_value, or any other admin-only config -
+    only composite_source_labels (and per_row/kind/label_name on first creation) - so an
+    operator can reorder pieces here but not rewrite the field into something else entirely.
+    """
+    from app.models.custom_field import CustomField
+
+    job = _load_job(db, job_id, scope, user)
+    label = payload.label_name.strip()
+    if not label:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the field a label.")
+    if not payload.source_labels:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose at least one piece to combine.")
+
+    composite_rows = (
+        db.query(CustomField)
+        .filter(CustomField.group_id == job.group_id, CustomField.kind == "composite",
+                CustomField.per_row.is_(True))
+        .all()
+    )
+    cf = next((c for c in composite_rows if c.label_name == label), None) or (
+        composite_rows[0] if composite_rows else None
+    )
+    if cf is None:
+        cf = CustomField(
+            tenant_id=job.tenant_id, group_id=job.group_id,
+            label_name=label, kind="composite", per_row=True,
+        )
+        db.add(cf)
+    cf.composite_source_labels = payload.source_labels
+    db.commit()
+    db.refresh(cf)
+    return _recompute_per_row_custom_field(db, job, cf)
 
 
 @router.post("/jobs/{job_id}/marks/{mark_id}/recompute", response_model=list[JobFieldValueOut])

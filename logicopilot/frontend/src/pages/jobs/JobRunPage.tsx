@@ -3452,6 +3452,62 @@ function ExtractionReview({
     return rows;
   }, [job.field_values, active]);
 
+  // "Combine fields" - picking an ordered set of this template's own per-line fields (Part
+  // No, Description, ...) and joining them into one "Combined Description"-style field for
+  // every product on this job. Reachable from the job screen itself rather than only the
+  // Super Admin wizard - see set_composite_field_order's own docstring: it is still a
+  // TEMPLATE-WIDE setting (the same field every job of this template reads), Apply here just
+  // recomputes it onto THIS job immediately so the change is visible right away.
+  const [compositeOpen, setCompositeOpen] = useState(false);
+  const [compositeLoading, setCompositeLoading] = useState(false);
+  const [compositeSaving, setCompositeSaving] = useState(false);
+  const [compositeError, setCompositeError] = useState<string | null>(null);
+  const [compositeAvailable, setCompositeAvailable] = useState<string[]>([]);
+  const [compositeChosen, setCompositeChosen] = useState<string[]>([]);
+  const [compositeLabel, setCompositeLabel] = useState("Combined Description");
+
+  async function openComposite() {
+    setCompositeOpen(true);
+    setCompositeLoading(true);
+    setCompositeError(null);
+    try {
+      const { available_labels, existing } = await jobsApi.getCompositeFieldsForJob(jobId);
+      setCompositeAvailable(available_labels);
+      setCompositeChosen(existing?.composite_source_labels ?? []);
+      setCompositeLabel(existing?.label_name ?? "Combined Description");
+    } catch (err) {
+      setCompositeError(
+        axios.isAxiosError(err)
+          ? (err.response?.data?.detail as string | undefined) ?? "Could not load the available fields."
+          : "Could not load the available fields.",
+      );
+    } finally {
+      setCompositeLoading(false);
+    }
+  }
+
+  async function applyComposite() {
+    if (compositeChosen.length === 0) {
+      setCompositeError("Choose at least one piece to combine.");
+      return;
+    }
+    setCompositeSaving(true);
+    setCompositeError(null);
+    try {
+      await jobsApi.setCompositeFieldOrder(jobId, compositeLabel.trim() || "Combined Description", compositeChosen);
+      await reload();
+      setCompositeOpen(false);
+    } catch (err) {
+      setCompositeError(
+        axios.isAxiosError(err)
+          ? (err.response?.data?.detail as string | undefined) ?? "Could not apply the combination."
+          : "Could not apply the combination.",
+      );
+    } finally {
+      setCompositeSaving(false);
+    }
+  }
+
   if (!files.length) {
     return (
       <Card className="p-8 text-center">
@@ -3591,9 +3647,20 @@ function ExtractionReview({
 
               {lineRows.length > 0 && (
                 <div className="mt-6">
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
-                    Product Detail · {lineRows.length}
-                  </p>
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                      Product Detail · {lineRows.length}
+                    </p>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={openComposite}
+                        className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
+                      >
+                        🧩 Combine fields
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-col gap-2">
                     {lineRows.map(([n, cells]) => {
                       const lookedUp = lookedUpByRow.get(n) ?? [];
@@ -3693,6 +3760,106 @@ function ExtractionReview({
           )}
         </div>
       )}
+
+      <Modal open={compositeOpen} onClose={() => setCompositeOpen(false)} title="Combine fields" maxWidth="max-w-lg">
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Pick an ordered set of this template's own per-line fields — each product's value
+            is these pieces' own values, in this order, joined with a single space (a line with
+            nothing for one piece just skips it). This is a template-wide setting: applying it
+            here recomputes it on THIS job right away, and every other job of this template
+            reads the same combination going forward.
+          </p>
+          {compositeLoading ? (
+            <p className="text-sm text-slate-400">Loading…</p>
+          ) : (
+            <>
+              <Input
+                label="Field label"
+                value={compositeLabel}
+                onChange={(e) => setCompositeLabel(e.target.value)}
+                placeholder="Combined Description"
+              />
+              {compositeChosen.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400 dark:border-slate-700">
+                  No pieces chosen yet.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {compositeChosen.map((label, i) => (
+                    <div
+                      key={label}
+                      className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm dark:border-teal-500/20 dark:bg-teal-500/10"
+                    >
+                      <span className="w-5 text-center text-xs font-semibold text-teal-700 dark:text-teal-300">{i + 1}</span>
+                      <span className="flex-1 text-teal-900 dark:text-teal-200">{label}</span>
+                      <button
+                        type="button"
+                        disabled={i === 0}
+                        onClick={() =>
+                          setCompositeChosen((arr) => {
+                            const next = [...arr];
+                            [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                            return next;
+                          })
+                        }
+                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        title="Move earlier"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={i === compositeChosen.length - 1}
+                        onClick={() =>
+                          setCompositeChosen((arr) => {
+                            const next = [...arr];
+                            [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                            return next;
+                          })
+                        }
+                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        title="Move later"
+                      >
+                        ▼
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCompositeChosen((arr) => arr.filter((_, idx) => idx !== i))}
+                        className="rounded px-1.5 py-0.5 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
+                        title="Remove"
+                      >
+                        −
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setCompositeChosen((arr) => [...arr, e.target.value]);
+                }}
+                className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+              >
+                <option value="">+ Add a piece…</option>
+                {compositeAvailable
+                  .filter((l) => !compositeChosen.includes(l))
+                  .map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+              </select>
+            </>
+          )}
+          {compositeError && <Alert>{compositeError}</Alert>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setCompositeOpen(false)}>Cancel</Button>
+            <Button onClick={applyComposite} isLoading={compositeSaving} disabled={compositeLoading}>
+              Apply
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
