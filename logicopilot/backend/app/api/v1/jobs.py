@@ -5366,7 +5366,14 @@ def correct_field_value(
     # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
     # either restriction could be bypassed just by knowing/guessing a value's id.
     _load_job(db, fv.job_id, scope, user)
-    fv.corrected_value = payload.corrected_value
+    # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
+    # read site in this file already defensively does `.strip()` - this was the one write site
+    # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
+    # value - a CTH/RITC code is the case this was found on - rode uncleaned straight through
+    # to the Excel export and failed the ERP's own upload there, while clearing the cell and
+    # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
+    # behaving differently purely because of what came along with it.
+    fv.corrected_value = (payload.corrected_value or "").strip()
     # A kind="lookup" field the master had nothing for, now filled in by hand: remember it, so
     # the same material/description on a later line - this job or any other - is filled in
     # automatically instead of asked for again. Never for a value the master DID already find:
