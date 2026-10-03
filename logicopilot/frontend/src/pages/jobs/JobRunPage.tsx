@@ -3151,6 +3151,15 @@ function DualSourcePicker({
       : "primary";
   });
 
+  // Each box is independently editable (not just pickable) - sometimes NEITHER the dump
+  // lookup nor the document read is right, and the operator needs to type the real answer in
+  // directly rather than only choosing between two wrong ones. Drafts are local so typing
+  // doesn't round-trip through reload() on every keystroke; committed on blur/Enter, the same
+  // pattern ExtractedField uses.
+  const [primaryDraft, setPrimaryDraft] = useState(primaryValue);
+  const [otherDraft, setOtherDraft] = useState(otherValue);
+  useEffect(() => setOtherDraft(otherValue), [otherValue]);
+
   if (!other || !otherValue) return null;
 
   const choose = async (which: "primary" | "other") => {
@@ -3169,30 +3178,47 @@ function DualSourcePicker({
     }
   };
 
-  const Option = ({ id, label, value }: { id: "primary" | "other"; label: string; value: string }) => (
-    <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
-      <input
-        type="checkbox"
-        checked={selected === id}
-        disabled={readOnly || saving}
-        onChange={() => void choose(id)}
-      />
-      <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value}
-        readOnly
-        placeholder="—"
-        className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs placeholder:italic placeholder:text-slate-400 ${
-          selected === id
-            ? "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
-            : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
-        }`}
-      />
-    </label>
-  );
+  // Editing primary's OWN box: it is unconditionally the field exports actually read, so a
+  // direct correction always carries the synced fields (RITC, etc.) along with it, same as
+  // picking it would.
+  const commitPrimary = async () => {
+    if (readOnly || primaryDraft === primaryValue) return;
+    setSaving(true);
+    try {
+      await jobsApi.correctFieldValue(primary.id, primaryDraft);
+      ownPrimaryValueRef.current = primaryDraft;
+      for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
+      await reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Editing the OTHER box corrects THAT field's own value outright. It only also flows into
+  // primary (+ synced fields) when "other" is the currently picked source - editing a
+  // reference value that isn't actively feeding the real field shouldn't silently start
+  // feeding it.
+  const commitOther = async () => {
+    if (readOnly || !other || otherDraft === otherValue) return;
+    setSaving(true);
+    try {
+      await jobsApi.correctFieldValue(other.id, otherDraft);
+      if (selected === "other") {
+        await jobsApi.correctFieldValue(primary.id, otherDraft);
+        for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, otherDraft);
+      }
+      await reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const boxClass = (id: "primary" | "other") =>
+    `min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs placeholder:italic placeholder:text-slate-400 focus:outline-none ${
+      selected === id
+        ? "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
+        : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
+    } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`;
 
   return (
     <div>
@@ -3200,8 +3226,52 @@ function DualSourcePicker({
         {primary.picker_heading?.trim() || "Pick which one is right for this line"}
       </p>
       <div className="flex flex-col gap-1.5">
-        <Option id="primary" label={primary.label_name} value={primaryValue} />
-        <Option id="other" label={other.label_name} value={otherValue} />
+        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
+          <input
+            type="checkbox"
+            checked={selected === "primary"}
+            disabled={readOnly || saving}
+            onChange={() => void choose("primary")}
+          />
+          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {primary.label_name}
+          </span>
+          <input
+            type="text"
+            value={primaryDraft}
+            readOnly={readOnly}
+            onChange={(e) => setPrimaryDraft(e.target.value)}
+            onBlur={commitPrimary}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+            className={boxClass("primary")}
+          />
+        </label>
+        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
+          <input
+            type="checkbox"
+            checked={selected === "other"}
+            disabled={readOnly || saving}
+            onChange={() => void choose("other")}
+          />
+          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {other.label_name}
+          </span>
+          <input
+            type="text"
+            value={otherDraft}
+            readOnly={readOnly}
+            onChange={(e) => setOtherDraft(e.target.value)}
+            onBlur={commitOther}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+            className={boxClass("other")}
+          />
+        </label>
       </div>
       {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
     </div>
