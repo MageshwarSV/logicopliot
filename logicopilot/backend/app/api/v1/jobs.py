@@ -973,7 +973,7 @@ def _customer_name(db: Session, job: Job) -> str | None:
     return None
 
 
-def _pulled_from_sender(job: Job) -> str | None:
+def _pulled_from_sender(db: Session, job: Job) -> str | None:
     """Who actually emailed this job in, for the Assigned To column - NOT a substitute
     reading for Importer/Exporter (a person is not the consignee; putting one there just
     trades one wrong answer shown under the wrong heading for another, confusing the two
@@ -981,6 +981,13 @@ def _pulled_from_sender(job: Job) -> str | None:
     paperwork"). Only worth showing at all while the job is genuinely unassigned - the
     moment a real operator is assigned, _operator_name already answers this column, and a
     stale sender name sitting behind it would be misleading once someone real owns the job.
+
+    If the sender's address is actually a registered user's own account - their login email,
+    or a personal mailbox they connected for their own polling (User.mail_email, same idea as
+    the tenant's shared inbox) - show the Full Name that was typed in when that account was
+    created, not a raw fragment of the address. Only falls back to the email's own local part
+    (e.g. "ftwz2" from ftwz2@4slogistics.com) when no such account exists - an external
+    sender, like a customer or a CHA, genuinely has no name on file here.
     """
     if job.created_by_id or job.assigned_operator_id:
         return None
@@ -988,8 +995,23 @@ def _pulled_from_sender(job: Job) -> str | None:
         from app.core.job_email import read_email_meta
 
         sender = (read_email_meta(job.id) or {}).get("sender") or ""
-        if "@" in sender:
-            return sender.split("@", 1)[0]
+        if "@" not in sender:
+            return None
+        from sqlalchemy import func
+
+        from app.models.user import User
+
+        user = (
+            db.query(User)
+            .filter(func.lower(User.email) == sender.lower())
+            .first()
+            or db.query(User)
+            .filter(User.mail_email.isnot(None), func.lower(User.mail_email) == sender.lower())
+            .first()
+        )
+        if user is not None:
+            return user.full_name
+        return sender.split("@", 1)[0]
     except Exception:  # noqa: BLE001 — a name is never worth failing the list over
         pass
     return None
@@ -1156,7 +1178,7 @@ def _job_out(db: Session, job: Job) -> JobOut:
     out.customer_name = _customer_name(db, job)
     out.mode = _shipment_mode(db, job)
     out.operator_name = _operator_name(db, job)
-    out.pulled_from_sender = _pulled_from_sender(job)
+    out.pulled_from_sender = _pulled_from_sender(db, job)
     out.duplicate_of_reference = _duplicate_of_reference(db, job)
     return out
 
