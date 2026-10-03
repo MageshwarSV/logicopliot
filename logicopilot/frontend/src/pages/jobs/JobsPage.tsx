@@ -171,7 +171,12 @@ export function JobsPage() {
   }, [tenantFilter, group, bucket]);
 
   useEffect(() => {
-    const t = window.setInterval(refreshCurrentWindow, 4000);
+    // 15s, not 4s - this re-fetches every row currently loaded (which grows with how far an
+    // operator has scrolled, uncapped), fully enriched per job. A 4s interval across every
+    // open Jobs list tab was part of what exhausted the database connection pool under real
+    // concurrent use (see the dashboards' identical change) - 15s is still well inside "feels
+    // live" for a status change, at well under half the request volume.
+    const t = window.setInterval(refreshCurrentWindow, 15000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantFilter, group, bucket]);

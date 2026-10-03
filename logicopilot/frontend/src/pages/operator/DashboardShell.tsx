@@ -26,8 +26,14 @@ export function OperatorDashboard() {
   useEffect(() => {
     refresh();
     // Auto-refresh so the boxes' own counts (a job moving to Completed, a fresh GK2 approval)
-    // stay live without a manual reload.
-    const t = window.setInterval(() => { jobsApi.listJobs().then(setJobs).catch(() => {}); }, 4000);
+    // stay live without a manual reload. 30s, not 4s: this is the FULL, unpaginated job list,
+    // fully enriched (stage/customer/mode/operator/...) per job purely to compute a handful of
+    // count boxes from it client-side - a 4s interval meant every open dashboard tab repeated
+    // that full, expensive fetch 15x/minute continuously, which is what exhausted the database
+    // connection pool under any real concurrent use and took the whole Jobs list down for
+    // everyone. 30s is still "live" for a status dashboard a human is glancing at, at a small
+    // fraction of the load.
+    const t = window.setInterval(() => { jobsApi.listJobs().then(setJobs).catch(() => {}); }, 30000);
     return () => window.clearInterval(t);
   }, []);
 

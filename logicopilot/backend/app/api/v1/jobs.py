@@ -705,7 +705,7 @@ def _job_stage(db: Session, job: Job) -> str:
     return "ERP Submission"
 
 
-def _outer_status(db: Session, job: Job) -> str:
+def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     """The single word shown on the job list and the job header — coarser than the seven-stage
     rail on purpose. The rail's words are screens an operator navigates between; this is the
     answer to "where does this job actually stand", for someone who has not opened it.
@@ -714,6 +714,13 @@ def _outer_status(db: Session, job: Job) -> str:
     button and the green ticks all key off _job_stage()'s exact words, and changing those to
     read better here would change what gates a job's progress too. This function only picks a
     different word for the same computed stage — nothing it returns feeds back into the gate.
+
+    `stage` lets a caller that already computed _job_stage() for this exact job (every caller,
+    in practice - see _job_out/_build_detail) pass it straight through instead of this function
+    quietly computing it AGAIN - _job_stage() runs its own verification-findings queries, and
+    doing that twice per job is pure waste, sharply felt the moment a job list has more than a
+    handful of rows. None (the default) preserves the original one-argument behaviour for any
+    caller that has not computed it already.
 
     The GK1 (operator) -> GK2 sign-off chain (see Job.gk2_status) is checked first: once an
     operator has submitted a job for approval, THAT is what the badge should say, regardless
@@ -733,7 +740,7 @@ def _outer_status(db: Session, job: Job) -> str:
         return "Failed"
     if job.status == "extracting":
         return "AI - Processing"
-    stage = _job_stage(db, job)
+    stage = stage if stage is not None else _job_stage(db, job)
     if stage == "Running":
         return "Submitted"  # the ERP run is in flight — this IS the act of submitting
     if stage == "Document Capture":
@@ -1200,7 +1207,7 @@ def _duplicate_of_reference(db: Session, job: Job) -> str | None:
 def _job_out(db: Session, job: Job) -> JobOut:
     out = JobOut.model_validate(job)
     out.stage = _job_stage(db, job)
-    out.outer_status = _outer_status(db, job)
+    out.outer_status = _outer_status(db, job, stage=out.stage)
     out.customer_name = _customer_name(db, job)
     out.mode = _shipment_mode(db, job)
     out.operator_name = _operator_name(db, job)
@@ -2606,6 +2613,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     all_passed = len(verifications) > 0 and all(
         v.status not in BLOCKING_VERIFICATION_STATUSES or v.accepted for v in verifications
     )
+    job_stage = _job_stage(db, job)
     return JobDetailOut(
         id=job.id,
         tenant_id=job.tenant_id,
@@ -2613,8 +2621,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         group_name=group.name,
         reference=job.reference,
         status=job.status,
-        stage=_job_stage(db, job),
-        outer_status=_outer_status(db, job),
+        stage=job_stage,
+        outer_status=_outer_status(db, job, stage=job_stage),
         mode=_shipment_mode(db, job),
         assigned_operator_id=job.assigned_operator_id,
         operator_name=_operator_name(db, job),

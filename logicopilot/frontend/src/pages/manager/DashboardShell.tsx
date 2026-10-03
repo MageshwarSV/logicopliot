@@ -45,8 +45,10 @@ export function ManagerDashboard() {
       }
     }
     refresh();
-    // Auto-refresh so the boxes' own counts stay live without a manual reload.
-    const t = window.setInterval(refresh, 4000);
+    // Auto-refresh so the boxes' own counts stay live without a manual reload. 30s, not 4s -
+    // see the operator dashboard's identical change for why (this is the full, unpaginated,
+    // fully-enriched job list, fetched purely to compute a few count boxes from it).
+    const t = window.setInterval(refresh, 30000);
     return () => window.clearInterval(t);
   }, []);
 

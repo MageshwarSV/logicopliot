@@ -1310,7 +1310,7 @@ export function JobRunPage() {
           that turned out to be junk-reference content) - its custom fields were cleared
           along with it, and this is the only thing that says so. Shown above every tab,
           not just Document Capture, since whoever opens the job next could land anywhere. */}
-      {job.needs_reextraction && (
+      {job.needs_reextraction && job.status !== "extracting" && (
         <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
           <span>⚠️ One of this job's documents changed since it was last extracted — press Extract to refresh its data.</span>
           {!readOnly && (
@@ -1318,6 +1318,19 @@ export function JobRunPage() {
               Extract now
             </Button>
           )}
+        </div>
+      )}
+
+      {/* Extraction is running RIGHT NOW - shown above every tab, same as the banner above,
+          since the Document Capture tab's own "AI Processing…" pill is only visible from
+          there. Found live: an operator deleted a wrong document, re-extraction kicked off,
+          and looking at Required Details Review while it ran showed only blank CTH/RITC
+          fields with nothing anywhere saying why - indistinguishable from the data simply
+          being gone for good. */}
+      {job.status === "extracting" && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+          <span>AI is reading this job's documents right now — fields will fill in as soon as it finishes. This can take a minute or two.</span>
         </div>
       )}
 
