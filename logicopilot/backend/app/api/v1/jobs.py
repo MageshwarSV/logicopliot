@@ -998,22 +998,34 @@ def _pulled_from_sender(db: Session, job: Job) -> str | None:
     try:
         from app.core.job_email import read_email_meta
 
+        from sqlalchemy import func
+
+        from app.models.user import User
+
         meta = read_email_meta(job.id) or {}
         received_by = meta.get("received_by") or ""
         if not received_by and meta.get("sender"):
             # A job pulled before this field existed has no recorded receiving mailbox at
-            # all - but every one of them genuinely did come in on the tenant's one shared
-            # inbox (the only mailbox that has ever actually been active), so that default
-            # is a safe assumption for this older data, not a guess made up from nothing.
-            # (A job that instead came in through an OPERATOR's own mailbox would already
-            # have job.created_by_id set via _operator_matching_sender and never reach this
-            # line at all - see the guard above.)
-            received_by = get_settings().gmail_user or ""
+            # all. Guessing the GLOBAL GMAIL_USER default here would be wrong whenever this
+            # tenant actually polls through one of its OWN connected mailboxes instead (the
+            # common case - see User.mail_email) - so look at THIS tenant's own mailboxes: if
+            # exactly one is connected and active, that is unambiguously where every one of
+            # its older, unrecorded jobs came from.
+            # (A job that instead came in through an operator mailbox that ALSO matched the
+            # sender's own address would already have job.created_by_id set via
+            # _operator_matching_sender and never reach this line at all - see the guard
+            # above; this only covers a tenant's single shared/forwarding mailbox.)
+            candidates = (
+                db.query(User)
+                .filter(User.tenant_id == job.tenant_id, User.mail_email.isnot(None),
+                        User.mail_paused.is_(False), User.is_active.is_(True))
+                .all()
+            )
+            if len(candidates) == 1:
+                return candidates[0].full_name
+            return None
         if "@" not in received_by:
             return None
-        from sqlalchemy import func
-
-        from app.models.user import User
 
         user = (
             db.query(User)

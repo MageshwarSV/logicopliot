@@ -130,15 +130,18 @@ def test_an_unregistered_mailbox_still_falls_back_to_the_raw_address(db_session)
     assert _pulled_from_sender(db_session, job) == "unregistered-inbox"
 
 
-def test_old_meta_with_no_received_by_falls_back_to_the_shared_inbox(db_session, monkeypatch):
+def test_old_meta_with_no_received_by_falls_back_to_this_tenants_one_connected_mailbox(db_session):
     """A job pulled before this field existed has no recorded receiving mailbox at all - but
-    every one of them genuinely came in through the tenant's one shared inbox (the only
-    mailbox that has ever actually been active), so that default is used rather than showing
-    nothing for every job that predates this change."""
-    from app.core import config as config_module
-
-    monkeypatch.setattr(config_module.get_settings(), "gmail_user", "cargora@4slogistics.com")
-    job, _tenant = _make_job(db_session)
+    if this TENANT has exactly one mailbox connected and active, every one of its older,
+    unrecorded jobs unambiguously came in through it. Deliberately NOT the global GMAIL_USER
+    default - that is a single platform-wide setting, wrong the moment a tenant actually polls
+    through its own connected mailbox instead (the common case)."""
+    job, tenant = _make_job(db_session)
+    user = make_user(db_session, role=OPERATOR, tenant=tenant, email="cargora@4slogistics.com",
+                     full_name="Cargora Shared Inbox")
+    user.mail_email = "cargora@4slogistics.com"
+    user.mail_paused = False
+    db_session.commit()
     email_dir = job_email_dir(job.id)
     email_dir.mkdir(parents=True, exist_ok=True)
     (email_dir / "meta.json").write_text(
@@ -146,7 +149,28 @@ def test_old_meta_with_no_received_by_falls_back_to_the_shared_inbox(db_session,
         encoding="utf-8",
     )
 
-    assert _pulled_from_sender(db_session, job) == "cargora"
+    assert _pulled_from_sender(db_session, job) == "Cargora Shared Inbox"
+
+
+def test_old_meta_with_no_received_by_and_multiple_tenant_mailboxes_returns_none(db_session):
+    """More than one connected mailbox for this tenant means which one an older, unrecorded
+    job actually came through is genuinely unknown - showing nothing is honest, picking one
+    at random would not be."""
+    job, tenant = _make_job(db_session)
+    for i, addr in enumerate(("cargora@4slogistics.com", "ops@4slogistics.com")):
+        u = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"user{i}@example.com",
+                      full_name=f"User {i}")
+        u.mail_email = addr
+        u.mail_paused = False
+    db_session.commit()
+    email_dir = job_email_dir(job.id)
+    email_dir.mkdir(parents=True, exist_ok=True)
+    (email_dir / "meta.json").write_text(
+        json.dumps({"sender": "muthu@4slogistics.com", "subject": "FW: PRE ALERT", "attachments": []}),
+        encoding="utf-8",
+    )
+
+    assert _pulled_from_sender(db_session, job) is None
 
 
 def test_a_job_with_no_prealert_at_all_returns_none(db_session):
