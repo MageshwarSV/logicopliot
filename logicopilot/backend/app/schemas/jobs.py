@@ -104,6 +104,11 @@ class JobDocumentOut(BaseModel):
     gk2_approved: bool = False
     # False = this document is optional — Document Capture can complete without it.
     is_required: bool = True
+    # Bumped whenever this slot's file is replaced (delete + reupload reuses the SAME row/id
+    # when it was the only file in the slot - see _remove_document_file) - the frontend keys
+    # its page-image fetch on this too, not just id+page_count, which stay identical across a
+    # same-slot reupload and would otherwise keep showing the PREVIOUS file's cached pages.
+    updated_at: datetime
 
 
 class JobFieldValueOut(BaseModel):

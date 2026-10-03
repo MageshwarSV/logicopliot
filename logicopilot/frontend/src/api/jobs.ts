@@ -111,10 +111,19 @@ export async function rerunJob(jobId: string): Promise<JobDetail> {
   return data;
 }
 
-export async function jobDocPageUrl(jobId: string, jobDocumentId: string, page: number): Promise<string> {
+export async function jobDocPageUrl(
+  jobId: string,
+  jobDocumentId: string,
+  page: number,
+  // Bumped (JobDocument.updated_at) whenever this slot's file is replaced. A same-slot
+  // delete+reupload keeps the URL otherwise byte-identical to a page the browser may already
+  // have cached from the file that was just deleted - this cache-busts it so a reupload is
+  // guaranteed to hit the network, never a stale cached response for the old file.
+  cacheBust?: string,
+): Promise<string> {
   const { data } = await apiClient.get<Blob>(
     `/jobs/${jobId}/documents/${jobDocumentId}/pages/${page}`,
-    { responseType: "blob" },
+    { responseType: "blob", params: cacheBust ? { v: cacheBust } : undefined },
   );
   return URL.createObjectURL(data);
 }

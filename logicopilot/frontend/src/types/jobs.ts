@@ -67,6 +67,10 @@ export interface JobDocument {
   gk2_approved?: boolean;
   /** False = optional — Document Capture can complete without this document uploaded. */
   is_required?: boolean;
+  /** Bumped whenever this slot's file is replaced - a same-slot delete+reupload reuses the
+   *  SAME id and often the same page_count, so this is what tells the preview the file
+   *  actually changed and its cached page images must be re-fetched, not reused. */
+  updated_at: string;
 }
 
 export interface JobFieldValue {

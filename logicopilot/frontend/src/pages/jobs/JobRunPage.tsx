@@ -668,7 +668,7 @@ export function JobRunPage() {
                         {name} <span className="text-slate-400">({doc_type})</span>
                       </p>
                       {uploaded.map((d) => (
-                        <JobDocPreview key={d.id} jobId={jobId} docId={d.id} pages={d.page_count} />
+                        <JobDocPreview key={d.id} jobId={jobId} docId={d.id} pages={d.page_count} updatedAt={d.updated_at} />
                       ))}
                       {renderIrnPlaceholder()}
                     </div>
@@ -1478,7 +1478,7 @@ export function JobRunPage() {
                           </button>
                         )}
                       </div>
-                      <JobDocPreview jobId={jobId} docId={d.id} pages={d.page_count} />
+                      <JobDocPreview jobId={jobId} docId={d.id} pages={d.page_count} updatedAt={d.updated_at} />
                     </div>
                   ))}
                   {readOnly ? (
@@ -2621,11 +2621,16 @@ function DocViewer({
   jobId,
   docId,
   pages,
+  updatedAt,
   highlight,
 }: {
   jobId: string;
   docId: string;
   pages: number;
+  /** Bumped when this slot's file is replaced - see JobDocument.updated_at's own comment.
+   *  A same-slot reupload keeps docId AND pages identical, so without this the viewer would
+   *  keep showing the file that was just deleted instead of fetching the new one. */
+  updatedAt: string;
   /** The field currently focused on the right, if its mark belongs to THIS document. */
   highlight?: DocHighlight | null;
 }) {
@@ -2645,7 +2650,7 @@ function DocViewer({
       const out: string[] = [];
       for (let p = 1; p <= pages; p++) {
         try {
-          const u = await jobsApi.jobDocPageUrl(jobId, docId, p);
+          const u = await jobsApi.jobDocPageUrl(jobId, docId, p, updatedAt);
           created.push(u);
           out.push(u);
         } catch {
@@ -2663,7 +2668,7 @@ function DocViewer({
       alive = false;
       created.forEach((u) => URL.revokeObjectURL(u));
     };
-  }, [jobId, docId, pages]);
+  }, [jobId, docId, pages, updatedAt]);
 
   // Jump to the focused field's own page. Keyed on fieldId, not the whole object, so this
   // only fires when a DIFFERENT field is focused — not on every re-render.
@@ -3579,7 +3584,7 @@ function ExtractionReview({
             <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">{docActionError}</p>
           )}
           {active && (
-            <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} highlight={highlight} />
+            <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} updatedAt={active.updated_at} highlight={highlight} />
           )}
         </Card>
 
@@ -3895,7 +3900,9 @@ function ExtractionReview({
   );
 }
 
-function JobDocPreview({ jobId, docId, pages }: { jobId: string; docId: string; pages: number }) {
+function JobDocPreview({
+  jobId, docId, pages, updatedAt,
+}: { jobId: string; docId: string; pages: number; updatedAt?: string }) {
   const [urls, setUrls] = useState<string[]>([]);
   const [zoom, setZoom] = useState<string | null>(null);
 
@@ -3906,7 +3913,7 @@ function JobDocPreview({ jobId, docId, pages }: { jobId: string; docId: string; 
       const out: string[] = [];
       for (let p = 1; p <= Math.min(pages, 6); p++) {
         try {
-          const u = await jobsApi.jobDocPageUrl(jobId, docId, p);
+          const u = await jobsApi.jobDocPageUrl(jobId, docId, p, updatedAt);
           created.push(u);
           out.push(u);
         } catch {
@@ -3920,7 +3927,10 @@ function JobDocPreview({ jobId, docId, pages }: { jobId: string; docId: string; 
       alive = false;
       created.forEach((u) => URL.revokeObjectURL(u));
     };
-  }, [jobId, docId, pages]);
+    // updatedAt isn't read in the body - it only forces a re-fetch when a same-slot
+    // reupload leaves docId/pages unchanged (see DocViewer's identical comment).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, docId, pages, updatedAt]);
 
   if (urls.length === 0) return null;
   return (

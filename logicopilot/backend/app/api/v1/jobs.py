@@ -2361,6 +2361,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             gk2_approved=jd.gk2_approved,
             is_required=(tdoc_by_id[jd.template_document_id].is_required
                         if jd.template_document_id in tdoc_by_id else True),
+            updated_at=jd.updated_at,
         )
         # The TEMPLATE's own order, which is deliberately most-authoritative-first — Bill of
         # lading, Invoice, Packing List, Freight Certificate. Sorting by template_document_id
