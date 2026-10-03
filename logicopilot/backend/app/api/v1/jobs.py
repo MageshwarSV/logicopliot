@@ -3933,18 +3933,34 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
     # Anything read from this file goes with it, or the job keeps reporting values from a
     # document that is no longer attached to it.
     db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
-    # Tenant CUSTOM fields (hardcoded/lookup/AI-computed) have no job_document_id of their
-    # own to key the delete above on - a field with no source_document_ids reads every
-    # document as its fallback, so there is no reliable way to tell "did this field actually
-    # depend on the file just removed" from the field's own config. A live job (JOB-7EED74)
-    # was found with EVERY mark-based value gone this way while its custom fields sat there
-    # untouched, computed from data that no longer existed, with nothing anywhere saying so.
+    # Tenant CUSTOM fields (lookup/AI-computed/composite) have no job_document_id of their own
+    # to key the delete above on - a field with no source_document_ids reads every document as
+    # its fallback, so there is no reliable way to tell "did this field actually depend on the
+    # file just removed" from the field's own config. A live job (JOB-7EED74) was found with
+    # EVERY mark-based value gone this way while its custom fields sat there untouched,
+    # computed from data that no longer existed, with nothing anywhere saying so.
+    #
+    # kind="hardcoded" is excluded from this wipe - it never reads any document at all, so a
+    # document being removed has no bearing on it either way. Its value is only ever the
+    # field's own static default or whatever an operator typed in by hand (e.g. a duty
+    # notification number on Additional Details) - wiping it on an unrelated document swap
+    # destroyed that operator's own input with no way for a later Extract to bring it back
+    # (Extract only knows the static default, never what was actually typed).
+    #
     # Only when this job has actually been extracted before (status != "draft") - losing an
     # upload before the first Extract is an operator swapping files, nothing stale exists yet.
     if job.status != "draft":
-        db.query(JobFieldValue).filter(
-            JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id.isnot(None)
-        ).delete()
+        from app.models.custom_field import CustomField
+
+        non_hardcoded_cf_ids = [
+            cid for (cid,) in db.query(CustomField.id)
+            .filter(CustomField.group_id == job.group_id, CustomField.kind != "hardcoded").all()
+        ]
+        if non_hardcoded_cf_ids:
+            db.query(JobFieldValue).filter(
+                JobFieldValue.job_id == job.id,
+                JobFieldValue.custom_field_id.in_(non_hardcoded_cf_ids),
+            ).delete(synchronize_session=False)
         job.needs_reextraction = True
     doc_dir = _job_doc_dir(jd.id)
 

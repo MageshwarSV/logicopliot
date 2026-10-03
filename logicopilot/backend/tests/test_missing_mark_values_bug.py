@@ -19,10 +19,16 @@ mark-based row (single- or multi-value) IS written with job_document_id set, so 
 Every CustomField-based row (hardcoded/lookup/ai) is written WITHOUT job_document_id — it was
 never touched by that delete, so it survived, stranded, looking valid.
 
-Fixed: _remove_document_file now ALSO clears every custom-field row on a non-draft job and
-sets Job.needs_reextraction, so nothing stale is left behind and the job visibly asks for a
-fresh Extract - the same real bug this test file was written to prove, now with the fix's
-behaviour asserted instead of the bug's."""
+Fixed: _remove_document_file now ALSO clears every non-hardcoded custom-field row on a
+non-draft job and sets Job.needs_reextraction, so nothing stale is left behind and the job
+visibly asks for a fresh Extract - the same real bug this test file was written to prove, now
+with the fix's behaviour asserted instead of the bug's.
+
+kind="hardcoded" is deliberately EXCLUDED from that clear (see _remove_document_file's own
+comment) - it never reads any document in the first place, so removing one has no bearing on
+it, and wiping it destroyed an operator's own manually-typed answer (a duty notification
+number, say) with no way for a later Extract to restore it - only the field's static default.
+The test below reflects this: "Shipping Line" (hardcoded) now survives the sweep."""
 from unittest.mock import patch
 
 from app.api.v1.custom_filter_pages import _sweep_old_jobs_for_reference
@@ -138,10 +144,13 @@ def test_filter_page_sweep_now_clears_stale_custom_fields_and_flags_reextraction
     db_session.refresh(job)
 
     # The Bill of Lading's own mark row is correctly gone (its document was removed) - that
-    # part was always right. What's fixed: the custom field row is now cleared too, instead
-    # of surviving stranded, and the job is flagged as needing a fresh Extract.
+    # part was always right, and the job is flagged as needing a fresh Extract. The custom
+    # field survives: it is kind="hardcoded" ("Shipping Line"), which never reads any
+    # document, so losing one has no bearing on whether its value is still correct.
     assert _mark_rows(db_session, job) == []
-    assert _custom_field_rows(db_session, job) == []
+    cf_rows_after = _custom_field_rows(db_session, job)
+    assert len(cf_rows_after) == 1
+    assert cf_rows_after[0].extracted_value == "KSS ROADWAYS"
     assert job.needs_reextraction is True
 
     # The job itself is not deleted (Packing List is untouched, so it still has a real
