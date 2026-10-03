@@ -16,6 +16,7 @@ from app.models.erp_access import ErpAccessRequest  # noqa: F401
 from app.models.erp_script import ErpScript  # noqa: F401
 from app.models.custom_field import CustomField  # noqa: F401
 from app.models.custom_field_reference import CustomFieldReferenceValue  # noqa: F401
+from app.models.composite_consignee_default import CompositeFieldConsigneeDefault  # noqa: F401
 from app.models.supporting_document import SupportingDocument  # noqa: F401
 from app.models.job_irn_signature import JobIrnSignature  # noqa: F401
 from app.models.job_failure import JobFailureReport  # noqa: F401
