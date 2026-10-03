@@ -1204,7 +1204,10 @@ def _pull_one_mailbox(
                 # view.
                 from app.core.job_email import save_original_email
 
-                save_original_email(job.id, msg, files, sender, subject)
+                save_original_email(
+                    job.id, msg, files, sender, subject,
+                    received_by=mail_email or get_settings().gmail_user,
+                )
             except AIServiceUnavailable as exc:
                 # The AI service itself failed (quota, rate limit, connection, 5xx) - this
                 # message was never actually looked at, so it must not be recorded as "no

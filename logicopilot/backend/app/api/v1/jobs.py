@@ -974,28 +974,42 @@ def _customer_name(db: Session, job: Job) -> str | None:
 
 
 def _pulled_from_sender(db: Session, job: Job) -> str | None:
-    """Who actually emailed this job in, for the Assigned To column - NOT a substitute
-    reading for Importer/Exporter (a person is not the consignee; putting one there just
-    trades one wrong answer shown under the wrong heading for another, confusing the two
-    completely different questions "who is this shipment for" and "who sent us this
-    paperwork"). Only worth showing at all while the job is genuinely unassigned - the
-    moment a real operator is assigned, _operator_name already answers this column, and a
-    stale sender name sitting behind it would be misleading once someone real owns the job.
+    """Which mailbox actually received this job's email, for the Assigned To column - NOT a
+    substitute reading for Importer/Exporter (a person is not the consignee; putting one
+    there just trades one wrong answer shown under the wrong heading for another, confusing
+    the two completely different questions "who is this shipment for" and "which of our own
+    inboxes caught this paperwork"). Only worth showing at all while the job is genuinely
+    unassigned - the moment a real operator is assigned, _operator_name already answers this
+    column, and a stale hint sitting behind it would be misleading once someone real owns the
+    job.
 
-    If the sender's address is actually a registered user's own account - their login email,
-    or a personal mailbox they connected for their own polling (User.mail_email, same idea as
-    the tenant's shared inbox) - show the Full Name that was typed in when that account was
-    created, not a raw fragment of the address. Only falls back to the email's own local part
-    (e.g. "ftwz2" from ftwz2@4slogistics.com) when no such account exists - an external
-    sender, like a customer or a CHA, genuinely has no name on file here.
+    Deliberately the RECEIVING mailbox (meta["received_by"] - the shared inbox, e.g.
+    "cargora@4slogistics.com", or one operator's own connected mailbox - see
+    _pull_one_mailbox's own call to save_original_email), never the external SENDER: the
+    sender is a customer or a CHA with no account here at all, while the receiving mailbox is
+    always one of this tenant's own and is exactly what an operator wants to know at a
+    glance - which of our inboxes did this come in on. Shown as the registered user's own
+    Full Name when that mailbox belongs to one (their login email, or their own connected
+    mailbox - User.mail_email), falling back to the address's own local part (e.g. "cargora"
+    from cargora@4slogistics.com) only when no such account is on file.
     """
     if job.created_by_id or job.assigned_operator_id:
         return None
     try:
         from app.core.job_email import read_email_meta
 
-        sender = (read_email_meta(job.id) or {}).get("sender") or ""
-        if "@" not in sender:
+        meta = read_email_meta(job.id) or {}
+        received_by = meta.get("received_by") or ""
+        if not received_by and meta.get("sender"):
+            # A job pulled before this field existed has no recorded receiving mailbox at
+            # all - but every one of them genuinely did come in on the tenant's one shared
+            # inbox (the only mailbox that has ever actually been active), so that default
+            # is a safe assumption for this older data, not a guess made up from nothing.
+            # (A job that instead came in through an OPERATOR's own mailbox would already
+            # have job.created_by_id set via _operator_matching_sender and never reach this
+            # line at all - see the guard above.)
+            received_by = get_settings().gmail_user or ""
+        if "@" not in received_by:
             return None
         from sqlalchemy import func
 
@@ -1003,15 +1017,15 @@ def _pulled_from_sender(db: Session, job: Job) -> str | None:
 
         user = (
             db.query(User)
-            .filter(func.lower(User.email) == sender.lower())
+            .filter(func.lower(User.email) == received_by.lower())
             .first()
             or db.query(User)
-            .filter(User.mail_email.isnot(None), func.lower(User.mail_email) == sender.lower())
+            .filter(User.mail_email.isnot(None), func.lower(User.mail_email) == received_by.lower())
             .first()
         )
         if user is not None:
             return user.full_name
-        return sender.split("@", 1)[0]
+        return received_by.split("@", 1)[0]
     except Exception:  # noqa: BLE001 — a name is never worth failing the list over
         pass
     return None

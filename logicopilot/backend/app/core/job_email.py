@@ -26,7 +26,7 @@ def job_email_dir(job_id: str) -> Path:
 
 
 def save_original_email(job_id: str, msg, files: list[tuple[str, bytes]],
-                        sender: str, subject: str) -> None:
+                        sender: str, subject: str, received_by: str | None = None) -> None:
     """Keep the raw message (when there is one) and its as-received attachments for this job.
     Best-effort: a failure here must never take down the job it is trying to preserve a copy
     for.
@@ -35,6 +35,13 @@ def save_original_email(job_id: str, msg, files: list[tuple[str, bytes]],
     attachments survive there (app/api/v1/pending_mail.py never keeps the raw MIME message),
     which is still worth having: an operator reviewing IRN documents mainly wants to see what
     was actually attached, not the message envelope around it.
+
+    `received_by` is the mailbox address that was being polled when this message was found -
+    the shared inbox (e.g. "cargora@4slogistics.com") or one operator's own connected
+    mailbox - see _pull_one_mailbox's own call site. This is what the Jobs list's "Assigned
+    To" hint is actually built from now (see _pulled_from_sender in api/v1/jobs.py) - which
+    account RECEIVED this job's email, not who sent it; the sender is an external party with
+    no account here at all, while the receiving mailbox is always one of this tenant's own.
     """
     try:
         out = job_email_dir(job_id)
@@ -50,7 +57,7 @@ def save_original_email(job_id: str, msg, files: list[tuple[str, bytes]],
             (att_dir / stored_as).write_bytes(blob)
             attachments.append({"name": name, "stored_as": stored_as, "size": len(blob)})
         meta = {
-            "sender": sender, "subject": subject,
+            "sender": sender, "subject": subject, "received_by": received_by,
             "received_at": datetime.now(timezone.utc).isoformat(),
             "attachments": attachments,
         }
