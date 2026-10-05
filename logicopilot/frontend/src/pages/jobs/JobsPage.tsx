@@ -20,7 +20,11 @@ import type { User } from "../../types/auth";
 import { useAuth } from "../../auth/useAuth";
 
 // How many rows load at a time — loading a tenant's entire history in one request is what
-// was making this page slow to open. Scrolling near the bottom loads the next batch.
+// was making this page slow to open. The FIRST batch is small on purpose, so something is on
+// screen almost immediately; every batch after that loads automatically in the background
+// (see the auto-continue effect below) rather than waiting for the operator to scroll down to
+// it, so the rest streams in quietly instead of the page staying empty-feeling.
+const INITIAL_BATCH_SIZE = 5;
 const PAGE_SIZE = 20;
 const QUICK_ALL = "__all__";
 
@@ -92,7 +96,7 @@ export function JobsPage() {
       const [jobList, groupList] = await Promise.all([
         jobsApi.listJobs({
           tenantId: tenantFilter || undefined,
-          limit: PAGE_SIZE,
+          limit: INITIAL_BATCH_SIZE,
           offset: 0,
           group: group ?? undefined,
           bucket,
@@ -100,7 +104,7 @@ export function JobsPage() {
         jobsApi.listAvailableGroups(),
       ]);
       setJobs(jobList);
-      setHasMore(jobList.length === PAGE_SIZE);
+      setHasMore(jobList.length === INITIAL_BATCH_SIZE);
       setGroups(groupList);
       if (groupList[0]) setGroupId(groupList[0].id);
     } catch {
@@ -181,24 +185,14 @@ export function JobsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantFilter, group, bucket]);
 
-  // Infinite scroll: a sentinel just past the table loads the next batch once it is close to
-  // view, so scrolling down reads as "it just keeps going" rather than a page-by-page click.
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  // Auto-continue loading in the background: the fast 5-row first batch is what the operator
+  // actually waits on, then every batch after that loads on its own, without needing a scroll
+  // to trigger it — by the time anyone scrolls down, the rest is usually already there. Fires
+  // again each time `jobs` grows (one batch finishing triggers the next) until hasMore is
+  // false or the date filter says going further back is pointless (pastDateWindow).
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    // AppShell's own content pane scrolls (it's `overflow-y-auto`), not the browser
-    // viewport/body — an observer rooted at the viewport never sees this sentinel move
-    // relative to it, so scrolling never appeared to load anything.
-    const root = el.closest(".overflow-y-auto") as HTMLElement | null;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) loadMore();
-      },
-      { root, rootMargin: "200px" },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
+    if (loading || loadingMore || !hasMore || pastDateWindow) return;
+    loadMore();
     // quick/dateFrom/dateTo: so a filter change re-captures loadMore's CURRENT pastDateWindow
     // guard immediately, rather than only once jobs.length/hasMore/etc happen to change too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -768,8 +762,9 @@ export function JobsPage() {
           />
         )}
       </Card>
-      {/* Just past the table — entering view is what triggers the next batch. */}
-      <div ref={sentinelRef} className="flex justify-center py-4">
+      {/* The next batch loads itself in the background (see the auto-continue effect) - this
+          just shows that it's happening. */}
+      <div className="flex justify-center py-4">
         {loadingMore && <span className="text-xs text-slate-400">Loading more…</span>}
       </div>
 
