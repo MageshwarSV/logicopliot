@@ -643,7 +643,7 @@ def _self_verifying_findings(db: Session, job: Job) -> list[dict]:
     return out
 
 
-def _job_stage(db: Session, job: Job) -> str:
+def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
     """Where the job sits in the pipeline, for the operator's list/badge:
     Documents → Verification → ERP Entry → Completed.
 
@@ -652,6 +652,12 @@ def _job_stage(db: Session, job: Job) -> str:
     thirty steps, be marked completed, and still sit in the list as "ERP Entry" while its own
     history popup said "Completed" two lines down. Where a job ENDED is not something an
     override about where it was waiting can contradict.
+
+    `links` lets a caller enriching MANY jobs at once (see list_jobs) pass in this job's
+    template's CrossDocLink rows, prefetched ONCE per group_id rather than once per job - every
+    job on the same template reads the identical rows here, and re-querying them per job was
+    measured as half the total cost of listing every job in a tenant. None (the default)
+    preserves the original per-job query for any caller handling a single job (_build_detail).
     """
     if job.status == "processing":
         return "Running"
@@ -670,7 +676,9 @@ def _job_stage(db: Session, job: Job) -> str:
         return job.stage_override
     if job.status != "extracted":
         return "Document Capture"
-    links = db.query(CrossDocLink).filter(CrossDocLink.group_id == job.group_id).all()
+    links = links if links is not None else (
+        db.query(CrossDocLink).filter(CrossDocLink.group_id == job.group_id).all()
+    )
     # The same findings the verification screen shows, computed once in one place — so this
     # gate and that screen can no longer disagree about whether the job may be submitted.
     # `links` empty means no findings at all (nothing to disagree) - that used to skip
@@ -926,7 +934,9 @@ _CUSTOMER_LABELS = (
 )
 
 
-def _customer_name(db: Session, job: Job) -> str | None:
+def _customer_name(
+    db: Session, job: Job, rows: list | None = None, hardcoded_ids: set | None = None,
+) -> str | None:
     """The customer on this job, read off its own documents.
 
     The list column is headed "Customer name" and was rendering the TEMPLATE's name, which is a
@@ -935,21 +945,31 @@ def _customer_name(db: Session, job: Job) -> str | None:
 
     A job-level value only (row_index is None): a per-line field is a product, not a party.
     Falls back to None so the caller can show the template name as before rather than a blank.
+
+    `rows`/`hardcoded_ids` let a caller enriching MANY jobs at once (see list_jobs) pass in
+    this job's own job-level field values and this job's template's hardcoded-field ids,
+    prefetched in bulk rather than two fresh queries per job - the SAME hardcoded_ids query
+    result is identical for every job on one template, and `rows` is one query across every
+    job instead of one query per job. None for either (the default) preserves the original
+    per-job queries for a caller handling a single job (_build_detail).
     """
     from app.models.custom_field import CustomField
 
     try:
-        rows = (db.query(JobFieldValue)
-                .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None))
-                .all())
-        # Same "fixed" concept JobFieldValueOut.origin uses for the API response - a
-        # hardcoded custom field's id, so a value coming from one can be told apart from a
-        # genuine per-job reading (a mark, an AI computation, or a reference-sheet lookup).
-        # Not a column on JobFieldValue itself, so it has to be looked up here the same way.
-        hardcoded_ids = {
-            c.id for c in db.query(CustomField)
-            .filter(CustomField.group_id == job.group_id, CustomField.kind == "hardcoded").all()
-        }
+        if rows is None:
+            rows = (db.query(JobFieldValue)
+                    .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None))
+                    .all())
+        if hardcoded_ids is None:
+            # Same "fixed" concept JobFieldValueOut.origin uses for the API response - a
+            # hardcoded custom field's id, so a value coming from one can be told apart from a
+            # genuine per-job reading (a mark, an AI computation, or a reference-sheet
+            # lookup). Not a column on JobFieldValue itself, so it has to be looked up here
+            # the same way.
+            hardcoded_ids = {
+                c.id for c in db.query(CustomField)
+                .filter(CustomField.group_id == job.group_id, CustomField.kind == "hardcoded").all()
+            }
     except Exception:  # noqa: BLE001 — a name is never worth failing the list over
         return None
     by_label: dict[str, tuple[str, bool]] = {}
@@ -1204,11 +1224,25 @@ def _duplicate_of_reference(db: Session, job: Job) -> str | None:
     return other.reference if other else None
 
 
-def _job_out(db: Session, job: Job) -> JobOut:
+def _job_out(
+    db: Session, job: Job,
+    links_by_group: dict | None = None,
+    hardcoded_ids_by_group: dict | None = None,
+    job_level_fvs_by_job: dict | None = None,
+) -> JobOut:
+    """Builds one job's list-row representation. The three dicts are bulk-prefetched, once for
+    the WHOLE list being built (see list_jobs) rather than once per job - None for any of them
+    (the default) falls back to this job's own per-job query, so a caller building just one
+    JobOut (there is none left, but future code might) still works unassisted."""
     out = JobOut.model_validate(job)
-    out.stage = _job_stage(db, job)
+    links = links_by_group.get(job.group_id) if links_by_group is not None else None
+    out.stage = _job_stage(db, job, links=links)
     out.outer_status = _outer_status(db, job, stage=out.stage)
-    out.customer_name = _customer_name(db, job)
+    out.customer_name = _customer_name(
+        db, job,
+        rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
+        hardcoded_ids=hardcoded_ids_by_group.get(job.group_id) if hardcoded_ids_by_group is not None else None,
+    )
     out.mode = _shipment_mode(db, job)
     out.operator_name = _operator_name(db, job)
     out.pulled_from_sender = _pulled_from_sender(db, job)
@@ -1491,7 +1525,46 @@ def list_jobs(
         query = query.offset(offset).limit(limit)
 
     jobs = query.all()
-    return [_job_out(db, j) for j in jobs]
+
+    # Bulk-prefetched ONCE for this whole list, instead of once per job inside _job_out - see
+    # that function's own docstring. _job_stage's own verification-findings queries and
+    # _customer_name's two queries together were measured as the large majority of the cost of
+    # listing every job in a tenant, almost all of it spent re-fetching data that is IDENTICAL
+    # for every job sharing one template (CrossDocLink rows, hardcoded-field ids) or that can
+    # be read in one query across every job instead of one query per job (job-level field
+    # values).
+    group_ids = {j.group_id for j in jobs}
+    links_by_group: dict[str, list] = {
+        gid: [] for gid in group_ids
+    }
+    for link in (
+        db.query(CrossDocLink).filter(CrossDocLink.group_id.in_(group_ids)).all() if group_ids else []
+    ):
+        links_by_group[link.group_id].append(link)
+
+    from app.models.custom_field import CustomField
+
+    hardcoded_ids_by_group: dict[str, set] = {gid: set() for gid in group_ids}
+    for cf in (
+        db.query(CustomField.id, CustomField.group_id)
+        .filter(CustomField.group_id.in_(group_ids), CustomField.kind == "hardcoded").all()
+        if group_ids else []
+    ):
+        hardcoded_ids_by_group[cf.group_id].add(cf.id)
+
+    job_ids = [j.id for j in jobs]
+    job_level_fvs_by_job: dict[str, list] = {jid: [] for jid in job_ids}
+    for fv in (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id.in_(job_ids), JobFieldValue.row_index.is_(None)).all()
+        if job_ids else []
+    ):
+        job_level_fvs_by_job[fv.job_id].append(fv)
+
+    return [
+        _job_out(db, j, links_by_group, hardcoded_ids_by_group, job_level_fvs_by_job)
+        for j in jobs
+    ]
 
 
 # The path spells out /jobs itself: this router is mounted with NO prefix, so "/{job_id}/
