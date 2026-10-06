@@ -1,16 +1,32 @@
 """A page smart-upload could not confidently place used to be silently discarded along with
 the temp upload dir - gone the instant the request finished, with no trace it ever existed.
 Now it's kept as an UnmatchedUploadPage row an operator can resolve by hand (GET the list,
-POST assign onto a real document slot), and that manual correction is remembered as a
-ClassificationExample so a future similarly-worded document is recognised on its own."""
+POST assign onto a real document slot). That manual correction is remembered the same way an
+ordinary manual upload already teaches the classifier - via document_samples.remember(), see
+test_document_samples.py/test_self_training_on_upload.py for that mechanism's own coverage;
+this file only checks that assigning an UNCLASSIFIED page reaches the same hook."""
 from unittest.mock import patch
 
 import fitz
 
-from app.models.job import ClassificationExample, Job, JobDocument, UnmatchedUploadPage
+from app.models.document_sample import DocumentSample
+from app.models.job import Job, JobDocument, UnmatchedUploadPage
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
 from tests.conftest import login, make_tenant, make_user
+
+# Realistic enough to survive document_samples._trim/_label_lines (several genuine
+# field-label-style lines, no sender-identifying text) - a bare "some text" fixture
+# produces no excerpt at all and would make the learning assertion vacuous.
+_REALISTIC_OCR_TEXT = (
+    "ARRIVAL NOTICE\n"
+    "Consignee Notify Party\n"
+    "Port of Discharge Final Destination\n"
+    "Vessel Voyage Number\n"
+    "Container Number Seal Number\n"
+    "Gross Weight Net Weight Measurement\n"
+    "Freight Prepaid Collect\n"
+)
 
 
 def _pdf_bytes(n_pages: int = 1) -> bytes:
@@ -97,15 +113,16 @@ def test_assigning_an_unclassified_page_writes_it_into_the_slot_and_removes_the_
     op = make_user(db_session, role="operator", tenant=tenant, email="unc3@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
+    with patch("app.api.v1.jobs.ocr_page_image",
+               return_value={"text": _REALISTIC_OCR_TEXT, "tokens": []}), \
+         patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
         _upload(client, job.id, [("arrival_notice.pdf", _pdf_bytes(1), "application/pdf")])
     page = db_session.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.job_id == job.id).one()
 
-    with patch("app.api.v1.jobs._extract_classification_keywords", return_value=["arrival notice"]):
-        resp = client.post(
-            f"/api/v1/jobs/{job.id}/unclassified-pages/{page.id}/assign",
-            json={"template_document_id": docs["Freight Certificate"].id},
-        )
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{page.id}/assign",
+        json={"template_document_id": docs["Freight Certificate"].id},
+    )
     assert resp.status_code == 200, resp.text
 
     assert db_session.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.id == page.id).first() is None
@@ -115,38 +132,10 @@ def test_assigning_an_unclassified_page_writes_it_into_the_slot_and_removes_the_
     assert jd.file_path is not None
     assert jd.page_count == 1
 
-    example = db_session.query(ClassificationExample).filter(
-        ClassificationExample.template_document_id == docs["Freight Certificate"].id
+    # Assigning an unclassified page teaches the classifier the same way an ordinary
+    # manual upload does - see document_samples.remember(), called identically from both.
+    sample = db_session.query(DocumentSample).filter(
+        DocumentSample.template_document_id == docs["Freight Certificate"].id
     ).one()
-    assert example.source_filename == "arrival_notice.pdf"
-    assert example.keywords == ["arrival notice"]
-    assert example.snippet_text.strip()
-
-
-def test_classifier_is_handed_confirmed_examples_for_a_slot(db_session):
-    """A direct, DB-free check of the plumbing: entries saved by ClassificationExample must
-    reach classify_document's own candidate description unchanged (see
-    _classification_examples_by_tdoc in jobs.py and _describe_examples in classifier.py)."""
-    from app.api.v1.jobs import _classification_examples_by_tdoc
-    from app.core.classifier import _describe_examples
-
-    tenant = make_tenant(db_session)
-    group = TemplateGroup(tenant_id=tenant.id, name="G", status="ready")
-    db_session.add(group)
-    db_session.flush()
-    tdoc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Freight Certificate",
-                            doc_type="Custom", order_index=0)
-    db_session.add(tdoc)
-    db_session.flush()
-    db_session.add(ClassificationExample(
-        tenant_id=tenant.id, group_id=group.id, template_document_id=tdoc.id,
-        source_filename="arrival_notice.pdf", snippet_text="ARRIVAL NOTICE ...",
-        keywords=["arrival notice", "notify party"],
-    ))
-    db_session.commit()
-
-    by_tdoc = _classification_examples_by_tdoc(db_session, group.id)
-    assert tdoc.id in by_tdoc
-    described = _describe_examples({"examples": by_tdoc[tdoc.id]})
-    assert "arrival notice" in described
-    assert "ARRIVAL NOTICE" in described
+    assert sample.job_document_id == jd.id
+    assert sample.excerpt.strip()

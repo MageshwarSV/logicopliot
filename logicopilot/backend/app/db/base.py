@@ -9,9 +9,7 @@ from app.models.template_group import TemplateGroup  # noqa: F401
 from app.models.template_document import TemplateDocument  # noqa: F401
 from app.models.field_mark import FieldMark  # noqa: F401
 from app.models.cross_doc_link import CrossDocLink  # noqa: F401
-from app.models.job import (  # noqa: F401
-    ClassificationExample, Job, JobDocument, JobFieldValue, UnmatchedUploadPage,
-)
+from app.models.job import Job, JobDocument, JobFieldValue, UnmatchedUploadPage  # noqa: F401
 from app.models.template_review import TemplateReview  # noqa: F401
 from app.models.user_template import UserTemplateAssignment  # noqa: F401
 from app.models.erp_access import ErpAccessRequest  # noqa: F401
@@ -19,6 +17,7 @@ from app.models.erp_script import ErpScript  # noqa: F401
 from app.models.custom_field import CustomField  # noqa: F401
 from app.models.custom_field_reference import CustomFieldReferenceValue  # noqa: F401
 from app.models.composite_consignee_default import CompositeFieldConsigneeDefault  # noqa: F401
+from app.models.document_sample import DocumentSample  # noqa: F401
 from app.models.supporting_document import SupportingDocument  # noqa: F401
 from app.models.job_irn_signature import JobIrnSignature  # noqa: F401
 from app.models.job_failure import JobFailureReport  # noqa: F401

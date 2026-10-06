@@ -207,38 +207,6 @@ class UnmatchedUploadPage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ocr_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
 
-class ClassificationExample(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """A real document an operator manually confirmed belongs to one template document slot
-    (dragging an unresolved page from UnmatchedUploadPage onto it), remembered so a FUTURE
-    smart-upload of a similarly-worded document classifies correctly on its own.
-
-    Read back in by classifier.py's describe()/_describe() as extra evidence alongside the
-    template's own onboarding sample - the same "compare against a real example" reasoning
-    the classifier already does for that sample, just fed from real corrections instead of
-    the one document uploaded when the template was first set up."""
-
-    __tablename__ = "classification_examples"
-
-    tenant_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    group_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("template_groups.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    template_document_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("template_documents.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    snippet_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # A handful of short phrases that define this document type for this tenant (e.g. an
-    # Arrival Notice's own heading words) - cheap to compare against on every future
-    # classification call without re-reading the whole snippet_text.
-    keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    created_by_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-
-
 class JobFieldValue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """An extracted (and optionally corrected) value for one configured field on this job."""
 

@@ -70,38 +70,6 @@ def _hint_from_name(name: str) -> str:
     return DOC_TYPE_HINTS.get(key, "") if key else ""
 
 
-def _describe_examples(candidate: dict) -> str:
-    """Real documents an operator has manually confirmed belong to this slot (see
-    ClassificationExample in app/models/job.py) - this module stays free of any database
-    access, so the caller (jobs.py/email_puller.py) passes these in on the candidate dict
-    itself, under "examples": [{"keywords": [...], "snippet": "..."}, ...].
-
-    Worded the same way as THE CUSTOMER'S OWN SAMPLE above, because it is the same kind of
-    evidence - a real document of this type, just confirmed by a correction afterwards
-    instead of at template setup. This is what lets a document worded nothing like "freight
-    certificate" (an Arrival Notice, say) get recognised on its own after the first one is
-    ever manually corrected, without needing its exact wording hand-coded anywhere.
-    """
-    examples = [e for e in (candidate.get("examples") or []) if isinstance(e, dict)]
-    if not examples:
-        return ""
-    lines = []
-    for e in examples[:3]:
-        kw = ", ".join(str(k) for k in (e.get("keywords") or [])[:10])
-        snippet = str(e.get("snippet") or "")[:600]
-        bits = []
-        if kw:
-            bits.append(f"keywords: {kw}")
-        if snippet:
-            bits.append(f'excerpt: "{snippet}"')
-        if bits:
-            lines.append("; ".join(bits))
-    if not lines:
-        return ""
-    return ("CONFIRMED BY THIS TENANT'S OWN OPERATOR - real documents matched here before "
-            "(treat these the same as the customer's own sample above): " + " | ".join(lines))
-
-
 def _effective_doc_type(candidate: dict) -> str | None:
     """Which _TYPE_SIGNATURES entry this slot should be checked against for the keyword
     backstop - its own structured doc_type when that is already one of the 4 built-in types,
@@ -366,9 +334,6 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         if ref:
             parts.append("THE CUSTOMER'S OWN SAMPLE of this document, uploaded when their "
                          f'template was set up: "{ref[:1200]}"')
-        examples = _describe_examples(c)
-        if examples:
-            parts.append(examples)
         hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
         if hint:
             parts.append(f"typical content: {hint}")
@@ -615,9 +580,6 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
         ref = (c.get("reference") or "").strip()
         if ref:
             parts.append("the customer's own sample of this document: " + repr(ref[:900]))
-        examples = _describe_examples(c)
-        if examples:
-            parts.append(examples)
         hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
         if hint:
             parts.append(f"typical content: {hint}")

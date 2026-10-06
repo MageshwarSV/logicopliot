@@ -30,6 +30,7 @@ from app.core.deps import (
 )
 from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
+from app.core import document_samples
 from app.core.page_filter import extract_pdf_pages, kept_page_to_original
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import is_extraction_paused
@@ -46,7 +47,7 @@ from app.core.extraction import (
 from app.models.cross_doc_link import CrossDocLink
 from app.models.field_mark import FieldMark
 from app.models.job import (
-    ClassificationExample, Job, JobDocument, JobFieldValue, UnmatchedUploadPage,
+    Job, JobDocument, JobFieldValue, UnmatchedUploadPage,
 )
 from app.core import live_runs
 from app.models.job_event import JobEvent
@@ -3862,6 +3863,28 @@ def upload_job_document(
 
     jd.file_path = str(original)
     jd.page_count = page_count
+
+    # The operator has just said what this document is, by choosing its slot. That is
+    # a correct, customer-specific label the classifier can be shown next time, and it
+    # is the whole reason this is recorded here rather than guessed at later. A
+    # correction - deleting from the wrong slot and uploading to the right one - lands
+    # here too, which is the most valuable case of all.
+    #
+    # Reading page 1 costs nothing now: extraction is about to OCR it anyway, and the
+    # content cache means whichever of the two asks first pays and the other does not.
+    try:
+        page_one = get_page_ocr(ddir, 1)
+        document_samples.remember(
+            db, tenant_id=job.tenant_id, template_document_id=template_document_id,
+            text=page_one.get("layout_text") or page_one.get("text") or "",
+            job_document_id=jd.id,
+        )
+    except Exception:  # noqa: BLE001
+        # Learning is a bonus, never a reason to fail an upload the operator has
+        # already seen succeed.
+        logger.debug("could not sample %s for slot %s", jd.id, template_document_id,
+                     exc_info=True)
+
     db.commit()
     _maybe_auto_extract(db, job)
     db.refresh(job)
@@ -4206,25 +4229,6 @@ def delete_job_document_file(
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 
 
-def _classification_examples_by_tdoc(db: Session, group_id: str) -> dict[str, list[dict]]:
-    """template_document_id -> this template's own operator-confirmed ClassificationExample
-    rows, most recent first, shaped exactly as classifier.py's _describe_examples expects
-    (see its own docstring) - shared by smart_upload and email_puller.py's own pull-time
-    classification so both learn from the same corrections."""
-    rows = (
-        db.query(ClassificationExample)
-        .filter(ClassificationExample.group_id == group_id)
-        .order_by(ClassificationExample.created_at.desc())
-        .all()
-    )
-    out: dict[str, list[dict]] = {}
-    for r in rows:
-        bucket = out.setdefault(r.template_document_id, [])
-        if len(bucket) < 3:
-            bucket.append({"keywords": r.keywords or [], "snippet": r.snippet_text or ""})
-    return out
-
-
 @router.post("/jobs/{job_id}/smart-upload")
 def smart_upload(
     job_id: str,
@@ -4266,16 +4270,24 @@ def smart_upload(
             detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
         )
     group = db.get(TemplateGroup, job.group_id)
-    examples_by_tdoc = _classification_examples_by_tdoc(db, group.id)
     # `fields` lets a "Custom" document (no built-in content hint) still be classified,
     # by describing itself through the labels configured on it.
+    # What this customer's own documents of each type have looked like, taken from the
+    # slots they filled by hand. The prompt already describes `reference` to the model
+    # as "the customer's own sample of this document"; nothing had ever filled it.
+    #
+    # This matters more than any wording rule. Nothing in the text of shipping
+    # paperwork separates these reliably - every document in a consignment quotes the
+    # others - but one customer's invoice and packing list are laid out consistently,
+    # and that is what these show.
+    samples = document_samples.for_slots(db, [d.id for d in group.documents])
     candidates = [
         {
             "key": d.id,
             "name": d.name,
             "doc_type": d.doc_type,
             "fields": [m.label_name for m in d.marks],
-            "examples": examples_by_tdoc.get(d.id, []),
+            "reference": samples.get(d.id, ""),
         }
         for d in group.documents
     ]
@@ -4506,48 +4518,6 @@ class AssignUnclassifiedPagePayload(BaseModel):
     template_document_id: str
 
 
-def _extract_classification_keywords(ocr_text: str) -> list[str]:
-    """A handful of short phrases that define this document's type for this tenant - e.g. an
-    Arrival Notice's own heading words - cheap evidence to compare against on every FUTURE
-    classification call without re-reading the whole snippet_text.
-
-    Only ever runs once per manual drag-and-drop correction (a rare, operator-triggered event),
-    never in a bulk/automatic path, so one extra small OpenAI call here costs nothing in
-    practice. Falls back to an empty list rather than raising - a missing keyword list still
-    leaves the (always-saved) snippet_text itself as evidence; it must never block the
-    assignment the operator is actively waiting on."""
-    settings = get_settings()
-    if not settings.openai_api_key or not ocr_text.strip():
-        return []
-    try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=30)
-        resp = client.chat.completions.create(
-            model=settings.openai_model,
-            max_tokens=150,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Read this document and return 5-10 short phrases (2-5 words each) that "
-                    "would let someone recognise another document of the SAME type at a "
-                    "glance - its own heading/title wording, a distinctive section label, a "
-                    "phrase that is characteristic of this kind of document. Not generic "
-                    "words like 'date' or 'company'.\n\n"
-                    'Return JSON: {"keywords": ["...", ...]}.\n\n--- DOCUMENT TEXT ---\n'
-                    + ocr_text[:4000]
-                ),
-            }],
-        )
-        data = json.loads(resp.choices[0].message.content or "{}")
-        return [str(k).strip() for k in (data.get("keywords") or []) if str(k).strip()][:10]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("keyword extraction for a classification example failed: %s", exc)
-        return []
-
-
 @router.post("/jobs/{job_id}/unclassified-pages/{page_id}/assign")
 def assign_unclassified_page(
     job_id: str,
@@ -4558,9 +4528,11 @@ def assign_unclassified_page(
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
 ):
     """An operator drags an unclassified page onto a document slot label. Writes the page into
-    a real JobDocument for that slot, remembers it as a ClassificationExample so classify_document
-    recognises a similarly-worded document on its own next time (see classifier.py's describe()/
-    _describe()), and removes the staging row - the whole point of today's correction."""
+    a real JobDocument for that slot, and teaches the classifier from it the same way choosing
+    a slot for an ordinary manual upload already does (see document_samples.remember(), used by
+    upload_job_document above) - this is exactly that same "the operator just said what this
+    document is" signal, just arriving via the drag-and-drop resolver instead of a direct
+    upload. Removes the staging row - the whole point of today's correction."""
     job = _load_job(db, job_id, scope, user)
     row = (
         db.query(UnmatchedUploadPage)
@@ -4588,13 +4560,16 @@ def assign_unclassified_page(
     jd.file_path = str(dorig)
     jd.page_count = _render_pages(dorig, ddir / "pages")
 
-    db.add(ClassificationExample(
-        tenant_id=job.tenant_id, group_id=job.group_id, template_document_id=tdoc.id,
-        source_filename=row.original_filename,
-        snippet_text=row.ocr_text[:3000],
-        keywords=_extract_classification_keywords(row.ocr_text),
-        created_by_id=getattr(user, "id", None),
-    ))
+    try:
+        document_samples.remember(
+            db, tenant_id=job.tenant_id, template_document_id=tdoc.id,
+            text=row.ocr_text, job_document_id=jd.id,
+        )
+    except Exception:  # noqa: BLE001
+        # Learning is a bonus, never a reason to fail an assignment the operator is
+        # actively waiting on - see upload_job_document's identical guard.
+        logger.debug("could not sample %s for slot %s", jd.id, tdoc.id, exc_info=True)
+
     db.delete(row)
     db.commit()
     _maybe_auto_extract(db, job)

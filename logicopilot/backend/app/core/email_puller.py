@@ -819,10 +819,7 @@ def _pull_one_mailbox(
     mail_host: str | None = None,
 ) -> dict:
     """Everything pull_inbox used to do end to end, now for exactly ONE mailbox."""
-    from app.api.v1.jobs import (
-        _classification_examples_by_tdoc, _job_doc_dir, _render_pages, generate_job_no,
-        run_extraction,
-    )
+    from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
     from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, identify_customer
     from app.core.docai import ocr_page_image
     from app.core.page_filter import extract_pdf_pages, kept_page_to_original
@@ -1119,7 +1116,6 @@ def _pull_one_mailbox(
                 db.flush()
                 slots: dict[str, JobDocument] = {}
                 slot_meta: dict[str, dict] = {}
-                examples_by_tdoc = _classification_examples_by_tdoc(db, group.id)
                 for tdoc in group.documents:
                     jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
                                      template_document_id=tdoc.id, page_count=0)
@@ -1130,7 +1126,6 @@ def _pull_one_mailbox(
                         "fields": [m.label_name for m in tdoc.marks],
                         # the customer's own sample for this slot - the strongest reference
                         "reference": _slot_reference(tdoc.id),
-                        "examples": examples_by_tdoc.get(tdoc.id, []),
                     }
                 db.flush()
                 cand_slots = list(slot_meta.values())
