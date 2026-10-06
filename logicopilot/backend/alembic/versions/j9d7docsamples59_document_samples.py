@@ -12,13 +12,13 @@ server that has not run this yet, reading the samples fails softly and
 classification behaves exactly as it does today.
 
 Revision ID: j9d7docsamples59
-Revises: h8c6consigndef58
+Revises: j0e8standalonehdg60
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "j9d7docsamples59"
-down_revision = "h8c6consigndef58"
+down_revision = "j0e8standalonehdg60"
 branch_labels = None
 depends_on = None
 
