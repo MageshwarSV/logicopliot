@@ -254,8 +254,39 @@ def _docai_safe_bytes(image_path: Path) -> tuple[bytes, str]:
     return raw, "image/png"
 
 
+def _content_cache_path(image_bytes: bytes) -> Path:
+    """Where this exact page image's OCR is kept, keyed by its own content.
+
+    Keyed on content, not on path, because the same page is OCR'd from two
+    different directories: the smart-upload temp dir when deciding which slot a
+    file belongs in, and the document's own dir when extracting from it. Both
+    render at RENDER_DPI from the same source, so the bytes match and the second
+    read costs nothing.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    root = Path(get_settings().uploads_dir) / "_ocr_by_content"
+    return root / digest[:2] / f"{digest}.json"
+
+
 def ocr_page_image(image_path: Path) -> dict:
     from google.cloud import documentai
+
+    image_bytes = image_path.read_bytes()
+    cached_at = _content_cache_path(image_bytes)
+    if cached_at.exists():
+        try:
+            data = json.loads(cached_at.read_text(encoding="utf-8"))
+            if "layout_text" in data and "structured_text" in data:
+                logger.info("Document AI OCR served from the content cache: %s",
+                            image_path.name)
+                return data
+            # Written before a later field existed; re-read this one page rather
+            # than serving stale shape forever.
+        except (OSError, ValueError):
+            pass    # unreadable cache entry is not a reason to fail the read
+
 
     settings = get_settings()
     client = _get_client()
@@ -301,7 +332,7 @@ def ocr_page_image(image_path: Path) -> dict:
         page_structured = build_structured_text(page_blocks)
         if page_structured:
             structured_text = (structured_text or "") + page_structured
-    return {
+    result_data = {
         "text": doc.text, "tokens": tokens, "layout_text": layout_text or doc.text,
         # One int per Document AI table detected on this page - the actual row count the
         # LAYOUT itself reports, excluding a trailing TOTAL/summary row (see
@@ -318,6 +349,20 @@ def ocr_page_image(image_path: Path) -> dict:
         # inspect real bounding boxes directly instead of guessing at them.
         "debug_blocks": debug_blocks,
     }
+
+    # Cached by the image's own content so the next path to want this page - the
+    # extraction run, a re-upload of the same file, a re-extraction - does not pay
+    # Document AI for it again. Written atomically: a half-written entry read by a
+    # concurrent upload would look like a valid hit with missing text.
+    try:
+        cached_at.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cached_at.with_suffix('.json.tmp')
+        tmp_path.write_text(json.dumps(result_data), encoding='utf-8')
+        tmp_path.replace(cached_at)
+    except OSError as exc:
+        logger.debug('could not cache OCR for %s: %s', image_path.name, exc)
+
+    return result_data
 
 
 def _normalize_for_match(text: str) -> str:
