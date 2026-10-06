@@ -4676,7 +4676,7 @@ def run_extraction(db: Session, job: Job) -> None:
         # Fields ticked "multiple values" describe a line-item table and are read together
         # in one pass so their rows stay aligned; the rest are read as single values.
         single_marks = [m for m in tdoc.marks if not m.is_multi_value]
-        multi_marks = [m for m in tdoc.marks if m.is_multi_value]
+        all_multi_marks = [m for m in tdoc.marks if m.is_multi_value]
         fields = [_spec(m) for m in single_marks]
 
         used_vision = not ocr_text.strip()
@@ -4799,7 +4799,22 @@ def run_extraction(db: Session, job: Job) -> None:
                     return True
             return False
 
-        if multi_marks:
+        # A mark ticked standalone_multi_value is its own table - never meant to line up
+        # against any other per-row field (a container count has nothing to do with how many
+        # products are on the invoice, or even with another container field's own natural
+        # count). Batching it in with the row-aligned group forces every field in the batch
+        # to answer for the SAME row count via one shared `rows` array - which silently pulled
+        # a working single-field read (4 real containers) back into the row count a SECOND,
+        # unrelated field implied (8), re-admitting seal numbers to fill the extra slots. Each
+        # standalone mark is therefore read in its own, fully independent pass; the ordinary
+        # row-aligned fields (CTH, RITC, a part description) are completely unaffected -
+        # exactly the same single batch as before, with exactly the same row count.
+        row_aligned_marks = [m for m in all_multi_marks if not m.standalone_multi_value]
+        mark_groups = (
+            ([row_aligned_marks] if row_aligned_marks else [])
+            + [[m] for m in all_multi_marks if m.standalone_multi_value]
+        )
+        for multi_marks in mark_groups:
             row_specs = [_spec(m, inline_format=False) for m in multi_marks]
             row_labels = [f["label"] for f in row_specs]
             # Document AI's own detected table geometry (see docai.py's _table_row_count) - 0
