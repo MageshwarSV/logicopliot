@@ -5015,6 +5015,20 @@ def run_extraction(db: Session, job: Job) -> None:
         for multi_marks in mark_groups:
             row_specs = [_spec(m, inline_format=False) for m in multi_marks]
             row_labels = [f["label"] for f in row_specs]
+            # A standalone field (container_number, say) is read from a document that is
+            # often a sparse, irregular table - a world apart from a dense product-line
+            # table, which is what the "prefer whichever reading found MORE rows" heuristic
+            # below was built for (there, the demonstrated failure mode is rows going
+            # missing, never spurious extras). On a real job the opposite failure showed up
+            # instead: text correctly read exactly 1 real container, but the page image
+            # hallucinated 4 more (scraping nearby invoice/reference numbers to fill out
+            # what it mistook for more table rows) - and "more rows wins" then threw away
+            # the one answer that was actually right. A standalone field's own row count has
+            # nothing to back it up the way a product table's printed total/Document AI
+            # geometry does, so it skips that cross-check entirely and trusts its own text
+            # reading, exactly as before this whole reconciliation block existed.
+            is_standalone_group = len(multi_marks) == 1 and getattr(
+                multi_marks[0], "standalone_multi_value", False)
             # Document AI's own detected table geometry (see docai.py's _table_row_count) - 0
             # when it found no ruled/structured table on this document at all, treated
             # everywhere below as "no signal available", never as "zero rows". Passed into
@@ -5033,7 +5047,7 @@ def run_extraction(db: Session, job: Job) -> None:
                 # mode is rows going missing or merging, never spurious extra ones) OR when the
                 # text read itself looks broken - but never prefer a candidate that itself looks
                 # broken just because it has a higher row count.
-                if image_paths:
+                if image_paths and not is_standalone_group:
                     vision_rows = extract_document_rows_from_images(
                         image_paths, row_specs, detected_row_count or None)
                     vision_broken = _row_read_looks_broken(vision_rows, row_labels)
