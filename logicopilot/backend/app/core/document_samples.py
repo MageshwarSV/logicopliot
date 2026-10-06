@@ -24,6 +24,7 @@ the upload is what gets recorded.
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -52,20 +53,66 @@ SAMPLES_SHOWN = 3
 MIN_USEFUL_CHARS = 60
 
 
-def _trim(text: str) -> str:
-    """The top of the document, tidied, or "" if there is nothing worth keeping."""
-    lines: list[str] = []
-    used = 0
-    for raw in (text or "").splitlines():
-        line = " ".join(raw.split())
-        if not line:
+# Lines that describe the SENDER rather than the document. A supplier's invoice and
+# their packing list carry the identical letterhead, so these teach the model who sent
+# the paperwork - which it cannot use to tell one document from the other.
+_SENDER_LINE = re.compile(
+    r"\b(co\.?,?\s*ltd|pvt|private limited|limited|inc\.?|gmbh|corp|llc|"
+    r"road|street|avenue|floor|district|province|tel|fax|e-?mail|@|"
+    r"http|www\.|zip|postal|p\.?o\.? box)\b", re.I)
+
+# A value, not a label: mostly digits, a date, a reference number.
+_MOSTLY_DIGITS = re.compile(r"^[\W\d]*$")
+
+
+def _label_lines(text: str) -> list[str]:
+    """The lines that say what KIND of document this is.
+
+    Field labels, taken from the whole page rather than the top of it, with their
+    values stripped. "Net Weight 820.50 KGS" becomes "net weight kgs" - the same on
+    every packing list this supplier ever sends, and absent from every invoice.
+
+    Values are removed on purpose: 820.50 changes with each shipment and would make
+    two samples of the same document look different.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = " ".join(raw_line.split())
+        if not line or _SENDER_LINE.search(line):
             continue
-        lines.append(line)
+        # Strip the data, keep the wording.
+        stripped = re.sub(r"[\d.,:/\\-]+", " ", line).lower()
+        stripped = re.sub(r"[^a-z&%() ]+", " ", stripped)
+        stripped = re.sub(r"\s+", " ", stripped).strip()
+        if len(stripped) < 3 or len(stripped) > 60 or _MOSTLY_DIGITS.match(stripped):
+            continue
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        out.append(stripped)
+    return out
+
+
+def _trim(text: str) -> str:
+    """What this document type looks like, small enough to put in a prompt.
+
+    The title area is kept first - a document that does announce itself should say so
+    up front - followed by the label lines that distinguish it from its siblings.
+    """
+    labels = _label_lines(text)
+    if not labels:
+        return ""
+
+    out, used = [], 0
+    for line in labels:
+        out.append(line)
         used += len(line) + 1
         if used >= DOCUMENT_SAMPLE_CHARS:
             break
-    out = "\n".join(lines)[:DOCUMENT_SAMPLE_CHARS]
-    return out if len(out) >= MIN_USEFUL_CHARS else ""
+
+    joined = "\n".join(out)[:DOCUMENT_SAMPLE_CHARS]
+    return joined if len(joined) >= MIN_USEFUL_CHARS else ""
 
 
 def remember(db: Session, *, tenant_id: str, template_document_id: str,
