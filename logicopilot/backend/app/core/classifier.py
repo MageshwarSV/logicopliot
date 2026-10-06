@@ -70,6 +70,38 @@ def _hint_from_name(name: str) -> str:
     return DOC_TYPE_HINTS.get(key, "") if key else ""
 
 
+def _describe_examples(candidate: dict) -> str:
+    """Real documents an operator has manually confirmed belong to this slot (see
+    ClassificationExample in app/models/job.py) - this module stays free of any database
+    access, so the caller (jobs.py/email_puller.py) passes these in on the candidate dict
+    itself, under "examples": [{"keywords": [...], "snippet": "..."}, ...].
+
+    Worded the same way as THE CUSTOMER'S OWN SAMPLE above, because it is the same kind of
+    evidence - a real document of this type, just confirmed by a correction afterwards
+    instead of at template setup. This is what lets a document worded nothing like "freight
+    certificate" (an Arrival Notice, say) get recognised on its own after the first one is
+    ever manually corrected, without needing its exact wording hand-coded anywhere.
+    """
+    examples = [e for e in (candidate.get("examples") or []) if isinstance(e, dict)]
+    if not examples:
+        return ""
+    lines = []
+    for e in examples[:3]:
+        kw = ", ".join(str(k) for k in (e.get("keywords") or [])[:10])
+        snippet = str(e.get("snippet") or "")[:600]
+        bits = []
+        if kw:
+            bits.append(f"keywords: {kw}")
+        if snippet:
+            bits.append(f'excerpt: "{snippet}"')
+        if bits:
+            lines.append("; ".join(bits))
+    if not lines:
+        return ""
+    return ("CONFIRMED BY THIS TENANT'S OWN OPERATOR - real documents matched here before "
+            "(treat these the same as the customer's own sample above): " + " | ".join(lines))
+
+
 def _effective_doc_type(candidate: dict) -> str | None:
     """Which _TYPE_SIGNATURES entry this slot should be checked against for the keyword
     backstop - its own structured doc_type when that is already one of the 4 built-in types,
@@ -194,6 +226,7 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
         resp = client.chat.completions.create(
             model=settings.openai_model,
             max_tokens=300,
+            temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )
@@ -333,6 +366,9 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         if ref:
             parts.append("THE CUSTOMER'S OWN SAMPLE of this document, uploaded when their "
                          f'template was set up: "{ref[:1200]}"')
+        examples = _describe_examples(c)
+        if examples:
+            parts.append(examples)
         hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
         if hint:
             parts.append(f"typical content: {hint}")
@@ -385,6 +421,7 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         resp = client.chat.completions.create(
             model=settings.openai_model,
             max_tokens=200,
+            temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": user_content}],
         )
@@ -506,6 +543,7 @@ def identify_customer(mail_subject: str, mail_body: str, doc_texts: list[tuple[s
         resp = client.chat.completions.create(
             model=settings.openai_model,
             max_tokens=400,
+            temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": instruction}],
         )
@@ -577,6 +615,9 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
         ref = (c.get("reference") or "").strip()
         if ref:
             parts.append("the customer's own sample of this document: " + repr(ref[:900]))
+        examples = _describe_examples(c)
+        if examples:
+            parts.append(examples)
         hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
         if hint:
             parts.append(f"typical content: {hint}")
@@ -679,6 +720,12 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
             # one PDF) now returns one entry per instance instead of one per type, and got
             # cut off mid-JSON on a genuinely multi-instance file at the old limit.
             max_tokens=1200,
+            # A shipment's several near-identical documents (five packing lists from the
+            # same shipper) were classified ONE FILE AT A TIME, each its own independent call
+            # with no temperature pinned - two structurally identical files could and did come
+            # back with different answers purely from sampling, with nothing in the content
+            # itself explaining why one specific instance landed on the wrong slot.
+            temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )

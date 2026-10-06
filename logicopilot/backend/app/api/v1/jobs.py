@@ -45,7 +45,9 @@ from app.core.extraction import (
 )
 from app.models.cross_doc_link import CrossDocLink
 from app.models.field_mark import FieldMark
-from app.models.job import Job, JobDocument, JobFieldValue
+from app.models.job import (
+    ClassificationExample, Job, JobDocument, JobFieldValue, UnmatchedUploadPage,
+)
 from app.core import live_runs
 from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
@@ -4204,6 +4206,25 @@ def delete_job_document_file(
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 
 
+def _classification_examples_by_tdoc(db: Session, group_id: str) -> dict[str, list[dict]]:
+    """template_document_id -> this template's own operator-confirmed ClassificationExample
+    rows, most recent first, shaped exactly as classifier.py's _describe_examples expects
+    (see its own docstring) - shared by smart_upload and email_puller.py's own pull-time
+    classification so both learn from the same corrections."""
+    rows = (
+        db.query(ClassificationExample)
+        .filter(ClassificationExample.group_id == group_id)
+        .order_by(ClassificationExample.created_at.desc())
+        .all()
+    )
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        bucket = out.setdefault(r.template_document_id, [])
+        if len(bucket) < 3:
+            bucket.append({"keywords": r.keywords or [], "snippet": r.snippet_text or ""})
+    return out
+
+
 @router.post("/jobs/{job_id}/smart-upload")
 def smart_upload(
     job_id: str,
@@ -4229,6 +4250,8 @@ def smart_upload(
     sent one at a time each landed as if it were the ONLY invoice, instead of three rows in
     the same slot.
     """
+    import uuid
+
     import fitz  # PyMuPDF
 
     job = _load_job(db, job_id, scope, user)
@@ -4243,6 +4266,7 @@ def smart_upload(
             detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
         )
     group = db.get(TemplateGroup, job.group_id)
+    examples_by_tdoc = _classification_examples_by_tdoc(db, group.id)
     # `fields` lets a "Custom" document (no built-in content hint) still be classified,
     # by describing itself through the labels configured on it.
     candidates = [
@@ -4251,6 +4275,7 @@ def smart_upload(
             "name": d.name,
             "doc_type": d.doc_type,
             "fields": [m.label_name for m in d.marks],
+            "examples": examples_by_tdoc.get(d.id, []),
         }
         for d in group.documents
     ]
@@ -4276,6 +4301,11 @@ def smart_upload(
 
     tmp = Path(get_settings().uploads_dir) / "_classify" / job_id
     shutil.rmtree(tmp, ignore_errors=True)
+    # A page the classifier cannot confidently place lives here PERMANENTLY, not in `tmp`
+    # above - `tmp` is unconditionally wiped in the `finally` below no matter how
+    # classification goes, which used to mean a page nobody could place was gone with no
+    # trace it ever existed (see UnmatchedUploadPage's own docstring).
+    unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job_id / "unmatched"
     custom_filter_texts = get_active_custom_filter_texts(db)
     results: list[dict] = []
     try:
@@ -4330,17 +4360,53 @@ def smart_upload(
                 continue
             prepared.append({"name": name, "ext": ext, "blob": data,
                              "text": text, "image": img_path,
-                             "drop_pages": dropped_pages, "page_count": page_count})
+                             "drop_pages": dropped_pages, "page_count": page_count,
+                             "fdir": fdir, "kept_pages": kept_pages,
+                             "kept_original": kept_page_to_original(page_count, dropped_pages)})
+
+        # Persist every KEPT page to the database before classification runs at all - an
+        # OpenAI outage partway through a batch of several files used to lose every page's
+        # OCR text along with it (the temp dir is wiped regardless, in `finally` below);
+        # now the text and a permanent copy of the page image already exist independently
+        # of whether classification ever completes. Pruned back down to just the pages that
+        # stay genuinely unresolved once classification has actually run, below.
+        unmatched_dir.mkdir(parents=True, exist_ok=True)
+        pages_by_file: list[list] = []
+        for item in prepared:
+            rows: list = []
+            for i, page_text in enumerate(item["kept_pages"], start=1):
+                if not page_text.strip():
+                    rows.append(None)
+                    continue
+                orig_idx = item["kept_original"][i - 1] if i - 1 < len(item["kept_original"]) else i
+                src_png = item["fdir"] / "pages" / f"page_{orig_idx}.png"
+                dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                if src_png.exists():
+                    shutil.copy(src_png, dest)
+                row = UnmatchedUploadPage(
+                    tenant_id=job.tenant_id, job_id=job.id,
+                    original_filename=item["name"][:255], page_number=i,
+                    image_path=str(dest), ocr_text=page_text,
+                )
+                db.add(row)
+                rows.append(row)
+            pages_by_file.append(rows)
+        db.commit()
 
         claims_per_file = assign_documents_detailed(prepared, candidates) if prepared else []
-        for item, claims in zip(prepared, claims_per_file):
+        for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
             matched_names: list[str] = []
+            # Every page this file's claims actually cover is now a real JobDocument - its
+            # staging row has done its job (and would otherwise show the operator a page
+            # that already lives somewhere real).
+            claimed_pages = {p for c in claims for p in c["pages"]}
+            for i, row in enumerate(unmatched_rows, start=1):
+                if row is not None and i in claimed_pages:
+                    db.delete(row)
             # A combined file (one PDF carrying both the Invoice and the Packing List) must
             # give each slot only ITS pages, not the whole thing - see extract_pdf_pages.
             split = len(claims) > 1 and item["ext"] == ".pdf"
-            kept_original = (
-                kept_page_to_original(item["page_count"], item["drop_pages"]) if split else []
-            )
+            kept_original = item["kept_original"] if split else []
             for claim in claims:
                 key = claim["key"]
                 # A new row per file, so a ZIP of three invoices lands as three invoices
@@ -4377,6 +4443,163 @@ def smart_upload(
     _maybe_auto_extract(db, job)
     db.refresh(job)
     return {"results": results, "detail": _build_detail(db, job).model_dump()}
+
+
+class UnclassifiedPageOut(BaseModel):
+    id: str
+    original_filename: str
+    page_number: int
+    preview_url: str
+
+
+@router.get("/jobs/{job_id}/unclassified-pages", response_model=list[UnclassifiedPageOut])
+def list_unclassified_pages(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[UnclassifiedPageOut]:
+    """Every page a smart-upload on this job could not confidently place anywhere - shown as
+    draggable cards next to the document slots so an operator can resolve them by hand (see
+    assign_unclassified_page). A page leaves this list the moment it is assigned, never before -
+    nothing here was ever silently dropped."""
+    job = _load_job(db, job_id, scope, user)
+    rows = (
+        db.query(UnmatchedUploadPage)
+        .filter(UnmatchedUploadPage.job_id == job.id)
+        .order_by(UnmatchedUploadPage.original_filename, UnmatchedUploadPage.page_number)
+        .all()
+    )
+    return [
+        UnclassifiedPageOut(
+            id=r.id, original_filename=r.original_filename, page_number=r.page_number,
+            preview_url=f"/api/v1/jobs/{job.id}/unclassified-pages/{r.id}/image",
+        )
+        for r in rows
+    ]
+
+
+@router.get("/jobs/{job_id}/unclassified-pages/{page_id}/image")
+def get_unclassified_page_image(
+    job_id: str,
+    page_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+):
+    """Serve the rendered page image for one unresolved unclassified page."""
+    job = _load_job(db, job_id, scope, user)
+    row = (
+        db.query(UnmatchedUploadPage)
+        .filter(UnmatchedUploadPage.id == page_id, UnmatchedUploadPage.job_id == job.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page not found")
+    image = Path(row.image_path)
+    if not image.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered page missing")
+    return FileResponse(image, media_type="image/png")
+
+
+class AssignUnclassifiedPagePayload(BaseModel):
+    template_document_id: str
+
+
+def _extract_classification_keywords(ocr_text: str) -> list[str]:
+    """A handful of short phrases that define this document's type for this tenant - e.g. an
+    Arrival Notice's own heading words - cheap evidence to compare against on every FUTURE
+    classification call without re-reading the whole snippet_text.
+
+    Only ever runs once per manual drag-and-drop correction (a rare, operator-triggered event),
+    never in a bulk/automatic path, so one extra small OpenAI call here costs nothing in
+    practice. Falls back to an empty list rather than raising - a missing keyword list still
+    leaves the (always-saved) snippet_text itself as evidence; it must never block the
+    assignment the operator is actively waiting on."""
+    settings = get_settings()
+    if not settings.openai_api_key or not ocr_text.strip():
+        return []
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=30)
+        resp = client.chat.completions.create(
+            model=settings.openai_model,
+            max_tokens=150,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Read this document and return 5-10 short phrases (2-5 words each) that "
+                    "would let someone recognise another document of the SAME type at a "
+                    "glance - its own heading/title wording, a distinctive section label, a "
+                    "phrase that is characteristic of this kind of document. Not generic "
+                    "words like 'date' or 'company'.\n\n"
+                    'Return JSON: {"keywords": ["...", ...]}.\n\n--- DOCUMENT TEXT ---\n'
+                    + ocr_text[:4000]
+                ),
+            }],
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return [str(k).strip() for k in (data.get("keywords") or []) if str(k).strip()][:10]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("keyword extraction for a classification example failed: %s", exc)
+        return []
+
+
+@router.post("/jobs/{job_id}/unclassified-pages/{page_id}/assign")
+def assign_unclassified_page(
+    job_id: str,
+    page_id: str,
+    payload: AssignUnclassifiedPagePayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """An operator drags an unclassified page onto a document slot label. Writes the page into
+    a real JobDocument for that slot, remembers it as a ClassificationExample so classify_document
+    recognises a similarly-worded document on its own next time (see classifier.py's describe()/
+    _describe()), and removes the staging row - the whole point of today's correction."""
+    job = _load_job(db, job_id, scope, user)
+    row = (
+        db.query(UnmatchedUploadPage)
+        .filter(UnmatchedUploadPage.id == page_id, UnmatchedUploadPage.job_id == job.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page not found")
+    tdoc = db.get(TemplateDocument, payload.template_document_id)
+    if tdoc is None or tdoc.group_id != job.group_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Document type not found on this job's template.")
+
+    jd = _slot_for_new_file(db, job, tdoc.id)
+    if jd is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not find or create a slot for this document type.",
+        )
+    jd.original_name = row.original_filename[:255] or None
+    ddir = _job_doc_dir(jd.id)
+    ddir.mkdir(parents=True, exist_ok=True)
+    dorig = ddir / "original.png"
+    shutil.copy(Path(row.image_path), dorig)
+    jd.file_path = str(dorig)
+    jd.page_count = _render_pages(dorig, ddir / "pages")
+
+    db.add(ClassificationExample(
+        tenant_id=job.tenant_id, group_id=job.group_id, template_document_id=tdoc.id,
+        source_filename=row.original_filename,
+        snippet_text=row.ocr_text[:3000],
+        keywords=_extract_classification_keywords(row.ocr_text),
+        created_by_id=getattr(user, "id", None),
+    ))
+    db.delete(row)
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
 
 
 def _resolve_target_value(

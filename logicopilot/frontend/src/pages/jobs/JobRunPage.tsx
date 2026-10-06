@@ -187,7 +187,34 @@ export function JobRunPage() {
   const [rulingBusy, setRulingBusy] = useState(false);
   const [rulingAnswer, setRulingAnswer] = useState("");
   const [smartResult, setSmartResult] = useState<{ filename: string; matched: string[] | null; error?: string }[] | null>(null);
+  // Pages a smart-upload could not confidently place - shown as draggable cards next to the
+  // document slots so an operator resolves them by hand instead of them being silently gone.
+  const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
+  const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
+  const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   const didInit = useRef(false);
+
+  async function refreshUnclassifiedPages() {
+    try {
+      setUnclassifiedPages(await jobsApi.getUnclassifiedPages(jobId));
+    } catch {
+      /* non-critical - the slots themselves still load and work */
+    }
+  }
+
+  async function handleAssignUnclassifiedPage(pageId: string, templateDocumentId: string) {
+    setAssigningPageId(pageId);
+    setError(null);
+    try {
+      setJob(await jobsApi.assignUnclassifiedPage(jobId, pageId, templateDocumentId));
+      setUnclassifiedPages((prev) => prev.filter((p) => p.id !== pageId));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not assign that page.");
+    } finally {
+      setAssigningPageId(null);
+      setDraggedPageId(null);
+    }
+  }
 
   async function load() {
     try {
@@ -210,6 +237,7 @@ export function JobRunPage() {
       .catch(() => {
         /* the header falls back to the job's own timestamp */
       });
+    refreshUnclassifiedPages();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
@@ -449,6 +477,7 @@ export function JobRunPage() {
       const res = await jobsApi.smartUpload(jobId, Array.from(fileList));
       setJob(res.detail);
       setSmartResult(res.results);
+      await refreshUnclassifiedPages();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Smart upload failed.");
     } finally {
@@ -1448,12 +1477,31 @@ export function JobRunPage() {
               )}
             </div>
           )}
+          <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
           <div className="grid gap-3 sm:grid-cols-2">
             {docSlots.map(({ tdocId, name, doc_type, required, files }) => {
               const isUploading = uploadingId === tdocId;
               const uploaded = files.filter((f) => f.is_uploaded);
+              const isDropTarget = draggedPageId !== null;
               return (
-                <div key={tdocId}>
+                <div
+                  key={tdocId}
+                  onDragOver={(e) => {
+                    if (!draggedPageId) return;
+                    e.preventDefault();
+                    setDragOverId(tdocId);
+                  }}
+                  onDragLeave={() => { if (draggedPageId) setDragOverId(null); }}
+                  onDrop={(e) => {
+                    if (!draggedPageId) return;
+                    e.preventDefault();
+                    setDragOverId(null);
+                    handleAssignUnclassifiedPage(draggedPageId, tdocId);
+                  }}
+                  className={isDropTarget
+                    ? `rounded-lg p-1.5 transition-colors ${dragOverId === tdocId ? "bg-teal-50 ring-2 ring-teal-400 dark:bg-teal-500/10" : "ring-1 ring-dashed ring-teal-300 dark:ring-teal-500/30"}`
+                    : undefined}
+                >
                   <p className="mb-1 text-sm font-medium text-slate-900 dark:text-slate-100">
                     {name} <span className="text-xs text-slate-400">({doc_type})</span>
                     {!required && (
@@ -1523,6 +1571,30 @@ export function JobRunPage() {
                 </div>
               );
             })}
+          </div>
+          {unclassifiedPages.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
+                Unclassified pages · {unclassifiedPages.length}
+              </p>
+              <p className="mb-2 text-xs text-slate-400">
+                Couldn't be auto-routed — drag one onto the right document type on the left.
+              </p>
+              <div className="flex flex-col gap-2">
+                {unclassifiedPages.map((p) => (
+                  <UnclassifiedPageCard
+                    key={p.id}
+                    jobId={jobId}
+                    page={p}
+                    busy={assigningPageId === p.id}
+                    readOnly={readOnly}
+                    onDragStart={() => setDraggedPageId(p.id)}
+                    onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           </div>
           {!allUploaded && !readOnly && <p className="mt-3 text-xs text-slate-400">Upload every document — extraction starts on its own once all of them are in.</p>}
         </Card>
@@ -3998,6 +4070,65 @@ function ExtractionReview({
           </div>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+/** One page a smart-upload could not confidently place - a draggable card labelled with its
+ *  own filename and page number, dropped by the operator onto the correct document type on
+ *  the left (see the slot cards' own onDrop in the Document Capture tab). Native HTML5 drag
+ *  and drop - no library exists anywhere in this frontend, and this is one list to another
+ *  with no reordering, so adding one would be overkill. */
+function UnclassifiedPageCard({
+  jobId, page, busy, readOnly, onDragStart, onDragEnd,
+}: {
+  jobId: string;
+  page: jobsApi.UnclassifiedPage;
+  busy: boolean;
+  readOnly: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    let created: string | null = null;
+    (async () => {
+      try {
+        const u = await jobsApi.unclassifiedPageImageUrl(jobId, page.id);
+        created = u;
+        if (alive) setUrl(u);
+        else URL.revokeObjectURL(u);
+      } catch {
+        /* no thumbnail - the label alone still lets the operator drag it */
+      }
+    })();
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [jobId, page.id]);
+
+  return (
+    <div
+      draggable={!readOnly && !busy}
+      onDragStart={(e) => { e.dataTransfer.setData("text/plain", page.id); onDragStart(); }}
+      onDragEnd={onDragEnd}
+      className={`flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-2 text-xs dark:border-amber-500/20 dark:bg-amber-500/10 ${
+        readOnly || busy ? "" : "cursor-grab active:cursor-grabbing"
+      } ${busy ? "opacity-50" : ""}`}
+      title={readOnly ? undefined : "Drag onto the correct document type on the left"}
+    >
+      {url ? (
+        <img src={url} alt="" className="h-12 w-9 shrink-0 rounded border border-amber-300 object-cover" />
+      ) : (
+        <div className="h-12 w-9 shrink-0 rounded border border-amber-300 bg-amber-100 dark:bg-amber-500/20" />
+      )}
+      <span className="min-w-0 truncate text-amber-800 dark:text-amber-300">
+        {page.original_filename} — page {page.page_number}
+      </span>
+      {busy && <span className="shrink-0 text-amber-600">assigning…</span>}
     </div>
   );
 }

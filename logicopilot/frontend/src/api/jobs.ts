@@ -178,6 +178,44 @@ export async function smartUpload(jobId: string, files: File[]): Promise<SmartUp
   return data;
 }
 
+/** A page a smart-upload could not confidently place anywhere - kept instead of silently
+ *  discarded, shown as a draggable card next to the document slots so an operator can resolve
+ *  it by hand (see assignUnclassifiedPage). */
+export interface UnclassifiedPage {
+  id: string;
+  original_filename: string;
+  page_number: number;
+  preview_url: string;
+}
+
+export async function getUnclassifiedPages(jobId: string): Promise<UnclassifiedPage[]> {
+  const { data } = await apiClient.get<UnclassifiedPage[]>(`/jobs/${jobId}/unclassified-pages`);
+  return data;
+}
+
+export async function unclassifiedPageImageUrl(jobId: string, pageId: string): Promise<string> {
+  const { data } = await apiClient.get<Blob>(
+    `/jobs/${jobId}/unclassified-pages/${pageId}/image`,
+    { responseType: "blob" },
+  );
+  return URL.createObjectURL(data);
+}
+
+/** The operator drops an unclassified page onto a document slot label. Writes it into a real
+ *  document for that slot and remembers it as a confirmed example so a similarly-worded
+ *  document is recognised automatically next time. */
+export async function assignUnclassifiedPage(
+  jobId: string,
+  pageId: string,
+  templateDocumentId: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/unclassified-pages/${pageId}/assign`,
+    { template_document_id: templateDocumentId },
+  );
+  return data;
+}
+
 // ---- IRN Documents Upload (GK1) / IRN Processing (GK2): supporting documents + prealert ----
 
 export interface SupportingDocumentFile {
