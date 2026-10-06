@@ -2568,6 +2568,13 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         m.id: (m.page_number, m.x, m.y, m.width, m.height)
         for tdoc in group.documents for m in tdoc.marks
     }
+    mark_standalone: dict[str, bool] = {
+        m.id: m.standalone_multi_value for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_group_heading: dict[str, str | None] = {
+        m.id: m.standalone_group_heading for tdoc in group.documents for m in tdoc.marks
+    }
+    cf_standalone = {c.id: c.multi_value_from_document for c in cf_rows}
     field_values = []
     for fv in fvs:
         mp = mark_pos.get(fv.mark_id)
@@ -2615,6 +2622,11 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 paired_custom_field_id=cf_paired.get(fv.custom_field_id),
                 picker_heading=cf_picker_heading.get(fv.custom_field_id),
                 sync_field_ids=cf_sync_ids.get(fv.custom_field_id),
+                standalone_multi_value=(
+                    mark_standalone.get(fv.mark_id, False)
+                    or cf_standalone.get(fv.custom_field_id, False)
+                ),
+                standalone_group_heading=mark_group_heading.get(fv.mark_id),
             )
         )
 
@@ -3103,19 +3115,28 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     from app.models.custom_field import CustomField
 
     job_fvs = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all()
-    # A custom field ticked "multiple values in this document" (multi_value_from_document)
-    # reads straight off its own document and was never tied to any invoice line item to
-    # begin with — a bill of lading's container count has nothing to do with how many
-    # products are on the invoice. Keeping these labels out of the shared line_keys union
-    # below, and sizing their row list to their OWN count instead, is what keeps a
-    # CONTAINERS-style sheet from inheriting a stray extra blank row (or losing rows) purely
-    # because the invoice happened to have a different number of lines.
+    # A custom field ticked "multiple values in this document" (multi_value_from_document),
+    # or a mark ticked "its own table" (standalone_multi_value), reads straight off its own
+    # document and was never tied to any invoice line item to begin with — a bill of
+    # lading's container count has nothing to do with how many products are on the invoice.
+    # Keeping these labels out of the shared line_keys union below, and sizing their row
+    # list to their OWN count instead, is what keeps a CONTAINERS-style sheet from
+    # inheriting a stray extra blank row (or losing rows) purely because the invoice
+    # happened to have a different number of lines.
     standalone_labels = {
         cf.label_name
         for cf in db.query(CustomField).filter(
             CustomField.group_id == job.group_id,
             CustomField.kind == "ai",
             CustomField.multi_value_from_document.is_(True),
+        ).all()
+    } | {
+        m.label_name
+        for m in db.query(FieldMark).join(
+            TemplateDocument, TemplateDocument.id == FieldMark.document_id
+        ).filter(
+            TemplateDocument.group_id == job.group_id,
+            FieldMark.standalone_multi_value.is_(True),
         ).all()
     }
     # A line-item field is often marked on TWO documents so the two can be cross-checked.
@@ -3174,7 +3195,25 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
             if v.strip() or fv.label_name not in d:
                 d[fv.label_name] = v
     if len(per_set) > 1:
-        rows[SET_VALUES_KEY] = [per_set[k] for k in sorted(per_set)]
+        # Several SETS does not always mean several invoices - a packing list whose own
+        # "Invoice No" reading never matched any invoice's is left unpaired (see
+        # doc_sets.assign_sets) and lands in its own set despite being the SAME invoice. An
+        # invoice-scoped sheet must show each DISTINCT invoice once, not once per set that
+        # happened to carry it - a duplicate row would tell the ERP there are two invoices
+        # when there is one.
+        from app.core.doc_sets import pairing_key
+
+        seen_keys: set[str] = set()
+        deduped: list[dict[str, str]] = []
+        for k in sorted(per_set):
+            key = pairing_key(per_set[k])
+            if key is not None and key in seen_keys:
+                continue
+            if key is not None:
+                seen_keys.add(key)
+            deduped.append(per_set[k])
+        if len(deduped) > 1:
+            rows[SET_VALUES_KEY] = deduped
     return values, rows
 
 

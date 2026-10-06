@@ -129,6 +129,11 @@ export function TemplateCreationWizard() {
   const [askRequired, setAskRequired] = useState(true);
   // Tick: this document holds many values for the field (a line-item table).
   const [multiValue, setMultiValue] = useState(false);
+  // Multi-value only: this field's rows are their OWN table, never meant to line up against
+  // any other per-row field (a container count has nothing to do with the invoice's products).
+  const [standaloneMultiValue, setStandaloneMultiValue] = useState(false);
+  // Standalone only: what the job screen heads this group of rows with, e.g. "Container".
+  const [standaloneHeading, setStandaloneHeading] = useState("");
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -291,6 +296,8 @@ export function TemplateCreationWizard() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editAnchors, setEditAnchors] = useState<string[]>([]);
   const [newAnchor, setNewAnchor] = useState("");
+  const [editStandalone, setEditStandalone] = useState(false);
+  const [editStandaloneHeading, setEditStandaloneHeading] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -596,6 +603,8 @@ export function TemplateCreationWizard() {
     setAskRequired(true);
     setAskHint("");
     setMultiValue(false);
+    setStandaloneMultiValue(false);
+    setStandaloneHeading("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -619,6 +628,9 @@ export function TemplateCreationWizard() {
         ask_operator_required: askOperator ? askRequired : true,
         ask_operator_hint: askOperator ? askHint.trim() || null : null,
         is_multi_value: multiValue,
+        standalone_multi_value: multiValue ? standaloneMultiValue : false,
+        standalone_group_heading:
+          multiValue && standaloneMultiValue ? standaloneHeading.trim() || null : null,
         is_target_value: targetValue,
         fuzzy_match: targetValue ? fuzzyMatch : false,
       });
@@ -711,6 +723,8 @@ export function TemplateCreationWizard() {
     setEditPrompt(m.extraction_prompt ?? "");
     setEditAnchors(m.anchor_variations ?? []);
     setNewAnchor("");
+    setEditStandalone(!!m.standalone_multi_value);
+    setEditStandaloneHeading(m.standalone_group_heading ?? "");
     setError(null);
   }
 
@@ -728,6 +742,8 @@ export function TemplateCreationWizard() {
         label_name: editLabel.trim() || undefined,
         extraction_prompt: editPrompt,
         anchor_variations: editAnchors,
+        standalone_multi_value: editStandalone,
+        standalone_group_heading: editStandalone ? editStandaloneHeading.trim() || null : null,
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1445,6 +1461,40 @@ export function TemplateCreationWizard() {
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                       />
                     </div>
+                    {m.is_multi_value && (
+                      <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-500/20 dark:bg-violet-500/5">
+                        <label className="flex items-start gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={editStandalone}
+                            onChange={(e) => setEditStandalone(e.target.checked)}
+                          />
+                          <span className="text-violet-800 dark:text-violet-300">
+                            <b>Its own table, not row-aligned with other fields?</b><br />
+                            <span className="text-xs">
+                              Tick when these rows are a separate table unrelated to the
+                              job's other line items (e.g. a container count on the Bill of
+                              Lading).
+                            </span>
+                          </span>
+                        </label>
+                        {editStandalone && (
+                          <div className="mt-2 pl-6">
+                            <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
+                              Heading on the job screen (optional — e.g. "Container")
+                            </label>
+                            <input
+                              type="text"
+                              value={editStandaloneHeading}
+                              onChange={(e) => setEditStandaloneHeading(e.target.value)}
+                              placeholder={m.label_name}
+                              className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>
@@ -2087,6 +2137,41 @@ export function TemplateCreationWizard() {
               <span className="text-xs">Tick when the document lists this field once per row (a line-item table). Extraction reads the whole table and returns every row — value 1, value 2, value 3 and so on — instead of a single value. Fields ticked together stay row-aligned.</span>
             </span>
           </label>
+          {multiValue && (
+            <label className="flex items-start gap-2 rounded-lg border border-violet-200 bg-violet-50/60 p-3 text-sm dark:border-violet-500/20 dark:bg-violet-500/5">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={standaloneMultiValue}
+                onChange={(e) => setStandaloneMultiValue(e.target.checked)}
+              />
+              <span className="text-violet-800 dark:text-violet-300">
+                <b>Its own table, not row-aligned with other fields?</b><br />
+                <span className="text-xs">
+                  Tick when these rows are a separate table that has nothing to do with the
+                  job's other line items (e.g. a container count on the Bill of Lading — it
+                  isn't tied to the invoice's own product lines, and there's no reason the two
+                  should share a row count). Leave unticked for a field that genuinely
+                  describes the SAME line as other per-row fields (CTH, RITC, a part
+                  description).
+                </span>
+                {standaloneMultiValue && (
+                  <div className="mt-2">
+                    <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
+                      Heading on the job screen (optional — e.g. "Container")
+                    </label>
+                    <input
+                      type="text"
+                      value={standaloneHeading}
+                      onChange={(e) => setStandaloneHeading(e.target.value)}
+                      placeholder={labelName || "defaults to the field's own name"}
+                      className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
+                    />
+                  </div>
+                )}
+              </span>
+            </label>
+          )}
           <label className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm dark:border-sky-500/20 dark:bg-sky-500/10">
             <input type="checkbox" className="mt-0.5" checked={askOperator} onChange={(e) => setAskOperator(e.target.checked)} />
             <span className="text-sky-800 dark:text-sky-300">

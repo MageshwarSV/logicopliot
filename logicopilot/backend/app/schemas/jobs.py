@@ -177,6 +177,16 @@ class JobFieldValueOut(BaseModel):
     paired_custom_field_id: str | None = None
     picker_heading: str | None = None
     sync_field_ids: list[str] | None = None
+    # True when this field's rows are their OWN table - never meant to line up against any
+    # other per-row field on the job (FieldMark.standalone_multi_value, or a custom field
+    # ticked multi_value_from_document). A container count on the Bill of Lading has nothing
+    # to do with how many products are on the invoice; the job screen uses this to keep such
+    # rows out of the Product Detail cards and their cross-document reference-sheet lookups.
+    standalone_multi_value: bool = False
+    # standalone_multi_value only: the heading to show above this group (e.g. "Container"),
+    # from FieldMark.standalone_group_heading - wordable per tenant/template. None/blank
+    # falls back to the field's own label_name.
+    standalone_group_heading: str | None = None
 
 
 class VerificationRow(BaseModel):

@@ -133,6 +133,14 @@ export interface JobFieldValue {
   /** Other custom_field ids that also get set to whichever value is picked, on the same
    *  row (e.g. RITC following the CTH pick). */
   sync_field_ids?: string[] | null;
+  /** True when this field's rows are their OWN table - never meant to line up against any
+   *  other per-row field on the job (a container count on the Bill of Lading has nothing to
+   *  do with how many products are on the invoice). Used to keep such rows out of the
+   *  Product Detail cards and their cross-document reference-sheet lookups. */
+  standalone_multi_value?: boolean;
+  /** standalone_multi_value only: heading to show above this group (e.g. "Container"),
+   *  wordable per tenant/template. Falls back to label_name when null/blank. */
+  standalone_group_heading?: string | null;
 }
 
 export type VerificationStatus = "match" | "mismatch" | "missing" | "review";

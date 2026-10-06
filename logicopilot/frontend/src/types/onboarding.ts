@@ -27,6 +27,14 @@ export interface Mark {
   ask_operator_hint?: string | null;
   /** This document repeats this field — extraction returns one value per table row. */
   is_multi_value?: boolean;
+  /** is_multi_value only: this field's rows are their OWN table, never meant to line up
+   *  against any other per-row field on the job (a container count has nothing to do with
+   *  how many products are on the invoice). */
+  standalone_multi_value?: boolean;
+  /** standalone_multi_value only: the heading the job screen shows above this field's own
+   *  group of rows, e.g. "Container" — wordable per tenant/template. Falls back to the
+   *  field's own label_name when blank. */
+  standalone_group_heading?: string | null;
   /** The extracted value is looked up in its own reference table (keyed on itself); a
    *  match replaces it, no match returns empty. */
   is_target_value?: boolean;

@@ -3493,6 +3493,19 @@ function ExtractionReview({
     return [...byRow.entries()].sort((a, b) => a[0] - b[0]);
   }, [job.field_values, active]);
 
+  // A standalone-row document (e.g. container numbers off the Bill of Lading) is its own
+  // table, not a line-item family like the Invoice's products - it has no CTH/RITC to look
+  // up and nothing to combine, so it gets its own heading instead of "Product N" and never
+  // joins the cross-document reference-sheet lookup below.
+  const docIsStandalone =
+    lineRows.length > 0 && lineRows.every(([, cells]) => cells.every((fv) => fv.standalone_multi_value));
+  // Wordable per tenant/template (FieldMark.standalone_group_heading) - "Container" for one
+  // customer's Bill of Lading could be something else for another's. Falls back to the
+  // field's own label_name when nothing was set.
+  const standaloneHeading = docIsStandalone
+    ? lineRows[0][1][0].standalone_group_heading?.trim() || lineRows[0][1][0].label_name
+    : null;
+
   // The reference-sheet lookup for THIS SAME product line (the CTH/RITC code, keyed off the
   // part number sitting right there in the card above) - self_filled carries no mark and no
   // job_document_id of its own, only the row_index that ties it to one physical line, so it
@@ -3738,9 +3751,11 @@ function ExtractionReview({
                 <div className="mt-6">
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                      Product Detail · {lineRows.length}
+                      {docIsStandalone ? `${standaloneHeading} Detail` : "Product Detail"}
+                      {" · "}
+                      {lineRows.length}
                     </p>
-                    {!readOnly && (
+                    {!readOnly && !docIsStandalone && (
                       <button
                         type="button"
                         onClick={openComposite}
@@ -3752,7 +3767,7 @@ function ExtractionReview({
                   </div>
                   <div className="flex flex-col gap-2">
                     {lineRows.map(([n, cells]) => {
-                      const lookedUp = lookedUpByRow.get(n) ?? [];
+                      const lookedUp = docIsStandalone ? [] : (lookedUpByRow.get(n) ?? []);
                       // Any field whose own config names a pairing (primary) gets matched, on
                       // THIS row, to the field it names (other) and whatever it lists as sync
                       // targets - by custom_field_id, never by label text, since a Super Admin
@@ -3778,7 +3793,11 @@ function ExtractionReview({
                           key={n}
                           className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"
                         >
-                          <p className="mb-2 text-xs font-semibold text-slate-500">Product {n}</p>
+                          <p className="mb-2 text-xs font-semibold text-slate-500">
+                            {docIsStandalone
+                              ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
+                              : `Product ${n}`}
+                          </p>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                             {cells.map((fv) => (
                               <ExtractedField

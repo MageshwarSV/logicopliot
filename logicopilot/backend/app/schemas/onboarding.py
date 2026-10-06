@@ -62,6 +62,8 @@ class MarkOut(BaseModel):
     ask_operator_required: bool = True
     ask_operator_hint: str | None = None
     is_multi_value: bool = False
+    standalone_multi_value: bool = False
+    standalone_group_heading: str | None = None
     is_target_value: bool = False
     fuzzy_match: bool = False
 
@@ -223,6 +225,8 @@ class MarkCreate(BaseModel):
     ask_operator_hint: str | None = None
     ask_operator_required: bool = True  # False = optional, never blocks Submit Entry
     is_multi_value: bool = False
+    standalone_multi_value: bool = False
+    standalone_group_heading: str | None = None
     is_target_value: bool = False
     fuzzy_match: bool = False
 
@@ -243,6 +247,8 @@ class MarkEdit(BaseModel):
     ask_operator_hint: str | None = None
     ask_operator_required: bool | None = None
     is_multi_value: bool | None = None
+    standalone_multi_value: bool | None = None
+    standalone_group_heading: str | None = None
     is_target_value: bool | None = None
     fuzzy_match: bool | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the

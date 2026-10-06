@@ -125,6 +125,8 @@ def create_mark(
         ask_operator_required=payload.ask_operator_required,
         ask_operator_hint=payload.ask_operator_hint,
         is_multi_value=payload.is_multi_value,
+        standalone_multi_value=payload.standalone_multi_value,
+        standalone_group_heading=payload.standalone_group_heading,
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
     )
@@ -458,6 +460,7 @@ def link_field_to_documents(
                 # this the copy is read as ONE value while the source yields many, and the
                 # cross-check has nothing comparable to work with.
                 is_multi_value=source.is_multi_value,
+                standalone_multi_value=source.standalone_multi_value,
             )
             db.add(target)
             db.flush()

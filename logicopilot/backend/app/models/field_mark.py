@@ -56,6 +56,20 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # JobFieldValue per row (see JobFieldValue.row_index).
     is_multi_value: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # is_multi_value only: this field's rows are their OWN table, never meant to line up
+    # against any other per-row field (a container count has nothing to do with how many
+    # products are on the invoice) - unlike item_material_code/product_description, which
+    # genuinely are the same line item read off two different documents and must stay
+    # aligned. See entry_values_and_rows' own docstring for what this changes.
+    standalone_multi_value: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # standalone_multi_value only: the heading the job screen shows above this field's own
+    # group of rows, e.g. "Container" - each tenant's template can word this however fits
+    # that tenant's documents, the same way CustomField.picker_heading already lets a picker
+    # pair be worded per template rather than with one fixed phrase everywhere. Falls back to
+    # the field's own label_name when blank.
+    standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # This mark is extracted normally, then its OWN raw value is looked up in a reference
     # table keyed on itself (see CustomFieldReferenceValue.mark_id) - a match replaces the
     # extraction with the table's stored value, no match returns empty rather than the raw

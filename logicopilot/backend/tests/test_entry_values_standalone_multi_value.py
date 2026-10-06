@@ -95,6 +95,46 @@ def test_standalone_field_with_more_rows_than_the_invoice_does_not_inflate_item_
     assert rows["Container No"] == ["CONT1", "CONT2", "CONT3", "CONT4"]
 
 
+def test_standalone_mark_keeps_its_own_row_count_even_with_colliding_set_index(db_session):
+    """A mark ticked standalone_multi_value (e.g. container_number on the Bill of Lading) is
+    its own table. On a real single-invoice job every per-row field - including this one -
+    gets set_index=1 (assign_sets gives every slot set 1 when there is only one of each
+    document), so the container rows' (set, row) keys can land EXACTLY on top of the
+    invoice's own item keys. Without the exclusion this is indistinguishable from real
+    invoice lines and would get silently merged into the same union - this is the live bug
+    that was actually found: more containers than invoice lines inflated the ITEMS sheet
+    with phantom blank rows."""
+    tenant = make_tenant(db_session)
+    group, job = _make_group_and_job(db_session, tenant)
+    bl_tdoc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Bill of lading", doc_type="BL")
+    db_session.add(bl_tdoc)
+    db_session.commit()
+    db_session.refresh(bl_tdoc)
+    container_mark = FieldMark(
+        tenant_id=tenant.id, document_id=bl_tdoc.id, label_name="container_number",
+        page_number=1, x=0.1, y=0.1, width=0.1, height=0.1,
+        is_multi_value=True, standalone_multi_value=True,
+    )
+    db_session.add(container_mark)
+    db_session.commit()
+
+    # 2 invoice line items, both set_index=1 ...
+    for i in range(1, 3):
+        _add_row(db_session, job, "item_material_code", i, f"MC{i}", set_index=1)
+    # ... and 4 containers, ALSO landing on set_index=1 (the single-invoice default) - same
+    # (set, row) keys as the first 4 invoice lines would occupy if this weren't excluded.
+    for i in range(1, 5):
+        _add_row(db_session, job, "container_number", i, f"CONT{i}", set_index=1)
+    db_session.commit()
+
+    values, rows = entry_values_and_rows(db_session, job)
+
+    assert rows["item_material_code"] == ["MC1", "MC2"]
+    assert rows["container_number"] == ["CONT1", "CONT2", "CONT3", "CONT4"]
+    from app.core.excel_entry import LINE_SET_KEY
+    assert len(rows[LINE_SET_KEY]) == 2
+
+
 def test_no_standalone_fields_behaves_exactly_as_before(db_session):
     """No multi_value_from_document field on this job at all - the ordinary single shared
     line_keys path, byte for byte as it already worked."""

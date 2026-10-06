@@ -241,6 +241,11 @@ export async function createMark(
     ask_operator_hint?: string | null;
     /** Document repeats this field — extraction returns one value per table row. */
     is_multi_value?: boolean;
+    /** is_multi_value only: this field's rows are their own table, not line-aligned with
+     *  any other per-row field. */
+    standalone_multi_value?: boolean;
+    /** standalone_multi_value only: heading shown above this group, e.g. "Container". */
+    standalone_group_heading?: string | null;
     /** Look the extracted value up in its own reference table; a match replaces it, no
      *  match returns empty. */
     is_target_value?: boolean;
@@ -271,6 +276,8 @@ export async function editMark(
     anchor_variations: string[];
     semantic_description: string;
     value_format_hint: string;
+    standalone_multi_value: boolean;
+    standalone_group_heading: string | null;
   }>,
 ): Promise<Mark> {
   const { data } = await apiClient.patch<Mark>(`/marks/${markId}`, patch);
