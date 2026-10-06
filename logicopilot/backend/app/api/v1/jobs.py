@@ -3100,8 +3100,24 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     version of it now.
     """
     from app.core.excel_entry import LINE_SET_KEY, SET_VALUES_KEY
+    from app.models.custom_field import CustomField
 
     job_fvs = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all()
+    # A custom field ticked "multiple values in this document" (multi_value_from_document)
+    # reads straight off its own document and was never tied to any invoice line item to
+    # begin with — a bill of lading's container count has nothing to do with how many
+    # products are on the invoice. Keeping these labels out of the shared line_keys union
+    # below, and sizing their row list to their OWN count instead, is what keeps a
+    # CONTAINERS-style sheet from inheriting a stray extra blank row (or losing rows) purely
+    # because the invoice happened to have a different number of lines.
+    standalone_labels = {
+        cf.label_name
+        for cf in db.query(CustomField).filter(
+            CustomField.group_id == job.group_id,
+            CustomField.kind == "ai",
+            CustomField.multi_value_from_document.is_(True),
+        ).all()
+    }
     # A line-item field is often marked on TWO documents so the two can be cross-checked.
     # Collapse on the LINE, keeping the first non-empty value — and a line is (set, row),
     # not row alone: with three invoices on one job "line 1" is three different products,
@@ -3116,9 +3132,15 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     # Every line on the job, invoice by invoice and in line order within each. A field the
     # packing list carries but the invoice does not still lines up, because every column is
     # laid out against the SAME list of lines rather than against its own.
-    line_keys = sorted({k for slots in _by_line.values() for k in slots})
+    line_keys = sorted({
+        k for label, slots in _by_line.items() if label not in standalone_labels for k in slots
+    })
     rows: dict[str, list[str]] = {
-        label: [slots.get(k, "") for k in line_keys] for label, slots in _by_line.items()
+        label: (
+            [v for _, v in sorted(slots.items())] if label in standalone_labels
+            else [slots.get(k, "") for k in line_keys]
+        )
+        for label, slots in _by_line.items()
     }
     if line_keys:
         # Which invoice each line belongs to, in the same order. Read by excel_entry to fill
