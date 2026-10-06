@@ -30,6 +30,7 @@ from app.core.deps import (
 )
 from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
+from app.core import document_samples
 from app.core.page_filter import extract_pdf_pages, kept_page_to_original
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import is_extraction_paused
@@ -3860,6 +3861,28 @@ def upload_job_document(
 
     jd.file_path = str(original)
     jd.page_count = page_count
+
+    # The operator has just said what this document is, by choosing its slot. That is
+    # a correct, customer-specific label the classifier can be shown next time, and it
+    # is the whole reason this is recorded here rather than guessed at later. A
+    # correction - deleting from the wrong slot and uploading to the right one - lands
+    # here too, which is the most valuable case of all.
+    #
+    # Reading page 1 costs nothing now: extraction is about to OCR it anyway, and the
+    # content cache means whichever of the two asks first pays and the other does not.
+    try:
+        page_one = get_page_ocr(ddir, 1)
+        document_samples.remember(
+            db, tenant_id=job.tenant_id, template_document_id=template_document_id,
+            text=page_one.get("layout_text") or page_one.get("text") or "",
+            job_document_id=jd.id,
+        )
+    except Exception:  # noqa: BLE001
+        # Learning is a bonus, never a reason to fail an upload the operator has
+        # already seen succeed.
+        logger.debug("could not sample %s for slot %s", jd.id, template_document_id,
+                     exc_info=True)
+
     db.commit()
     _maybe_auto_extract(db, job)
     db.refresh(job)
@@ -4245,12 +4268,22 @@ def smart_upload(
     group = db.get(TemplateGroup, job.group_id)
     # `fields` lets a "Custom" document (no built-in content hint) still be classified,
     # by describing itself through the labels configured on it.
+    # What this customer's own documents of each type have looked like, taken from the
+    # slots they filled by hand. The prompt already describes `reference` to the model
+    # as "the customer's own sample of this document"; nothing had ever filled it.
+    #
+    # This matters more than any wording rule. Nothing in the text of shipping
+    # paperwork separates these reliably - every document in a consignment quotes the
+    # others - but one customer's invoice and packing list are laid out consistently,
+    # and that is what these show.
+    samples = document_samples.for_slots(db, [d.id for d in group.documents])
     candidates = [
         {
             "key": d.id,
             "name": d.name,
             "doc_type": d.doc_type,
             "fields": [m.label_name for m in d.marks],
+            "reference": samples.get(d.id, ""),
         }
         for d in group.documents
     ]
