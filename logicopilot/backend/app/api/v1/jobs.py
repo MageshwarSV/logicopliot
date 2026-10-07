@@ -387,6 +387,32 @@ def _is_valid_container_number(value) -> bool:
     return bool(_CONTAINER_NUMBER_RE.match(str(value or "").strip().upper()))
 
 
+def _is_truncated_reference_number(value: str, ocr_text: str) -> bool:
+    """A real container number is always printed as its own complete 11-character token -
+    never as the front of a longer run of digits. Found live on a 3-page OOCL waybill: the
+    continuation page's own blank "CNTR. NOS." section sits right under a header reading
+    "SEA WAYBILL NO.: OOLU2172231880" - 14 characters, not a container number at all - and
+    the model truncated it down to "OOLU2172231" (dropping the trailing "880") specifically
+    because that prefix happens to fit the 4-letters-then-7-digits shape. The format check
+    alone can't catch this - the truncated fragment passes it perfectly.
+
+    If EVERY place this exact value occurs in the document's own OCR text is immediately
+    followed by another digit, it is a fragment of something longer, never a complete,
+    standalone container number - reject it. A single clean, standalone occurrence anywhere
+    is enough to trust it, even if the same digits also happen to appear as a prefix of some
+    longer number elsewhere on the page.
+    """
+    if not ocr_text or not value:
+        return False
+    found_any = False
+    for m in re.finditer(re.escape(value), ocr_text, re.IGNORECASE):
+        found_any = True
+        end = m.end()
+        if end >= len(ocr_text) or not ocr_text[end].isdigit():
+            return False
+    return found_any
+
+
 def _row_sums_disagree(rows_a: list, rows_b: list, labels: list[str]) -> bool:
     """Two independent reads of the SAME table (OCR text vs the page image) can agree on the
     row COUNT while still disagreeing on individual VALUES - a value dropped from the middle
@@ -5206,6 +5232,16 @@ def run_extraction(db: Session, job: Job) -> None:
                         "multi-value on %s: dropped %d row(s) that weren't a valid container "
                         "number (4 letters + 7 digits) - likely a seal number read as an extra "
                         "container row",
+                        tdoc.name, before - len(rows),
+                    )
+                before = len(rows)
+                rows = [r for r in rows if not _is_truncated_reference_number(
+                    str(r.get("container_number") or "").strip().upper(), ocr_text)]
+                if len(rows) != before:
+                    logger.warning(
+                        "multi-value on %s: dropped %d row(s) that were a truncated fragment "
+                        "of a longer reference number (booking no., sea waybill no., ...), not "
+                        "a real standalone container number",
                         tdoc.name, before - len(rows),
                     )
             logger.warning(
