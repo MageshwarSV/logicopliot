@@ -31,7 +31,10 @@ class OpenAIAdminAPIError(Exception):
 
 
 def _get(path: str, api_key: str, params: dict) -> dict:
-    query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    # doseq=True so a list value (group_by's repeated "group_by=project_id&group_by=..."
+    # form) encodes as separate query params instead of one literal, wrong "['project_id']".
+    query = urllib.parse.urlencode(
+        {k: v for k, v in params.items() if v is not None}, doseq=True)
     url = f"{BASE_URL}{path}?{query}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
@@ -65,7 +68,9 @@ def _bucket_day(start_time: int) -> str:
     return datetime.fromtimestamp(start_time, tz=timezone.utc).date().isoformat()
 
 
-def _paged_buckets(path: str, api_key: str, start: date, end: date) -> list[dict]:
+def _paged_buckets(
+    path: str, api_key: str, start: date, end: date, group_by: list[str] | None = None,
+) -> list[dict]:
     start_ts, end_ts = _day_range_to_unix(start, end)
     buckets: list[dict] = []
     page = None
@@ -76,6 +81,8 @@ def _paged_buckets(path: str, api_key: str, start: date, end: date) -> list[dict
         # buckets is also exactly enough for one calendar month in one request; wider ranges
         # still page correctly via has_more/next_page below.
         params = {"start_time": start_ts, "end_time": end_ts, "bucket_width": "1d", "limit": 31}
+        if group_by:
+            params["group_by"] = group_by
         if page:
             params["page"] = page
         body = _get(path, api_key, params)
@@ -119,4 +126,50 @@ def fetch_daily_token_usage(api_key: str, start: date, end: date) -> dict[str, d
         raise
     except Exception as exc:  # noqa: BLE001
         raise OpenAIAdminAPIError(f"Could not read OpenAI's usage response: {exc}") from exc
+    return out
+
+
+def fetch_projects(api_key: str) -> dict[str, str]:
+    """{project_id: project_name} for every project in the org - a cost/usage result grouped
+    by project_id only ever gives back the bare id, never a human name, so this is the only
+    way to show which project a slice of spend actually belongs to."""
+    out: dict[str, str] = {}
+    after = None
+    try:
+        for _ in range(_MAX_PAGES):
+            params = {"limit": 100}
+            if after:
+                params["after"] = after
+            body = _get("/organization/projects", api_key, params)
+            for p in body.get("data", []):
+                out[p["id"]] = p.get("name") or p["id"]
+            if not body.get("has_more"):
+                break
+            after = body.get("last_id")
+    except OpenAIAdminAPIError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise OpenAIAdminAPIError(f"Could not read OpenAI's projects response: {exc}") from exc
+    return out
+
+
+def fetch_daily_costs_by_project(api_key: str, start: date, end: date) -> dict[str, dict[str, float]]:
+    """{project_id: {date: usd}} - the SAME real spend fetch_daily_costs reports, broken out
+    per project via OpenAI's own group_by=project_id, so one org account shared by several
+    apps (this server runs more than one) can have each app's share told apart instead of
+    only ever seeing one combined total that silently includes everyone else's usage too."""
+    out: dict[str, dict[str, float]] = {}
+    try:
+        for bucket in _paged_buckets("/organization/costs", api_key, start, end,
+                                     group_by=["project_id"]):
+            day = _bucket_day(bucket["start_time"])
+            for r in bucket.get("results", []):
+                pid = r.get("project_id") or "unknown"
+                amt = (r.get("amount") or {}).get("value") or 0
+                day_totals = out.setdefault(pid, {})
+                day_totals[day] = day_totals.get(day, 0.0) + amt
+    except OpenAIAdminAPIError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise OpenAIAdminAPIError(f"Could not read OpenAI's per-project cost response: {exc}") from exc
     return out

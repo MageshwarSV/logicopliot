@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.core.currency import CurrencyRateError, fetch_usd_to_inr_rate
 from app.core.deps import get_db, require_role
-from app.core.openai_admin import OpenAIAdminAPIError, fetch_daily_costs, fetch_daily_token_usage
+from app.core.openai_admin import (
+    OpenAIAdminAPIError,
+    fetch_daily_costs,
+    fetch_daily_costs_by_project,
+    fetch_daily_token_usage,
+    fetch_projects,
+)
 from app.core.system_settings import (
     InvalidOpenAIAdminKey,
     InvalidOpenAIBalance,
@@ -279,6 +285,70 @@ def openai_costs(
         total_input_tokens=sum(d.input_tokens for d in days),
         total_output_tokens=sum(d.output_tokens for d in days),
         days=days,
+    )
+
+
+class OpenAICostByProject(BaseModel):
+    project_id: str
+    project_name: str
+    usd: float
+
+
+class OpenAICostsByProjectOut(BaseModel):
+    connected: bool
+    start: str
+    end: str
+    total_usd: float
+    projects: list[OpenAICostByProject]
+
+
+@router.get("/openai-costs-by-project", response_model=OpenAICostsByProjectOut)
+def openai_costs_by_project(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> OpenAICostsByProjectOut:
+    """The same real org-wide spend /openai-costs reports, broken out per OpenAI project -
+    this server runs several apps under what may be one shared OpenAI organization, so the
+    combined total above can silently include spend that has nothing to do with this app.
+    This tells the pieces apart by the project each API key actually belongs to."""
+    try:
+        end_inclusive = date.fromisoformat(end) if end else datetime.now(timezone.utc).date()
+        start_date = date.fromisoformat(start) if start else end_inclusive - timedelta(days=29)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="start/end must be YYYY-MM-DD dates")
+    if start_date > end_inclusive:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="start must not be after end")
+
+    admin_key = get_openai_admin_key(db)
+    if not admin_key:
+        return OpenAICostsByProjectOut(
+            connected=False, start=start_date.isoformat(), end=end_inclusive.isoformat(),
+            total_usd=0.0, projects=[],
+        )
+
+    try:
+        by_project = fetch_daily_costs_by_project(admin_key, start_date, end_inclusive)
+        names = fetch_projects(admin_key)
+    except OpenAIAdminAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Could not reach OpenAI: {exc}")
+
+    projects = [
+        OpenAICostByProject(
+            project_id=pid, project_name=names.get(pid, pid),
+            usd=round(sum(day_totals.values()), 4),
+        )
+        for pid, day_totals in by_project.items()
+    ]
+    projects.sort(key=lambda p: p.usd, reverse=True)
+    return OpenAICostsByProjectOut(
+        connected=True, start=start_date.isoformat(), end=end_inclusive.isoformat(),
+        total_usd=round(sum(p.usd for p in projects), 4),
+        projects=projects,
     )
 
 
