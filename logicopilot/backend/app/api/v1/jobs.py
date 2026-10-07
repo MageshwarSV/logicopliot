@@ -372,6 +372,21 @@ def _numeric_total_field(single_values: dict, row_label: str) -> float | None:
     return None
 
 
+_CONTAINER_NUMBER_RE = re.compile(r"^[A-Z]{4}\d{7}$")
+
+
+def _is_valid_container_number(value) -> bool:
+    """ISO 6346: exactly 4 letters then 7 digits. A prompt alone ("a 3-letter code is a seal
+    number, not a container number") isn't reliable enough on its own - JOB-7372E8 extracted
+    5 real containers (WHSU...) correctly interleaved with 5 of their own seal numbers
+    (WHA...), one row each, because the model still read the seal number's row as if it were
+    a second container. This is the deterministic backstop: whatever the model returns for
+    a container_number mark, a row that isn't actually 4 letters + 7 digits is dropped
+    outright rather than trusted, no matter how confidently the model read it off the page.
+    """
+    return bool(_CONTAINER_NUMBER_RE.match(str(value or "").strip().upper()))
+
+
 def _row_sums_disagree(rows_a: list, rows_b: list, labels: list[str]) -> bool:
     """Two independent reads of the SAME table (OCR text vs the page image) can agree on the
     row COUNT while still disagreeing on individual VALUES - a value dropped from the middle
@@ -5183,6 +5198,16 @@ def run_extraction(db: Session, job: Job) -> None:
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
                 rows = extract_document_rows_from_images(image_paths, row_specs, detected_row_count or None)
+            if is_standalone_group and multi_marks[0].label_name == "container_number":
+                before = len(rows)
+                rows = [r for r in rows if _is_valid_container_number(r.get("container_number"))]
+                if len(rows) != before:
+                    logger.warning(
+                        "multi-value on %s: dropped %d row(s) that weren't a valid container "
+                        "number (4 letters + 7 digits) - likely a seal number read as an extra "
+                        "container row",
+                        tdoc.name, before - len(rows),
+                    )
             logger.warning(
                 "multi-value on %s: %d row(s) from %s",
                 tdoc.name, len(rows), "page images" if used_vision else "OCR text",
