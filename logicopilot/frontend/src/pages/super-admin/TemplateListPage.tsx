@@ -29,6 +29,7 @@ export function TemplateListPage() {
   const [copyName, setCopyName] = useState("");
   const [copyDestTenantId, setCopyDestTenantId] = useState("");
   const [copying, setCopying] = useState(false);
+  const [tenantSort, setTenantSort] = useState<"" | "asc" | "desc">("");
 
   async function load() {
     try {
@@ -47,6 +48,16 @@ export function TemplateListPage() {
   }, []);
 
   const tenantName = useMemo(() => new Map(tenants.map((t) => [t.id, t.name])), [tenants]);
+
+  const sortedGroups = useMemo(() => {
+    if (!tenantSort) return groups;
+    const copy = [...groups];
+    copy.sort((a, b) => {
+      const cmp = (tenantName.get(a.tenant_id) ?? "").localeCompare(tenantName.get(b.tenant_id) ?? "");
+      return tenantSort === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [groups, tenantName, tenantSort]);
 
   async function confirmDelete() {
     if (!deleteTarget) return;
@@ -131,11 +142,25 @@ export function TemplateListPage() {
           {error}
         </div>
       )}
+      <div className="mb-3 flex justify-end">
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+          Sort by tenant
+          <select
+            value={tenantSort}
+            onChange={(e) => setTenantSort(e.target.value as "" | "asc" | "desc")}
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+          >
+            <option value="">Default</option>
+            <option value="asc">A → Z</option>
+            <option value="desc">Z → A</option>
+          </select>
+        </label>
+      </div>
       <Card>
         {!loading && (
           <DataTable
             columns={columns}
-            rows={groups}
+            rows={sortedGroups}
             keyFor={(g) => g.id}
             emptyMessage="No templates yet — create one under Customer with Template Creation."
           />
