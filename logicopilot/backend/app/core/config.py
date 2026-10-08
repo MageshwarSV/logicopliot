@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     # trusting a page to a slot - see classify_pages_from_images in app/core/classifier.py.
     # Below this, the page is left unclassified (same Unclassified Pages tray as a page
     # nothing matched at all) rather than guessed into a slot it wasn't confident about.
-    vision_classification_confidence_threshold: float = 0.85
+    # Lowered from 0.85 after JOB-901CC7 showed several genuine-looking pages landing just
+    # under that bar (0.78-0.83) - still well above a coin flip, so still a real gate.
+    vision_classification_confidence_threshold: float = 0.75
     docai_project_id: str = ""
     docai_location: str = "us"
     docai_processor_id: str = ""
