@@ -1573,14 +1573,16 @@ export function JobRunPage() {
             })}
           </div>
           {unclassifiedPages.length > 0 && (
-            <div>
+            <div className="lg:sticky lg:top-4 lg:self-start">
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
                 Unclassified pages · {unclassifiedPages.length}
               </p>
               <p className="mb-2 text-xs text-slate-400">
                 Couldn't be auto-routed — drag one onto the right document type on the left.
               </p>
-              <div className="flex flex-col gap-2">
+              {/* Its own scroll, separate from the page's - so a long list never pushes the
+                  document-type slots on the left out of reach while you're mid-drag. */}
+              <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pr-1">
                 {unclassifiedPages.map((p) => (
                   <UnclassifiedPageCard
                     key={p.id}
@@ -4090,6 +4092,7 @@ function UnclassifiedPageCard({
   onDragEnd: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
+  const [viewing, setViewing] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -4129,6 +4132,101 @@ function UnclassifiedPageCard({
         {page.original_filename} — page {page.page_number}
       </span>
       {busy && <span className="shrink-0 text-amber-600">assigning…</span>}
+      {!busy && url && (
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); setViewing(true); }}
+          className="ml-auto shrink-0 rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-500/20"
+        >
+          View
+        </button>
+      )}
+      {viewing && url && (
+        <ZoomableImageModal
+          src={url}
+          title={`${page.original_filename} — page ${page.page_number}`}
+          onClose={() => setViewing(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Full-screen, zoomable view of a single page image - used so an operator can read small
+ *  print before deciding which document-type slot an unclassified page actually belongs in.
+ *  Plain +/- buttons and Ctrl+scroll, no library - the rest of this file's zoom (JobDocPreview)
+ *  is a simple click-to-fit view; this one additionally needs to zoom PAST fit-to-screen. */
+function ZoomableImageModal({ src, title, onClose }: { src: string; title: string; onClose: () => void }) {
+  const [scale, setScale] = useState(1);
+  const MIN_SCALE = 0.5;
+  const MAX_SCALE = 4;
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-slate-900/85"
+      onClick={onClose}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between gap-3 px-4 py-3" onClick={(e) => e.stopPropagation()}>
+        <span className="min-w-0 truncate text-sm text-slate-200">{title}</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setScale((s) => Math.max(MIN_SCALE, s - 0.25))}
+            className="rounded bg-slate-700 px-2.5 py-1 text-sm font-semibold text-white hover:bg-slate-600"
+          >
+            −
+          </button>
+          <span className="w-12 text-center text-xs text-slate-300">{Math.round(scale * 100)}%</span>
+          <button
+            type="button"
+            onClick={() => setScale((s) => Math.min(MAX_SCALE, s + 0.25))}
+            className="rounded bg-slate-700 px-2.5 py-1 text-sm font-semibold text-white hover:bg-slate-600"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => setScale(1)}
+            className="ml-1 rounded bg-slate-700 px-2 py-1 text-xs text-white hover:bg-slate-600"
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-2 rounded bg-slate-700 px-2 py-1 text-xs text-white hover:bg-slate-600"
+          >
+            ✕ Close
+          </button>
+        </div>
+      </div>
+      <div
+        className="flex-1 overflow-auto px-6 pb-6"
+        onClick={(e) => e.stopPropagation()}
+        onWheel={(e) => {
+          if (!e.ctrlKey) return;
+          e.preventDefault();
+          setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s + (e.deltaY < 0 ? 0.25 : -0.25))));
+        }}
+      >
+        <img
+          src={src}
+          alt={title}
+          style={{ transform: `scale(${scale})`, transformOrigin: "top center" }}
+          className="mx-auto max-h-[85vh] w-auto max-w-full rounded-lg shadow-2xl"
+        />
+      </div>
     </div>
   );
 }
