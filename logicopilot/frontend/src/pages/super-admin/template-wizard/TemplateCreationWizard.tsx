@@ -388,8 +388,8 @@ export function TemplateCreationWizard() {
   // so you can jump directly to the stage you need instead of walking every step.
   function goToStep(n: number) {
     if (n === step) return;
-    if (group && n >= 2) setStep(n);
-    else if (!group && n === 1) setStep(1);
+    if (group) setStep(n);
+    else if (n === 1) setStep(1);
   }
 
   const activeDoc = useMemo(
@@ -990,7 +990,7 @@ export function TemplateCreationWizard() {
         {STEPS.map((label, i) => {
           const n = i + 1;
           const state = n === step ? "current" : n < step ? "done" : "todo";
-          const clickable = (group && n >= 2) || (!group && n === 1);
+          const clickable = !!group || n === 1;
           return (
             <div key={label} className="flex items-center gap-2">
               <button
@@ -1027,25 +1027,43 @@ export function TemplateCreationWizard() {
         </div>
       )}
 
-      {editing && group && (
-        <Card className="mb-6 max-w-2xl p-4">
-          <h3 className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-50">Group settings</h3>
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <Select
-                label="Tenant"
-                value={moveTenantId}
-                onChange={(e) => {
-                  setMoveTenantId(e.target.value);
-                  setMoveSaved(false);
-                  setMoveError(null);
-                }}
-              >
-                {tenants.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </Select>
-            </div>
+      {error && (
+        <div className="mb-6">
+          <Alert>{error}</Alert>
+        </div>
+      )}
+
+      {/* STEP 1 — Declare */}
+      {step === 1 && editing && group && (
+        <Card className="max-w-2xl p-6">
+          <h2 className="mb-1 font-semibold text-slate-900 dark:text-slate-50">Customer / Tenant</h2>
+          <p className="mb-4 text-sm text-slate-500">
+            The mode, name, and documents declared when this template was created aren't
+            editable here — only which tenant this template belongs to.
+          </p>
+          <div className="flex flex-col gap-4">
+            <Select
+              label="Customer / Tenant"
+              value={moveTenantId}
+              onChange={(e) => {
+                setMoveTenantId(e.target.value);
+                setMoveSaved(false);
+                setMoveError(null);
+              }}
+            >
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </Select>
+            <p className="-mt-2 text-xs text-slate-400 dark:text-slate-500">
+              Moves this template (and everything in it) to the selected tenant. If this
+              template already has jobs run against it, this is refused — duplicate it into
+              the new tenant instead, from the Template List.
+            </p>
+            {moveError && <p className="text-xs text-rose-600 dark:text-rose-400">{moveError}</p>}
+            {moveSaved && <p className="text-xs text-emerald-600 dark:text-emerald-400">Tenant updated.</p>}
+          </div>
+          <div className="mt-6 flex justify-end">
             <Button
               onClick={saveGroupTenant}
               isLoading={moveBusy}
@@ -1054,24 +1072,9 @@ export function TemplateCreationWizard() {
               Save
             </Button>
           </div>
-          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-            Moves this template (and everything in it) to a different tenant. If this template
-            already has jobs run against it, this is refused — duplicate it into the new tenant
-            instead, from the Template List.
-          </p>
-          {moveError && <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{moveError}</p>}
-          {moveSaved && <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">Tenant updated.</p>}
         </Card>
       )}
-
-      {error && (
-        <div className="mb-6">
-          <Alert>{error}</Alert>
-        </div>
-      )}
-
-      {/* STEP 1 — Declare */}
-      {step === 1 && (
+      {step === 1 && !editing && (
         <Card className="max-w-2xl p-6">
           <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Declare the documents</h2>
           <div className="flex flex-col gap-4">
