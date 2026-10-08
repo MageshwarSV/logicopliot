@@ -4418,11 +4418,20 @@ def smart_upload(
             except Exception:  # noqa: BLE001
                 results.append({"filename": name, "matched": [], "error": "unreadable"})
                 continue
+            kept_original = kept_page_to_original(page_count, dropped_pages)
             prepared.append({"name": name, "ext": ext, "blob": data,
                              "text": text, "image": img_path,
                              "drop_pages": dropped_pages, "page_count": page_count,
                              "fdir": fdir, "kept_pages": kept_pages,
-                             "kept_original": kept_page_to_original(page_count, dropped_pages)})
+                             "kept_original": kept_original,
+                             # Every kept page's own image, keyed by its KEPT-page number -
+                             # used only by the vision engine's per-page classifier
+                             # (classify_pages_from_images), which judges each page on its
+                             # own instead of the whole file's combined OCR text.
+                             "page_images": [
+                                 (i, fdir / "pages" / f"page_{kept_original[i - 1] if i - 1 < len(kept_original) else i}.png")
+                                 for i in range(1, len(kept_pages) + 1)
+                             ]})
 
         # Persist every KEPT page to the database before classification runs at all - an
         # OpenAI outage partway through a batch of several files used to lose every page's
@@ -4456,6 +4465,10 @@ def smart_upload(
         claims_per_file = (
             assign_documents_detailed(
                 prepared, candidates, engine=extraction_engine, vision_model=vision_engine_model,
+                # Smart Upload only - classify every page on its own instead of page 1 alone,
+                # fixing a combined/multi-page file sometimes assigning the wrong page to the
+                # wrong slot. Never passed by email_puller's own call to this same function.
+                per_page_vision=True,
             )
             if prepared else []
         )

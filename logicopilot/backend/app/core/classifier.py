@@ -807,9 +807,140 @@ def classify_document_from_image(filename: str, image_path: Path | None,
         return []
 
 
+def classify_page_image(filename: str, page_no: int, image_path: Path, candidates: list[dict],
+                        model: str, prev_key: str | None) -> dict | None:
+    """Decide which ONE of this template's own candidates (whatever document labels were
+    declared in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to,
+    independent of every other page in the file. Smart-Upload-only building block for
+    classify_pages_from_images, below.
+
+    Returns {"key", "confidence", "evidence"}, or None if nothing matches or the model's own
+    confidence is below `vision_classification_confidence_threshold` - a low-confidence or
+    unmatched page is simply left out, so it falls through to the existing Unclassified Pages
+    tray exactly like any other page nothing could place. No new "LOW_CONFIDENCE" status is
+    introduced; that tray already is one.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return None
+    if not image_path.exists():
+        return None
+
+    instruction = _classification_instruction(filename, candidates)
+    instruction += (
+        f"\n\nYou are shown exactly ONE page - page {page_no} of this file, not the whole "
+        "document. Decide which ONE of the slots above THIS SINGLE PAGE belongs to, if any."
+    )
+    if prev_key:
+        prev_name = next((c["name"] for c in candidates if c["key"] == prev_key), prev_key)
+        instruction += (
+            f"\n\nThe page immediately before this one was classified as {prev_name!r}. If "
+            "this page is a direct continuation of that same document (e.g. a carrier's own "
+            "continuation/attachment page, or simply the next page of a multi-page document "
+            "with no new document number/date/header starting here), return that same slot."
+        )
+    instruction += (
+        '\n\nReturn JSON: {"matches": [{"key": "...", "confidence": 0.00, '
+        '"evidence": "the words on the page that make it this type"}]} - at most one entry, '
+        "since this is a single page. Return an empty list if no slot fits."
+    )
+    try:
+        from openai import APIError, OpenAI
+
+        from app.core.llm import reasoning_safe_chat_params
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
+        b64 = base64.b64encode(image_path.read_bytes()).decode()
+        content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        resp = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=500),
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        valid = {c["key"] for c in candidates}
+        matches = data.get("matches") or []
+        if not matches:
+            return None
+        m = matches[0]
+        key = m.get("key")
+        ev = str(m.get("evidence") or "").strip()
+        try:
+            confidence = float(m.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if key not in valid or len(ev) < 8:
+            return None
+        if confidence < settings.vision_classification_confidence_threshold:
+            logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
+                        filename, page_no, key, confidence,
+                        settings.vision_classification_confidence_threshold)
+            return None
+        return {"key": key, "confidence": confidence, "evidence": ev[:300]}
+    except APIError as exc:
+        raise AIServiceUnavailable(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Per-page vision classification failed for %s page %s: %s",
+                       filename, page_no, exc)
+        return None
+
+
+def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
+                               candidates: list[dict], model: str) -> list[dict]:
+    """Smart-Upload-only counterpart to classify_document_from_image: classifies EVERY kept
+    page of a file independently from its own image (not just page 1) - the fix for a
+    combined/multi-page file's classification, done once over the whole file's OCR text,
+    sometimes assigning the wrong page to the wrong slot. `page_images` is this file's own
+    KEPT-page numbering, same contract as this function's own return value (see this
+    module's docstring on assign_documents_detailed).
+
+    Consecutive pages landing on the SAME slot are merged into one document instance (a
+    2-page bill of lading stays one BL, not two) - a deliberate v1 trade-off: several
+    genuinely SEPARATE same-type documents back-to-back in one file (e.g. three invoices
+    with no gap) would currently merge into one entry too. The whole-file text classifier's
+    own number/date/header reasoning still catches that case; this path trades it away for
+    reliably keeping each page in the right slot, which is the bug this exists to fix. The
+    manual Unclassified Pages tray remains the fallback either way.
+
+    Returns the same shape as classify_document/classify_document_from_image:
+    [{"key", "pages": [int], "evidence": str}].
+    """
+    out: list[dict] = []
+    current: dict | None = None
+    prev_key: str | None = None
+    for page_no, image_path in page_images:
+        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key)
+        if result is None:
+            prev_key = None
+            if current is not None:
+                out.append(current)
+                current = None
+            continue
+        key = result["key"]
+        if current is not None and current["key"] == key:
+            current["pages"].append(page_no)
+        else:
+            if current is not None:
+                out.append(current)
+            current = {"key": key, "pages": [page_no], "evidence": result["evidence"],
+                      "source": "model"}
+        prev_key = key
+    if current is not None:
+        out.append(current)
+    if not out:
+        logger.info("classify %s: no slot's document is present on any page (per-page "
+                    "vision engine, %s slots offered)", filename, len(candidates))
+    return out
+
+
 def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
+    per_page_vision: bool = False,
 ) -> list[list[dict]]:
     """Same as assign_documents, but keeps each match's page numbers instead of collapsing
     to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
@@ -825,9 +956,20 @@ def assign_documents_detailed(
     before; "gpt5_mini_vision" switches to classify_document_from_image (the page-1 image)
     instead, with `vision_model` as the model it reads with. Passing neither is completely
     unaffected by this parameter's existence.
+
+    `per_page_vision` (Smart Upload only - email_puller never passes this) additionally
+    switches the gpt5_mini_vision engine from page-1-only to classifying every one of a
+    file's own `page_images` independently (classify_pages_from_images) - see that
+    function's own docstring for the trade-off this makes. Ignored under the default engine.
     """
-    if engine == "gpt5_mini_vision":
+    if engine == "gpt5_mini_vision" and per_page_vision:
         claims: list[list[dict]] = [
+            classify_pages_from_images(f.get("name") or "", f.get("page_images") or [],
+                                       candidates, vision_model)
+            for f in files
+        ]
+    elif engine == "gpt5_mini_vision":
+        claims = [
             classify_document_from_image(f.get("name") or "", f.get("image"), candidates,
                                          vision_model)
             for f in files

@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # change if this one ever needs more plumbing than expected. Never read by the Template
     # Wizard's own training flow, which always uses openai_model.
     vision_engine_model: str = "gpt-5-mini"
+    # Minimum confidence (0-1) Smart Upload's per-page vision classifier requires before
+    # trusting a page to a slot - see classify_pages_from_images in app/core/classifier.py.
+    # Below this, the page is left unclassified (same Unclassified Pages tray as a page
+    # nothing matched at all) rather than guessed into a slot it wasn't confident about.
+    vision_classification_confidence_threshold: float = 0.85
     docai_project_id: str = ""
     docai_location: str = "us"
     docai_processor_id: str = ""
