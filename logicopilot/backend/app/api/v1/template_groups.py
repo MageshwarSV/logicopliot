@@ -457,6 +457,105 @@ def set_pull_email(
     return TemplateGroupOut.model_validate(group)
 
 
+class GroupTenantPayload(BaseModel):
+    tenant_id: str
+
+
+@router.patch("/{group_id}/tenant", response_model=TemplateGroupDetailOut)
+def set_group_tenant(
+    group_id: str,
+    payload: GroupTenantPayload,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> TemplateGroupDetailOut:
+    """Move a template set to a DIFFERENT tenant - for one duplicated or built before its real
+    owner was settled, or one that simply needs to move. Super-Admin only: unlike /mode and
+    /name (which a Tenant Admin may also use on their own tenant's template), this changes
+    WHICH tenant the template belongs to, a platform-level action.
+
+    Refused outright once the group has any real job against it - see delete_group's own
+    precedent just above (it deletes every job under a group outright on template deletion):
+    a group with job history is real usage, not mutable configuration, and
+    `Job`/`JobDocument`/`JobFieldValue`/`JobEvent` are all tenant-scoped too - cascading this
+    change into them would leave that history permanently inconsistent. Duplicate the
+    template into the new tenant instead (POST .../duplicate, above) - a fresh copy with no
+    job history to protect.
+
+    Every other tenant_id this template's own configuration carries - TemplateDocument,
+    FieldMark, CustomField, CrossDocLink, TemplateReview, DocumentSample (classifier training
+    excerpts, keyed through template_documents), CompositeFieldConsigneeDefault (per-
+    consignee field ordering, keyed through custom_fields) - moves with it. The one exception
+    is UserTemplateAssignment: deleted rather than moved, since the assigned user still
+    belongs to the OLD tenant and has no business being auto-assigned to a different
+    tenant's template - the same reasoning duplicate_group already applies by never copying
+    this table at all.
+    """
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    new_tenant_id = payload.tenant_id
+    old_tenant_id = group.tenant_id
+    if new_tenant_id == old_tenant_id:
+        return _detail(db, group)
+
+    new_tenant = db.get(Tenant, new_tenant_id)
+    if new_tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination tenant not found")
+
+    job_count = db.execute(text("SELECT COUNT(*) FROM jobs WHERE group_id=:g"), {"g": group_id}).scalar()
+    if job_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"This template already has {job_count} job(s) against it - reassigning "
+                   f"its tenant would leave that job history inconsistent. Duplicate it into "
+                   f"the new tenant instead, which starts fresh with no job history to protect."),
+        )
+
+    if new_tenant.allowed_modes and group.mode not in new_tenant.allowed_modes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"{new_tenant.name} is not licensed for {group.mode}. "
+                   f"Allowed: {', '.join(new_tenant.allowed_modes)}"),
+        )
+
+    clash = (
+        db.query(TemplateGroup)
+        .filter(TemplateGroup.tenant_id == new_tenant_id, TemplateGroup.name == group.name)
+        .first()
+    )
+    if clash is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{new_tenant.name} already has a template set called {group.name!r}. Rename this one first.",
+        )
+
+    p = {"g": group_id, "t": new_tenant_id}
+    db.execute(text("UPDATE template_documents SET tenant_id=:t WHERE group_id=:g"), p)
+    db.execute(text(
+        "UPDATE field_marks SET tenant_id=:t "
+        "WHERE document_id IN (SELECT id FROM template_documents WHERE group_id=:g)"
+    ), p)
+    db.execute(text("UPDATE custom_fields SET tenant_id=:t WHERE group_id=:g"), p)
+    db.execute(text("UPDATE cross_doc_links SET tenant_id=:t WHERE group_id=:g"), p)
+    db.execute(text("UPDATE template_reviews SET tenant_id=:t WHERE group_id=:g"), p)
+    db.execute(text(
+        "UPDATE document_samples SET tenant_id=:t "
+        "WHERE template_document_id IN (SELECT id FROM template_documents WHERE group_id=:g)"
+    ), p)
+    db.execute(text(
+        "UPDATE composite_field_consignee_defaults SET tenant_id=:t "
+        "WHERE custom_field_id IN (SELECT id FROM custom_fields WHERE group_id=:g)"
+    ), p)
+    db.execute(text("DELETE FROM user_template_assignments WHERE group_id=:g"), p)
+
+    group.tenant_id = new_tenant_id
+    db.commit()
+    db.refresh(group)
+    logger.info("moved template set %s (%s) from tenant %s to %s",
+                group.name, group_id, old_tenant_id, new_tenant_id)
+    return _detail(db, group)
+
+
 @router.post("/{group_id}/finalize", response_model=TemplateGroupOut)
 def finalize_group(
     group_id: str,

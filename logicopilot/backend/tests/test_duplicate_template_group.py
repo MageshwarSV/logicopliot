@@ -5,9 +5,11 @@ already-trained template directly into a brand-new tenant as a fully independent
 from app.models.cross_doc_link import CrossDocLink
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
+from app.models.job import Job
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
-from app.models.user import SUPER_ADMIN
+from app.models.user import SUPER_ADMIN, TENANT_ADMIN
+from app.models.user_template import UserTemplateAssignment
 from tests.conftest import login, make_tenant, make_user
 
 
@@ -286,3 +288,125 @@ def test_cross_doc_link_sourced_from_a_custom_field_survives_a_duplicate(client,
 
     mark_sourced = [l for l in copy_links if l.source_mark_id is not None]
     assert len(mark_sourced) == 1
+
+
+# ---------------------------------------------------------------------------
+# PATCH /template-groups/{id}/tenant - reassign an EXISTING group's tenant
+# ---------------------------------------------------------------------------
+
+def test_reassigns_tenant_and_cascades_every_child_row(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari")
+    group, doc, mark, fields = _build_trained_group(db_session, source_tenant)
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tenant_id"] == dest_tenant.id
+
+    db_session.refresh(group)
+    assert group.tenant_id == dest_tenant.id
+    db_session.refresh(doc)
+    assert doc.tenant_id == dest_tenant.id
+    db_session.refresh(mark)
+    assert mark.tenant_id == dest_tenant.id
+    for cf in fields.values():
+        db_session.refresh(cf)
+        assert cf.tenant_id == dest_tenant.id
+
+
+def test_user_template_assignment_is_deleted_not_moved(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari")
+    group, *_ = _build_trained_group(db_session, source_tenant)
+    operator = make_user(db_session, role="operator", tenant=source_tenant, email="op-move@example.com")
+    db_session.add(UserTemplateAssignment(tenant_id=source_tenant.id, user_id=operator.id, group_id=group.id))
+    db_session.commit()
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 200, resp.text
+    assert db_session.query(UserTemplateAssignment).filter(
+        UserTemplateAssignment.group_id == group.id).count() == 0
+
+
+def test_refused_when_the_group_already_has_a_job_no_partial_mutation(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari")
+    group, doc, mark, fields = _build_trained_group(db_session, source_tenant)
+    db_session.add(Job(tenant_id=source_tenant.id, group_id=group.id, reference="JOB-EXISTS", status="extracted"))
+    db_session.commit()
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 409
+    assert "duplicate" in resp.json()["detail"].lower()
+
+    # No partial mutation - everything still shows the ORIGINAL tenant.
+    db_session.refresh(group)
+    assert group.tenant_id == source_tenant.id
+    db_session.refresh(doc)
+    assert doc.tenant_id == source_tenant.id
+    db_session.refresh(mark)
+    assert mark.tenant_id == source_tenant.id
+
+
+def test_name_clash_in_the_destination_tenant_is_refused(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari")
+    group, *_ = _build_trained_group(db_session, source_tenant)  # named "Sea Import"
+    existing = TemplateGroup(tenant_id=dest_tenant.id, name="Sea Import", mode="Sea Import", status="draft")
+    db_session.add(existing)
+    db_session.commit()
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 409
+
+
+def test_refused_when_destination_not_licensed_for_the_mode(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari", allowed_modes=["Air Import"])
+    group, *_ = _build_trained_group(db_session, source_tenant, mode="Sea Import")
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 400
+
+
+def test_refused_for_an_unknown_destination_tenant(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    group, *_ = _build_trained_group(db_session, source_tenant)
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": "does-not-exist"})
+    assert resp.status_code == 404
+
+
+def test_tenant_admin_is_refused_super_admin_only(client, db_session):
+    source_tenant = make_tenant(db_session, name="4S Logistics")
+    dest_tenant = make_tenant(db_session, name="Bhuvaneswari")
+    group, *_ = _build_trained_group(db_session, source_tenant)
+    admin = make_user(db_session, role=TENANT_ADMIN, tenant=source_tenant, email="ta-move@example.com")
+    login(client, admin.email)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": dest_tenant.id})
+    assert resp.status_code == 403
+
+
+def test_same_tenant_is_a_harmless_no_op(client, db_session):
+    tenant = make_tenant(db_session, name="4S Logistics")
+    group, *_ = _build_trained_group(db_session, tenant)
+    _login_super_admin(client, db_session)
+
+    resp = client.patch(f"/api/v1/template-groups/{group.id}/tenant",
+                        json={"tenant_id": tenant.id})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tenant_id"] == tenant.id

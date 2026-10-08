@@ -89,6 +89,12 @@ export function TemplateCreationWizard() {
   const [finalizing, setFinalizing] = useState(false);
   const [savedOpen, setSavedOpen] = useState(false);
 
+  // Group settings (editing an existing template only) — reassign its tenant.
+  const [moveTenantId, setMoveTenantId] = useState("");
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const [moveSaved, setMoveSaved] = useState(false);
+
   // Step 1
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState("");
@@ -358,9 +364,14 @@ export function TemplateCreationWizard() {
         .then((g) => {
           setGroup(g);
           setActiveDocId(g.documents[0]?.id ?? "");
+          setMoveTenantId(g.tenant_id);
           setStep(3);
         })
         .catch(() => setError("Failed to load the template to edit."));
+      tenantsApi
+        .listTenants()
+        .then((rows) => setTenants(rows))
+        .catch(() => setError("Failed to load tenants — is the backend running?"));
     } else {
       tenantsApi
         .listTenants()
@@ -404,6 +415,22 @@ export function TemplateCreationWizard() {
     const g = await api.getGroup(id);
     setGroup(g);
     return g;
+  }
+
+  async function saveGroupTenant() {
+    if (!group || moveTenantId === group.tenant_id) return;
+    setMoveBusy(true);
+    setMoveError(null);
+    setMoveSaved(false);
+    try {
+      const g = await api.setGroupTenant(group.id, moveTenantId);
+      setGroup(g);
+      setMoveSaved(true);
+    } catch (err) {
+      setMoveError(errText(err, "Could not move this template to that tenant."));
+    } finally {
+      setMoveBusy(false);
+    }
   }
 
   function openCustom() {
@@ -998,6 +1025,43 @@ export function TemplateCreationWizard() {
         <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm text-indigo-800 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-300">
           Editing an existing template — click any step above to jump straight there. No need to re-upload or re-declare. Changes save when you click <b>Done</b>.
         </div>
+      )}
+
+      {editing && group && (
+        <Card className="mb-6 max-w-2xl p-4">
+          <h3 className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-50">Group settings</h3>
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <Select
+                label="Tenant"
+                value={moveTenantId}
+                onChange={(e) => {
+                  setMoveTenantId(e.target.value);
+                  setMoveSaved(false);
+                  setMoveError(null);
+                }}
+              >
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </Select>
+            </div>
+            <Button
+              onClick={saveGroupTenant}
+              isLoading={moveBusy}
+              disabled={!moveTenantId || moveTenantId === group.tenant_id}
+            >
+              Save
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+            Moves this template (and everything in it) to a different tenant. If this template
+            already has jobs run against it, this is refused — duplicate it into the new tenant
+            instead, from the Template List.
+          </p>
+          {moveError && <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{moveError}</p>}
+          {moveSaved && <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">Tenant updated.</p>}
+        </Card>
       )}
 
       {error && (

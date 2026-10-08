@@ -197,6 +197,11 @@ export async function renameGroup(groupId: string, name: string): Promise<Templa
   return data;
 }
 
+export async function setGroupTenant(groupId: string, tenantId: string): Promise<TemplateGroupDetail> {
+  const { data } = await apiClient.patch<TemplateGroupDetail>(`/template-groups/${groupId}/tenant`, { tenant_id: tenantId });
+  return data;
+}
+
 // --- Step 2: upload a document file + page previews ---
 export async function uploadDocument(documentId: string, file: File): Promise<TemplateDocument> {
   const form = new FormData();
