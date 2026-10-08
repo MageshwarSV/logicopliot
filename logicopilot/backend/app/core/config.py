@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # Document-extraction stack (onboarding wizard: OCR + prompt generation).
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    # The model production document classification/extraction use when a Super Admin flips
+    # the "extraction_engine" Settings toggle to "gpt5_mini_vision" (see
+    # app/models/system_setting.py) - kept as its own env-overridable setting, not shared
+    # with openai_model above, so it can be pointed at a different model without a code
+    # change if this one ever needs more plumbing than expected. Never read by the Template
+    # Wizard's own training flow, which always uses openai_model.
+    vision_engine_model: str = "gpt-5-mini"
     docai_project_id: str = ""
     docai_location: str = "us"
     docai_processor_id: str = ""

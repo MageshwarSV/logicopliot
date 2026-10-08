@@ -62,3 +62,13 @@ class SystemSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # cookie-based endpoint that could break at any time.
     openai_balance_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     openai_balance_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    # Which engine production document classification and field extraction use:
+    # "ocr_gpt4o_mini" (default - Document AI OCR text, read by gpt-4o-mini) or
+    # "gpt5_mini_vision" (the page image, read directly by gpt-5-mini, skipping OCR text for
+    # the classification/extraction DECISION itself - Document AI still runs underneath for
+    # page rendering and table-row-count hints). Never affects the Template Wizard's own
+    # demo-extract/prompt-generation flow, which always uses OCR text + gpt-4o-mini - those
+    # call sites never read this setting at all, by construction (see app/core/llm.py's
+    # build_field_profile and app/api/v1/field_marks.py's demo_extract/test-extract).
+    extraction_engine: Mapped[str] = mapped_column(Text, nullable=False, default="ocr_gpt4o_mini")

@@ -80,6 +80,45 @@ def create_chat_completion_with_retry(client, **kwargs):
     raise last_exc  # pragma: no cover - the loop above always returns or raises
 
 
+# Every reasoning-family chat model released so far shares this prefix set. Confirmed live
+# against the real API (gpt-5-mini): "temperature=0" 400s with "Unsupported value: only the
+# default (1) value is supported", and separately "max_tokens" 400s with "use
+# max_completion_tokens instead" - a plain model-name swap into an existing gpt-4o-mini call
+# site is not safe without also fixing these two parameters.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def is_reasoning_model(model: str) -> bool:
+    return model.startswith(_REASONING_MODEL_PREFIXES)
+
+
+# A reasoning-family model spends part of its own completion-token budget on hidden
+# reasoning before it ever writes the visible answer - confirmed live: a trivial one-line
+# reply from gpt-5-mini used 128 of 142 total completion tokens on reasoning, leaving only
+# 14 for the actual answer. max_tokens figures throughout this codebase were sized for
+# gpt-4o-mini, which has no such overhead - passed straight through unchanged, a real
+# multi-field extraction call would be a plausible candidate for silent truncation (an empty
+# or cut-off JSON response, indistinguishable from "the model found nothing"). This
+# multiplier is a deliberately generous safety margin, not a precisely measured figure -
+# reasoning effort isn't capped by this codebase today, so the margin errs toward "never
+# truncate" over "never overspend": OpenAI only bills for the completion tokens a call
+# actually uses, so a higher ceiling that goes unused costs nothing.
+_REASONING_TOKEN_BUDGET_MULTIPLIER = 6
+
+
+def reasoning_safe_chat_params(model: str, *, temperature: float, max_tokens: int) -> dict:
+    """The {"temperature", "max_tokens"} kwargs every existing chat-completion call site in
+    this codebase passes literally - translated for a reasoning-family model (gpt-5*, o1,
+    o3, o4-mini, ...), which rejects a non-default temperature outright, renames max_tokens
+    to max_completion_tokens, and needs a materially larger budget to leave room for its own
+    hidden reasoning tokens ahead of the visible answer. Every call site whose model can vary
+    (a stored setting, a caller-supplied override) funnels through this rather than repeating
+    the branch, so a future reasoning model's quirks only ever need fixing in one place."""
+    if is_reasoning_model(model):
+        return {"max_completion_tokens": max_tokens * _REASONING_TOKEN_BUDGET_MULTIPLIER}
+    return {"temperature": temperature, "max_tokens": max_tokens}
+
+
 @dataclass
 class FieldProfile:
     anchor_variations: list[str]

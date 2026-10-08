@@ -33,7 +33,7 @@ from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
 from app.core.page_filter import extract_pdf_pages, kept_page_to_original
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
-from app.core.system_settings import is_extraction_paused
+from app.core.system_settings import get_extraction_engine, is_extraction_paused
 from app.core.extraction import (
     compare_values,
     extract_document_fields,
@@ -4303,6 +4303,13 @@ def smart_upload(
     if is_extraction_paused(db):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
+    # Read ONCE, up front, before any tentative row below is ever flushed - the first-ever
+    # read of a system setting lazily creates (and commits) its row if none exists yet (see
+    # get_system_settings), and doing that lazily deep inside this request, after something
+    # tentative was already flushed but not committed, would incidentally commit that
+    # half-built state along with it. Same reasoning as email_puller's identical fix.
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
     if job.status == "extracting":
         # See the identical guard in upload_job_document (same file, above) - same race,
         # same fix.
@@ -4446,7 +4453,12 @@ def smart_upload(
             pages_by_file.append(rows)
         db.commit()
 
-        claims_per_file = assign_documents_detailed(prepared, candidates) if prepared else []
+        claims_per_file = (
+            assign_documents_detailed(
+                prepared, candidates, engine=extraction_engine, vision_model=vision_engine_model,
+            )
+            if prepared else []
+        )
         for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
             matched_names: list[str] = []
             # Every page this file's claims actually cover is now a real JobDocument - its
@@ -4737,6 +4749,13 @@ def run_extraction(db: Session, job: Job) -> None:
         # try/except just logs and leaves the job routed but not yet field-extracted -
         # either way, pressing Extract again once resumed is all that is needed.
         raise AIServiceUnavailable("extraction is paused")
+    # Read ONCE, up front, before anything in this run is ever flushed - the first-ever read
+    # of a system setting lazily creates (and commits) its row if none exists yet (see
+    # get_system_settings), and doing that lazily deep inside this function, after a
+    # tentative write was already flushed but not committed, would incidentally commit that
+    # half-built state along with it. Same reasoning as smart_upload/email_puller's own fix.
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
     group = db.get(TemplateGroup, job.group_id)
     # A slot can hold several files — three invoices are three rows sharing one
     # template_document_id — so this is a LIST per slot, in upload order, not one document.
@@ -4918,13 +4937,22 @@ def run_extraction(db: Session, job: Job) -> None:
         all_multi_marks = [m for m in tdoc.marks if m.is_multi_value]
         fields = [_spec(m) for m in single_marks]
 
-        used_vision = not ocr_text.strip()
+        # The vision engine reads every document's image directly, by deliberate Settings
+        # choice - a completely different reason to skip OCR text than the pre-existing
+        # "OCR genuinely returned nothing" fallback below, so the two are told apart rather
+        # than folded into one ambiguous "used_vision" cause. model_override is None for the
+        # OCR-failure fallback (extraction.py then defaults to settings.openai_model exactly
+        # as before this setting existed) and only becomes vision_engine_model when the
+        # engine was deliberately chosen.
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
+        used_vision = engine_forces_vision or not ocr_text.strip()
+        model_override = vision_engine_model if engine_forces_vision else None
         # Computed unconditionally (cheap - just a filesystem check): the row cross-check below
         # needs these page images even when OCR text is present and single-value extraction
         # stays text-based.
         image_paths: list = [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
         image_paths = [p for p in image_paths if p.exists()]
-        if used_vision:
+        if used_vision and not engine_forces_vision:
             # WARNING, not INFO: reading page images instead of OCR text measurably degrades
             # accuracy, and until now it happened silently — a job could be read entirely from
             # images and look completely normal.
@@ -4932,11 +4960,17 @@ def run_extraction(db: Session, job: Job) -> None:
                 "OCR text empty for job doc %s (%s) — falling back to vision on %d page image(s)",
                 jd.id, tdoc.name, len(image_paths),
             )
+        elif engine_forces_vision:
+            logger.info(
+                "job doc %s (%s): extraction_engine=gpt5_mini_vision — reading %d page "
+                "image(s) directly with %s, regardless of whether OCR text is available",
+                jd.id, tdoc.name, len(image_paths), vision_engine_model,
+            )
 
         if not used_vision:
             extracted = extract_document_fields(ocr_text, fields)
         else:
-            extracted = extract_document_fields_from_images(image_paths, fields)
+            extracted = extract_document_fields_from_images(image_paths, fields, model=model_override)
 
         for mark in single_marks:
             val = extracted.get(mark.label_name)
@@ -5223,7 +5257,8 @@ def run_extraction(db: Session, job: Job) -> None:
                 # Previously this branch required OCR text, so with none the line items were
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
-                rows = extract_document_rows_from_images(image_paths, row_specs, detected_row_count or None)
+                rows = extract_document_rows_from_images(
+                    image_paths, row_specs, detected_row_count or None, model=model_override)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
                 before = len(rows)
                 rows = [r for r in rows if _is_valid_container_number(r.get("container_number"))]
@@ -6364,6 +6399,12 @@ def recompute_mark(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="This job has no uploaded document in that slot.")
 
+    # Read once, up front - mirrors run_extraction's own reasoning: this endpoint backfills
+    # "same as a fresh extraction would" (its own docstring), so a job originally extracted
+    # under the vision engine must recompute under that same engine too, not silently fall
+    # back to the old one and disagree with the rest of the job.
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
     custom_filter_texts = get_active_custom_filter_texts(db)
     results: list[JobFieldValueOut] = []
     for jd in uploaded:
@@ -6386,13 +6427,19 @@ def recompute_mark(
         tokens = [(p, tokens_by_page[p]) for p in range(1, len(parts) + 1)
                   if p not in dropped_pages and p in tokens_by_page]
 
-        used_vision = not ocr_text.strip()
+        # Same "deliberate engine choice" vs. "OCR genuinely found nothing" distinction as
+        # run_extraction - see its own comment for why model_override stays None in the
+        # fallback case.
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
+        used_vision = engine_forces_vision or not ocr_text.strip()
+        model_override = vision_engine_model if engine_forces_vision else None
         if not used_vision:
             extracted = extract_document_fields(ocr_text, [field_spec(mark)])
         else:
             image_paths = [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
             image_paths = [p for p in image_paths if p.exists()]
-            extracted = extract_document_fields_from_images(image_paths, [field_spec(mark)])
+            extracted = extract_document_fields_from_images(
+                image_paths, [field_spec(mark)], model=model_override)
         val = extracted.get(mark.label_name)
         raw_val = val
         if mark.is_target_value and val:

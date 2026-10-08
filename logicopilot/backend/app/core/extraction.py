@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 
 from app.core.config import get_settings
-from app.core.llm import create_chat_completion_with_retry
+from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
 
 logger = logging.getLogger(__name__)
 
@@ -458,14 +458,22 @@ def _chunks(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) ->
     return out
 
 
-def extract_document_fields(ocr_text: str, fields: list[dict]) -> dict[str, str | None]:
+def extract_document_fields(
+    ocr_text: str, fields: list[dict], model: str | None = None,
+) -> dict[str, str | None]:
     """fields: [{"label": str, "prompt": str, "variations": [str], "description": str}]
     Returns {label: value_or_None}. Falls back to all-None if OpenAI is unavailable.
 
     A document longer than one request's worth is read in SEVERAL passes and the answers
     merged, rather than cut off at 12,000 characters and silently half-read.
+
+    `model` overrides the configured `settings.openai_model` for this call only - every
+    existing caller omits it and is therefore completely unaffected by passing it; it exists
+    so a caller can route a specific document through a different model (e.g. the
+    vision-engine toggle) without changing the default for everyone else.
     """
     settings = get_settings()
+    effective_model = model or settings.openai_model
     labels = [f["label"] for f in fields]
     if not settings.openai_api_key or not fields:
         return {label: None for label in labels}
@@ -478,7 +486,7 @@ def extract_document_fields(ocr_text: str, fields: list[dict]) -> dict[str, str 
         logger.info("Extraction: reading %d chars in %d passes", len(ocr_text or ""), len(pieces))
         merged: dict[str, str | None] = {label: None for label in labels}
         for piece in pieces:
-            part = extract_document_fields(piece, fields)
+            part = extract_document_fields(piece, fields, model=model)
             for label in labels:
                 if merged[label] in (None, "") and part.get(label) not in (None, ""):
                     merged[label] = part[label]
@@ -501,12 +509,14 @@ def extract_document_fields(ocr_text: str, fields: list[dict]) -> dict[str, str 
         client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
             client,
-            model=settings.openai_model,
+            model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
-            # "2026-12-12", and repeat runs scored differently on identical input.
-            temperature=0,
-            max_tokens=800,
+            # "2026-12-12", and repeat runs scored differently on identical input. (On a
+            # reasoning-family model this pin is translated/dropped - see
+            # reasoning_safe_chat_params - since those models reject a non-default value
+            # outright rather than merely behaving less deterministically.)
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=800),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -706,6 +716,7 @@ def _row_count_hint(expected_row_count: int | None) -> str:
 
 def extract_document_rows(
     ocr_text: str, fields: list[dict], expected_row_count: int | None = None,
+    model: str | None = None,
 ) -> list[dict[str, str | None]]:
     """Pull a REPEATING table out of a document: one dict per row, aligned across fields.
 
@@ -724,6 +735,7 @@ def extract_document_rows(
     Returns [] when OpenAI is unavailable or the document has no such table.
     """
     settings = get_settings()
+    effective_model = model or settings.openai_model
     labels = [f["label"] for f in fields]
     if not settings.openai_api_key or not fields or not ocr_text.strip():
         return []
@@ -747,7 +759,7 @@ def extract_document_rows(
         collected: list[dict[str, str | None]] = []
         seen: set[tuple] = set()
         for piece in pieces:
-            for row in extract_document_rows(piece, fields):
+            for row in extract_document_rows(piece, fields, model=model):
                 key = tuple((label, (row.get(label) or "").strip()) for label in labels)
                 if key in seen:
                     continue
@@ -761,12 +773,13 @@ def extract_document_rows(
         client = OpenAI(api_key=settings.openai_api_key, timeout=90)
         resp = create_chat_completion_with_retry(
             client,
-            model=settings.openai_model,
+            model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
-            # "2026-12-12", and repeat runs scored differently on identical input.
-            temperature=0,
-            max_tokens=3000,
+            # "2026-12-12", and repeat runs scored differently on identical input. (On a
+            # reasoning-family model this pin is translated/dropped - see
+            # reasoning_safe_chat_params.)
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=3000),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -869,10 +882,15 @@ def _field_lines(fields: list[dict]) -> list[str]:
     return lines
 
 
-def extract_document_fields_from_images(image_paths: list[Path], fields: list[dict]) -> dict[str, str | None]:
+def extract_document_fields_from_images(
+    image_paths: list[Path], fields: list[dict], model: str | None = None,
+) -> dict[str, str | None]:
     """Vision fallback — read the field values straight from the page images with OpenAI
-    when OCR (Document AI) is unavailable. Same contract as extract_document_fields."""
+    when OCR (Document AI) is unavailable, or the vision engine was chosen deliberately.
+    Same contract as extract_document_fields. `model` overrides the configured
+    `settings.openai_model` for this call only - see extract_document_fields's docstring."""
     settings = get_settings()
+    effective_model = model or settings.openai_model
     labels = [f["label"] for f in fields]
     if not settings.openai_api_key or not fields or not image_paths:
         return {label: None for label in labels}
@@ -911,12 +929,13 @@ def extract_document_fields_from_images(image_paths: list[Path], fields: list[di
 
         resp = create_chat_completion_with_retry(
             client,
-            model=settings.openai_model,
+            model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
-            # "2026-12-12", and repeat runs scored differently on identical input.
-            temperature=0,
-            max_tokens=900,
+            # "2026-12-12", and repeat runs scored differently on identical input. (On a
+            # reasoning-family model this pin is translated/dropped - see
+            # reasoning_safe_chat_params.)
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=900),
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )
@@ -933,16 +952,19 @@ def extract_document_fields_from_images(image_paths: list[Path], fields: list[di
 
 def extract_document_rows_from_images(
     image_paths: list[Path], fields: list[dict], expected_row_count: int | None = None,
+    model: str | None = None,
 ) -> list[dict[str, str | None]]:
     """Vision fallback for a LINE-ITEM TABLE. Same contract as extract_document_rows, including
     expected_row_count (see its docstring there) - None reproduces the exact prompt this
-    function has always sent.
+    function has always sent. `model` overrides the configured `settings.openai_model` for
+    this call only - see extract_document_fields's docstring.
 
     Single fields have had an image fallback since the beginning, but rows did not: when OCR
     returned nothing, every line item was dropped with no error anywhere, while the single
     fields on the same document still came back. A partly-filled job looked like a complete one.
     """
     settings = get_settings()
+    effective_model = model or settings.openai_model
     labels = [f["label"] for f in fields]
     if not settings.openai_api_key or not fields or not image_paths:
         return []
@@ -982,9 +1004,10 @@ def extract_document_rows_from_images(
 
         resp = create_chat_completion_with_retry(
             client,
-            model=settings.openai_model,
-            temperature=0,
-            max_tokens=3000,
+            model=effective_model,
+            # On a reasoning-family model this pin is translated/dropped - see
+            # reasoning_safe_chat_params.
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=3000),
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )

@@ -40,6 +40,11 @@ export function SettingsPage() {
   const [busyWorkers, setBusyWorkers] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerSaved, setWorkerSaved] = useState(false);
+  const [engineInput, setEngineInput] =
+    useState<systemSettingsApi.SystemSettings["extraction_engine"]>("ocr_gpt4o_mini");
+  const [busyEngine, setBusyEngine] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
+  const [engineSaved, setEngineSaved] = useState(false);
   const [mailboxesOpen, setMailboxesOpen] = useState(false);
   const [mailboxes, setMailboxes] = useState<systemSettingsApi.Mailbox[] | null>(null);
   const [mailboxesLoading, setMailboxesLoading] = useState(false);
@@ -51,6 +56,7 @@ export function SettingsPage() {
       const s = await systemSettingsApi.getSystemSettings();
       setSettings(s);
       setWorkerInput(String(s.email_poll_workers));
+      setEngineInput(s.extraction_engine);
     } catch {
       setError("Could not load system settings.");
     }
@@ -201,6 +207,25 @@ export function SettingsPage() {
       );
     } finally {
       setBusyWorkers(false);
+    }
+  }
+
+  async function saveExtractionEngine() {
+    setBusyEngine(true);
+    setEngineError(null);
+    setEngineSaved(false);
+    try {
+      const result = await systemSettingsApi.setExtractionEngine(engineInput);
+      setSettings((prev) => (prev ? { ...prev, extraction_engine: result.extraction_engine } : prev));
+      setEngineSaved(true);
+    } catch (err) {
+      setEngineError(
+        axios.isAxiosError(err)
+          ? err.response?.data?.detail ?? "Could not update the extraction engine."
+          : "Could not update the extraction engine.",
+      );
+    } finally {
+      setBusyEngine(false);
     }
   }
 
@@ -386,6 +411,52 @@ export function SettingsPage() {
             {workerError && (
               <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
                 {workerError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {settings && (
+          <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Extraction engine</h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Which engine production document classification and field extraction use.
+              "Document OCR + GPT-4o-mini" is today's pipeline. "GPT-5-mini Vision" reads the
+              page image directly instead of OCR text for both steps. Takes effect on the
+              very next job, no restart. Never affects the Template Wizard's own training
+              flow, which always stays on OCR text + GPT-4o-mini either way.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="flex-1 sm:max-w-xs">
+                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Engine
+                </label>
+                <select
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  value={engineInput}
+                  onChange={(e) =>
+                    setEngineInput(e.target.value as systemSettingsApi.SystemSettings["extraction_engine"])
+                  }
+                >
+                  {systemSettingsApi.EXTRACTION_ENGINE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button size="sm" onClick={saveExtractionEngine} disabled={busyEngine}>
+                {busyEngine ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {engineSaved && (
+              <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                Saved — the next job uses this engine.
+              </p>
+            )}
+            {engineError && (
+              <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                {engineError}
               </p>
             )}
           </div>

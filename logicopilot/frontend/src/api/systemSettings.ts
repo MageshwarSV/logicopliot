@@ -18,7 +18,17 @@ export interface SystemSettings {
   openai_balance_usd: number | null;
   /** YYYY-MM-DD, or null if never set / no expiry entered. */
   openai_balance_expiry: string | null;
+  /** Which engine production document classification and field extraction use -
+   *  "ocr_gpt4o_mini" (Document AI OCR text + gpt-4o-mini, the default) or
+   *  "gpt5_mini_vision" (the page image, read directly by gpt-5-mini). Never affects the
+   *  Template Wizard's own training flow, which always stays on OCR text + gpt-4o-mini. */
+  extraction_engine: "ocr_gpt4o_mini" | "gpt5_mini_vision";
 }
+
+export const EXTRACTION_ENGINE_OPTIONS: { value: SystemSettings["extraction_engine"]; label: string }[] = [
+  { value: "ocr_gpt4o_mini", label: "Document OCR + GPT-4o-mini" },
+  { value: "gpt5_mini_vision", label: "GPT-5-mini Vision" },
+];
 
 export async function getSystemSettings(): Promise<SystemSettings> {
   const { data } = await apiClient.get<SystemSettings>("/system-settings");
@@ -39,6 +49,18 @@ export async function setEmailPullPaused(
 
 export async function setExtractionPaused(paused: boolean): Promise<SystemSettings> {
   const { data } = await apiClient.post<SystemSettings>("/system-settings/extraction", { paused });
+  return data;
+}
+
+/** Takes effect on the very next job, no restart. Refused (400, message in
+ *  err.response.data.detail) for anything other than the two known engine values. */
+export async function setExtractionEngine(
+  engine: SystemSettings["extraction_engine"],
+): Promise<{ extraction_engine: SystemSettings["extraction_engine"]; valid_extraction_engines: string[] }> {
+  const { data } = await apiClient.post<{
+    extraction_engine: SystemSettings["extraction_engine"];
+    valid_extraction_engines: string[];
+  }>("/system-settings/extraction-engine", { engine });
   return data;
 }
 

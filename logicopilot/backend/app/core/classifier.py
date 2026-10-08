@@ -551,25 +551,7 @@ def identify_customer(mail_subject: str, mail_body: str, doc_texts: list[tuple[s
 # ---------------------------------------------------------------------------------------------
 
 
-def classify_document(filename: str, ocr_text: str | None, image_path: Path | None,
-                      candidates: list[dict]) -> list[dict]:
-    """Which document types are PRESENT in this file, with the evidence for each.
-
-    Returns [{"key", "pages": [int], "evidence": str}]. A match the model cannot back with
-    evidence is dropped here rather than trusted: that is the whole difference between "this
-    file contains a packing list" and "this file looks a bit like one".
-    """
-    settings = get_settings()
-    if not settings.openai_api_key or not candidates:
-        return []
-    if not ocr_text or not ocr_text.strip():
-        # No extractable text at all - never worth an AI opinion. A page with nothing to
-        # quote as evidence must not be attached to a job as if a vision guess from its raw
-        # appearance were a real match; that determination stays with OCR, not AI.
-        logger.info("classify %s: no OCR text extracted - not asking the model to guess "
-                    "from the image; this file is not attached to any document slot", filename)
-        return []
-
+def _classify_candidate_lines(candidates: list[dict]) -> str:
     seen_in: dict[str, int] = {}
     for c in candidates:
         for f in set(c.get("fields") or []):
@@ -589,11 +571,18 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
             parts.append("content found ONLY on this type: " + ", ".join(only_here[:12]))
         return "; ".join(parts) or "no hint available"
 
-    lines = "\n".join(
+    return "\n".join(
         f'- key="{c["key"]}" name="{c["name"]}" type={c["doc_type"]} ({describe(c)})'
         for c in candidates)
 
-    instruction = (
+
+def _classification_instruction(filename: str, candidates: list[dict]) -> str:
+    """The document-type decision prompt, shared by the OCR-text reader (classify_document)
+    and the vision reader (classify_document_from_image) - the SLOTS and the reasoning about
+    what distinguishes one document type from another are identical either way; only what
+    the model is shown (text vs. the page image) differs, appended by each caller."""
+    lines = _classify_candidate_lines(candidates)
+    return (
         "You are sorting the documents in one shipment into the slots below.\n\n"
         "For the file given, decide which of these document types it ACTUALLY CONTAINS. Judge "
         "by content; the filename is a weak hint.\n\n"
@@ -671,6 +660,31 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
         'Return JSON: {"matches": [{"key": "...", "pages": [1], '
         '"evidence": "the words on the page that make it this type"}]}'
     )
+
+
+def classify_document(filename: str, ocr_text: str | None, image_path: Path | None,
+                      candidates: list[dict]) -> list[dict]:
+    """Which document types are PRESENT in this file, with the evidence for each.
+
+    Returns [{"key", "pages": [int], "evidence": str}]. A match the model cannot back with
+    evidence is dropped here rather than trusted: that is the whole difference between "this
+    file contains a packing list" and "this file looks a bit like one".
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return []
+    if not ocr_text or not ocr_text.strip():
+        # No extractable text at all - never worth an AI opinion. A page with nothing to
+        # quote as evidence must not be attached to a job as if a vision guess from its raw
+        # appearance were a real match; that determination stays with OCR, not AI. (The
+        # vision engine's own separate reader, classify_document_from_image, is the
+        # deliberate exception to this rule - chosen explicitly via the extraction_engine
+        # setting, never as an automatic fallback from here.)
+        logger.info("classify %s: no OCR text extracted - not asking the model to guess "
+                    "from the image; this file is not attached to any document slot", filename)
+        return []
+
+    instruction = _classification_instruction(filename, candidates)
     try:
         from openai import APIError, OpenAI
 
@@ -721,7 +735,82 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
         return []
 
 
-def assign_documents_detailed(files: list[dict], candidates: list[dict]) -> list[list[dict]]:
+def classify_document_from_image(filename: str, image_path: Path | None,
+                                 candidates: list[dict], model: str) -> list[dict]:
+    """Vision-engine counterpart to classify_document - decides which document types are
+    PRESENT in this file from its PAGE-1 IMAGE ALONE, never OCR text. Used only when the
+    `extraction_engine` system setting is "gpt5_mini_vision" (see
+    app/models/system_setting.py); classify_document itself is untouched and keeps running
+    for the default engine.
+
+    Same return shape and evidence-or-discard discipline as classify_document. Scoped to
+    page 1 only for v1 (a deliberate, documented limitation - see the project plan): every
+    returned match's "pages" is always exactly [1], since page 1 is the only page this
+    function ever shows the model - a combined multi-page document whose defining evidence
+    sits on page 2+ may be missed here, with the unclassified-pages panel as the manual
+    fallback.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return []
+    if not image_path or not image_path.exists():
+        logger.info("classify %s: no page-1 image available for the vision engine - this "
+                    "file is not attached to any document slot", filename)
+        return []
+
+    instruction = (
+        _classification_instruction(filename, candidates)
+        + "\n\n(Only page 1 of this file is shown below - judge from it alone; if the "
+        "document genuinely continues past page 1, still return any type page 1 itself "
+        "gives you real evidence for.)"
+    )
+    try:
+        from openai import APIError, OpenAI
+
+        from app.core.llm import reasoning_safe_chat_params
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
+        b64 = base64.b64encode(image_path.read_bytes()).decode()
+        content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        resp = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=1200),
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        valid = {c["key"] for c in candidates}
+        out = []
+        for m in data.get("matches") or []:
+            key = m.get("key")
+            ev = str(m.get("evidence") or "").strip()
+            if key not in valid:
+                continue
+            if len(ev) < 8:
+                logger.info("classify %s: dropped a vision match on %s with nothing to back it",
+                            filename, key)
+                continue
+            # Page 1 is the only page this function ever showed the model - never trust a
+            # claim to any other page, regardless of what the model itself returns.
+            out.append({"key": key, "pages": [1], "evidence": ev[:300], "source": "model"})
+        if not out:
+            logger.info("classify %s: no slot's document is present on page 1 (vision "
+                        "engine, %s slots offered)", filename, len(candidates))
+        return out
+    except APIError as exc:
+        raise AIServiceUnavailable(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Vision classification failed for %s: %s", filename, exc)
+        return []
+
+
+def assign_documents_detailed(
+    files: list[dict], candidates: list[dict],
+    engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
+) -> list[list[dict]]:
     """Same as assign_documents, but keeps each match's page numbers instead of collapsing
     to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
 
@@ -730,11 +819,24 @@ def assign_documents_detailed(files: list[dict], candidates: list[dict]) -> list
     - not the original PDF's page numbers. A caller that wants to physically split the PDF
     needs to translate through whatever page-drop list it used to build that text (see
     page_filter.extract_pdf_pages and its callers).
+
+    `engine`/`vision_model` select which reader classifies each file - "ocr_gpt4o_mini"
+    (the default, every existing caller) keeps using classify_document (OCR text) exactly as
+    before; "gpt5_mini_vision" switches to classify_document_from_image (the page-1 image)
+    instead, with `vision_model` as the model it reads with. Passing neither is completely
+    unaffected by this parameter's existence.
     """
-    claims: list[list[dict]] = [
-        classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates)
-        for f in files
-    ]
+    if engine == "gpt5_mini_vision":
+        claims: list[list[dict]] = [
+            classify_document_from_image(f.get("name") or "", f.get("image"), candidates,
+                                         vision_model)
+            for f in files
+        ]
+    else:
+        claims = [
+            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates)
+            for f in files
+        ]
 
     # A deterministic backstop, run BEFORE the reconciliation below so an added claim is
     # reconciled exactly like one the model found itself. See _augment_combined_document_claims.

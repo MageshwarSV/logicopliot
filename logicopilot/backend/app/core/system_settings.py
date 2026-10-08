@@ -193,3 +193,28 @@ def set_openai_balance(db: Session, balance_usd: float | None, expiry: date | No
     row.openai_balance_usd = balance_usd
     row.openai_balance_expiry = expiry
     db.commit()
+
+
+class InvalidExtractionEngine(Exception):
+    """Not one of the two known engine keys - never saved, so a typo cannot silently leave
+    the system in an unrecognized state."""
+
+
+# "ocr_gpt4o_mini" (today's default: Document AI OCR text, read by gpt-4o-mini) or
+# "gpt5_mini_vision" (the page image, read directly by gpt-5-mini - see
+# app/models/system_setting.py's extraction_engine column docstring for exactly what this
+# does and does not change).
+VALID_EXTRACTION_ENGINES = ("ocr_gpt4o_mini", "gpt5_mini_vision")
+
+
+def get_extraction_engine(db: Session) -> str:
+    return get_system_settings(db).extraction_engine
+
+
+def set_extraction_engine(db: Session, engine: str) -> None:
+    if engine not in VALID_EXTRACTION_ENGINES:
+        raise InvalidExtractionEngine(
+            f"'{engine}' is not a known engine - expected one of {VALID_EXTRACTION_ENGINES}.")
+    row = get_system_settings(db)
+    row.extraction_engine = engine
+    db.commit()

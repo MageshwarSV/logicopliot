@@ -15,6 +15,8 @@ from app.core.openai_admin import (
     fetch_projects,
 )
 from app.core.system_settings import (
+    VALID_EXTRACTION_ENGINES,
+    InvalidExtractionEngine,
     InvalidOpenAIAdminKey,
     InvalidOpenAIBalance,
     InvalidOpenAIKey,
@@ -26,6 +28,7 @@ from app.core.system_settings import (
     has_openai_admin_key,
     max_email_poll_workers,
     set_email_poll_workers,
+    set_extraction_engine,
     set_openai_admin_key,
     set_openai_api_key,
     set_openai_balance,
@@ -49,6 +52,10 @@ class OpenAIKeyIn(BaseModel):
 
 class WorkerCountIn(BaseModel):
     count: int
+
+
+class ExtractionEngineIn(BaseModel):
+    engine: str
 
 
 class OpenAIBalanceIn(BaseModel):
@@ -79,6 +86,10 @@ def read_system_settings(
         # why this can never come from OpenAI's own API, not even the Admin key.
         "openai_balance_usd": row.openai_balance_usd,
         "openai_balance_expiry": row.openai_balance_expiry.isoformat() if row.openai_balance_expiry else None,
+        # Which engine production document classification/extraction use - see
+        # app/models/system_setting.py's extraction_engine column docstring. Never affects
+        # the Template Wizard's own training flow, which always stays on OCR + gpt-4o-mini.
+        "extraction_engine": row.extraction_engine,
     }
 
 
@@ -514,6 +525,30 @@ def set_workers(
     except InvalidWorkerCount as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return {"email_poll_workers": get_system_settings(db).email_poll_workers}
+
+
+@router.post("/extraction-engine")
+def set_extraction_engine_endpoint(
+    payload: ExtractionEngineIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Which engine production document classification and field extraction use -
+    "ocr_gpt4o_mini" (Document AI OCR text + gpt-4o-mini) or "gpt5_mini_vision" (the page
+    image, read directly by gpt-5-mini). Takes effect on the very next job, no restart.
+    Never affects the Template Wizard's own training flow, which always stays on OCR text +
+    gpt-4o-mini - see app/models/system_setting.py's extraction_engine column docstring.
+    An unrecognized value is refused outright, never silently coerced to a known one, so a
+    typo cannot leave the system on a setting nobody chose.
+    """
+    try:
+        set_extraction_engine(db, payload.engine)
+    except InvalidExtractionEngine as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return {
+        "extraction_engine": get_system_settings(db).extraction_engine,
+        "valid_extraction_engines": list(VALID_EXTRACTION_ENGINES),
+    }
 
 
 @router.post("/openai-balance")

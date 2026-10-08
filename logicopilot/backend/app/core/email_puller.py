@@ -824,7 +824,16 @@ def _pull_one_mailbox(
     from app.core.docai import ocr_page_image
     from app.core.page_filter import extract_pdf_pages, kept_page_to_original
     from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
+    from app.core.system_settings import get_extraction_engine
 
+    # Read ONCE, up front, before any tentative Job/JobDocument is ever flushed below. The
+    # first-ever read of a system setting lazily creates (and commits) its row if none
+    # exists yet (see get_system_settings) - doing that lazily INSIDE the per-message loop,
+    # after a tentative Job was already flushed but not committed, would incidentally commit
+    # that half-built job along with it, defeating the rollback this function relies on when
+    # the classification call itself fails (see test_classify_document_outage_rolls_back_*).
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
     custom_filter_texts = get_active_custom_filter_texts(db)
     groups = _candidate_groups(db, tenant_id, operator_id)
     if not groups:
@@ -1135,7 +1144,10 @@ def _pull_one_mailbox(
                 # invoice fill both the Invoice and the Packing List slot, and a bill of lading
                 # fill both the BL and the Freight slot - the real packing list and freight
                 # certificate were silently dropped.
-                claims_per_file = assign_documents_detailed(prepared, cand_slots)
+                claims_per_file = assign_documents_detailed(
+                    prepared, cand_slots, engine=extraction_engine,
+                    vision_model=vision_engine_model,
+                )
                 for item, claims in zip(prepared, claims_per_file):
                     keys = [c["key"] for c in claims]
                     # Say what the analyser decided, per file. Without this a document that
