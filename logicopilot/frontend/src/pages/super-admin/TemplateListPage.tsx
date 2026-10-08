@@ -27,6 +27,7 @@ export function TemplateListPage() {
   const [deleting, setDeleting] = useState(false);
   const [copyTarget, setCopyTarget] = useState<TemplateGroup | null>(null);
   const [copyName, setCopyName] = useState("");
+  const [copyDestTenantId, setCopyDestTenantId] = useState("");
   const [copying, setCopying] = useState(false);
 
   async function load() {
@@ -67,7 +68,13 @@ export function TemplateListPage() {
     setCopying(true);
     setError(null);
     try {
-      const copy = await onboardingApi.duplicateGroup(copyTarget.id, copyName.trim());
+      // Only sent when it actually differs from the source - same wording the backend uses
+      // to decide "same tenant" (its own only behavior before this picker existed) vs. a real
+      // cross-tenant copy, so leaving the picker on the default tenant changes nothing.
+      const destTenantId = copyDestTenantId && copyDestTenantId !== copyTarget.tenant_id
+        ? copyDestTenantId
+        : undefined;
+      const copy = await onboardingApi.duplicateGroup(copyTarget.id, copyName.trim(), destTenantId);
       setCopyTarget(null);
       await load();
       // Straight into the copy: the only reason to make one is to change something in it.
@@ -101,7 +108,11 @@ export function TemplateListPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setCopyTarget(g); setCopyName(`${g.name}(excel)`); }}
+            onClick={() => {
+              setCopyTarget(g);
+              setCopyName(`${g.name}(excel)`);
+              setCopyDestTenantId(g.tenant_id);
+            }}
           >
             Duplicate
           </Button>
@@ -137,7 +148,9 @@ export function TemplateListPage() {
             Copy <b>{copyTarget?.name}</b> &mdash; its documents and sample files, every field with
             its prompts, the custom fields and the cross-document links. Use this when the same
             paperwork has to reach the ERP a second way, e.g. typed field by field on one and
-            imported as a workbook on the other.
+            imported as a workbook on the other &mdash; or when a brand-new customer's paperwork is
+            close to one already trained, so their own template starts from this one instead of
+            from scratch.
           </p>
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">
@@ -149,14 +162,33 @@ export function TemplateListPage() {
               className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">
+              Destination tenant
+            </label>
+            <select
+              value={copyDestTenantId}
+              onChange={(e) => setCopyDestTenantId(e.target.value)}
+              className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+            >
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id === copyTarget?.tenant_id ? `${t.name} (same tenant)` : t.name}
+                </option>
+              ))}
+            </select>
+          </div>
           <p className="text-xs text-slate-500">
-            The email address that routes incoming documents is <b>not</b> copied &mdash; two
-            templates sharing it would make it unclear which one an email belongs to. Set it on the
-            copy if it should pull its own mail.
+            The email address and operator that route incoming documents are <b>not</b> copied
+            &mdash; set those on the copy if it should pull its own mail. Picking a{" "}
+            <b>different</b> tenant also leaves behind any hardcoded values (they belong to{" "}
+            {copyTarget?.name ?? "the original"}, not the new customer), the material-master
+            workbook, and any ERP automation script &mdash; the new tenant's copy is otherwise
+            fully independent and editing it never affects the original.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setCopyTarget(null)}>Cancel</Button>
-            <Button onClick={confirmCopy} isLoading={copying} disabled={!copyName.trim()}>
+            <Button onClick={confirmCopy} isLoading={copying} disabled={!copyName.trim() || !copyDestTenantId}>
               Make the copy
             </Button>
           </div>

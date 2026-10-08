@@ -33,14 +33,19 @@ export async function listGroups(tenantId?: string): Promise<TemplateGroup[]> {
 }
 
 /** Copy a whole template set - documents, sample files, marks, custom fields, links.
- *  The email routing is deliberately NOT copied, so the copy cannot take the original's mail. */
+ *  The email routing is deliberately NOT copied, so the copy cannot take the original's mail.
+ *  Omit `destinationTenantId` for the original same-tenant behavior; pass it to land the copy
+ *  in a DIFFERENT tenant instead - e.g. a brand-new customer whose paperwork is close to one
+ *  already trained, starting from that template instead of from scratch. Hardcoded values are
+ *  blanked (not copied) only when the destination tenant differs from the source. */
 export async function duplicateGroup(
   groupId: string,
   name: string,
+  destinationTenantId?: string,
 ): Promise<TemplateGroupDetail> {
   const { data } = await apiClient.post<TemplateGroupDetail>(
     `/template-groups/${groupId}/duplicate`,
-    { name },
+    { name, ...(destinationTenantId ? { destination_tenant_id: destinationTenantId } : {}) },
   );
   return data;
 }

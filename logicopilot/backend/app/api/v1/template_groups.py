@@ -477,6 +477,11 @@ class DuplicatePayload(BaseModel):
     # The copy's name. Left to the caller on purpose: "nokia(excel)" says what it is for far
     # better than "Nokia (copy)" would.
     name: str
+    # None (the default) = same tenant as the source group, byte-identical to this endpoint's
+    # only behavior before this field existed. A real id here is a cross-tenant copy - a
+    # brand-new customer whose paperwork is close to one already trained, starting from that
+    # trained template instead of from scratch.
+    destination_tenant_id: str | None = None
 
 
 @router.post("/{group_id}/duplicate", response_model=TemplateGroupDetailOut,
@@ -489,10 +494,21 @@ def duplicate_group(
 ) -> TemplateGroupDetailOut:
     """Copy a whole template set - documents, sample files, marks, custom fields, links.
 
-    Used when one customer needs a second variant of the same paperwork: the same documents and
-    the same extraction, entered into the ERP a different way (typed field by field on one,
-    imported as a workbook on the other). Everything that took work to produce is carried over;
-    only the email routing is left blank, so the copy cannot steal the original's incoming mail.
+    Used two ways: (1) one customer needs a second variant of the same paperwork - the same
+    documents and the same extraction, entered into the ERP a different way (typed field by
+    field on one, imported as a workbook on the other); (2) a BRAND-NEW customer's paperwork
+    is close to one already trained, so their own template starts from that one instead of
+    from scratch - `destination_tenant_id` names the new tenant and the copy becomes a fully
+    independent template of theirs; nothing further done to either copy ever touches the other.
+
+    Deliberately NEVER copied, same-tenant or not: the email address that routes incoming
+    mail and the operator it is routed to (a copy stealing the original's incoming mail, or
+    pointing at a user who may not even belong to the destination tenant, would be worse than
+    leaving it blank); the per-group material-master workbook (the source customer's own
+    real product/HS-code data, not template configuration); `ErpScript` rows (tenant-level ERP
+    automation the destination tenant sets up for itself); `CustomFieldReferenceValue` rows
+    (lookup answers LEARNED from the source tenant's own real documents, meaningless - or
+    worse, wrong - for an unrelated company's documents).
     """
     src = db.get(TemplateGroup, group_id)
     if src is None:
@@ -500,9 +516,25 @@ def duplicate_group(
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="Give the copy a name.")
+
+    dest_tenant_id = payload.destination_tenant_id or src.tenant_id
+    cross_tenant = dest_tenant_id != src.tenant_id
+    if cross_tenant:
+        dest_tenant = db.get(Tenant, dest_tenant_id)
+        if dest_tenant is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination tenant not found")
+        # Same licensing check create_group already applies when building a fresh group for
+        # this tenant - a destination not licensed for this mode must refuse a copy of it too.
+        if dest_tenant.allowed_modes and src.mode not in dest_tenant.allowed_modes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(f"{dest_tenant.name} is not licensed for {src.mode}. "
+                       f"Allowed: {', '.join(dest_tenant.allowed_modes)}"),
+            )
+
     clash = (
         db.query(TemplateGroup)
-        .filter(TemplateGroup.tenant_id == src.tenant_id, TemplateGroup.name == name)
+        .filter(TemplateGroup.tenant_id == dest_tenant_id, TemplateGroup.name == name)
         .first()
     )
     if clash is not None:
@@ -512,14 +544,14 @@ def duplicate_group(
         )
 
     copy = TemplateGroup(
-        tenant_id=src.tenant_id,
+        tenant_id=dest_tenant_id,
         name=name,
         status=src.status,
         mode=src.mode,
         ruling_prompt=src.ruling_prompt,
         entry_mode=src.entry_mode,
         excel_config=src.excel_config,
-        # pull_email is NOT copied - see the module note.
+        # pull_email/pull_operator_id are NOT copied - see this function's own docstring.
     )
     db.add(copy)
     db.flush()
@@ -580,38 +612,87 @@ def duplicate_group(
                 ask_operator_hint=mark.ask_operator_hint,
                 ask_operator_required=mark.ask_operator_required,
                 is_multi_value=mark.is_multi_value,
+                standalone_multi_value=mark.standalone_multi_value,
+                standalone_group_heading=mark.standalone_group_heading,
+                is_target_value=mark.is_target_value,
+                fuzzy_match=mark.fuzzy_match,
             )
             db.add(new_mark)
             db.flush()
             mark_ids[mark.id] = new_mark.id
 
-    for cf in db.query(CustomField).filter(CustomField.group_id == src.id).all():
-        db.add(CustomField(
+    # Two passes: paired_custom_field_id/sync_field_ids point at OTHER custom_fields.id values,
+    # which do not exist yet while the first one is still being created - same reason
+    # source_document_ids above needs doc_ids built first. Pass 1 creates every field (every
+    # column that does NOT reference another custom field); pass 2 patches the two that do,
+    # once cf_ids maps every old id to its new one.
+    src_custom_fields = db.query(CustomField).filter(CustomField.group_id == src.id).all()
+    cf_ids: dict[str, str] = {}
+    for cf in src_custom_fields:
+        new_cf = CustomField(
             tenant_id=copy.tenant_id,
             group_id=copy.id,
             label_name=cf.label_name,
             kind=cf.kind,
-            hardcoded_value=cf.hardcoded_value,
+            # Literal data typed in for the SOURCE customer (a GST number, a fixed consignee
+            # name) - template CONFIGURATION this is not, so it must never leak into an
+            # unrelated company's copy. Same-tenant duplicate (today's only case before this
+            # function took a destination tenant) keeps it exactly as before.
+            hardcoded_value=cf.hardcoded_value if not cross_tenant else None,
             ai_prompt=cf.ai_prompt,
             # The ids point at the ORIGINAL's documents; without remapping the AI would be fed
             # the wrong template set's files.
             source_document_ids=[doc_ids[d] for d in (cf.source_document_ids or [])
                                 if d in doc_ids] or None,
+            multi_value_from_document=cf.multi_value_from_document,
             ask_operator=cf.ask_operator,
             ask_operator_hint=cf.ask_operator_hint,
             ask_operator_required=cf.ask_operator_required,
             per_row=cf.per_row,
-        ))
+            lookup_key_label=cf.lookup_key_label,
+            lookup_match_columns=list(cf.lookup_match_columns or []) or None,
+            lookup_return_column=cf.lookup_return_column,
+            verify_with_other_document=cf.verify_with_other_document,
+            is_target_value=cf.is_target_value,
+            fuzzy_match=cf.fuzzy_match,
+            example_value=cf.example_value,
+            picker_heading=cf.picker_heading,
+            composite_source_labels=list(cf.composite_source_labels or []) or None,
+        )
+        db.add(new_cf)
+        db.flush()
+        cf_ids[cf.id] = new_cf.id
+
+    for cf in src_custom_fields:
+        if not cf.paired_custom_field_id and not cf.sync_field_ids:
+            continue
+        new_cf = db.get(CustomField, cf_ids[cf.id])
+        new_cf.paired_custom_field_id = cf_ids.get(cf.paired_custom_field_id)
+        new_cf.sync_field_ids = [cf_ids[i] for i in (cf.sync_field_ids or []) if i in cf_ids] or None
 
     for link in db.query(CrossDocLink).filter(CrossDocLink.group_id == src.id).all():
-        if link.source_mark_id in mark_ids and link.target_mark_id in mark_ids:
-            db.add(CrossDocLink(
-                tenant_id=copy.tenant_id,
-                group_id=copy.id,
-                source_mark_id=mark_ids[link.source_mark_id],
-                target_mark_id=mark_ids[link.target_mark_id],
-                condition=link.condition,
-            ))
+        # Exactly one of these is ever set on a real link (see CrossDocLink's own check
+        # constraint) - resolve whichever it is through the matching id map, same as the mark
+        # side below; a link whose source can't be resolved (its mark/field was somehow not
+        # copied) is dropped rather than left pointing at nothing.
+        if link.source_mark_id is not None:
+            if link.source_mark_id not in mark_ids:
+                continue
+            new_source_mark_id, new_source_custom_field_id = mark_ids[link.source_mark_id], None
+        else:
+            if link.source_custom_field_id not in cf_ids:
+                continue
+            new_source_mark_id, new_source_custom_field_id = None, cf_ids[link.source_custom_field_id]
+        if link.target_mark_id not in mark_ids:
+            continue
+        db.add(CrossDocLink(
+            tenant_id=copy.tenant_id,
+            group_id=copy.id,
+            source_mark_id=new_source_mark_id,
+            source_custom_field_id=new_source_custom_field_id,
+            target_mark_id=mark_ids[link.target_mark_id],
+            condition=link.condition,
+        ))
 
     # The import workbook, if the original had one - so the copy's Excel step opens with the
     # sheets already readable instead of asking for the file again.
