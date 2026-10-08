@@ -28,6 +28,34 @@ const INITIAL_BATCH_SIZE = 5;
 const PAGE_SIZE = 20;
 const QUICK_ALL = "__all__";
 
+// Quick filter / customer / status / assignee / date range used to live only in component
+// state, so navigating away (Dashboard, a job's own detail page, anywhere) and back remounted
+// this page from scratch and silently reset every one of them - group/bucket already survive
+// this via the URL (see searchParams above); these six did not. Session-scoped, not
+// permanent: a brand new tab or a fresh login starts clean, same as before this existed -
+// only round-tripping within the same browser session now keeps what you set.
+const JOBS_FILTERS_STORAGE_KEY = "jobs-list-filters";
+
+interface StoredJobsFilters {
+  quick: "today" | "7" | "30" | "all";
+  customer: string;
+  statusFilter: string;
+  assignedTo: string;
+  dateFrom: string;
+  dateTo: string;
+}
+
+function readStoredJobsFilters(): Partial<StoredJobsFilters> {
+  try {
+    const raw = window.sessionStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Partial<StoredJobsFilters>) : {};
+  } catch {
+    // A private window, blocked storage, or a malformed stored value - fall through to the
+    // same defaults as before this existed rather than breaking the page over a convenience.
+    return {};
+  }
+}
+
 export function JobsPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -82,12 +110,29 @@ export function JobsPage() {
   // counted", server-side, for whatever bucket was pressed (This Week/Month/Overall
   // included). Stacking a client-side "today" filter on top of an "Overall" bucket click
   // would have hidden almost everything the box just promised to show.
-  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => (group ? "all" : "today"));
-  const [customer, setCustomer] = useState<string>(QUICK_ALL);
-  const [statusFilter, setStatusFilter] = useState<string>(QUICK_ALL);
-  const [assignedTo, setAssignedTo] = useState<string>(QUICK_ALL);
-  const [dateFrom, setDateFrom] = useState<string>("");
-  const [dateTo, setDateTo] = useState<string>("");
+  const storedFilters = readStoredJobsFilters();
+  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(
+    () => (group ? "all" : storedFilters.quick ?? "today"),
+  );
+  const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
+  const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
+  const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
+  const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
+
+  // Keep the stored filters in sync with whatever is currently selected, so the NEXT time
+  // this page mounts (coming back from Dashboard, a job, anywhere) it restores exactly this.
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        JOBS_FILTERS_STORAGE_KEY,
+        JSON.stringify({ quick, customer, statusFilter, assignedTo, dateFrom, dateTo }),
+      );
+    } catch {
+      // Best-effort only - worst case, filters just reset on the next visit, exactly like
+      // before this existed.
+    }
+  }, [quick, customer, statusFilter, assignedTo, dateFrom, dateTo]);
 
   async function loadFirstPage() {
     setLoading(true);
