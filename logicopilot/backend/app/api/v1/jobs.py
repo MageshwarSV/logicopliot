@@ -4465,9 +4465,9 @@ def smart_upload(
         claims_per_file = (
             assign_documents_detailed(
                 prepared, candidates, engine=extraction_engine, vision_model=vision_engine_model,
-                # Smart Upload only - classify every page on its own instead of page 1 alone,
-                # fixing a combined/multi-page file sometimes assigning the wrong page to the
-                # wrong slot. Never passed by email_puller's own call to this same function.
+                # Classify every page on its own instead of page 1 alone, fixing a
+                # combined/multi-page file sometimes assigning the wrong page to the wrong
+                # slot - email_puller's own call to this same function does the same.
                 per_page_vision=True,
             )
             if prepared else []

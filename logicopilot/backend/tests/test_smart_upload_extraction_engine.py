@@ -52,6 +52,7 @@ def test_default_engine_reaches_assign_documents_detailed_unchanged(client, db_s
 
     assert resp.status_code == 200, resp.text
     assert mock_assign.call_args.kwargs["engine"] == "ocr_gpt4o_mini"
+    assert mock_assign.call_args.kwargs["per_page_vision"] is True
 
 
 def test_vision_engine_setting_reaches_assign_documents_detailed_with_the_configured_model(client, db_session):
@@ -69,3 +70,4 @@ def test_vision_engine_setting_reaches_assign_documents_detailed_with_the_config
     assert resp.status_code == 200, resp.text
     assert mock_assign.call_args.kwargs["engine"] == "gpt5_mini_vision"
     assert mock_assign.call_args.kwargs["vision_model"] == "gpt-5-mini"
+    assert mock_assign.call_args.kwargs["per_page_vision"] is True

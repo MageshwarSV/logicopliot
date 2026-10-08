@@ -1015,12 +1015,23 @@ def _pull_one_mailbox(
                         text = "\n\n".join(
                             f"=== PAGE {n} ===\n{t}"
                             for n, t in enumerate(kept, start=1) if t.strip())
+                        # Every kept page's own image, keyed by its KEPT-page number - used
+                        # only by the vision engine's per-page classifier
+                        # (classify_pages_from_images), mirroring smart_upload's own
+                        # page_images. Same reasoning: a wrong page in a combined email
+                        # attachment deserves the same fix as a manual upload.
+                        kept_to_orig = kept_page_to_original(pages, list(dropped))
+                        page_images = [
+                            (i, fdir / "pages" / f"page_{kept_to_orig[i - 1] if i - 1 < len(kept_to_orig) else i}.png")
+                            for i in range(1, len(kept) + 1)
+                        ]
                     except Exception:  # noqa: BLE001
                         logger.warning("could not open attachment %s", name)
                         continue
                     prepared.append({"name": name, "ext": ext, "blob": blob,
                                      "text": text, "image": first_png,
-                                     "drop_pages": list(dropped), "page_count": pages})
+                                     "drop_pages": list(dropped), "page_count": pages,
+                                     "page_images": page_images})
                     doc_texts.append((name, text))
 
                 if not prepared:
@@ -1147,6 +1158,10 @@ def _pull_one_mailbox(
                 claims_per_file = assign_documents_detailed(
                     prepared, cand_slots, engine=extraction_engine,
                     vision_model=vision_engine_model,
+                    # Classify every page from its own image instead of page 1 alone, same
+                    # fix as Smart Upload - a combined/multi-page attachment can mis-route a
+                    # page just as easily arriving by mail as uploaded by hand.
+                    per_page_vision=True,
                 )
                 for item, claims in zip(prepared, claims_per_file):
                     keys = [c["key"] for c in claims]

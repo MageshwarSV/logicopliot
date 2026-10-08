@@ -819,6 +819,11 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
     unmatched page is simply left out, so it falls through to the existing Unclassified Pages
     tray exactly like any other page nothing could place. No new "LOW_CONFIDENCE" status is
     introduced; that tray already is one.
+
+    EXCEPTION: a page that agrees it CONTINUES `prev_key`'s document (same key returned, with
+    real evidence) is trusted on that reasoning alone, regardless of its own raw confidence -
+    see the comment at that check for why a continuation page can honestly self-rate near
+    zero while still being the right answer.
     """
     settings = get_settings()
     if not settings.openai_api_key or not candidates:
@@ -826,23 +831,30 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
     if not image_path.exists():
         return None
 
-    instruction = _classification_instruction(filename, candidates)
-    instruction += (
-        f"\n\nYou are shown exactly ONE page - page {page_no} of this file, not the whole "
-        "document. Decide which ONE of the slots above THIS SINGLE PAGE belongs to, if any."
+    # Deliberately plain: this template's own document labels (never a fixed BL/PL/INVOICE/
+    # FREIGHT list) and the image, nothing else - no written heuristics describing what each
+    # type should look like. That judgment belongs to the model's own visual analysis of the
+    # page, not a hardcoded prompt of document-field rules - the whole point of asking vision
+    # in the first place. classify_document/classify_document_from_image's own elaborate
+    # instruction text was written for a different, whole-file, multi-match call and is
+    # deliberately NOT reused here.
+    lines = "\n".join(f'- key="{c["key"]}" name="{c["name"]}"' for c in candidates)
+    instruction = (
+        f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
+        "paperwork. Based on what you actually see on the page - its title, layout, and the "
+        "fields or tables it contains - decide which ONE of the following document types it "
+        f"is, if any:\n\n{lines}\n\n"
     )
     if prev_key:
         prev_name = next((c["name"] for c in candidates if c["key"] == prev_key), prev_key)
         instruction += (
-            f"\n\nThe page immediately before this one was classified as {prev_name!r}. If "
-            "this page is a direct continuation of that same document (e.g. a carrier's own "
-            "continuation/attachment page, or simply the next page of a multi-page document "
-            "with no new document number/date/header starting here), return that same slot."
+            f"The page immediately before this one was classified as {prev_name!r}. If this "
+            "page is simply the next page of that same document, say so.\n\n"
         )
     instruction += (
-        '\n\nReturn JSON: {"matches": [{"key": "...", "confidence": 0.00, '
-        '"evidence": "the words on the page that make it this type"}]} - at most one entry, '
-        "since this is a single page. Return an empty list if no slot fits."
+        'Return JSON: {"key": "..." or null, "confidence": 0.00, '
+        '"evidence": "what on the page tells you this"}. Use null for key if none of the '
+        "types fit this page."
     )
     try:
         from openai import APIError, OpenAI
@@ -863,19 +875,24 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         valid = {c["key"] for c in candidates}
-        matches = data.get("matches") or []
-        if not matches:
-            return None
-        m = matches[0]
-        key = m.get("key")
-        ev = str(m.get("evidence") or "").strip()
+        key = data.get("key")
+        ev = str(data.get("evidence") or "").strip()
         try:
-            confidence = float(m.get("confidence"))
+            confidence = float(data.get("confidence"))
         except (TypeError, ValueError):
             confidence = 0.0
-        if key not in valid or len(ev) < 8:
+        if not key or key not in valid or len(ev) < 8:
             return None
-        if confidence < settings.vision_classification_confidence_threshold:
+        # A page agreeing it CONTINUES the previous page's document (same key, per the
+        # continuation hint above) is trusted on that reasoning alone, not on its own raw
+        # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
+        # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
+        # self-rate near zero even while correctly following the continuation instruction.
+        # Gating that away is what regressed a page that classified correctly before this
+        # per-page engine existed. Only a FRESH match (no continuation claim) needs to clear
+        # the confidence bar.
+        is_continuation = prev_key is not None and key == prev_key
+        if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
             logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
                         filename, page_no, key, confidence,
                         settings.vision_classification_confidence_threshold)
@@ -957,10 +974,10 @@ def assign_documents_detailed(
     instead, with `vision_model` as the model it reads with. Passing neither is completely
     unaffected by this parameter's existence.
 
-    `per_page_vision` (Smart Upload only - email_puller never passes this) additionally
-    switches the gpt5_mini_vision engine from page-1-only to classifying every one of a
-    file's own `page_images` independently (classify_pages_from_images) - see that
-    function's own docstring for the trade-off this makes. Ignored under the default engine.
+    `per_page_vision` (passed by both Smart Upload and email_puller) additionally switches
+    the gpt5_mini_vision engine from page-1-only to classifying every one of a file's own
+    `page_images` independently (classify_pages_from_images) - see that function's own
+    docstring for the trade-off this makes. Ignored under the default engine.
     """
     if engine == "gpt5_mini_vision" and per_page_vision:
         claims: list[list[dict]] = [

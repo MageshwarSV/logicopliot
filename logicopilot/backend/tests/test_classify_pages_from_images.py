@@ -33,8 +33,7 @@ def _response(key="inv", confidence=0.95, evidence="Invoice No: INV-123, Total P
     fake_response = MagicMock()
     fake_response.choices = [MagicMock()]
     fake_response.choices[0].message.content = (
-        f'{{"matches": [{{"key": "{key}", "confidence": {confidence}, '
-        f'"evidence": "{evidence}"}}]}}'
+        f'{{"key": "{key}", "confidence": {confidence}, "evidence": "{evidence}"}}'
     )
     client = MagicMock()
     client.chat.completions.create.return_value = fake_response
@@ -44,7 +43,7 @@ def _response(key="inv", confidence=0.95, evidence="Invoice No: INV-123, Total P
 def _empty_response():
     fake_response = MagicMock()
     fake_response.choices = [MagicMock()]
-    fake_response.choices[0].message.content = '{"matches": []}'
+    fake_response.choices[0].message.content = '{"key": null, "confidence": 0.0, "evidence": ""}'
     client = MagicMock()
     client.chat.completions.create.return_value = fake_response
     return client
@@ -103,6 +102,33 @@ def test_below_threshold_confidence_is_rejected(tmp_path):
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
          patch("openai.OpenAI", return_value=client):
         result = classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
+    assert result is None
+
+
+def test_a_continuation_match_is_trusted_even_at_zero_confidence(tmp_path):
+    # A carrier's own continuation/attachment page rarely looks like a Bill of Lading by
+    # itself - no Shipper/Consignee box, no title - so the model can honestly self-rate near
+    # zero even while correctly agreeing this page continues the previous one's document.
+    img = tmp_path / "page_2.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _response(key="bl", confidence=0.0, evidence="Marks and numbers continued from page 1")
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
+         patch("openai.OpenAI", return_value=client):
+        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_key="bl")
+    assert result == {"key": "bl", "confidence": 0.0,
+                      "evidence": "Marks and numbers continued from page 1"}
+
+
+def test_a_fresh_match_not_matching_prev_key_still_needs_real_confidence(tmp_path):
+    # The continuation exception only applies when the page AGREES it continues prev_key -
+    # a different key offered alongside a continuation hint is a fresh claim, not a
+    # continuation, and must still clear the confidence bar like any other fresh match.
+    img = tmp_path / "page_2.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _response(key="inv", confidence=0.5)
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
+         patch("openai.OpenAI", return_value=client):
+        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_key="bl")
     assert result is None
 
 
