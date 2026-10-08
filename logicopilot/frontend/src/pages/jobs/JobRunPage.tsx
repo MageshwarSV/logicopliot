@@ -193,6 +193,9 @@ export function JobRunPage() {
   const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
+  // Which unclassified page the zoom viewer is open on - an index into unclassifiedPages, not
+  // a copy of it, so Prev/Next just move this and the viewer re-fetches that page's image.
+  const [viewingPageIndex, setViewingPageIndex] = useState<number | null>(null);
   const didInit = useRef(false);
 
   async function refreshUnclassifiedPages() {
@@ -1584,7 +1587,7 @@ export function JobRunPage() {
               {/* Its own scroll, separate from the page's - so a long list never pushes the
                   document-type slots on the left out of reach while you're mid-drag. */}
               <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pr-1">
-                {unclassifiedPages.map((p) => (
+                {unclassifiedPages.map((p, i) => (
                   <UnclassifiedPageCard
                     key={p.id}
                     jobId={jobId}
@@ -1593,10 +1596,20 @@ export function JobRunPage() {
                     readOnly={readOnly}
                     onDragStart={() => setDraggedPageId(p.id)}
                     onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); }}
+                    onView={() => setViewingPageIndex(i)}
                   />
                 ))}
               </div>
             </div>
+          )}
+          {viewingPageIndex !== null && unclassifiedPages[viewingPageIndex] && (
+            <UnclassifiedPageViewer
+              jobId={jobId}
+              pages={unclassifiedPages}
+              index={viewingPageIndex}
+              onIndexChange={setViewingPageIndex}
+              onClose={() => setViewingPageIndex(null)}
+            />
           )}
           </div>
           {!allUploaded && !readOnly && <p className="mt-3 text-xs text-slate-400">Upload every document — extraction starts on its own once all of them are in.</p>}
@@ -4083,7 +4096,7 @@ function ExtractionReview({
  *  and drop - no library exists anywhere in this frontend, and this is one list to another
  *  with no reordering, so adding one would be overkill. */
 function UnclassifiedPageCard({
-  jobId, page, busy, readOnly, onDragStart, onDragEnd,
+  jobId, page, busy, readOnly, onDragStart, onDragEnd, onView,
 }: {
   jobId: string;
   page: jobsApi.UnclassifiedPage;
@@ -4091,9 +4104,9 @@ function UnclassifiedPageCard({
   readOnly: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
+  onView: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
-  const [viewing, setViewing] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -4138,39 +4151,70 @@ function UnclassifiedPageCard({
           type="button"
           draggable={false}
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); setViewing(true); }}
+          onClick={(e) => { e.stopPropagation(); onView(); }}
           className="ml-auto shrink-0 rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-500/20"
         >
           View
         </button>
       )}
-      {viewing && url && (
-        <ZoomableImageModal
-          src={url}
-          title={`${page.original_filename} — page ${page.page_number}`}
-          onClose={() => setViewing(false)}
-        />
-      )}
     </div>
   );
 }
 
-/** Full-screen, zoomable view of a single page image - used so an operator can read small
- *  print before deciding which document-type slot an unclassified page actually belongs in.
- *  Plain +/- buttons and Ctrl+scroll, no library - the rest of this file's zoom (JobDocPreview)
- *  is a simple click-to-fit view; this one additionally needs to zoom PAST fit-to-screen. */
-function ZoomableImageModal({ src, title, onClose }: { src: string; title: string; onClose: () => void }) {
+/** Full-screen, zoomable view of one unclassified page, with Prev/Next to step through the
+ *  whole list without closing and reopening - so an operator can read small print and
+ *  compare a run of pages before deciding which slot each one actually belongs in. Plain
+ *  +/- buttons and Ctrl+scroll, no library - the rest of this file's zoom (JobDocPreview) is
+ *  a simple click-to-fit view; this one additionally needs to zoom PAST fit-to-screen and
+ *  step between pages. Portaled to <body> - see the fix note on the commit that added this,
+ *  the header's backdrop-blur-sm otherwise traps a plain `fixed` overlay beneath it. */
+function UnclassifiedPageViewer({
+  jobId, pages, index, onIndexChange, onClose,
+}: {
+  jobId: string;
+  pages: jobsApi.UnclassifiedPage[];
+  index: number;
+  onIndexChange: (i: number) => void;
+  onClose: () => void;
+}) {
+  const page = pages[index];
+  const [url, setUrl] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const MIN_SCALE = 0.5;
   const MAX_SCALE = 4;
+  const hasPrev = index > 0;
+  const hasNext = index < pages.length - 1;
+
+  useEffect(() => {
+    let alive = true;
+    let created: string | null = null;
+    setUrl(null);
+    setScale(1);
+    (async () => {
+      try {
+        const u = await jobsApi.unclassifiedPageImageUrl(jobId, page.id);
+        created = u;
+        if (alive) setUrl(u);
+        else URL.revokeObjectURL(u);
+      } catch {
+        /* nothing to show - the header/nav still work */
+      }
+    })();
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [jobId, page.id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft" && hasPrev) onIndexChange(index - 1);
+      else if (e.key === "ArrowRight" && hasNext) onIndexChange(index + 1);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, onIndexChange, index, hasPrev, hasNext]);
 
   return createPortal(
     <div
@@ -4179,7 +4223,10 @@ function ZoomableImageModal({ src, title, onClose }: { src: string; title: strin
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between gap-3 px-4 py-3" onClick={(e) => e.stopPropagation()}>
-        <span className="min-w-0 truncate text-sm text-slate-200">{title}</span>
+        <span className="min-w-0 truncate text-sm text-slate-200">
+          {page.original_filename} — page {page.page_number}
+          <span className="ml-2 text-slate-400">({index + 1} of {pages.length})</span>
+        </span>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
@@ -4213,7 +4260,7 @@ function ZoomableImageModal({ src, title, onClose }: { src: string; title: strin
         </div>
       </div>
       <div
-        className="flex-1 overflow-auto px-6 pb-6"
+        className="relative flex-1 overflow-auto px-6 pb-6"
         onClick={(e) => e.stopPropagation()}
         onWheel={(e) => {
           if (!e.ctrlKey) return;
@@ -4221,12 +4268,36 @@ function ZoomableImageModal({ src, title, onClose }: { src: string; title: strin
           setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s + (e.deltaY < 0 ? 0.25 : -0.25))));
         }}
       >
-        <img
-          src={src}
-          alt={title}
-          style={{ transform: `scale(${scale})`, transformOrigin: "top center" }}
-          className="mx-auto max-h-[85vh] w-auto max-w-full rounded-lg shadow-2xl"
-        />
+        {hasPrev && (
+          <button
+            type="button"
+            onClick={() => onIndexChange(index - 1)}
+            title="Previous unclassified page"
+            className="fixed left-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-slate-700/90 text-lg text-white hover:bg-slate-600"
+          >
+            ‹
+          </button>
+        )}
+        {hasNext && (
+          <button
+            type="button"
+            onClick={() => onIndexChange(index + 1)}
+            title="Next unclassified page"
+            className="fixed right-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-slate-700/90 text-lg text-white hover:bg-slate-600"
+          >
+            ›
+          </button>
+        )}
+        {url ? (
+          <img
+            src={url}
+            alt={`${page.original_filename} — page ${page.page_number}`}
+            style={{ transform: `scale(${scale})`, transformOrigin: "top center" }}
+            className="mx-auto max-h-[85vh] w-auto max-w-full rounded-lg shadow-2xl"
+          />
+        ) : (
+          <p className="mt-16 text-center text-sm text-slate-400">Loading…</p>
+        )}
       </div>
     </div>,
     document.body,
