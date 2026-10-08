@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
@@ -4171,7 +4172,7 @@ function ZoomableImageModal({ src, title, onClose }: { src: string; title: strin
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col bg-slate-900/85"
       onClick={onClose}
@@ -4227,7 +4228,8 @@ function ZoomableImageModal({ src, title, onClose }: { src: string; title: strin
           className="mx-auto max-h-[85vh] w-auto max-w-full rounded-lg shadow-2xl"
         />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
