@@ -1034,116 +1034,137 @@ export function TemplateCreationWizard() {
       )}
 
       {/* STEP 1 — Declare */}
-      {step === 1 && editing && group && (
-        <Card className="max-w-2xl p-6">
-          <h2 className="mb-1 font-semibold text-slate-900 dark:text-slate-50">Customer / Tenant</h2>
-          <p className="mb-4 text-sm text-slate-500">
-            The mode, name, and documents declared when this template was created aren't
-            editable here — only which tenant this template belongs to.
-          </p>
-          <div className="flex flex-col gap-4">
-            <Select
-              label="Customer / Tenant"
-              value={moveTenantId}
-              onChange={(e) => {
-                setMoveTenantId(e.target.value);
-                setMoveSaved(false);
-                setMoveError(null);
-              }}
-            >
-              {tenants.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </Select>
-            <p className="-mt-2 text-xs text-slate-400 dark:text-slate-500">
-              Moves this template (and everything in it) to the selected tenant. If this
-              template already has jobs run against it, this is refused — duplicate it into
-              the new tenant instead, from the Template List.
-            </p>
-            {moveError && <p className="text-xs text-rose-600 dark:text-rose-400">{moveError}</p>}
-            {moveSaved && <p className="text-xs text-emerald-600 dark:text-emerald-400">Tenant updated.</p>}
-          </div>
-          <div className="mt-6 flex justify-end">
-            <Button
-              onClick={saveGroupTenant}
-              isLoading={moveBusy}
-              disabled={!moveTenantId || moveTenantId === group.tenant_id}
-            >
-              Save
-            </Button>
-          </div>
-        </Card>
-      )}
-      {step === 1 && !editing && (
+      {step === 1 && (
         <Card className="max-w-2xl p-6">
           <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Declare the documents</h2>
           <div className="flex flex-col gap-4">
-            <Select label="Customer / Tenant" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
-              {tenants.length === 0 && <option value="">No tenants yet</option>}
+            <Select
+              label="Customer / Tenant"
+              value={editing ? moveTenantId : tenantId}
+              onChange={(e) => {
+                if (editing) {
+                  setMoveTenantId(e.target.value);
+                  setMoveSaved(false);
+                  setMoveError(null);
+                } else {
+                  setTenantId(e.target.value);
+                }
+              }}
+            >
+              {!editing && tenants.length === 0 && <option value="">No tenants yet</option>}
               {tenants.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </Select>
-            <Select label="What is this template for?" value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="">Pick a mode…</option>
-              {availableModes.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </Select>
-            {tenants.find((t) => t.id === tenantId)?.allowed_modes?.length ? (
+            {editing && (
+              <p className="-mt-2 text-xs text-slate-400 dark:text-slate-500">
+                Changing this moves the template (and everything in it) to the selected
+                tenant. Refused if this template already has jobs run against it — duplicate
+                it into the new tenant instead, from the Template List.
+              </p>
+            )}
+            {editing && moveError && <p className="-mt-2 text-xs text-rose-600 dark:text-rose-400">{moveError}</p>}
+            {editing && moveSaved && <p className="-mt-2 text-xs text-emerald-600 dark:text-emerald-400">Tenant updated.</p>}
+            {editing && (
+              <div className="-mt-2 flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={saveGroupTenant}
+                  isLoading={moveBusy}
+                  disabled={!moveTenantId || moveTenantId === group?.tenant_id}
+                >
+                  Save tenant
+                </Button>
+              </div>
+            )}
+            {editing ? (
+              <Input label="What is this template for?" value={group?.mode ?? ""} disabled readOnly />
+            ) : (
+              <Select label="What is this template for?" value={mode} onChange={(e) => setMode(e.target.value)}>
+                <option value="">Pick a mode…</option>
+                {availableModes.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </Select>
+            )}
+            {!editing && tenants.find((t) => t.id === tenantId)?.allowed_modes?.length ? (
               <p className="-mt-2 text-xs text-slate-400 dark:text-slate-500">
                 Only showing modes this client is licensed for.
               </p>
             ) : null}
-            <Input label="Template set name" value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Import Shipment Set" />
+            <Input
+              label="Template set name"
+              value={editing ? group?.name ?? "" : groupName}
+              disabled={editing}
+              readOnly={editing}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="Import Shipment Set"
+            />
             <div>
               <p className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">Documents in this set</p>
-              <div className="flex flex-col gap-2">
-                {decls.map((d, i) => (
-                  <div key={i} className="flex items-end gap-2">
-                    <div className="flex-1">
-                      <Input
-                        label={`Document ${i + 1}`}
-                        value={d.name}
-                        onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
-                        placeholder="e.g. BL, Invoice, Packing List"
-                      />
+              {editing ? (
+                <div className="flex flex-col gap-1.5">
+                  {(group?.documents ?? []).map((d) => (
+                    <div key={d.id} className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
+                      <span className="text-slate-900 dark:text-slate-100">{d.name}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 dark:bg-slate-800 dark:text-slate-400">{d.doc_type}</span>
                     </div>
-                    <select
-                      value={d.doc_type}
-                      onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, doc_type: e.target.value } : x)))}
-                      className="mb-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                    >
-                      {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                    <label className="mb-0.5 flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={d.is_required !== false}
-                        onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, is_required: e.target.checked } : x)))}
-                        className="h-3.5 w-3.5 rounded border-slate-300"
-                      />
-                      Mandatory
-                    </label>
-                    {decls.length > 1 && (
-                      <Button variant="ghost" size="sm" onClick={() => setDecls((arr) => arr.filter((_, j) => j !== i))}>
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <p className="mt-1.5 text-xs text-slate-400">
-                Unchecked = optional — the job can move past Document Capture without it.
-              </p>
-              <Button variant="secondary" size="sm" className="mt-2" onClick={() => setDecls((arr) => [...arr, { name: "", doc_type: "Custom", is_required: true }])}>
-                + Add document
-              </Button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {decls.map((d, i) => (
+                    <div key={i} className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <Input
+                          label={`Document ${i + 1}`}
+                          value={d.name}
+                          onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                          placeholder="e.g. BL, Invoice, Packing List"
+                        />
+                      </div>
+                      <select
+                        value={d.doc_type}
+                        onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, doc_type: e.target.value } : x)))}
+                        className="mb-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                      >
+                        {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <label className="mb-0.5 flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={d.is_required !== false}
+                          onChange={(e) => setDecls((arr) => arr.map((x, j) => (j === i ? { ...x, is_required: e.target.checked } : x)))}
+                          className="h-3.5 w-3.5 rounded border-slate-300"
+                        />
+                        Mandatory
+                      </label>
+                      {decls.length > 1 && (
+                        <Button variant="ghost" size="sm" onClick={() => setDecls((arr) => arr.filter((_, j) => j !== i))}>
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!editing && (
+                <>
+                  <p className="mt-1.5 text-xs text-slate-400">
+                    Unchecked = optional — the job can move past Document Capture without it.
+                  </p>
+                  <Button variant="secondary" size="sm" className="mt-2" onClick={() => setDecls((arr) => [...arr, { name: "", doc_type: "Custom", is_required: true }])}>
+                    + Add document
+                  </Button>
+                </>
+              )}
             </div>
           </div>
-          <div className="mt-6 flex justify-end">
-            <Button onClick={submitDeclare} isLoading={busy}>Next: Upload →</Button>
-          </div>
+          {!editing && (
+            <div className="mt-6 flex justify-end">
+              <Button onClick={submitDeclare} isLoading={busy}>Next: Upload →</Button>
+            </div>
+          )}
         </Card>
       )}
 
