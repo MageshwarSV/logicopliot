@@ -80,6 +80,47 @@ def test_calls_openai_with_the_page_image_and_returns_key_and_confidence(tmp_pat
     assert "page 2" in text
 
 
+def test_the_prompt_includes_a_typical_content_hint_per_candidate(tmp_path):
+    # Not a heuristic rule for telling documents apart - just what the candidate's own name
+    # even refers to, reusing the same DOC_TYPE_HINTS/_hint_from_name lookup
+    # classify_document already relies on. Without it, a real Arrival Notice confidently
+    # says "none of these 4 types fit" when the slot is only known by an opaque custom name
+    # like "Fright Certificate" - this is the fix for exactly that regression.
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _response(key="bl")
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI", return_value=client):
+        classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
+
+    text = next(
+        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        if part.get("type") == "text"
+    )
+    assert "typically:" in text
+    assert "bill of lading" in text.lower()
+
+
+def test_a_custom_typed_slot_still_gets_a_hint_from_its_own_name(tmp_path):
+    # A tenant's own slot, typed "Custom" rather than one of the 4 built-ins, spelled however
+    # they spelled it ("Fright Certificate") - _hint_from_name's own job.
+    custom_candidates = [
+        {"key": "fright", "name": "Fright Certificate", "doc_type": "Custom", "fields": []},
+    ]
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _response(key="fright")
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI", return_value=client):
+        classify_page_image("file.pdf", 1, img, custom_candidates, "gpt-5-mini", None)
+
+    text = next(
+        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        if part.get("type") == "text"
+    )
+    assert "freight charges" in text.lower()
+
+
 def test_includes_the_previous_page_s_classification_as_context(tmp_path):
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")

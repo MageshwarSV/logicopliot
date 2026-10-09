@@ -833,12 +833,26 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
 
     # Deliberately plain: this template's own document labels (never a fixed BL/PL/INVOICE/
     # FREIGHT list) and the image, nothing else - no written heuristics describing what each
-    # type should look like. That judgment belongs to the model's own visual analysis of the
-    # page, not a hardcoded prompt of document-field rules - the whole point of asking vision
-    # in the first place. classify_document/classify_document_from_image's own elaborate
-    # instruction text was written for a different, whole-file, multi-match call and is
-    # deliberately NOT reused here.
-    lines = "\n".join(f'- key="{c["key"]}" name="{c["name"]}"' for c in candidates)
+    # type should look like or how to tell them apart. That judgment belongs to the model's
+    # own visual analysis of the page. classify_document/classify_document_from_image's own
+    # elaborate instruction text (the "trap" paragraphs) was written for a different,
+    # whole-file, multi-match call and is deliberately NOT reused here.
+    #
+    # The ONE exception, reusing the SAME lookup classify_document already relies on
+    # (_hint_from_name/DOC_TYPE_HINTS): a short "typically contains" phrase per candidate.
+    # This is not a rule for telling document types apart - it is what the candidate's own
+    # NAME even refers to. A tenant's slot literally named "Fright Certificate" (their own
+    # spelling) means nothing to a model with no domain context; a real Arrival Notice, shown
+    # with no hint, confidently says "this is none of your 4 types" (verified: 0.85-0.92
+    # confidence, key=null) because "Arrival Notice" isn't a synonym for "Fright Certificate"
+    # without being told so - the exact gap DOC_TYPE_HINTS/_hint_from_name already exists to
+    # close for the older classifier. Omitting it here silently broke that same case.
+    def _candidate_line(c: dict) -> str:
+        hint = DOC_TYPE_HINTS.get(c.get("doc_type") or "") or _hint_from_name(c.get("name") or "")
+        suffix = f" (typically: {hint})" if hint else ""
+        return f'- key="{c["key"]}" name="{c["name"]}"{suffix}'
+
+    lines = "\n".join(_candidate_line(c) for c in candidates)
     instruction = (
         f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
         "paperwork. Based on what you actually see on the page - its title, layout, and the "
