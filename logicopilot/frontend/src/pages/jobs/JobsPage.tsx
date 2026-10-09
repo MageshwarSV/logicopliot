@@ -41,6 +41,7 @@ interface StoredJobsFilters {
   customer: string;
   statusFilter: string;
   assignedTo: string;
+  shipmentType: string;
   dateFrom: string;
   dateTo: string;
 }
@@ -117,6 +118,10 @@ export function JobsPage() {
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
+  // Type of shipment (mode) - "All" plus whatever modes actually have jobs among those
+  // loaded. Reacts to the tenant filter for free: picking a tenant already narrows `jobs`
+  // server-side, so this list naturally shows only that tenant's own created/assigned modes.
+  const [shipmentType, setShipmentType] = useState<string>(() => storedFilters.shipmentType ?? QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
   const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
 
@@ -126,13 +131,13 @@ export function JobsPage() {
     try {
       window.sessionStorage.setItem(
         JOBS_FILTERS_STORAGE_KEY,
-        JSON.stringify({ quick, customer, statusFilter, assignedTo, dateFrom, dateTo }),
+        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo }),
       );
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
     }
-  }, [quick, customer, statusFilter, assignedTo, dateFrom, dateTo]);
+  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
 
   async function loadFirstPage() {
     setLoading(true);
@@ -382,6 +387,15 @@ export function JobsPage() {
     return [...s].sort();
   }, [jobs]);
 
+  // Every mode of transport (Sea Import, Air Export, ...) that has actually been created/
+  // assigned among the jobs currently loaded - same client-side derivation as customers
+  // above, so it narrows automatically to whichever tenant the Tenant filter has selected.
+  const shipmentTypes = useMemo(() => {
+    const s = new Set<string>();
+    for (const j of jobs) if (j.mode) s.add(j.mode);
+    return [...s].sort();
+  }, [jobs]);
+
   // Exactly the same string the Status column itself shows — filtering by anything else
   // would let a person pick a status they can never actually match against a row.
   const statuses = useMemo(() => {
@@ -448,12 +462,13 @@ export function JobsPage() {
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
       if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
       if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
+      if (shipmentType !== QUICK_ALL && (j.mode ?? "") !== shipmentType) return false;
       const d = dayKey(j.created_at);
       if (quickRange.from && d && d < quickRange.from) return false;
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, quickRange]);
+  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange]);
 
   const columns: Column<Job>[] = [
     {
@@ -755,7 +770,20 @@ export function JobsPage() {
               ))}
             </select>
           </div>
-          {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || assignedTo !== QUICK_ALL || quick !== "today") && (
+          <div className="min-w-0 flex-1">
+            <label className="mb-1 block text-xs font-medium text-slate-500">Type of shipment</label>
+            <select
+              className={`${quickField} w-full`}
+              value={shipmentType}
+              onChange={(e) => setShipmentType(e.target.value)}
+            >
+              <option value={QUICK_ALL}>All shipment types</option>
+              {shipmentTypes.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+          {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || assignedTo !== QUICK_ALL || shipmentType !== QUICK_ALL || quick !== "today") && (
             <button
               type="button"
               onClick={() => {
@@ -765,6 +793,7 @@ export function JobsPage() {
                 setCustomer(QUICK_ALL);
                 setStatusFilter(QUICK_ALL);
                 setAssignedTo(QUICK_ALL);
+                setShipmentType(QUICK_ALL);
               }}
               className="pb-2 text-xs text-slate-500 hover:underline dark:text-slate-400"
             >
