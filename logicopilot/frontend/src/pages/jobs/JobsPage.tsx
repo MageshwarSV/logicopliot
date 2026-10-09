@@ -67,6 +67,9 @@ export function JobsPage() {
   // Only these two roles ever see jobs outside their own tenant — the tenant filter and
   // column are pointless (and the /tenants call would just 403) for anyone else.
   const crossTenant = user?.role === "admin" || user?.role === "super_admin";
+  // "Type of shipment" is Super Admin's own filter - explicitly narrower than crossTenant
+  // above, which also includes admin.
+  const isSuperAdmin = user?.role === "super_admin";
   const [jobs, setJobs] = useState<Job[]>([]);
   const jobsRef = useRef<Job[]>([]);
   useEffect(() => {
@@ -770,19 +773,21 @@ export function JobsPage() {
               ))}
             </select>
           </div>
-          <div className="min-w-0 flex-1">
-            <label className="mb-1 block text-xs font-medium text-slate-500">Type of shipment</label>
-            <select
-              className={`${quickField} w-full`}
-              value={shipmentType}
-              onChange={(e) => setShipmentType(e.target.value)}
-            >
-              <option value={QUICK_ALL}>All shipment types</option>
-              {shipmentTypes.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
+          {isSuperAdmin && (
+            <div className="min-w-0 flex-1">
+              <label className="mb-1 block text-xs font-medium text-slate-500">Type of shipment</label>
+              <select
+                className={`${quickField} w-full`}
+                value={shipmentType}
+                onChange={(e) => setShipmentType(e.target.value)}
+              >
+                <option value={QUICK_ALL}>All shipment types</option>
+                {shipmentTypes.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || assignedTo !== QUICK_ALL || shipmentType !== QUICK_ALL || quick !== "today") && (
             <button
               type="button"
