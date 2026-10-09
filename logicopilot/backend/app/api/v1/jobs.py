@@ -5765,6 +5765,18 @@ def extract_job(
     if is_extraction_paused(db):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
+    if job.status == "extracting":
+        # Without this, a manual Re-run click landing while the auto-trigger's own background
+        # run_extraction was still in flight started a SECOND, fully concurrent run - both
+        # independently doing their own idempotent check-then-write per field, neither aware
+        # of the other. Found live: a Bill of Lading's Gross Wt and package_count each ended
+        # up with two JobFieldValue rows for the same single-value mark, the stale one never
+        # cleaned up. See the identical guard + its own comment in upload_job_document and
+        # smart_upload (same file) for the first, narrower instance of this same race.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are already being read right now — wait for that to finish before running it again.",
+        )
     _begin_extraction(db, job)
     db.refresh(job)
     return _build_detail(db, job)
