@@ -124,6 +124,11 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
     { value: "N", label: "Normal" },
   ],
 };
+// Fields whose dropdown options come from the server instead of the fixed list above - a
+// reference-backed (is_target_value) custom field's own table (e.g. every real Customs House
+// Code), fetched per-job via listCustomFieldReferenceOptions rather than hardcoded, so
+// updating the reference sheet changes the dropdown without a frontend redeploy.
+const DYNAMIC_REFERENCE_DROPDOWN_LABELS = new Set(["CustomsHouseCode"]);
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -3748,6 +3753,35 @@ function ExtractionReview({
     return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
   }, [job.field_values, active]);
 
+  // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_LABELS field (e.g. CustomsHouseCode),
+  // fetched once per custom_field_id rather than hardcoded - see listCustomFieldReferenceOptions.
+  const [dynamicReferenceOptions, setDynamicReferenceOptions] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    const toFetch = relocatedFields.filter(
+      (fv) =>
+        DYNAMIC_REFERENCE_DROPDOWN_LABELS.has(fv.label_name) &&
+        fv.custom_field_id &&
+        !(fv.custom_field_id in dynamicReferenceOptions),
+    );
+    if (!toFetch.length) return;
+    let cancelled = false;
+    toFetch.forEach((fv) => {
+      jobsApi
+        .listCustomFieldReferenceOptions(jobId, fv.custom_field_id!)
+        .then((options) => {
+          if (cancelled) return;
+          setDynamicReferenceOptions((prev) => ({ ...prev, [fv.custom_field_id!]: options }));
+        })
+        .catch(() => {
+          if (!cancelled) setDynamicReferenceOptions((prev) => ({ ...prev, [fv.custom_field_id!]: [] }));
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relocatedFields, jobId]);
+
   // Named sections for the flat field grid above (visibleFields + relocatedFields combined),
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
   // happen to be stored in. null when this doc_type has no grouping configured (every other
@@ -4024,6 +4058,14 @@ function ExtractionReview({
                 const renderField = (fv: JobFieldValue) => {
                   const from = usedFrom.get(fv.label_name);
                   const isMark = !!fv.mark_id;
+                  const dynamicOptions =
+                    DYNAMIC_REFERENCE_DROPDOWN_LABELS.has(fv.label_name) && fv.custom_field_id
+                      ? dynamicReferenceOptions[fv.custom_field_id]
+                      : undefined;
+                  const options =
+                    dynamicOptions !== undefined
+                      ? dynamicOptions.map((v) => ({ value: v, label: v }))
+                      : FIELD_SELECT_OPTIONS[fv.label_name];
                   return (
                     <ExtractedField
                       key={fv.id}
@@ -4033,7 +4075,7 @@ function ExtractionReview({
                       tone={isMark ? "document" : "computed"}
                       onFocusField={isMark ? setFocusedFv : undefined}
                       labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                      options={FIELD_SELECT_OPTIONS[fv.label_name]}
+                      options={options}
                       note={
                         isMark && from && from !== fv.document_name
                           ? `Cross-check only — the entry uses ${from}'s copy.`

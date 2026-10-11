@@ -2794,6 +2794,39 @@ def get_job(
     return _build_detail(db, _load_job(db, job_id, scope, user))
 
 
+@router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-options")
+def list_custom_field_reference_options(
+    job_id: str,
+    custom_field_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """Every resolved_value this is_target_value field's reference table carries - e.g. every
+    valid Customs House Code - so Additional Details can offer a dropdown of all of them
+    instead of only ever showing the one the automatic lookup matched. Any role that can see
+    the job can see this; it names only resolved_value, never the table's own match columns.
+    """
+    from app.models.custom_field import CustomField
+    from app.models.custom_field_reference import CustomFieldReferenceValue
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, custom_field_id)
+    if cf is None or cf.group_id != job.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    rows = (
+        db.query(CustomFieldReferenceValue.resolved_value)
+        .filter(CustomFieldReferenceValue.custom_field_id == custom_field_id)
+        .distinct()
+        .order_by(CustomFieldReferenceValue.resolved_value)
+        .all()
+    )
+    return {"options": [r[0] for r in rows if r[0]]}
+
+
 @router.get("/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}")
 def get_job_document_page(
     job_id: str,
@@ -4666,20 +4699,34 @@ def _resolve_target_value(
 
     key_field_label = (getattr(cf, "lookup_key_label", None) or "").strip()
     if key_field_label:
-        key_fv = (
-            db.query(JobFieldValue)
-            .filter(JobFieldValue.job_id == job_id, JobFieldValue.label_name == key_field_label,
-                    JobFieldValue.row_index.is_(None))
-            .first()
-        )
-        key_value = (
-            (key_fv.corrected_value or key_fv.extracted_value or "").strip() if key_fv else ""
-        )
-        if not key_value:
-            return None, None
-        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[key_value],
+        # One or more OTHER job-level fields to key off, comma-separated - a customs house
+        # code keyed off BOTH the port of entry AND the transport mode together, say, since
+        # neither one alone picks a single row (Chennai Sea vs Chennai Air are different
+        # customs houses). Joined with "||" for raw_value/target_value_raw (a single TEXT
+        # column) so correct_field_value's own remember_reference call can split it back into
+        # the same ordered keys - see that call site's own comment. A single label (today's
+        # only real usage, e.g. "Erp Entry Name" keyed off "Quotation Name") round-trips
+        # exactly as before: one key, no "||" ever appears, nothing changes for it.
+        key_labels = [lbl.strip() for lbl in key_field_label.split(",") if lbl.strip()]
+        key_values: list[str] = []
+        for label in key_labels:
+            key_fv = (
+                db.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job_id, JobFieldValue.label_name == label,
+                        JobFieldValue.row_index.is_(None))
+                .first()
+            )
+            key_value = (
+                (key_fv.corrected_value or key_fv.extracted_value or "").strip() if key_fv else ""
+            )
+            if not key_value:
+                # Any one key missing means no row can be matched - same "nothing to show yet"
+                # outcome a single missing key already produced.
+                return None, None
+            key_values.append(key_value)
+        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=key_values,
                                     fuzzy=getattr(cf, "fuzzy_match", False))
-        return (resolved or None), key_value
+        return (resolved or None), "||".join(key_values)
     if not value:
         return value, value
     resolved = lookup_reference(db, custom_field_id=cf.id, match_values=[value],
@@ -5898,9 +5945,12 @@ def correct_field_value(
         elif fv.mark_id:
             mark = db.get(FieldMark, fv.mark_id)
             fuzzy = bool(mark and mark.fuzzy_match)
+        # "||"-joined when _resolve_target_value was keyed off more than one other job-level
+        # field (see its own comment) - split back into the same ordered keys. A single key
+        # (no "||" present) round-trips as the one-element list it always was.
         remember_reference(
             db, custom_field_id=fv.custom_field_id, mark_id=fv.mark_id,
-            match_values=[fv.target_value_raw], resolved_value=payload.corrected_value or "",
+            match_values=(fv.target_value_raw or "").split("||"), resolved_value=payload.corrected_value or "",
             fuzzy=fuzzy,
         )
     db.commit()

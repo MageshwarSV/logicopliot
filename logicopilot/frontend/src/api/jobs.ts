@@ -356,6 +356,18 @@ export async function correctFieldValue(valueId: string, correctedValue: string)
   return data;
 }
 
+/** Every resolved_value a reference-backed (is_target_value) custom field's table carries -
+ * e.g. every real Customs House Code - so it can be offered as a dropdown instead of only
+ * ever showing the one value an automatic lookup matched. */
+export async function listCustomFieldReferenceOptions(
+  jobId: string, customFieldId: string,
+): Promise<string[]> {
+  const { data } = await apiClient.get<{ options: string[] }>(
+    `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
+  );
+  return data.options;
+}
+
 /** One piece of a composite field's value: either another field's own label_name (a plain
  *  string) or a fixed literal value typed straight in - the SAME text on every product line
  *  rather than something read off the job (e.g. a separator, a fixed prefix). */
