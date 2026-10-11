@@ -62,7 +62,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country",
     "CustomsHouseCode",
   ],
-  Invoice: ["Currency_type", "Product Value", "Package Unit", "consignee_full_name", "Consignee"],
+  Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
@@ -70,9 +70,10 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 // Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
 // separate, older field from "Consignment Type" (both read the same BL/Freight documents);
 // now that "Consignment Type" shows directly on the Bill of Lading tab, this duplicate has
-// no reason to still show under Additional Details. Display only - the field itself,
-// ask_operator, and extraction are unchanged.
-const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set(["Cont Type"]);
+// no reason to still show under Additional Details. "consignee_full_name" is a word-for-word
+// duplicate of "Consignee" (identical ai_prompt) - only "Consignee" is shown anywhere now.
+// Display only - the fields themselves, ask_operator, and extraction are unchanged.
+const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set(["Cont Type", "consignee_full_name"]);
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
 // shown on the same Bill of Lading tab. Display only - the mark itself and its data are
@@ -110,9 +111,8 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     "Product Value": "Total Invoice Value",
     total_quantity: "Total Quantity",
     unit: "Quantity Unit",
-    shipper: "Shipper Name & Address",
+    shipper: "Shipper Name",
     Consignee: "Consignee Name",
-    consignee_full_name: "Consignee Full Name",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
@@ -125,6 +125,10 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     "Customer Part code": "Customer Part Code",
     "RITC No.": "RITC / Customs Tariff Code",
     "Combined Description": "Combined Product Description",
+  },
+  PackingList: {
+    package_count: "Package Count",
+    total_quantity: "Total Quantity",
   },
 };
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
@@ -159,6 +163,9 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
   CustomsHouseCode: "port_of_entry",
 };
+// A full postal address reads better as a few short lines than as one long line the operator
+// has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
+const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -190,7 +197,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Value & Quantity Details",
       labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Package Unit", "Gross Wt"],
     },
-    { heading: "Party Details", labels: ["shipper", "Consignee", "consignee_full_name"] },
+    {
+      heading: "Party Details",
+      labels: ["shipper", "Shipper Address", "Consignee", "Consignee Address"],
+    },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
   ],
   PackingList: [
@@ -3271,6 +3281,7 @@ function ExtractedField({
   options,
   defaultValue,
   hideBlankOption,
+  multiline,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3300,6 +3311,9 @@ function ExtractedField({
   /** A dropdown whose options already cover every real possibility (Advance/Prior/Normal,
    *  Transaction/Deferred) reads better with no blank choice to accidentally pick. */
   hideBlankOption?: boolean;
+  /** A full address reads better as a few short lines in a taller box than as one long line
+   *  scrolled sideways through - see MULTILINE_FIELD_LABELS. */
+  multiline?: boolean;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3401,6 +3415,19 @@ function ExtractedField({
               </option>
             ))}
           </select>
+        ) : multiline ? (
+          <textarea
+            value={draft}
+            readOnly={readOnly}
+            rows={3}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={() => onFocusField?.(fv)}
+            // Blur still saves, as a safety net for anyone who types and tabs away - same
+            // pattern as the single-line input below.
+            onBlur={commit}
+            placeholder="not found"
+            className={`${boxClassName} resize-y`}
+          />
         ) : (
           <input
             value={draft}
@@ -4152,6 +4179,7 @@ function ExtractionReview({
                       onFocusField={isMark ? setFocusedFv : undefined}
                       labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                       options={options}
+                      multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
                       note={
                         isMark && from && from !== fv.document_name
                           ? `Cross-check only — the entry uses ${from}'s copy.`
