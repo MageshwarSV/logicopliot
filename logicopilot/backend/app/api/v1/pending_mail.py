@@ -5,6 +5,7 @@ pick the template by hand instead of the mail simply being read once and forgott
 Cross-tenant by nature — which tenant this even belongs to is exactly the thing nobody could
 tell automatically — so this is Super Admin only, same as every other cross-tenant view.
 """
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,11 +17,14 @@ from app.core.config import get_settings
 from app.core.deps import get_db, require_role
 from app.core.email_puller import _document_name
 from app.core.page_filter import extract_pdf_pages, kept_page_to_original
+from app.core.system_settings import get_extraction_engine
 from app.models.job import Job, JobDocument
 from app.models.pending_email import PendingEmail
 from app.models.template_group import TemplateGroup
 from app.models.user import SUPER_ADMIN, User
 from app.schemas.pending_email import PendingEmailOut, PendingEmailResolve
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pending-emails", tags=["pending emails"])
 
@@ -82,16 +86,56 @@ def resolve_pending_email(
     if group is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Template not found")
 
+    # Read ONCE, up front, before any flush - same reasoning as smart_upload/email_puller's
+    # own identical fix (see their comments): the first-ever read of a system setting lazily
+    # creates and commits its row, and doing that deep inside this function after a tentative
+    # write was already flushed would incidentally commit that half-built state along with it.
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
+
     pdir = _pending_dir(pending_id)
+    # Only rendered when the vision engine is active - this is the one call site that was
+    # still missing per-page images entirely (classify_document_from_image/
+    # classify_pages_from_images need them; _save_pending_email only ever kept the original
+    # blob + OCR text, never page images, since nothing needed them before the vision engine
+    # existed). Found live: a combined attachment (Sales Contract + Invoice + Packing List +
+    # a Chinese customs form, all in one PDF) that reached this screen stayed on the OLD
+    # whole-file text classifier regardless of the tenant's own engine setting, bundling every
+    # page under one slot instead of splitting them - this docstring's own promise ("the SAME
+    # classifier ... smart-upload use") was quietly false for this one entry point.
+    render_dir = Path(get_settings().uploads_dir) / "_pending_resolve" / pending_id
     prepared = []
     for a in (row.attachments or []):
         fpath = pdir / a["path"]
         if not fpath.exists():
             continue
+        page_count = a.get("page_count") or 0
+        drop_pages = a.get("drop_pages") or []
+        page_images: list[tuple[int, Path]] = []
+        if extraction_engine == "gpt5_mini_vision" and page_count:
+            import fitz  # PyMuPDF
+
+            fdir = render_dir / a["path"] / "pages"
+            fdir.mkdir(parents=True, exist_ok=True)
+            try:
+                with fitz.open(fpath) as doc:
+                    for i, page in enumerate(doc, start=1):
+                        if i > 6:  # same cap as smart_upload/email_puller
+                            break
+                        page.get_pixmap(dpi=150).save(fdir / f"page_{i}.png")
+                kept_original = kept_page_to_original(page_count, drop_pages)
+                page_images = [
+                    (i, fdir / f"page_{kept_original[i - 1] if i - 1 < len(kept_original) else i}.png")
+                    for i in range(1, len(kept_original) + 1)
+                ]
+            except Exception:  # noqa: BLE001
+                logger.warning("could not render page images for %s - falling back to "
+                              "text classification for this file", a.get("name"))
         prepared.append({
             "name": a.get("name") or a["path"], "ext": a.get("ext") or "",
             "text": a.get("text") or "", "image": None, "blob": fpath.read_bytes(),
-            "drop_pages": a.get("drop_pages") or [], "page_count": a.get("page_count") or 0,
+            "drop_pages": drop_pages, "page_count": page_count,
+            "page_images": page_images,
         })
     if not prepared:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -120,7 +164,10 @@ def resolve_pending_email(
         }
     db.flush()
 
-    claims_per_file = assign_documents_detailed(prepared, list(slot_meta.values()))
+    claims_per_file = assign_documents_detailed(
+        prepared, list(slot_meta.values()), engine=extraction_engine,
+        vision_model=vision_engine_model, per_page_vision=True,
+    )
     for item, claims in zip(prepared, claims_per_file):
         # A combined attachment (one PDF carrying both the Invoice and the Packing List) must
         # give each slot only ITS pages, not the whole thing.
@@ -176,6 +223,7 @@ def resolve_pending_email(
     # normal pull, nothing of the mail is left lying around once it has somewhere real to live.
     import shutil
     shutil.rmtree(pdir, ignore_errors=True)
+    shutil.rmtree(render_dir, ignore_errors=True)
 
     # Extract whatever was actually attached, complete or not — the same rule the auto-pull
     # itself follows (run_extraction right after routing), rather than _maybe_auto_extract's
