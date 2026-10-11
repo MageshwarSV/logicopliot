@@ -58,7 +58,10 @@ const ADDITIONAL_DETAILS_ID = "additional-details";
 // is no mark_id to key off. Purely where they render; nothing about extraction, ask_operator,
 // or the underlying data changes.
 const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
-  BL: ["HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country"],
+  BL: [
+    "HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country",
+    "CustomsHouseCode",
+  ],
   Invoice: ["Currency_type", "Product Value", "Package Unit", "consignee_full_name", "Consignee"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
@@ -70,6 +73,13 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 // no reason to still show under Additional Details. Display only - the field itself,
 // ask_operator, and extraction are unchanged.
 const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set(["Cont Type"]);
+// A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
+// ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
+// shown on the same Bill of Lading tab. Display only - the mark itself and its data are
+// unchanged; only this field no longer renders.
+const HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE: Record<string, Set<string>> = {
+  BL: new Set(["mode_of_transport"]),
+};
 // Display label only - label_name in the database is unchanged, so template config, ERP
 // mapping, and every other screen that reads this field by name are unaffected. Keyed by
 // the ACTIVE document's doc_type - "Supplier Address"/"Supplier Name" are real marks that
@@ -88,7 +98,6 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     port_of_entry: "Port of Entry",
     PortOfShipmentCode: "Port of Loading Code",
     CountryOfShipmentCode: "Shipment Country Code",
-    mode_of_transport: "Transport Mode",
     TransportModeCode: "Transport Mode Code",
     package_count: "Package Count",
     "Gross Wt": "Gross Weight (kg)",
@@ -116,7 +125,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Port & Transport Details",
       labels: [
         "port_of_entry", "PortOfShipmentCode", "CountryOfShipmentCode",
-        "mode_of_transport", "TransportModeCode",
+        "TransportModeCode", "CustomsHouseCode",
       ],
     },
     { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },
@@ -150,7 +159,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
 const COMPUTED_FIELD_GROUPS: { heading: string; labels: string[] }[] = [
   {
     heading: "Branch & Customs House Details",
-    labels: ["CustomsHouseCode", "ad_code", "branch_name", "branch_number", "Quotation Name"],
+    labels: ["ad_code", "branch_name", "branch_number", "Quotation Name"],
   },
 ];
 
@@ -3668,7 +3677,10 @@ function ExtractionReview({
     // Only what was read off the page. A computed or looked-up field was never on the
     // document, so it has no business on the screen that checks the reading against it —
     // those belong to Dump Data.
-    return rows.filter((fv) => fv.row_index == null && fv.mark_id);
+    const hidden = HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
+    return rows.filter(
+      (fv) => fv.row_index == null && fv.mark_id && !hidden?.has(fv.label_name),
+    );
   }, [job.field_values, active]);
 
 
