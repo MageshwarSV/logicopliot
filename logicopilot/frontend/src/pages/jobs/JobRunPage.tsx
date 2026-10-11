@@ -51,6 +51,30 @@ const STEPS: { key: TabKey; label: string; displayLabel: string; built: boolean 
 // a real uploaded file's UUID.
 const ADDITIONAL_DETAILS_ID = "additional-details";
 
+// Display-only relocation, requested for 4S Logistics' Sea Import template: these "worked
+// out for this job" custom fields read more naturally next to the document they actually
+// describe than lumped under Additional Details. Keyed by the owning document's doc_type
+// (BL / Invoice) - matched by label_name since these are custom fields, not marks, so there
+// is no mark_id to key off. Purely where they render; nothing about extraction, ask_operator,
+// or the underlying data changes.
+const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
+  BL: ["HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country"],
+  Invoice: ["Currency_type", "Product Value", "Package Unit", "consignee_full_name", "Consignee"],
+};
+const ALL_RELOCATED_FIELD_LABELS = new Set(
+  Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
+);
+// Display label only - label_name in the database is unchanged, so template config, ERP
+// mapping, and every other screen that reads this field by name are unaffected.
+const FIELD_LABEL_OVERRIDES: Record<string, string> = {
+  "Supplier City": "Shipper City",
+  "Supplier Country": "Shipper Country",
+};
+// A fixed, short set of valid codes reads better as a dropdown than free text.
+const FIELD_SELECT_OPTIONS: Record<string, string[]> = {
+  TransportModeCode: ["S", "A"],
+};
+
 /** Which of the four steps this job is on.
  *
  *  The SERVER already works this out - it is the badge in the jobs list - so use its answer
@@ -813,7 +837,11 @@ export function JobRunPage() {
   };
   const commonComputedFields =
     job?.field_values.filter(
-      (fv) => fv.origin === "computed" && fv.row_index == null && !isSelfVerifyingLabel(fv.label_name),
+      (fv) =>
+        fv.origin === "computed" &&
+        fv.row_index == null &&
+        !isSelfVerifyingLabel(fv.label_name) &&
+        !ALL_RELOCATED_FIELD_LABELS.has(fv.label_name),
     ) ?? [];
   // What Manual Data Entry actually asks for. Reference-sheet fields are asked too — the CTH
   // and RITC are marked "ask the operator" so a part missing from the sheet gets typed — but
@@ -2197,43 +2225,10 @@ export function JobRunPage() {
                 </Card>
               )}
 
-              {perRowAsks.length > 0 && (
-                <Card className="p-5">
-                  <h3 className="mb-1 text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    One value per product line
-                  </h3>
-                  <p className="mb-3 text-xs text-slate-400">
-                    {perRowAsks.length} line(s). Each is named by its product, so a value goes
-                    against the right one.
-                  </p>
-                  <div className="flex flex-col gap-3">
-                    {perRowAsks.map(({ line, items, context }) => (
-                      <div
-                        key={line}
-                        className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"
-                      >
-                        <p className="mb-2 flex items-baseline gap-2 text-xs">
-                          <span className="font-semibold text-slate-500">Product {line}</span>
-                          {context && (
-                            <span className="min-w-0 truncate text-slate-400">{context}</span>
-                          )}
-                        </p>
-                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                          {items.map((fv) => (
-                            <ExtractedField
-                              key={fv.id}
-                              fv={fv}
-                              readOnly={!canEditValues}
-                              reload={load}
-                              small
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              )}
+              {/* "One value per product line" (perRowAsks) is deliberately not rendered here
+                  per request - these duty-notification fields (AIDC, Basic, ...) no longer
+                  show on Additional Details. Display only: perRowAsks/ask_operator and the
+                  underlying data are unchanged. */}
             </>
           )}
         </div>
@@ -3082,6 +3077,8 @@ function ExtractedField({
   tone,
   note,
   onFocusField,
+  labelOverride,
+  options,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3097,6 +3094,11 @@ function ExtractedField({
   /** Data Extraction only: tell the document preview which value is focused, so it can jump
    *  to and highlight this field's mark on the page. */
   onFocusField?: (fv: JobFieldValue) => void;
+  /** Display label only - fv.label_name (the template's own configured name) is unchanged,
+   *  so nothing that matches on it elsewhere is affected. */
+  labelOverride?: string;
+  /** A fixed, short set of valid values reads better as a dropdown than free text. */
+  options?: string[];
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current);
@@ -3134,7 +3136,7 @@ function ExtractedField({
             small ? "text-[11px] font-medium text-slate-500 dark:text-slate-400" : "text-sm"
           }`}
         >
-          {fv.label_name}
+          {labelOverride ?? fv.label_name}
         </p>
         {corrected && (
           <span className="shrink-0 rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
@@ -3147,21 +3149,8 @@ function ExtractedField({
         )}
       </div>
       <div className="relative">
-      <input
-        value={draft}
-        readOnly={readOnly}
-        onChange={(e) => setDraft(e.target.value)}
-        onFocus={() => onFocusField?.(fv)}
-        // Blur still saves, as a safety net for anyone who types and tabs away. The button
-        // below suppresses its own mousedown so it never takes focus from the input, so the
-        // two cannot both fire — without that, blur would save and reload, unmounting the
-        // button before its own click landed.
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-        placeholder="not found"
-        className={`w-full rounded-lg border px-3 py-2 text-sm transition-colors placeholder:italic placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none ${
+      {(() => {
+        const boxClassName = `w-full rounded-lg border px-3 py-2 text-sm transition-colors placeholder:italic placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none ${
           failed
             ? "border-rose-300 text-slate-700 dark:border-rose-500/40 dark:text-slate-200"
             : corrected
@@ -3180,9 +3169,57 @@ function ExtractedField({
                     : tone === "computed"
                       ? "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200"
                       : "border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-        } ${readOnly ? "cursor-default" : ""} ${!readOnly && (dirty || corrected) ? "pr-16" : ""}`}
-      />
-      {!readOnly && (dirty || saving) && (
+        } ${readOnly ? "cursor-default" : ""} ${!readOnly && (dirty || corrected) ? "pr-16" : ""}`;
+
+        return options ? (
+          <select
+            value={draft}
+            disabled={readOnly}
+            onFocus={() => onFocusField?.(fv)}
+            onChange={async (e) => {
+              const next = e.target.value;
+              setDraft(next);
+              if (readOnly || next === current) return;
+              setSaving(true);
+              setFailed(false);
+              try {
+                await jobsApi.correctFieldValue(fv.id, next);
+                await reload();
+              } catch {
+                setFailed(true);
+              } finally {
+                setSaving(false);
+              }
+            }}
+            className={boxClassName}
+          >
+            <option value="">not found</option>
+            {options.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={draft}
+            readOnly={readOnly}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={() => onFocusField?.(fv)}
+            // Blur still saves, as a safety net for anyone who types and tabs away. The button
+            // below suppresses its own mousedown so it never takes focus from the input, so the
+            // two cannot both fire — without that, blur would save and reload, unmounting the
+            // button before its own click landed.
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="not found"
+            className={boxClassName}
+          />
+        );
+      })()}
+      {!readOnly && !options && (dirty || saving) && (
         <button
           type="button"
           // Keeps focus in the input, so pressing Save does not blur it first.
@@ -3567,6 +3604,16 @@ function ExtractionReview({
     });
   }, [fields, usedFrom]);
 
+  // Custom fields (no mark_id, so `fields` above never picks them up) relocated here from
+  // Additional Details for display purposes only - see RELOCATED_FIELD_LABELS_BY_DOC_TYPE.
+  const relocatedFields = useMemo(() => {
+    if (!active) return [];
+    const labels = RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
+    if (!labels || !labels.length) return [];
+    const wanted = new Set(labels);
+    return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
+  }, [job.field_values, active]);
+
   const lineRows = useMemo(() => {
     if (!active) return [];
     const mine = job.field_values.filter(
@@ -3808,7 +3855,7 @@ function ExtractionReview({
           <div className="mb-4">
             <ColourKey />
           </div>
-          {visibleFields.length === 0 && lineRows.length === 0 ? (
+          {visibleFields.length === 0 && lineRows.length === 0 && relocatedFields.length === 0 ? (
             <p className="text-sm text-slate-400">
               Nothing was read from this document yet.
             </p>
@@ -3833,6 +3880,17 @@ function ExtractionReview({
                     />
                   );
                 })}
+                {relocatedFields.map((fv) => (
+                  <ExtractedField
+                    key={fv.id}
+                    fv={fv}
+                    readOnly={readOnly}
+                    reload={reload}
+                    tone="computed"
+                    labelOverride={FIELD_LABEL_OVERRIDES[fv.label_name]}
+                    options={FIELD_SELECT_OPTIONS[fv.label_name]}
+                  />
+                ))}
               </div>
 
               {lineRows.length > 0 && (
