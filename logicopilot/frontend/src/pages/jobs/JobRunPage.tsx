@@ -104,6 +104,28 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     container_number: "Container Number",
     container_type: "Container Type",
   },
+  Invoice: {
+    "Invoice No": "Invoice Number",
+    Currency_type: "Currency",
+    "Product Value": "Total Invoice Value",
+    total_quantity: "Total Quantity",
+    unit: "Quantity Unit",
+    shipper: "Shipper Name & Address",
+    Consignee: "Consignee Name",
+    consignee_full_name: "Consignee Full Name",
+    CountryOfOriginCode: "Country of Origin Code",
+    TOI: "Terms of Invoice",
+    product_description: "Product Description",
+    item_material_code: "Item Material Code",
+    item_quantity: "Item Quantity",
+    item_unit_price: "Unit Price",
+    item_po_no: "Purchase Order Number",
+    product_amount: "Product Amount",
+    "product quantity type": "Product Quantity Unit",
+    "Customer Part code": "Customer Part Code",
+    "RITC No.": "RITC / Customs Tariff Code",
+    "Combined Description": "Combined Product Description",
+  },
 };
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
@@ -163,10 +185,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     },
   ],
   Invoice: [
-    { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No", "Currency_type"] },
+    { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No"] },
     {
       heading: "Value & Quantity Details",
-      labels: ["Product Value", "total_quantity", "unit", "Package Unit", "Gross Wt"],
+      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Package Unit", "Gross Wt"],
     },
     { heading: "Party Details", labels: ["shipper", "Consignee", "consignee_full_name"] },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
@@ -211,6 +233,9 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   "MBL No": "Master Bill of Lading Number",
   "MBL Date": "Master Bill of Lading Date",
 };
+// These two dropdowns' own options already cover every real possibility - no blank "not
+// found" choice to accidentally leave selected.
+const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePriorNormal"]);
 
 /** Which of the four steps this job is on.
  *
@@ -2377,6 +2402,7 @@ export function JobRunPage() {
                               labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={FIELD_SELECT_OPTIONS[fv.label_name]}
                               defaultValue={defaultValue}
+                              hideBlankOption={NO_BLANK_DROPDOWN_OPTION_LABELS.has(fv.label_name)}
                             />
                             {fv.ask_operator_hint && (
                               <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
@@ -3244,6 +3270,7 @@ function ExtractedField({
   labelOverride,
   options,
   defaultValue,
+  hideBlankOption,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3270,6 +3297,9 @@ function ExtractedField({
    *  value already works everywhere else: still needs an explicit confirm before it counts as
    *  answered. */
   defaultValue?: string;
+  /** A dropdown whose options already cover every real possibility (Advance/Prior/Normal,
+   *  Transaction/Deferred) reads better with no blank choice to accidentally pick. */
+  hideBlankOption?: boolean;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3364,7 +3394,7 @@ function ExtractedField({
             }}
             className={boxClassName}
           >
-            <option value="">not found</option>
+            {!hideBlankOption && <option value="">not found</option>}
             {options.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
@@ -4231,6 +4261,7 @@ function ExtractionReview({
                                 reload={reload}
                                 small
                                 tone="reference"
+                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                               />
                             ))}
                           </div>
