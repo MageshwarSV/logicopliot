@@ -87,6 +87,50 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
 const FIELD_SELECT_OPTIONS: Record<string, string[]> = {
   TransportModeCode: ["S", "A"],
 };
+// Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
+// read better as named sections, grouped the way an operator actually thinks about a
+// shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
+// doc_type; a doc_type with no entry here (any other template) keeps the plain ungrouped
+// grid exactly as before. Within a doc_type, any field not listed in any group still renders,
+// under a final "Other" section, so nothing silently disappears if a field is added later.
+const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string[] }[]> = {
+  BL: [
+    {
+      heading: "HBL & Shipment Details",
+      labels: ["HBL No", "HBL Date", "vessel_name", "voyage_number", "Consignment Type"],
+    },
+    {
+      heading: "Port & Transport Details",
+      labels: [
+        "port_of_entry", "PortOfShipmentCode", "CountryOfShipmentCode",
+        "mode_of_transport", "TransportModeCode",
+      ],
+    },
+    { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },
+    {
+      heading: "Shipper Details",
+      labels: ["Supplier Name", "Supplier Address", "Supplier City", "Supplier Country"],
+    },
+  ],
+  Invoice: [
+    { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No", "Currency_type"] },
+    {
+      heading: "Value & Quantity Details",
+      labels: ["Product Value", "total_quantity", "unit", "Package Unit", "Gross Wt"],
+    },
+    { heading: "Party Details", labels: ["shipper", "Consignee", "consignee_full_name"] },
+    { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
+  ],
+  PackingList: [
+    { heading: "Shipment Reference", labels: ["Invoice No", "Invoice Date", "HBL No"] },
+    { heading: "Package & Weight Details", labels: ["package_count", "total_quantity", "Gross Wt"] },
+  ],
+  Custom: [
+    { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
+    { heading: "Charges", labels: ["Freight Amount", "Misc Charge Amount"] },
+    { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
+  ],
+};
 
 /** Which of the four steps this job is on.
  *
@@ -3628,6 +3672,31 @@ function ExtractionReview({
     return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
   }, [job.field_values, active]);
 
+  // Named sections for the flat field grid above (visibleFields + relocatedFields combined),
+  // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
+  // happen to be stored in. null when this doc_type has no grouping configured (every other
+  // template) - the caller then falls back to the plain ungrouped grid, unchanged.
+  const groupedDocFields = useMemo(() => {
+    if (!active) return null;
+    const groups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type];
+    if (!groups) return null;
+    const all = [...visibleFields, ...relocatedFields];
+    const byLabel = new Map(all.map((fv) => [fv.label_name, fv] as const));
+    const used = new Set<string>();
+    const sections = groups
+      .map(({ heading, labels }) => {
+        const items = labels
+          .map((label) => byLabel.get(label))
+          .filter((fv): fv is JobFieldValue => !!fv);
+        items.forEach((fv) => used.add(fv.label_name));
+        return { heading, items };
+      })
+      .filter((section) => section.items.length > 0);
+    const leftover = all.filter((fv) => !used.has(fv.label_name));
+    if (leftover.length) sections.push({ heading: "Other", items: leftover });
+    return sections;
+  }, [active, visibleFields, relocatedFields]);
+
   const lineRows = useMemo(() => {
     if (!active) return [];
     const mine = job.field_values.filter(
@@ -3875,38 +3944,52 @@ function ExtractionReview({
             </p>
           ) : (
             <>
-              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                {visibleFields.map((fv) => {
+              {(() => {
+                const renderField = (fv: JobFieldValue) => {
                   const from = usedFrom.get(fv.label_name);
+                  const isMark = !!fv.mark_id;
                   return (
                     <ExtractedField
                       key={fv.id}
                       fv={fv}
                       readOnly={readOnly}
                       reload={reload}
-                      tone="document"
-                      onFocusField={setFocusedFv}
+                      tone={isMark ? "document" : "computed"}
+                      onFocusField={isMark ? setFocusedFv : undefined}
                       labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                      options={FIELD_SELECT_OPTIONS[fv.label_name]}
                       note={
-                        from && from !== fv.document_name
+                        isMark && from && from !== fv.document_name
                           ? `Cross-check only — the entry uses ${from}'s copy.`
                           : undefined
                       }
                     />
                   );
-                })}
-                {relocatedFields.map((fv) => (
-                  <ExtractedField
-                    key={fv.id}
-                    fv={fv}
-                    readOnly={readOnly}
-                    reload={reload}
-                    tone="computed"
-                    labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                    options={FIELD_SELECT_OPTIONS[fv.label_name]}
-                  />
-                ))}
-              </div>
+                };
+
+                return groupedDocFields ? (
+                  <div className="flex flex-col gap-5">
+                    {groupedDocFields.map(({ heading, items }, i) => (
+                      <div
+                        key={heading}
+                        className={i > 0 ? "border-t border-slate-200 pt-5 dark:border-slate-700" : ""}
+                      >
+                        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                          {heading}
+                        </p>
+                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                          {items.map(renderField)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                    {visibleFields.map(renderField)}
+                    {relocatedFields.map(renderField)}
+                  </div>
+                );
+              })()}
 
               {lineRows.length > 0 && (
                 <div className="mt-6">
