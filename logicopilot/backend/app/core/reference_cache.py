@@ -145,6 +145,21 @@ def lookup_reference(
     for i in range(max(0, real_keys - 1)):
         query = query.filter(exact_columns[i] == slots[i])
     candidates = query.all()
+    # An EXACT match always wins over a fuzzy one, even here - fuzzy is a fallback for when
+    # nothing matches exactly, never a reason to prefer a near-miss over a row that already
+    # matches perfectly. Found live: "Shanghai" (an exact row, CNSHA) also satisfies
+    # _fuzzy_similar's own abbreviation/substring rule against "Pudong/Shanghai" (CNPDG, a
+    # real but DIFFERENT port) - that rule exists for "KUEHNENAGEL" inside
+    # "KUEHNENAGELPVTLTD" being the same company abbreviated, which does not hold for two
+    # genuinely different places that happen to share a word. Checking every candidate for an
+    # exact match FIRST, before any fuzzy comparison runs at all, is what keeps a real exact
+    # match from ever losing to a coincidental fuzzy one further down the same candidate list.
+    for row in candidates:
+        stored = [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4]
+        if all((not q) or (not s) or q == s for q, s in zip(slots, stored)) and any(
+            q and s for q, s in zip(slots, stored)
+        ):
+            return row.resolved_value
     for row in candidates:
         stored = [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4]
         # Every slot either side actually uses must agree (fuzzily); a slot blank on both sides

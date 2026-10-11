@@ -723,6 +723,22 @@ def test_two_key_fuzzy_lookup_only_fuzzy_scans_rows_sharing_the_exact_first_key(
     assert lookup_reference(db_session, cf.id, ["CANADA", "Victoria"], fuzzy=True) == "CAYVR"
 
 
+def test_an_exact_match_wins_over_a_fuzzy_one_even_among_fuzzy_candidates(db_session):
+    """Found live: "Shanghai" (an exact row) also satisfies _fuzzy_similar's own abbreviation/
+    substring rule against "Pudong/Shanghai" (a real but DIFFERENT port) - that rule is meant
+    for a company name abbreviated ("KUEHNENAGEL" inside "KUEHNENAGELPVTLTD"), which does not
+    hold for two genuinely different places that happen to share a word. The exact row must
+    always win, regardless of which order the candidates come back in."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = _make_lookup_field(db_session, tenant, group, label_name="Shipment Port Code")
+    remember_reference(db_session, cf.id, ["CHINA", "Pudong/Shanghai"], "CNPDG")
+    remember_reference(db_session, cf.id, ["CHINA", "Shanghai"], "CNSHA")
+    db_session.commit()
+
+    assert lookup_reference(db_session, cf.id, ["CHINA", "Shanghai"], fuzzy=True) == "CNSHA"
+
+
 def test_single_key_fuzzy_lookup_is_unaffected_by_the_multi_key_change(db_session):
     """A single-key fuzzy field (the original use - a freight forwarder's name) has no "every
     key except the last" to pre-filter, so it keeps scanning its own table exactly as before."""
