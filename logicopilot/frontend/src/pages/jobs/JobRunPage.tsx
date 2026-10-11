@@ -64,11 +64,24 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
 );
+// Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
+// separate, older field from "Consignment Type" (both read the same BL/Freight documents);
+// now that "Consignment Type" shows directly on the Bill of Lading tab, this duplicate has
+// no reason to still show under Additional Details. Display only - the field itself,
+// ask_operator, and extraction are unchanged.
+const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set(["Cont Type"]);
 // Display label only - label_name in the database is unchanged, so template config, ERP
-// mapping, and every other screen that reads this field by name are unaffected.
-const FIELD_LABEL_OVERRIDES: Record<string, string> = {
-  "Supplier City": "Shipper City",
-  "Supplier Country": "Shipper Country",
+// mapping, and every other screen that reads this field by name are unaffected. Keyed by
+// the ACTIVE document's doc_type - "Supplier Address"/"Supplier Name" are real marks that
+// exist on BOTH the Bill of Lading and the Fright Certificate under the same label_name, and
+// only the Bill of Lading's copy should read "Shipper ...".
+const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> = {
+  BL: {
+    "Supplier City": "Shipper City",
+    "Supplier Country": "Shipper Country",
+    "Supplier Address": "Shipper Address",
+    "Supplier Name": "Shipper Name",
+  },
 };
 // A fixed, short set of valid codes reads better as a dropdown than free text.
 const FIELD_SELECT_OPTIONS: Record<string, string[]> = {
@@ -841,7 +854,8 @@ export function JobRunPage() {
         fv.origin === "computed" &&
         fv.row_index == null &&
         !isSelfVerifyingLabel(fv.label_name) &&
-        !ALL_RELOCATED_FIELD_LABELS.has(fv.label_name),
+        !ALL_RELOCATED_FIELD_LABELS.has(fv.label_name) &&
+        !HIDDEN_ADDITIONAL_DETAILS_LABELS.has(fv.label_name),
     ) ?? [];
   // What Manual Data Entry actually asks for. Reference-sheet fields are asked too — the CTH
   // and RITC are marked "ask the operator" so a part missing from the sheet gets typed — but
@@ -3872,6 +3886,7 @@ function ExtractionReview({
                       reload={reload}
                       tone="document"
                       onFocusField={setFocusedFv}
+                      labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                       note={
                         from && from !== fv.document_name
                           ? `Cross-check only — the entry uses ${from}'s copy.`
@@ -3887,7 +3902,7 @@ function ExtractionReview({
                     readOnly={readOnly}
                     reload={reload}
                     tone="computed"
-                    labelOverride={FIELD_LABEL_OVERRIDES[fv.label_name]}
+                    labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                     options={FIELD_SELECT_OPTIONS[fv.label_name]}
                   />
                 ))}
