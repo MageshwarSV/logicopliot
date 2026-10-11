@@ -182,6 +182,11 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
 const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
+// A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
+// ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
+// backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
+// so the operator can find the right row themselves by inspecting the document.
+const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code"]);
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -3486,6 +3491,109 @@ function ExtractedField({
   );
 }
 
+/** The manual fallback for a reference-backed field too large to ever offer as a plain
+ * dropdown (see SEARCHABLE_REFERENCE_FIELD_LABELS) - only ever rendered while that field is
+ * blank (the caller's own job to decide). Typing searches the field's reference table
+ * server-side (reference-search), debounced so every keystroke doesn't fire its own request;
+ * picking a result commits it as this field's corrected value exactly like any other
+ * correction. */
+function ReferenceSearchPicker({
+  jobId,
+  customFieldId,
+  readOnly,
+  onPick,
+}: {
+  jobId: string;
+  customFieldId: string;
+  readOnly: boolean;
+  onPick: (value: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<jobsApi.CustomFieldReferenceSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
+
+  useEffect(() => {
+    if (query.trim().length < 2) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const handle = setTimeout(() => {
+      jobsApi
+        .searchCustomFieldReferenceValues(jobId, customFieldId, query.trim())
+        .then((found) => {
+          if (!cancelled) setResults(found);
+        })
+        .catch(() => {
+          if (!cancelled) setResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query, jobId, customFieldId]);
+
+  if (readOnly) return null;
+
+  return (
+    <div className="relative mt-1.5">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        // A short delay so a click on a result (below) lands before the blur closes the list.
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Not found automatically — search by city or country…"
+        className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
+      />
+      {open && query.trim().length >= 2 && (
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+          {loading ? (
+            <p className="px-3 py-2 text-slate-400">Searching…</p>
+          ) : results.length === 0 ? (
+            <p className="px-3 py-2 text-slate-400">No matches.</p>
+          ) : (
+            results.map((r) => (
+              <button
+                key={r.value}
+                type="button"
+                disabled={picking}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={async () => {
+                  setPicking(true);
+                  try {
+                    await onPick(r.value);
+                    setQuery("");
+                    setResults([]);
+                    setOpen(false);
+                  } finally {
+                    setPicking(false);
+                  }
+                }}
+                className="block w-full truncate px-3 py-2 text-left not-italic text-slate-700 hover:bg-indigo-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
+              >
+                {r.label}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Any two already-configured custom fields paired together (see the backend's
  * CustomField.paired_custom_field_id) - exactly one is ever the real answer for one product
  * line, and picking one sets it as `primary`'s own corrected value, since that is the field
@@ -4234,23 +4342,39 @@ function ExtractionReview({
                       : dynamicRows;
                     options = rows.map((r) => ({ value: r.value, label: r.value }));
                   }
+                  const currentValue = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
+                  const showSearchFallback =
+                    SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
+                    !currentValue && !!fv.custom_field_id;
                   return (
-                    <ExtractedField
-                      key={fv.id}
-                      fv={fv}
-                      readOnly={readOnly}
-                      reload={reload}
-                      tone={isMark ? "document" : "computed"}
-                      onFocusField={isMark ? setFocusedFv : undefined}
-                      labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                      options={options}
-                      multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
-                      note={
-                        isMark && from && from !== fv.document_name
-                          ? `Cross-check only — the entry uses ${from}'s copy.`
-                          : undefined
-                      }
-                    />
+                    <div key={fv.id}>
+                      <ExtractedField
+                        fv={fv}
+                        readOnly={readOnly}
+                        reload={reload}
+                        tone={isMark ? "document" : "computed"}
+                        onFocusField={isMark ? setFocusedFv : undefined}
+                        labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                        options={options}
+                        multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                        note={
+                          isMark && from && from !== fv.document_name
+                            ? `Cross-check only — the entry uses ${from}'s copy.`
+                            : undefined
+                        }
+                      />
+                      {showSearchFallback && (
+                        <ReferenceSearchPicker
+                          jobId={jobId}
+                          customFieldId={fv.custom_field_id!}
+                          readOnly={readOnly}
+                          onPick={async (value) => {
+                            await jobsApi.correctFieldValue(fv.id, value);
+                            await reload();
+                          }}
+                        />
+                      )}
+                    </div>
                   );
                 };
 

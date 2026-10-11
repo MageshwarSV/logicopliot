@@ -376,6 +376,26 @@ export async function listCustomFieldReferenceOptions(
   return data.options;
 }
 
+export interface CustomFieldReferenceSearchResult {
+  value: string;
+  /** Ready to show as-is, e.g. "Shanghai — China (CNSHA)". */
+  label: string;
+}
+
+/** The manual fallback for a reference-backed field too large to ever offer as a plain
+ * dropdown (e.g. Shipment Port Code's ~72,000-row world port table) - searches it server-side
+ * by a substring of the country or place name, for when the automatic lookup finds nothing and
+ * the operator has to pick the right row themselves by inspecting the document. */
+export async function searchCustomFieldReferenceValues(
+  jobId: string, customFieldId: string, query: string,
+): Promise<CustomFieldReferenceSearchResult[]> {
+  const { data } = await apiClient.get<{ results: CustomFieldReferenceSearchResult[] }>(
+    `/jobs/${jobId}/custom-fields/${customFieldId}/reference-search`,
+    { params: { q: query } },
+  );
+  return data.results;
+}
+
 /** One piece of a composite field's value: either another field's own label_name (a plain
  *  string) or a fixed literal value typed straight in - the SAME text on every product line
  *  rather than something read off the job (e.g. a separator, a fixed prefix). */

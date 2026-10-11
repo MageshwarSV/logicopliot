@@ -455,6 +455,60 @@ def resolve_fuzzy_candidate_with_ai(
         return ""
 
 
+def normalize_place_name_with_ai(name: str, *, field_description: str = "a place name") -> str:
+    """Asks the model for the current, standard English name of a possibly old, colonial-era,
+    or differently-romanised place name - e.g. "Peking" -> "Beijing", "Saigon" -> "Ho Chi Minh
+    City", "Bombay" -> "Mumbai". Pure world-knowledge translation, with no candidate list
+    involved at all - unlike resolve_fuzzy_candidate_with_ai's pick-from-a-list, this is what
+    actually catches a GENUINE rename. A truly renamed place typically shares almost no
+    characters with its current name, so string-similarity ranking - the step that narrows a
+    huge reference sheet down to a short candidate list in the first place - would never even
+    put the right answer in front of the model to pick from; asking for the translation FIRST
+    and only then searching the sheet for ITS OWN exact or close spelling sidesteps that
+    entirely. Returns "" if the model has nothing confident to offer (already looks standard,
+    or isn't recognised as a real place at all) - never a guess.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not (name or "").strip():
+        return ""
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
+        resp = create_chat_completion_with_retry(
+            client,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=60,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are given a real-world name that may be an old name, a colonial-"
+                        "era name, a different romanisation, or a common alternate spelling of "
+                        "a place. Return its CURRENT, STANDARD English name, as it would appear "
+                        "in an official place/port directory today - e.g. 'Peking' -> "
+                        "'Beijing', 'Saigon' -> 'Ho Chi Minh City', 'Bombay' -> 'Mumbai', "
+                        "'Madras' -> 'Chennai'. If the name given is ALREADY the standard "
+                        "current name, or you do not recognise it as referring to any real "
+                        "place, return an empty string rather than guessing.\n\n"
+                        'Reply with JSON: {"name": "<standard current name>"} or {"name": ""}.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Name: {name!r} ({field_description})",
+                },
+            ],
+        )
+        result = str(json.loads(resp.choices[0].message.content or "{}").get("name", "")).strip()
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normalize_place_name_with_ai failed: %s", exc)
+        return ""
+
+
 # A field could plausibly list hundreds of container numbers on a real consolidation, but
 # nothing legitimate needs more than this — a cap here is what stops one bad response (or a
 # document it misreads as one giant table) from writing thousands of JobFieldValue rows.

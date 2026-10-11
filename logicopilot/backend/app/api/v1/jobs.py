@@ -2840,6 +2840,66 @@ def list_custom_field_reference_options(
     }
 
 
+# A table the size of the world port list (tens of thousands of rows) can never be listed
+# whole for the browser to search client-side - this bounds a single search response instead.
+REFERENCE_SEARCH_RESULT_LIMIT = 50
+
+
+@router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-search")
+def search_custom_field_reference_values(
+    job_id: str,
+    custom_field_id: str,
+    q: str = "",
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """The manual fallback for a reference-backed field too large to ever offer as a plain
+    dropdown (e.g. Shipment Port Code's ~72,000-row world port table) - when the automatic
+    lookup (exact, then AI-assisted - see _resolve_target_value) finds nothing, the operator
+    can search this table themselves and pick the right row by inspecting the actual document.
+    Matches `q` as a substring against either the country or the place name, case-insensitively
+    - whichever key the operator actually recognises from the page in front of them. Capped at
+    REFERENCE_SEARCH_RESULT_LIMIT results; a query under 2 characters returns none at all,
+    since e.g. "a" alone would otherwise match a large fraction of the whole table.
+    """
+    from app.models.custom_field import CustomField
+    from app.models.custom_field_reference import CustomFieldReferenceValue
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, custom_field_id)
+    if cf is None or cf.group_id != job.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"results": []}
+    needle = f"%{query}%"
+    rows = (
+        db.query(CustomFieldReferenceValue)
+        .filter(
+            CustomFieldReferenceValue.custom_field_id == custom_field_id,
+            CustomFieldReferenceValue.resolved_value != "",
+            (CustomFieldReferenceValue.match_value_1.ilike(needle)
+             | CustomFieldReferenceValue.match_value_2.ilike(needle)),
+        )
+        .order_by(CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2)
+        .limit(REFERENCE_SEARCH_RESULT_LIMIT)
+        .all()
+    )
+    return {
+        "results": [
+            {
+                "value": r.resolved_value,
+                "label": f"{r.match_value_2} — {r.match_value_1} ({r.resolved_value})",
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}")
 def get_job_document_page(
     job_id: str,

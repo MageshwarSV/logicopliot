@@ -175,14 +175,25 @@ def lookup_reference_ai_assisted(
     already came back empty - called ONLY as that second step, never on its own (see
     _resolve_target_value). Every key except the LAST is matched exactly in SQL first (e.g. a
     shipment port's own country), narrowing a huge reference table (a ~72,000-row world port
-    list, say) down to the rows that could possibly apply. The closest-ranked
-    AI_ASSISTED_CANDIDATE_LIMIT of those (by plain string similarity on the last key) are then
-    shown to the model, which decides which one the document's OWN printed name actually
-    refers to - catching a genuine naming difference (an old name, a local variant, a
-    different romanisation) that string similarity alone ranks too low to surface as the top
-    pick, without ever sending the sheet's other tens of thousands of unrelated rows. Returns
-    None if there is nothing to key on, no candidates at all, or the model decides none of the
-    candidates genuinely match.
+    list, say) down to the rows that could possibly apply - still potentially thousands for a
+    major trading country, far too many to ever show the model directly.
+
+    Two AI steps, in order, for two different kinds of mismatch:
+
+    1. NORMALIZE first (normalize_place_name_with_ai) - asks the model for the current,
+       standard name of the last key as printed (e.g. "Peking" -> "Beijing", "Saigon" -> "Ho
+       Chi Minh City"), using nothing but its own world knowledge, no candidate list at all.
+       This is what catches a GENUINE rename: a truly renamed place shares almost no
+       characters with its current name, so step 2's string-similarity ranking would never
+       even put the right row in front of the model to pick from. The normalized name is
+       tried as an exact match first (free), then feeds step 2 if that still misses.
+    2. RANK then PICK (resolve_fuzzy_candidate_with_ai) - ranks the (possibly re-normalized)
+       candidates by plain string similarity and shows only the closest
+       AI_ASSISTED_CANDIDATE_LIMIT to the model, which picks the one that's really the same
+       place - catching OCR noise or a minor spelling variant step 1 was never meant to fix.
+
+    Returns None if there is nothing to key on, no candidates at all, or neither step finds a
+    genuine match.
     """
     slots = _padded_slots(match_values)
     real_keys = len([v for v in (match_values or []) if (v or "").strip()])
@@ -208,6 +219,19 @@ def lookup_reference_ai_assisted(
     def _stored_last(row: CustomFieldReferenceValue) -> str:
         return [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4][last_idx] or ""
 
+    from app.core.llm import normalize_place_name_with_ai, resolve_fuzzy_candidate_with_ai
+
+    normalized = normalize_place_name_with_ai(match_values[last_idx] or "",
+                                              field_description=field_description)
+    if normalized:
+        normalized_key = normalize_key(normalized)
+        for row in candidates:
+            if _stored_last(row) == normalized_key:
+                return row.resolved_value
+        # Not an exact hit even normalized - still worth ranking against, since the
+        # normalized form reads far closer to the sheet's own spelling than the original did.
+        last_query = normalized_key
+
     ranked = sorted(
         candidates,
         key=lambda row: difflib.SequenceMatcher(
@@ -217,8 +241,6 @@ def lookup_reference_ai_assisted(
     )[:AI_ASSISTED_CANDIDATE_LIMIT]
     if not ranked:
         return None
-    from app.core.llm import resolve_fuzzy_candidate_with_ai
-
     pairs = [(_stored_last(row), row.resolved_value) for row in ranked]
     return resolve_fuzzy_candidate_with_ai(
         last_query, pairs, field_description=field_description,
