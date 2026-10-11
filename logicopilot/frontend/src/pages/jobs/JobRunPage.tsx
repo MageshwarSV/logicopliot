@@ -60,7 +60,7 @@ const ADDITIONAL_DETAILS_ID = "additional-details";
 const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   BL: [
     "HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country",
-    "CustomsHouseCode",
+    "CustomsHouseCode", "Shipment Country", "Shipment City",
   ],
   Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
 };
@@ -97,7 +97,7 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     voyage_number: "Voyage Number",
     "Consignment Type": "Shipment Type",
     port_of_entry: "Port of Entry",
-    PortOfShipmentCode: "Port of Loading Code",
+    PortOfShipmentCode: "Shipment Port Code",
     CountryOfShipmentCode: "Shipment Country Code",
     TransportModeCode: "Transport Mode Code",
     package_count: "Package Count",
@@ -181,8 +181,8 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     {
       heading: "Port & Transport Details",
       labels: [
-        "port_of_entry", "PortOfShipmentCode", "CountryOfShipmentCode",
-        "TransportModeCode", "CustomsHouseCode",
+        "TransportModeCode", "Shipment Country", "CountryOfShipmentCode", "Shipment City",
+        "PortOfShipmentCode", "port_of_entry", "CustomsHouseCode",
       ],
     },
     { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },
