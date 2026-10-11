@@ -152,6 +152,17 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
     { value: "P", label: "Prior" },
     { value: "N", label: "Normal" },
   ],
+  BETypeCode: [
+    { value: "H", label: "Home" },
+    { value: "I", label: "In-Bond" },
+    { value: "X", label: "Ex-Bond" },
+    { value: "SEZ-Z", label: "SEZ-Z | SEZ Bill of Entry" },
+    { value: "SEZ-M", label: "SEZ-M | DTA Sales-Manufacturing" },
+    { value: "SEZ-T", label: "SEZ-T | DTA Sales-Trading" },
+    { value: "SEZ-V", label: "SEZ-V | Movement of Goods" },
+    { value: "SEZ-S", label: "SEZ-S | DTA Clearance of Goods" },
+    { value: "SEZ-W", label: "SEZ-W | SEZ to Customs Bonded Warehouse" },
+  ],
 };
 // Fields whose dropdown options come from the server instead of the fixed list above - a
 // reference-backed (is_target_value) custom field's own table (e.g. every real Customs House
@@ -230,7 +241,7 @@ const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
   { heading: "Duty & Insurance Details", labels: ["Payment Method", "insurance_percentage"] },
   {
     heading: "Bill of Entry & Manifest Details",
-    labels: ["AdvancePriorNormal", "IGM No", "IGM Date", "MBL No", "MBL Date"],
+    labels: ["BETypeCode", "AdvancePriorNormal", "IGM No", "IGM Date", "MBL No", "MBL Date"],
   },
 ];
 // Display label only - label_name in the database is unchanged.
@@ -242,13 +253,14 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   ad_code: "AD Code",
   insurance_percentage: "Insurance Rate (%)",
   AdvancePriorNormal: "Bill of Entry Type",
+  BETypeCode: "BE Type",
   "IGM No": "IGM Number",
   "MBL No": "Master Bill of Lading Number",
   "MBL Date": "Master Bill of Lading Date",
 };
-// These two dropdowns' own options already cover every real possibility - no blank "not
-// found" choice to accidentally leave selected.
-const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePriorNormal"]);
+// These dropdowns' own options already cover every real possibility - no blank "not found"
+// choice to accidentally leave selected.
+const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePriorNormal", "BETypeCode"]);
 
 /** Which of the four steps this job is on.
  *
@@ -3497,12 +3509,17 @@ function DualSourcePicker({
   syncTargets,
   readOnly,
   reload,
+  applyToAllRows,
 }: {
   primary: JobFieldValue;
   other: JobFieldValue | undefined;
   syncTargets: JobFieldValue[];
   readOnly: boolean;
   reload: () => Promise<void>;
+  /** Ripples the choice just made to every OTHER product line's own copy of this same
+   *  pairing - see applyPairChoiceToAllRows. Undefined only if this field somehow carries no
+   *  custom_field_id of its own (should not happen for a real pairing). */
+  applyToAllRows?: (which: "primary" | "other") => Promise<void>;
 }) {
   const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
   const [saving, setSaving] = useState(false);
@@ -3515,7 +3532,15 @@ function DualSourcePicker({
 
   const [selected, setSelected] = useState<"primary" | "other">(() => {
     const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-    return current === otherValue && otherValue !== "" && primaryValue !== otherValue
+    // primary's OWN raw computed value - UNLIKE primaryValue above, this is never touched by
+    // picking "other" (which only ever overwrites corrected_value, so exports still read the
+    // chosen value under primary's own name). Using primaryValue here was the bug: after
+    // picking "other" once, every later reload re-mounts with primaryValue ALREADY equal to
+    // otherValue (since that pick wrote it there), permanently hiding the choice from then on -
+    // primary.extracted_value survives that write untouched, so it stays a reliable "would
+    // primary and other have coincided anyway, with nothing ever picked" check.
+    const rawPrimaryValue = (primary.extracted_value ?? "").trim();
+    return current === otherValue && otherValue !== "" && rawPrimaryValue !== otherValue
       ? "other"
       : "primary";
   });
@@ -3541,7 +3566,14 @@ function DualSourcePicker({
         await jobsApi.correctFieldValue(target.id, value);
       }
       setSelected(which);
-      await reload();
+      // Ripples to every OTHER product line's own copy of this pairing (each keeping its OWN
+      // values) - applyToAllRows does its own reload at the end covering this row too, so skip
+      // the separate reload() below when it ran.
+      if (applyToAllRows) {
+        await applyToAllRows(which);
+      } else {
+        await reload();
+      }
     } finally {
       setSaving(false);
     }
@@ -3977,6 +4009,34 @@ function ExtractionReview({
     return rows;
   }, [job.field_values, active]);
 
+  // Picking a source (Document vs Dump) for one product's picker applies the SAME SOURCE
+  // CHOICE to every other product line's own pairing too - each line keeps its OWN primary/
+  // other values; only which SIDE wins carries across. A one-time ripple triggered by the
+  // explicit pick itself (see DualSourcePicker's own choose()), not an ongoing sync -
+  // correcting one line afterwards (typing a new value directly, or picking the other side
+  // back just for that line) never touches the rest again.
+  const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
+    for (const [n] of lineRows) {
+      const rowFields = lookedUpByRow.get(n) ?? [];
+      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
+      const primary = byCF.get(customFieldId);
+      if (!primary || !primary.paired_custom_field_id) continue;
+      const other = byCF.get(primary.paired_custom_field_id);
+      const otherVal = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
+      if (!other || !otherVal) continue; // nothing to pick between on this line
+      const primaryVal = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+      const value = which === "primary" ? primaryVal : otherVal;
+      await jobsApi.correctFieldValue(primary.id, value);
+      const syncTargets = (primary.sync_field_ids ?? [])
+        .map((id) => byCF.get(id))
+        .filter((fv): fv is JobFieldValue => !!fv);
+      for (const target of syncTargets) {
+        await jobsApi.correctFieldValue(target.id, value);
+      }
+    }
+    await reload();
+  };
+
   // "Combine fields" - picking an ordered set of this template's own per-line fields (Part
   // No, Description, ...) and joining them into one "Combined Description"-style field for
   // every product on this job. Reachable from the job screen itself rather than only the
@@ -4306,6 +4366,11 @@ function ExtractionReview({
                                   syncTargets={syncTargets}
                                   readOnly={readOnly}
                                   reload={reload}
+                                  applyToAllRows={
+                                    primary.custom_field_id
+                                      ? (which) => applyPairChoiceToAllRows(primary.custom_field_id!, which)
+                                      : undefined
+                                  }
                                 />
                               ))}
                             </div>
