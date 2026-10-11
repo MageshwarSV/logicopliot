@@ -2802,10 +2802,15 @@ def list_custom_field_reference_options(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
 ) -> dict:
-    """Every resolved_value this is_target_value field's reference table carries - e.g. every
-    valid Customs House Code - so Additional Details can offer a dropdown of all of them
-    instead of only ever showing the one the automatic lookup matched. Any role that can see
-    the job can see this; it names only resolved_value, never the table's own match columns.
+    """Every row this is_target_value field's reference table carries - e.g. every valid
+    Customs House Code, alongside the keys it was uploaded under - so Additional Details (and
+    the Bill of Lading tab, for CustomsHouseCode) can offer a dropdown. Narrowed to the ones
+    relevant to THIS job rather than always every row in the table: CustomsHouseCode's first
+    key is the port of entry, so a Chennai shipment only ever needs to choose between
+    Chennai's own codes (Sea vs Air), not Mumbai's or Kolkata's. match_values is returned
+    alongside resolved_value so the caller can do that narrowing itself, against whichever of
+    this job's OTHER fields it already knows are the relevant keys. Any role that can see the
+    job can see this.
     """
     from app.models.custom_field import CustomField
     from app.models.custom_field_reference import CustomFieldReferenceValue
@@ -2818,13 +2823,21 @@ def list_custom_field_reference_options(
             detail="Custom field not found on this job's template.",
         )
     rows = (
-        db.query(CustomFieldReferenceValue.resolved_value)
+        db.query(CustomFieldReferenceValue)
         .filter(CustomFieldReferenceValue.custom_field_id == custom_field_id)
-        .distinct()
         .order_by(CustomFieldReferenceValue.resolved_value)
         .all()
     )
-    return {"options": [r[0] for r in rows if r[0]]}
+    return {
+        "options": [
+            {
+                "value": r.resolved_value,
+                "match_values": [r.match_value_1, r.match_value_2, r.match_value_3, r.match_value_4],
+            }
+            for r in rows
+            if r.resolved_value
+        ]
+    }
 
 
 @router.get("/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}")

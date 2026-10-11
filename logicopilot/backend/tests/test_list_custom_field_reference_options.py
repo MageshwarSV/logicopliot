@@ -1,8 +1,8 @@
 """GET /jobs/{job_id}/custom-fields/{custom_field_id}/reference-options - lets Additional
-Details offer a dropdown of every valid resolved_value a reference-backed field carries (e.g.
-every real Customs House Code), rather than only ever showing the one value an automatic
-lookup matched. Any role that can open the job can call this - it names only resolved_value,
-never the table's own match columns.
+Details (and the Bill of Lading tab, for CustomsHouseCode) offer a dropdown of every valid
+resolved_value a reference-backed field carries, alongside the keys it was uploaded under, so
+the caller can narrow the list to the ones relevant to this job (e.g. only Chennai's own two
+codes, not every city's). Any role that can open the job can call this.
 """
 from app.models.custom_field import CustomField
 from app.models.custom_field_reference import CustomFieldReferenceValue
@@ -48,7 +48,13 @@ def test_lists_every_distinct_resolved_value_sorted(client, db_session):
     login(client, operator.email)
     resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-options")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"options": ["INMAA1", "INMAA4", "INMUN1"]}
+    assert resp.json() == {
+        "options": [
+            {"value": "INMAA1", "match_values": ["CHENNAI", "S", "", ""]},
+            {"value": "INMAA4", "match_values": ["CHENNAI", "A", "", ""]},
+            {"value": "INMUN1", "match_values": ["MUNDRA", "S", "", ""]},
+        ]
+    }
 
 
 def test_a_field_with_no_reference_rows_yet_returns_an_empty_list(client, db_session):

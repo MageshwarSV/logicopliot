@@ -127,8 +127,16 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // Fields whose dropdown options come from the server instead of the fixed list above - a
 // reference-backed (is_target_value) custom field's own table (e.g. every real Customs House
 // Code), fetched per-job via listCustomFieldReferenceOptions rather than hardcoded, so
-// updating the reference sheet changes the dropdown without a frontend redeploy.
-const DYNAMIC_REFERENCE_DROPDOWN_LABELS = new Set(["CustomsHouseCode"]);
+// updating the reference sheet changes the dropdown without a frontend redeploy. Each one is
+// narrowed to the rows relevant to THIS job by matching the table's own FIRST match column
+// against the current value of the other job field named here - a Chennai shipment only ever
+// needs to choose between Chennai's own codes (Sea vs Air), not every city's. The automatic
+// lookup still uses the SECOND key (transport mode) too, to pick the exact one by default -
+// only the dropdown's own option list is narrowed by just the first key, so the operator can
+// still correct the mode by picking the other code for the same city.
+const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
+  CustomsHouseCode: "port_of_entry",
+};
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -2336,30 +2344,50 @@ export function JobRunPage() {
                 </p>
               </Card>
 
-              {groupedAdditionalDetailsFields.map(({ heading, items }) => (
-                <Card key={heading} className="p-5">
-                  <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    {heading}
-                  </h3>
-                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                    {items.map((fv) => (
-                      <div key={fv.id}>
-                        <ExtractedField
-                          fv={fv}
-                          readOnly={!canEditValues}
-                          reload={load}
-                          tone={fv.origin === "computed" ? "computed" : undefined}
-                          labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
-                          options={FIELD_SELECT_OPTIONS[fv.label_name]}
-                        />
-                        {fv.ask_operator_hint && (
-                          <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              ))}
+              {groupedAdditionalDetailsFields.map(({ heading, items }) => {
+                // Bill of Entry Type defaults to Advance (pre-selected, not auto-saved - see
+                // ExtractedField's own defaultValue prop). When Advance is in effect - either
+                // already saved, or still just this default - there is no Master Bill of
+                // Lading yet either, so MBL No defaults to "NO MBL" instead of a blank box.
+                const advanceFv = job.field_values.find(
+                  (fv) => fv.row_index == null && fv.label_name === "AdvancePriorNormal",
+                );
+                const advanceValue =
+                  (advanceFv?.corrected_value ?? advanceFv?.extracted_value ?? "").trim() || "A";
+                return (
+                  <Card key={heading} className="p-5">
+                    <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
+                      {heading}
+                    </h3>
+                    <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                      {items.map((fv) => {
+                        const defaultValue =
+                          fv.label_name === "AdvancePriorNormal"
+                            ? "A"
+                            : fv.label_name === "MBL No" && advanceValue === "A"
+                              ? "NO MBL"
+                              : undefined;
+                        return (
+                          <div key={fv.id}>
+                            <ExtractedField
+                              fv={fv}
+                              readOnly={!canEditValues}
+                              reload={load}
+                              tone={fv.origin === "computed" ? "computed" : undefined}
+                              labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                              options={FIELD_SELECT_OPTIONS[fv.label_name]}
+                              defaultValue={defaultValue}
+                            />
+                            {fv.ask_operator_hint && (
+                              <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                );
+              })}
 
               {/* "One value per product line" (perRowAsks) is deliberately not rendered here
                   per request - these duty-notification fields (AIDC, Basic, ...) no longer
@@ -3215,6 +3243,7 @@ function ExtractedField({
   onFocusField,
   labelOverride,
   options,
+  defaultValue,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3235,17 +3264,23 @@ function ExtractedField({
   labelOverride?: string;
   /** A fixed, short set of valid values reads better as a dropdown than free text. */
   options?: FieldSelectOption[];
+  /** Shown pre-selected/pre-filled when this field has no value of its own yet (never saved
+   *  until the operator actually interacts with it, or another field's own value triggers an
+   *  auto-fill - see MBL No's "NO MBL" default). Mirrors how a pre-filled-but-unconfirmed
+   *  value already works everywhere else: still needs an explicit confirm before it counts as
+   *  answered. */
+  defaultValue?: string;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
-  const [draft, setDraft] = useState(current);
+  const [draft, setDraft] = useState(current || defaultValue || "");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
   // The job reloads after every save, so props change under us; re-sync unless the operator
   // is mid-edit on this very box.
   useEffect(() => {
-    setDraft(current);
-  }, [current]);
+    setDraft(current || defaultValue || "");
+  }, [current, defaultValue]);
 
   const dirty = draft !== current;
 
@@ -3753,13 +3788,14 @@ function ExtractionReview({
     return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
   }, [job.field_values, active]);
 
-  // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_LABELS field (e.g. CustomsHouseCode),
+  // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field (e.g. CustomsHouseCode),
   // fetched once per custom_field_id rather than hardcoded - see listCustomFieldReferenceOptions.
-  const [dynamicReferenceOptions, setDynamicReferenceOptions] = useState<Record<string, string[]>>({});
+  const [dynamicReferenceOptions, setDynamicReferenceOptions] =
+    useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
   useEffect(() => {
     const toFetch = relocatedFields.filter(
       (fv) =>
-        DYNAMIC_REFERENCE_DROPDOWN_LABELS.has(fv.label_name) &&
+        fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY &&
         fv.custom_field_id &&
         !(fv.custom_field_id in dynamicReferenceOptions),
     );
@@ -4058,14 +4094,24 @@ function ExtractionReview({
                 const renderField = (fv: JobFieldValue) => {
                   const from = usedFrom.get(fv.label_name);
                   const isMark = !!fv.mark_id;
-                  const dynamicOptions =
-                    DYNAMIC_REFERENCE_DROPDOWN_LABELS.has(fv.label_name) && fv.custom_field_id
+                  const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
+                  const dynamicRows =
+                    filterByLabel && fv.custom_field_id
                       ? dynamicReferenceOptions[fv.custom_field_id]
                       : undefined;
-                  const options =
-                    dynamicOptions !== undefined
-                      ? dynamicOptions.map((v) => ({ value: v, label: v }))
-                      : FIELD_SELECT_OPTIONS[fv.label_name];
+                  let options = FIELD_SELECT_OPTIONS[fv.label_name];
+                  if (dynamicRows !== undefined) {
+                    const filterFv = job.field_values.find(
+                      (x) => x.row_index == null && x.label_name === filterByLabel,
+                    );
+                    const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
+                      .trim()
+                      .toUpperCase();
+                    const rows = filterValue
+                      ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
+                      : dynamicRows;
+                    options = rows.map((r) => ({ value: r.value, label: r.value }));
+                  }
                   return (
                     <ExtractedField
                       key={fv.id}

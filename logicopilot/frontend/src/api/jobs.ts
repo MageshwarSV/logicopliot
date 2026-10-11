@@ -356,13 +356,21 @@ export async function correctFieldValue(valueId: string, correctedValue: string)
   return data;
 }
 
-/** Every resolved_value a reference-backed (is_target_value) custom field's table carries -
- * e.g. every real Customs House Code - so it can be offered as a dropdown instead of only
- * ever showing the one value an automatic lookup matched. */
+export interface CustomFieldReferenceOption {
+  value: string;
+  /** This row's own match keys, in upload order (e.g. [port of entry, transport mode]) - so
+   * the caller can narrow the list to the ones relevant to this job, against whichever of the
+   * job's OTHER fields it already knows are the relevant keys. */
+  match_values: string[];
+}
+
+/** Every row a reference-backed (is_target_value) custom field's table carries - e.g. every
+ * real Customs House Code, alongside the keys it was uploaded under - so it can be offered as
+ * a dropdown instead of only ever showing the one value an automatic lookup matched. */
 export async function listCustomFieldReferenceOptions(
   jobId: string, customFieldId: string,
-): Promise<string[]> {
-  const { data } = await apiClient.get<{ options: string[] }>(
+): Promise<CustomFieldReferenceOption[]> {
+  const { data } = await apiClient.get<{ options: CustomFieldReferenceOption[] }>(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
   );
   return data.options;
