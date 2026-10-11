@@ -59,7 +59,7 @@ const ADDITIONAL_DETAILS_ID = "additional-details";
 // or the underlying data changes.
 const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   BL: [
-    "HBL Date", "Consignment Type", "TransportModeCode", "Supplier City", "Supplier Country",
+    "HBL Date", "Consignment Type", "TransportModeCode",
     "CustomsHouseCode", "Shipment Country", "Shipment City",
   ],
   Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
@@ -72,8 +72,13 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 // now that "Consignment Type" shows directly on the Bill of Lading tab, this duplicate has
 // no reason to still show under Additional Details. "consignee_full_name" is a word-for-word
 // duplicate of "Consignee" (identical ai_prompt) - only "Consignee" is shown anywhere now.
-// Display only - the fields themselves, ask_operator, and extraction are unchanged.
-const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set(["Cont Type", "consignee_full_name"]);
+// "Supplier City"/"Supplier Country" (shown as Shipper City/Country) are removed by request -
+// Supplier Country's own Excel export mapping (INVOICES!AH, Supplier_Country_Code) was
+// cleared at the same time, so nothing downstream still reads it either. Display only - the
+// fields themselves, ask_operator, and extraction are unchanged.
+const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
+  "Cont Type", "consignee_full_name", "Supplier City", "Supplier Country",
+]);
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
 // shown on the same Bill of Lading tab. Display only - the mark itself and its data are
@@ -88,8 +93,6 @@ const HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE: Record<string, Set<string>> = {
 // only the Bill of Lading's copy should read "Shipper ...".
 const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> = {
   BL: {
-    "Supplier City": "Shipper City",
-    "Supplier Country": "Shipper Country",
     "Supplier Address": "Shipper Address",
     "Supplier Name": "Shipper Name",
     "HBL No": "HBL Number",
@@ -188,7 +191,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },
     {
       heading: "Shipper Details",
-      labels: ["Supplier Name", "Supplier Address", "Supplier City", "Supplier Country"],
+      labels: ["Supplier Name", "Supplier Address"],
     },
   ],
   Invoice: [
