@@ -105,9 +105,24 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     container_type: "Container Type",
   },
 };
-// A fixed, short set of valid codes reads better as a dropdown than free text.
-const FIELD_SELECT_OPTIONS: Record<string, string[]> = {
-  TransportModeCode: ["S", "A"],
+// A fixed, short set of valid values reads better as a dropdown than free text. `label` is
+// what the operator sees; `value` is what actually gets saved as the field's corrected value
+// (and so what the ERP export reads) - e.g. picking "Transaction" saves "T", not the word.
+type FieldSelectOption = { value: string; label: string };
+const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
+  TransportModeCode: [
+    { value: "S", label: "S" },
+    { value: "A", label: "A" },
+  ],
+  "Payment Method": [
+    { value: "T", label: "Transaction" },
+    { value: "D", label: "Deferred" },
+  ],
+  AdvancePriorNormal: [
+    { value: "A", label: "Advance" },
+    { value: "P", label: "Prior" },
+    { value: "N", label: "Normal" },
+  ],
 };
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
@@ -160,8 +175,11 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
 // origin split entirely. A field not listed in any group still renders, under a final "Other"
 // card, so nothing silently disappears.
 const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
-  { heading: "ERP Reference Mapping", labels: ["Quotation Name", "Erp Entry Name", "branch_name"] },
-  { heading: "Duty & Insurance Details", labels: ["Payment Method", "ad_code", "insurance_percentage"] },
+  {
+    heading: "ERP Reference Mapping",
+    labels: ["Quotation Name", "Erp Entry Name", "branch_name", "ad_code"],
+  },
+  { heading: "Duty & Insurance Details", labels: ["Payment Method", "insurance_percentage"] },
   {
     heading: "Bill of Entry & Manifest Details",
     labels: ["AdvancePriorNormal", "IGM No", "IGM Date", "MBL No", "MBL Date"],
@@ -2327,6 +2345,7 @@ export function JobRunPage() {
                           reload={load}
                           tone={fv.origin === "computed" ? "computed" : undefined}
                           labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                          options={FIELD_SELECT_OPTIONS[fv.label_name]}
                         />
                         {fv.ask_operator_hint && (
                           <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
@@ -3210,7 +3229,7 @@ function ExtractedField({
    *  so nothing that matches on it elsewhere is affected. */
   labelOverride?: string;
   /** A fixed, short set of valid values reads better as a dropdown than free text. */
-  options?: string[];
+  options?: FieldSelectOption[];
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current);
@@ -3307,8 +3326,8 @@ function ExtractedField({
           >
             <option value="">not found</option>
             {options.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
               </option>
             ))}
           </select>
