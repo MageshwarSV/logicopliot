@@ -107,10 +107,16 @@ def lookup_reference(
     only source - there is no separate sheet behind it.
 
     fuzzy=True (only ever set for a field with fuzzy_match=True - see _fuzzy_similar) matches
-    on the same real-world thing despite formatting noise, at the cost of leaving the database
-    unable to do the comparison itself: every row this owner has gets fetched and compared in
-    Python. Fine at this scale (one field's own reference table, never the whole table) and
-    never the default - a kind="lookup" material/CTH call never passes it.
+    on the same real-world thing despite formatting noise. With a SINGLE key (the original use -
+    a freight forwarder's name), every row this owner has gets fetched and compared in Python -
+    fine at that scale (one field's own reference table, typically a few dozen-to-hundred known
+    names). With TWO OR MORE keys, every key except the LAST is matched EXACTLY in SQL first,
+    and only the last key is fuzzy-compared, among that already-narrowed set - e.g. a shipment
+    port keyed on (country, city) exact-filters to the one country's own ports (a few hundred,
+    worldwide UN/LOCODE tables included) before fuzzy-matching the city name, rather than
+    fuzzy-scanning every port on earth for every single lookup. A single-key fuzzy field has no
+    "every key except the last" to pre-filter, so it is unaffected - never the default either
+    way, a kind="lookup" material/CTH call never passes fuzzy=True at all.
     """
     slots = _padded_slots(match_values)
     if not any(slots):
@@ -130,9 +136,15 @@ def lookup_reference(
             .first()
         )
         return row.resolved_value if row is not None else None
-    candidates = (
-        db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id)).all()
-    )
+    query = db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id))
+    exact_columns = [
+        CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2,
+        CustomFieldReferenceValue.match_value_3, CustomFieldReferenceValue.match_value_4,
+    ]
+    real_keys = len([v for v in (match_values or []) if (v or "").strip()])
+    for i in range(max(0, real_keys - 1)):
+        query = query.filter(exact_columns[i] == slots[i])
+    candidates = query.all()
     for row in candidates:
         stored = [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4]
         # Every slot either side actually uses must agree (fuzzily); a slot blank on both sides
