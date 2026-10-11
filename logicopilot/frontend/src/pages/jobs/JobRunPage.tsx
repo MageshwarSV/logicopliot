@@ -144,6 +144,15 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
   ],
 };
+// Same grouping idea, for Additional Details' own "Worked out for this job" card - not tied
+// to any one document, so a single flat list rather than one per doc_type. A field not listed
+// here still renders, under a final "Other" section.
+const COMPUTED_FIELD_GROUPS: { heading: string; labels: string[] }[] = [
+  {
+    heading: "Branch & Customs House Details",
+    labels: ["CustomsHouseCode", "ad_code", "branch_name", "branch_number", "Quotation Name"],
+  },
+];
 
 /** Which of the four steps this job is on.
  *
@@ -914,6 +923,22 @@ export function JobRunPage() {
         !ALL_RELOCATED_FIELD_LABELS.has(fv.label_name) &&
         !HIDDEN_ADDITIONAL_DETAILS_LABELS.has(fv.label_name),
     ) ?? [];
+  // Named sections for "Worked out for this job" - see COMPUTED_FIELD_GROUPS. A field not
+  // listed in any group still renders, under a final "Other" section.
+  const groupedComputedFields = (() => {
+    const byLabel = new Map(commonComputedFields.map((fv) => [fv.label_name, fv] as const));
+    const used = new Set<string>();
+    const sections = COMPUTED_FIELD_GROUPS.map(({ heading, labels }) => {
+      const items = labels
+        .map((label) => byLabel.get(label))
+        .filter((fv): fv is JobFieldValue => !!fv);
+      items.forEach((fv) => used.add(fv.label_name));
+      return { heading, items };
+    }).filter((section) => section.items.length > 0);
+    const leftover = commonComputedFields.filter((fv) => !used.has(fv.label_name));
+    if (leftover.length) sections.push({ heading: "Other", items: leftover });
+    return sections;
+  })();
   // What Manual Data Entry actually asks for. Reference-sheet fields are asked too — the CTH
   // and RITC are marked "ask the operator" so a part missing from the sheet gets typed — but
   // they have their own screen, Dump Data, which shows them and refuses to pass while one is
@@ -2268,9 +2293,23 @@ export function JobRunPage() {
                     These aren't printed as-is on any single document — the system looked at
                     everything on this job and filled them in for you. Please check each one.
                   </p>
-                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                    {commonComputedFields.map((fv) => (
-                      <ExtractedField key={fv.id} fv={fv} readOnly={!canEditValues} reload={load} tone="computed" />
+                  <div className="flex flex-col gap-5">
+                    {groupedComputedFields.map(({ heading, items }, i) => (
+                      <div
+                        key={heading}
+                        className={i > 0 ? "border-t border-slate-200 pt-5 dark:border-slate-700" : ""}
+                      >
+                        {groupedComputedFields.length > 1 && (
+                          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            {heading}
+                          </p>
+                        )}
+                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                          {items.map((fv) => (
+                            <ExtractedField key={fv.id} fv={fv} readOnly={!canEditValues} reload={load} tone="computed" />
+                          ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </Card>
