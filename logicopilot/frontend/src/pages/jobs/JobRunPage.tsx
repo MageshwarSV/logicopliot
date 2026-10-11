@@ -81,6 +81,19 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     "Supplier Country": "Shipper Country",
     "Supplier Address": "Shipper Address",
     "Supplier Name": "Shipper Name",
+    "HBL No": "HBL Number",
+    vessel_name: "Vessel Name",
+    voyage_number: "Voyage Number",
+    "Consignment Type": "Shipment Type",
+    port_of_entry: "Port of Entry",
+    PortOfShipmentCode: "Port of Loading Code",
+    CountryOfShipmentCode: "Shipment Country Code",
+    mode_of_transport: "Transport Mode",
+    TransportModeCode: "Transport Mode Code",
+    package_count: "Package Count",
+    "Gross Wt": "Gross Weight (kg)",
+    container_number: "Container Number",
+    container_type: "Container Type",
   },
 };
 // A fixed, short set of valid codes reads better as a dropdown than free text.
@@ -4052,6 +4065,7 @@ function ExtractionReview({
                                 small
                                 tone="document"
                                 onFocusField={setFocusedFv}
+                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                               />
                             ))}
                             {/* Looked up in the customer's own reference sheet by the part
