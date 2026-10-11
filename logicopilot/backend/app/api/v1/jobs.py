@@ -4737,8 +4737,24 @@ def _resolve_target_value(
                 # outcome a single missing key already produced.
                 return None, None
             key_values.append(key_value)
-        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=key_values,
-                                    fuzzy=getattr(cf, "fuzzy_match", False))
+        # Two steps, in order: an exact match on every key together is tried FIRST, always -
+        # free, instant, and exactly right whenever the sheet's own spelling already agrees
+        # with what was extracted. Only when that finds nothing does a fuzzy_match=True field
+        # fall to the second step - lookup_reference_ai_assisted for 2+ keys (narrows a huge
+        # table to a short AI-judged candidate list; see its own docstring), or
+        # lookup_reference's own single-key fuzzy path for exactly one key.
+        resolved = lookup_reference(db, custom_field_id=cf.id, match_values=key_values, fuzzy=False)
+        if resolved is None and getattr(cf, "fuzzy_match", False):
+            if len(key_values) >= 2:
+                from app.core.reference_cache import lookup_reference_ai_assisted
+
+                resolved = lookup_reference_ai_assisted(
+                    db, cf.id, key_values, field_description=cf.label_name,
+                )
+            else:
+                resolved = lookup_reference(
+                    db, custom_field_id=cf.id, match_values=key_values, fuzzy=True,
+                )
         return (resolved or None), "||".join(key_values)
     if not value:
         return value, value

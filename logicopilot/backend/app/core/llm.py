@@ -393,6 +393,68 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
         return ""
 
 
+def resolve_fuzzy_candidate_with_ai(
+    query_value: str, candidates: list[tuple[str, str]], *, field_description: str = "a value",
+) -> str:
+    """Given a SHORT list of (name, code) candidates already narrowed from a much larger
+    reference sheet (exact-filtered on every other key, then ranked by string similarity - see
+    reference_cache.lookup_reference_ai_assisted), decides which one the document's own printed
+    name actually refers to. This is what catches a genuine naming difference (an old name, a
+    local variant, a different romanisation) that plain string similarity ranks too low to pick
+    on its own - without ever sending the sheet's other tens of thousands of unrelated rows,
+    which is the token cost this whole narrow-then-ask design exists to avoid.
+
+    Never invents a code outside the given candidate list - the caller's list IS the complete
+    set of real possibilities; this only ever picks one of them, or none.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return ""
+    valid_codes = {code for _, code in candidates}
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=30)
+        listing = "\n".join(f'- {name!r} -> {code}' for name, code in candidates)
+        resp = create_chat_completion_with_retry(
+            client,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=100,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You match a real-world name to the closest entry in a short reference "
+                        "list, allowing for spelling variants, abbreviations, old names, or a "
+                        "different romanisation of the SAME real place or thing. Pick ONLY from "
+                        "the list given - never invent a code that is not in it. If none of "
+                        "them are genuinely the same real place/thing, say so rather than "
+                        "guessing the closest-looking one.\n\n"
+                        'Reply with JSON: {"code": "<the matching candidate\'s code>"} or '
+                        '{"code": ""} if none of them genuinely match.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Printed as: {query_value!r} ({field_description})\n\n"
+                        f"Candidates:\n{listing}\n\n"
+                        "Which candidate is this the same real place/thing as?"
+                    ),
+                },
+            ],
+        )
+        code = str(json.loads(resp.choices[0].message.content or "{}").get("code", "")).strip()
+        # The one safety property that matters here: whatever the model answers, it is only
+        # ever trusted if it names a code that was actually offered to it.
+        return code if code in valid_codes else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resolve_fuzzy_candidate_with_ai failed: %s", exc)
+        return ""
+
+
 # A field could plausibly list hundreds of container numbers on a real consolidation, but
 # nothing legitimate needs more than this — a cap here is what stops one bad response (or a
 # document it misreads as one giant table) from writing thousands of JobFieldValue rows.

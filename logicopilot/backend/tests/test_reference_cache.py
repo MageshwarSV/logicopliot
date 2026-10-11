@@ -678,49 +678,7 @@ def test_remember_reference_without_fuzzy_still_adds_a_duplicate(db_session):
     assert db_session.query(CustomFieldReferenceValue).count() == 2
 
 
-# ---- multi-key fuzzy: exact-prefix-filter + fuzzy-last-slot -------------------------------
-
-
-def test_two_key_fuzzy_lookup_exact_matches_the_first_key_and_fuzzy_matches_the_second(db_session):
-    """A shipment port keyed on (country, city): the country must match exactly, but the city
-    name tolerates spelling noise - e.g. a document reading "Shanghai" against a reference
-    table entry of "SHANGHAI" with different casing/whitespace."""
-    tenant = make_tenant(db_session)
-    group = _make_group(db_session, tenant)
-    cf = _make_lookup_field(db_session, tenant, group, label_name="Shipment Port Code")
-    remember_reference(db_session, cf.id, ["CHINA", "SHANGHAI"], "CNSHA")
-    db_session.commit()
-
-    # Fuzzy noise on the city (the LAST key) still resolves.
-    assert lookup_reference(db_session, cf.id, ["China", "  Shanghai  "], fuzzy=True) == "CNSHA"
-
-
-def test_two_key_fuzzy_lookup_requires_an_exact_match_on_the_first_key(db_session):
-    """The first key (country) is exact, not fuzzy - a near-miss there must not pick a row
-    keyed under a different country whose city happens to fuzzy-match."""
-    tenant = make_tenant(db_session)
-    group = _make_group(db_session, tenant)
-    cf = _make_lookup_field(db_session, tenant, group, label_name="Shipment Port Code")
-    remember_reference(db_session, cf.id, ["CHINA", "SHANGHAI"], "CNSHA")
-    db_session.commit()
-
-    assert lookup_reference(db_session, cf.id, ["CHIN", "SHANGHAI"], fuzzy=True) is None
-
-
-def test_two_key_fuzzy_lookup_only_fuzzy_scans_rows_sharing_the_exact_first_key(db_session):
-    """The real point of the exact pre-filter: with many rows sharing a fuzzy-similar LAST key
-    across different first-key groups, only the row whose first key matches exactly is ever a
-    candidate - proving the SQL filter actually narrows the scan, not just that the right
-    answer happens to win a full Python scan."""
-    tenant = make_tenant(db_session)
-    group = _make_group(db_session, tenant)
-    cf = _make_lookup_field(db_session, tenant, group, label_name="Shipment Port Code")
-    remember_reference(db_session, cf.id, ["CHINA", "VICTORIA"], "CNHKG")
-    remember_reference(db_session, cf.id, ["CANADA", "VICTORIA"], "CAYVR")
-    db_session.commit()
-
-    assert lookup_reference(db_session, cf.id, ["CHINA", "Victoria"], fuzzy=True) == "CNHKG"
-    assert lookup_reference(db_session, cf.id, ["CANADA", "Victoria"], fuzzy=True) == "CAYVR"
+# ---- exact always wins over fuzzy, even within a single owner's table ---------------------
 
 
 def test_an_exact_match_wins_over_a_fuzzy_one_even_among_fuzzy_candidates(db_session):

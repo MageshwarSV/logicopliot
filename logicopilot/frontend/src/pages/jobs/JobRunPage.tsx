@@ -60,7 +60,7 @@ const ADDITIONAL_DETAILS_ID = "additional-details";
 const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   BL: [
     "HBL Date", "Consignment Type", "TransportModeCode",
-    "CustomsHouseCode", "Shipment Country", "Shipment City",
+    "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code",
   ],
   Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
 };
@@ -82,9 +82,12 @@ const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
 // shown on the same Bill of Lading tab. Display only - the mark itself and its data are
-// unchanged; only this field no longer renders.
+// unchanged; only this field no longer renders. "PortOfShipmentCode" (the AI-read mark) is
+// replaced on screen by "Shipment Port Code" (the new country+city reference-sheet lookup,
+// fuzzy-matched against a 72k-row world port table) - its own Excel mapping (GENERAL!I) was
+// repointed to the new field at the same time, so the export reads what the operator now sees.
 const HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE: Record<string, Set<string>> = {
-  BL: new Set(["mode_of_transport"]),
+  BL: new Set(["mode_of_transport", "PortOfShipmentCode"]),
 };
 // Display label only - label_name in the database is unchanged, so template config, ERP
 // mapping, and every other screen that reads this field by name are unaffected. Keyed by
@@ -100,7 +103,6 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     voyage_number: "Voyage Number",
     "Consignment Type": "Shipment Type",
     port_of_entry: "Port of Entry",
-    PortOfShipmentCode: "Shipment Port Code",
     CountryOfShipmentCode: "Shipment Country Code",
     TransportModeCode: "Transport Mode Code",
     package_count: "Package Count",
@@ -196,7 +198,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Port & Transport Details",
       labels: [
         "TransportModeCode", "Shipment Country", "CountryOfShipmentCode", "Shipment City",
-        "PortOfShipmentCode", "port_of_entry", "CustomsHouseCode",
+        "Shipment Port Code", "port_of_entry", "CustomsHouseCode",
       ],
     },
     { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },

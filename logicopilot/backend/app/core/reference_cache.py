@@ -107,16 +107,15 @@ def lookup_reference(
     only source - there is no separate sheet behind it.
 
     fuzzy=True (only ever set for a field with fuzzy_match=True - see _fuzzy_similar) matches
-    on the same real-world thing despite formatting noise. With a SINGLE key (the original use -
-    a freight forwarder's name), every row this owner has gets fetched and compared in Python -
-    fine at that scale (one field's own reference table, typically a few dozen-to-hundred known
-    names). With TWO OR MORE keys, every key except the LAST is matched EXACTLY in SQL first,
-    and only the last key is fuzzy-compared, among that already-narrowed set - e.g. a shipment
-    port keyed on (country, city) exact-filters to the one country's own ports (a few hundred,
-    worldwide UN/LOCODE tables included) before fuzzy-matching the city name, rather than
-    fuzzy-scanning every port on earth for every single lookup. A single-key fuzzy field has no
-    "every key except the last" to pre-filter, so it is unaffected - never the default either
-    way, a kind="lookup" material/CTH call never passes fuzzy=True at all.
+    on the same real-world thing despite formatting noise, at the cost of leaving the database
+    unable to do the comparison itself: every row this owner has gets fetched and compared in
+    Python. Fine at this scale (one field's own reference table, typically a few dozen-to-
+    hundred known names, e.g. a freight forwarder's) and never the default - a kind="lookup"
+    material/CTH call never passes it. A field keyed on TWO OR MORE values that needs fuzzy
+    matching at real scale (a ~72,000-row world port table, say) uses
+    lookup_reference_ai_assisted instead, which this function knows nothing about - see
+    _resolve_target_value's own two-step call for how the two fit together (exact first here,
+    then that, only if this finds nothing).
     """
     slots = _padded_slots(match_values)
     if not any(slots):
@@ -136,24 +135,16 @@ def lookup_reference(
             .first()
         )
         return row.resolved_value if row is not None else None
-    query = db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id))
-    exact_columns = [
-        CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2,
-        CustomFieldReferenceValue.match_value_3, CustomFieldReferenceValue.match_value_4,
-    ]
-    real_keys = len([v for v in (match_values or []) if (v or "").strip()])
-    for i in range(max(0, real_keys - 1)):
-        query = query.filter(exact_columns[i] == slots[i])
-    candidates = query.all()
+    candidates = (
+        db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id)).all()
+    )
     # An EXACT match always wins over a fuzzy one, even here - fuzzy is a fallback for when
     # nothing matches exactly, never a reason to prefer a near-miss over a row that already
-    # matches perfectly. Found live: "Shanghai" (an exact row, CNSHA) also satisfies
-    # _fuzzy_similar's own abbreviation/substring rule against "Pudong/Shanghai" (CNPDG, a
-    # real but DIFFERENT port) - that rule exists for "KUEHNENAGEL" inside
-    # "KUEHNENAGELPVTLTD" being the same company abbreviated, which does not hold for two
-    # genuinely different places that happen to share a word. Checking every candidate for an
-    # exact match FIRST, before any fuzzy comparison runs at all, is what keeps a real exact
-    # match from ever losing to a coincidental fuzzy one further down the same candidate list.
+    # matches perfectly (two genuinely different real-world things can still satisfy
+    # _fuzzy_similar's own abbreviation/substring rule, e.g. two company names that happen to
+    # share a word). Checking every candidate for an exact match FIRST, before any fuzzy
+    # comparison runs at all, is what keeps a real exact match from ever losing to a
+    # coincidental fuzzy one further down the same candidate list.
     for row in candidates:
         stored = [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4]
         if all((not q) or (not s) or q == s for q, s in zip(slots, stored)) and any(
@@ -169,6 +160,69 @@ def lookup_reference(
         if any(q and s for q, s in zip(slots, stored)):
             return row.resolved_value
     return None
+
+
+# How many of the closest-ranked candidates ever get shown to the model - a bound on the
+# token cost regardless of how many rows one exact-prefix group holds (a big country can have
+# hundreds of ports).
+AI_ASSISTED_CANDIDATE_LIMIT = 15
+
+
+def lookup_reference_ai_assisted(
+    db: Session, custom_field_id: str, match_values, *, field_description: str = "a value",
+) -> str | None:
+    """Multi-key resolution for a field whose exact lookup (lookup_reference, fuzzy=False)
+    already came back empty - called ONLY as that second step, never on its own (see
+    _resolve_target_value). Every key except the LAST is matched exactly in SQL first (e.g. a
+    shipment port's own country), narrowing a huge reference table (a ~72,000-row world port
+    list, say) down to the rows that could possibly apply. The closest-ranked
+    AI_ASSISTED_CANDIDATE_LIMIT of those (by plain string similarity on the last key) are then
+    shown to the model, which decides which one the document's OWN printed name actually
+    refers to - catching a genuine naming difference (an old name, a local variant, a
+    different romanisation) that string similarity alone ranks too low to surface as the top
+    pick, without ever sending the sheet's other tens of thousands of unrelated rows. Returns
+    None if there is nothing to key on, no candidates at all, or the model decides none of the
+    candidates genuinely match.
+    """
+    slots = _padded_slots(match_values)
+    real_keys = len([v for v in (match_values or []) if (v or "").strip()])
+    if real_keys < 2:
+        # Nothing to pre-filter on - a single-key fuzzy field uses lookup_reference's own
+        # fuzzy=True path instead, which scans its own (typically small) table directly.
+        return None
+    exact_columns = [
+        CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2,
+        CustomFieldReferenceValue.match_value_3, CustomFieldReferenceValue.match_value_4,
+    ]
+    query = db.query(CustomFieldReferenceValue).filter(
+        CustomFieldReferenceValue.custom_field_id == custom_field_id,
+    )
+    for i in range(real_keys - 1):
+        query = query.filter(exact_columns[i] == slots[i])
+    candidates = query.all()
+    if not candidates:
+        return None
+    last_idx = real_keys - 1
+    last_query = slots[last_idx]
+
+    def _stored_last(row: CustomFieldReferenceValue) -> str:
+        return [row.match_value_1, row.match_value_2, row.match_value_3, row.match_value_4][last_idx] or ""
+
+    ranked = sorted(
+        candidates,
+        key=lambda row: difflib.SequenceMatcher(
+            None, _fuzzy_key(last_query), _fuzzy_key(_stored_last(row)),
+        ).ratio(),
+        reverse=True,
+    )[:AI_ASSISTED_CANDIDATE_LIMIT]
+    if not ranked:
+        return None
+    from app.core.llm import resolve_fuzzy_candidate_with_ai
+
+    pairs = [(_stored_last(row), row.resolved_value) for row in ranked]
+    return resolve_fuzzy_candidate_with_ai(
+        last_query, pairs, field_description=field_description,
+    ) or None
 
 
 def remember_reference(
