@@ -5654,6 +5654,27 @@ def run_extraction(db: Session, job: Job) -> None:
                             # products sharing one material code) keeps matching on both exactly
                             # as before - this never overrides a match that already exists.
                             cached = lookup_reference(db, cf.id, [material])
+                        if not cached and material and getattr(cf, "lookup_ai_fallback", False):
+                            # Last resort: the reference sheet (both tiers above) has nothing
+                            # for this exact text either. Rather than ask an operator to type a
+                            # code that is always one of a short, fixed list anyway (a
+                            # container type, say), ask an AI classifier to translate THIS
+                            # field's own raw value into one of that list - see
+                            # classify_container_type_code's own docstring for why this is safe
+                            # (a closed answer set, never an open-ended guess). A real hit is
+                            # remembered into the reference sheet, same as an operator's own
+                            # correction would be, so the SAME spelling never costs a second
+                            # call.
+                            from app.core.llm import classify_container_type_code
+                            from app.core.reference_cache import remember_reference
+
+                            cached = classify_container_type_code(material)
+                            if cached:
+                                # Remembered on material ALONE (not [material, desc]) - the
+                                # SAME shape the one-key fallback above matches against, since
+                                # desc is a different, unrelated product on every job and would
+                                # never repeat.
+                                remember_reference(db, cf.id, [material], cached)
                         if cached:
                             code = cached
                             cache_hits += 1
@@ -6174,11 +6195,19 @@ def _recompute_per_row_custom_field(
             material = material_from(codes.get(key, ""), desc)
             code = lookup_cth(material, master, description=desc)
             if not code and (material or desc):
-                # material+desc first, then material ALONE - see the identical fallback (and
-                # its full reasoning) in run_extraction's own per-row lookup block above.
+                # material+desc first, then material ALONE, then (if opted in) an AI classifier
+                # - see the identical fallbacks (and their full reasoning) in run_extraction's
+                # own per-row lookup block above.
                 code = lookup_reference(db, cf.id, [material, desc]) or ""
                 if not code and desc:
                     code = lookup_reference(db, cf.id, [material]) or ""
+                if not code and material and getattr(cf, "lookup_ai_fallback", False):
+                    from app.core.llm import classify_container_type_code
+                    from app.core.reference_cache import remember_reference
+
+                    code = classify_container_type_code(material)
+                    if code:
+                        remember_reference(db, cf.id, [material], code)
             computed[key] = code
     elif cf.kind == "ai":
         from app.core.llm import compute_custom_field_per_row

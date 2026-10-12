@@ -75,6 +75,16 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # line's row number and hand back THAT product's CTH as if it were this field's own answer -
     # found live on a container-type field, which got a real HS code back instead of a blank.
     skip_material_master: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # kind="lookup" only: when the reference sheet has nothing for this line EITHER, ask an AI
+    # classifier to translate the raw value into one of a small, fixed set of known-correct
+    # answers, rather than asking an operator or leaving it blank - built for a value whose
+    # real-world spelling varies endlessly (a container type: "40HC", "40 HQ", "40' High
+    # Cube", ...) but whose actual meaning is always one of a short, closed list a hand-
+    # maintained reference sheet can never fully anticipate. A match found this way is
+    # remembered into the reference sheet (see remember_reference), so the SAME spelling never
+    # pays for a second AI call. Off by default - the vast majority of lookup fields (Dump CTH
+    # Number and the like) have no such fixed answer set to classify into at all.
+    lookup_ai_fallback: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Mirrors FieldMark.verify_with_other_document: this field is meant to be cross-checked
     # against a mark on another document (e.g. "Total Amount (Calculated)" vs the Invoice's own

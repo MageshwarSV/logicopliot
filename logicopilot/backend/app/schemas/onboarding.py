@@ -102,6 +102,7 @@ class CustomFieldOut(BaseModel):
     # kind="lookup": skip the customer's material master entirely, match only this field's own
     # reference sheet - see CustomField.skip_material_master's own docstring.
     skip_material_master: bool = False
+    lookup_ai_fallback: bool = False
     # See CrossDocLink.source_custom_field_id - this field is linked to a mark on another
     # document for cross-verification. The tick itself; the actual pairing(s) are separate rows.
     verify_with_other_document: bool = False
@@ -142,6 +143,7 @@ class CustomFieldCreate(BaseModel):
     lookup_match_columns: list[str] | None = None
     lookup_return_column: str | None = None
     skip_material_master: bool = False
+    lookup_ai_fallback: bool = False
     is_target_value: bool = False
     fuzzy_match: bool = False
     example_value: str | None = None
@@ -170,6 +172,7 @@ class CustomFieldEdit(BaseModel):
     lookup_match_columns: list[str] | None = None
     lookup_return_column: str | None = None
     skip_material_master: bool | None = None
+    lookup_ai_fallback: bool | None = None
     ask_operator: bool | None = None
     ask_operator_required: bool | None = None
     per_row: bool | None = None

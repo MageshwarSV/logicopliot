@@ -524,6 +524,89 @@ def normalize_place_name_with_ai(name: str, *, field_description: str = "a place
         return ""
 
 
+# The ISO 6346 size/type codes ICEGATE's own ContainerTypeCode column expects, given to the
+# model as the closed set it must pick from - never an open-ended guess. A hand-maintained
+# reference sheet keyed on exact text ("40 HC", "40HC", "40 High Cube", ...) can never cover
+# every way a carrier's own document happens to spell a container type; this list is what
+# actually identifies the container (its real size and build), which an AI can reliably map
+# ANY of those spellings onto - the same translation a person would do by hand.
+_CONTAINER_TYPE_CODE_OPTIONS = """
+20 Bulk = 22B0
+20 Standard Dry = 22G0
+20 Ft. Dry Container = 22G1
+20 Flat Rack = 22P1
+20 Collapsible Flat Rack = 22P3
+20 Reefer = 22R1
+20 Open Top = 22U1
+20 Hard Top = 22UP
+20 Platform = 29P0
+40 Standard Dry = 42G0
+40 Ft. Dry Container = 42G1
+40 Flat Rack = 42P1
+40 Collapsible Flat Rack = 42P3
+40 Reefer = 42R1
+40 Open Top = 42U1
+40 Hard Top = 42UP
+40 High Cube = 45G0
+40 Reefer High Cube = 45R1
+40 Platform = 49P0
+45 High Cube = L5G1
+45 Reefer High Cube = L5R1
+""".strip()
+
+
+def classify_container_type_code(raw_value: str) -> str:
+    """"40HC" -> "45G0", "20'GP" -> "22G0", "40 Reefer High-Cube" -> "45R1" - whatever a
+    document's own container-type text actually says, translated to the ISO 6346 size/type
+    code ICEGATE expects. Constrained to _CONTAINER_TYPE_CODE_OPTIONS above (one of those
+    exact codes, or "") so the model is picking from a closed, known-correct list rather than
+    inventing one - a wrong container-type code is a wrong customs filing, so an unrecognised
+    or ambiguous value returns "" rather than a guess, same standard every lookup field in
+    this codebase already holds itself to.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not (raw_value or "").strip():
+        return ""
+    try:
+        resp = create_chat_completion_with_retry(
+            timeout=20,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=20,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are given a shipping container's type as printed on a real "
+                        "document - its size (20/40/45 feet) and build (standard dry, high "
+                        "cube, reefer, open top, flat rack, platform, ...), in whatever "
+                        "abbreviation or wording the carrier happened to use (e.g. '40HC', "
+                        "'40 HQ', \"40' High Cube\", 'HICUBE 40FT' all mean the same thing). "
+                        "Identify which ONE of the following known container types it refers "
+                        "to, and return its code exactly as listed - never a code not in this "
+                        "list, never invented:\n\n"
+                        f"{_CONTAINER_TYPE_CODE_OPTIONS}\n\n"
+                        "If the size or build cannot be confidently determined from the text "
+                        "given, return an empty string rather than guessing.\n\n"
+                        'Reply with JSON: {"code": "<one of the codes above>"} or '
+                        '{"code": ""}.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Container type: {raw_value!r}",
+                },
+            ],
+        )
+        code = str(json.loads(resp.choices[0].message.content or "{}").get("code", "")).strip()
+        valid_codes = {line.split("=")[-1].strip() for line in _CONTAINER_TYPE_CODE_OPTIONS.splitlines()}
+        return code if code in valid_codes else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("classify_container_type_code failed: %s", exc)
+        return ""
+
+
 # A field could plausibly list hundreds of container numbers on a real consolidation, but
 # nothing legitimate needs more than this — a cap here is what stops one bad response (or a
 # document it misreads as one giant table) from writing thousands of JobFieldValue rows.

@@ -618,6 +618,7 @@ def create_custom_field(
         lookup_match_columns=payload.lookup_match_columns,
         lookup_return_column=payload.lookup_return_column,
         skip_material_master=payload.skip_material_master,
+        lookup_ai_fallback=payload.lookup_ai_fallback,
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
         example_value=payload.example_value,
