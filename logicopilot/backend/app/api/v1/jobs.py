@@ -4580,18 +4580,38 @@ def smart_upload(
         )
         for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
             matched_names: list[str] = []
-            # Every page this file's claims actually cover is now a real JobDocument - its
+            # The AI second-opinion pathway (_ai_verify_second_type, source "ai_second") is
+            # the weakest signal assign_documents_detailed produces - a narrow, loosely-worded
+            # "does this ALSO contain Y" call with no regex anchor, consulted only because
+            # nothing more reliable recognised the wording. Found live via email_puller's own
+            # jobs: it accepted an ordinary invoice's own routine freight cost line as "this is
+            # ALSO a Freight Certificate", and separately a plain single-page House BL as
+            # "this is ALSO a Packing List" - two different document pairs, same underlying
+            # weak-signal cause. Rather than keep hand-tuning prompts pair by pair, a weak
+            # claim never silently fills a real slot here either - dropped, and (unless the
+            # SAME page also has a real claim from a stronger source) the page stays staged as
+            # Unclassified for a person to resolve by hand.
+            strong_claims = [c for c in claims if c.get("source") != "ai_second"]
+            for c in claims:
+                if c.get("source") == "ai_second":
+                    logger.info(
+                        "smart-upload classify: %s - dropped a weak AI second-opinion claim "
+                        "on %s (page(s) %s) - left for an operator to confirm instead of "
+                        "silently duplicating into that slot",
+                        item["name"], c["key"], c["pages"])
+            # Every page a STRONG claim actually covers is now a real JobDocument - its
             # staging row has done its job (and would otherwise show the operator a page
-            # that already lives somewhere real).
-            claimed_pages = {p for c in claims for p in c["pages"]}
+            # that already lives somewhere real). A page only a weak claim covered is
+            # deliberately NOT pruned - see above.
+            claimed_pages = {p for c in strong_claims for p in c["pages"]}
             for i, row in enumerate(unmatched_rows, start=1):
                 if row is not None and i in claimed_pages:
                     db.delete(row)
             # A combined file (one PDF carrying both the Invoice and the Packing List) must
             # give each slot only ITS pages, not the whole thing - see extract_pdf_pages.
-            split = len(claims) > 1 and item["ext"] == ".pdf"
+            split = len(strong_claims) > 1 and item["ext"] == ".pdf"
             kept_original = item["kept_original"] if split else []
-            for claim in claims:
+            for claim in strong_claims:
                 key = claim["key"]
                 # A new row per file, so a ZIP of three invoices lands as three invoices
                 # instead of three writes over the same slot leaving only the last.

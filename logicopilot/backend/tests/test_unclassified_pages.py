@@ -106,6 +106,43 @@ def test_a_confidently_matched_page_does_not_stay_unclassified(client, db_sessio
     assert rows == []
 
 
+def test_a_weak_ai_second_opinion_claim_never_fills_a_slot_and_stays_unclassified(client, db_session):
+    """The exact real production bug (found via email_puller, same code path smart_upload
+    shares): a plain single-page House BL also got a loosely-worded "ai_second" claim onto the
+    Packing List slot - a weak second-opinion guess, not a confident primary classification
+    or a deterministic regex hit. That weak claim must be dropped rather than silently
+    duplicating the BL into Packing List too; the page stays Unclassified since nothing
+    STRONG claimed it there."""
+    tenant, group, job, docs = _setup_job(
+        db_session, doc_specs=[("Bill of lading", "BL"), ("Packing List", "PackingList")])
+    op = make_user(db_session, role="operator", tenant=tenant, email="unc-weak@example.com")
+    login(client, op.email)
+
+    claims = [[
+        {"key": docs["Bill of lading"].id, "pages": [1], "evidence": "bill of lading no 123",
+         "source": "model"},
+        {"key": docs["Packing List"].id, "pages": [1],
+         "evidence": "AI-verified combined document: weak guess", "source": "ai_second"},
+    ]]
+    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+        resp = _upload(client, job.id, [("hbl.pdf", _pdf_bytes(1), "application/pdf")])
+    assert resp.status_code == 200, resp.text
+
+    bl_jd = db_session.query(JobDocument).filter(
+        JobDocument.job_id == job.id, JobDocument.template_document_id == docs["Bill of lading"].id
+    ).one()
+    assert bl_jd.file_path is not None
+
+    pl_jd = db_session.query(JobDocument).filter(
+        JobDocument.job_id == job.id, JobDocument.template_document_id == docs["Packing List"].id
+    ).one()
+    assert pl_jd.file_path is None
+
+    # Page 1 was covered by the STRONG (model) claim too, so it is correctly pruned - not
+    # left dangling as Unclassified on top of also being a real BL.
+    assert db_session.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.job_id == job.id).all() == []
+
+
 def test_assigning_an_unclassified_page_writes_it_into_the_slot_and_removes_the_staging_row(
     client, db_session,
 ):

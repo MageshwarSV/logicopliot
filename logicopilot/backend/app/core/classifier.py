@@ -163,6 +163,27 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
         return None
     hint = DOC_TYPE_HINTS.get(candidate["doc_type"]) or _hint_from_name(candidate.get("name") or "")
     already = ", ".join(already_types) or "another document type"
+    # A real BL/invoice very often prints its own "Freight: USD X" or "Freight Payable at
+    # Destination" line as ONE component of a routine FOB/Freight/Insurance=CIF cost
+    # breakdown, or a payment-terms box - that is not evidence of a SEPARATE freight
+    # certificate/invoice, which is its own dedicated document from the carrier/forwarder
+    # itemizing freight charges (ocean freight, THC, BAF, origin/destination charges), never
+    # just one cost line inside another document's own total. Found live: an ordinary
+    # commercial invoice's own "FREIGHT: USD 2,000.00" line (part of its FOB+Freight+
+    # Insurance=CIF math) got accepted as "this invoice is ALSO a Freight Certificate",
+    # duplicating the whole invoice into that slot.
+    freight_caveat = (
+        "\n\nIMPORTANT: a single freight cost LINE inside this document's own total "
+        "(a BL's \"Freight Payable at Destination\", or an invoice's own FOB/Freight/"
+        "Insurance=CIF breakdown showing \"Freight: USD X\") is NOT evidence of a separate "
+        "Freight Certificate - that is routine content every such document already carries. "
+        "Only answer true if the SAME file ALSO carries a dedicated freight charge "
+        "breakdown in its own right (e.g. ocean freight + THC + BAF + origin/destination "
+        "charges all itemized together, the way a forwarder's own freight invoice or "
+        "arrival notice does) - not merely a routine total this document was always going "
+        "to state anyway."
+        if _effective_doc_type(candidate) == "Freight" else ""
+    )
     instruction = (
         f"This file was already found to contain a {already}. Now check independently: does "
         f"the SAME file ALSO, separately, contain a {candidate['name']} ({candidate['doc_type']})? "
@@ -170,7 +191,8 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
         "for example a delivery challan that is also the commercial invoice and packing list "
         "combined. The exact words \"invoice\" or \"packing list\" may never appear at all, so "
         "judge by CONTENT, never by exact terminology: an invoice has prices and a total "
-        "payable; a packing list has a per-package weight/dimension breakdown.\n\n"
+        "payable; a packing list has a per-package weight/dimension breakdown."
+        f"{freight_caveat}\n\n"
         f"What a {candidate['doc_type']} typically contains: {hint or 'no hint available'}\n\n"
         f"Filename: {filename}\n\n"
         'Return JSON: {"present": true/false, "pages": [1], '

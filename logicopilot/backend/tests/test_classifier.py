@@ -294,6 +294,55 @@ def test_ai_fallback_without_an_api_key_returns_none_without_crashing():
     assert result is None
 
 
+def test_ai_fallback_prompt_warns_against_a_routine_freight_cost_line_for_freight_candidates():
+    # Found live: an ordinary invoice's own "FOB NET TOTAL / FREIGHT: USD 2,000.00 /
+    # INSURANCE" breakdown (routine CIF math every such invoice already carries) got accepted
+    # as "this invoice is ALSO a Freight Certificate", duplicating the whole invoice into that
+    # slot. The prompt must explicitly warn the model off a single freight cost line counting
+    # as evidence of a SEPARATE freight document.
+    from app.core.classifier import _ai_verify_second_type
+
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        resp = MagicMock()
+        resp.choices[0].message.content = '{"present": false}'
+        return resp
+
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls:
+        mock_openai_cls.return_value.chat.completions.create.side_effect = _fake_create
+        freight_candidate = {"key": "frt", "name": "Fright Certificate", "doc_type": "Freight"}
+        _ai_verify_second_type("invoice.pdf", "FOB NET TOTAL: USD 33,740.00\nFREIGHT: USD 2,000.00",
+                               None, freight_candidate, ["Invoice"])
+
+    prompt = captured["messages"][0]["content"]
+    assert "not evidence of a separate" in prompt.lower()
+    assert "freight payable at destination" in prompt.lower()
+
+
+def test_ai_fallback_prompt_has_no_freight_caveat_for_a_non_freight_candidate():
+    from app.core.classifier import _ai_verify_second_type
+
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        resp = MagicMock()
+        resp.choices[0].message.content = '{"present": false}'
+        return resp
+
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI") as mock_openai_cls:
+        mock_openai_cls.return_value.chat.completions.create.side_effect = _fake_create
+        pl_candidate = {"key": "pl", "name": "Packing List", "doc_type": "PackingList"}
+        _ai_verify_second_type("invoice.pdf", "some invoice text", None, pl_candidate, ["Invoice"])
+
+    prompt = captured["messages"][0]["content"]
+    assert "freight" not in prompt.lower()
+
+
 def test_keyword_backstop_does_not_fire_on_an_ordinary_invoice_with_one_weight_field():
     # A real, single-type invoice that happens to mention "Net Weight" once must NOT get a
     # phantom Packing List added - it never says "packing list" and has none of the other

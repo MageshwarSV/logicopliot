@@ -42,7 +42,7 @@ from app.core.config import get_settings
 from sqlalchemy.exc import IntegrityError
 
 from app.models.email_seen import EmailSeen
-from app.models.job import Job, JobDocument
+from app.models.job import Job, JobDocument, UnmatchedUploadPage
 from app.models.pending_email import PendingEmail
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
@@ -1031,7 +1031,7 @@ def _pull_one_mailbox(
                     prepared.append({"name": name, "ext": ext, "blob": blob,
                                      "text": text, "image": first_png,
                                      "drop_pages": list(dropped), "page_count": pages,
-                                     "page_images": page_images})
+                                     "page_images": page_images, "kept_pages": kept})
                     doc_texts.append((name, text))
 
                 if not prepared:
@@ -1150,6 +1150,46 @@ def _pull_one_mailbox(
                 db.flush()
                 cand_slots = list(slot_meta.values())
 
+                # Stage every kept page as a provisional "unresolved" row BEFORE classification
+                # runs - the exact same UnmatchedUploadPage mechanism Smart Upload already uses
+                # (see that model's own docstring), just never wired into this pipeline until
+                # now. A page the classifier cannot confidently place, or loses a same-slot
+                # arbitration to another file's page (see the comment just below - "the real
+                # packing list and freight certificate were silently dropped" was never fixed,
+                # only made less frequent), must surface to an operator as Unclassified rather
+                # than vanish with no trace. Pruned back down to just the pages that stay
+                # genuinely unresolved once classification has actually run, below.
+                import uuid
+
+                unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
+                unmatched_dir.mkdir(parents=True, exist_ok=True)
+                pages_by_file: list[list] = []
+                for item in prepared:
+                    rows: list = []
+                    page_image_by_num = dict(item.get("page_images") or [])
+                    for i, page_text in enumerate(item.get("kept_pages") or [], start=1):
+                        if not page_text.strip():
+                            rows.append(None)
+                            continue
+                        src_png = page_image_by_num.get(i)
+                        dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                        if src_png is not None and src_png.exists():
+                            shutil.copy(src_png, dest)
+                        row = UnmatchedUploadPage(
+                            tenant_id=job.tenant_id, job_id=job.id,
+                            original_filename=item["name"][:255], page_number=i,
+                            image_path=str(dest), ocr_text=page_text,
+                        )
+                        db.add(row)
+                        rows.append(row)
+                    pages_by_file.append(rows)
+                # A flush only, not a commit: if classification itself raises
+                # AIServiceUnavailable below, the WHOLE job - including these staged rows -
+                # must roll back together, exactly as before this existed, so the email is
+                # retried completely fresh next cycle rather than leaving an orphaned job
+                # with no classification ever having run against it.
+                db.flush()
+
                 # assign_documents, not classify_file per file: a slot goes to ONE file, and
                 # the most specific claimant wins it. Classifying each file alone let a single
                 # invoice fill both the Invoice and the Packing List slot, and a bill of lading
@@ -1163,8 +1203,38 @@ def _pull_one_mailbox(
                     # page just as easily arriving by mail as uploaded by hand.
                     per_page_vision=True,
                 )
-                for item, claims in zip(prepared, claims_per_file):
-                    keys = [c["key"] for c in claims]
+                for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
+                    # The AI second-opinion pathway (_ai_verify_second_type, source
+                    # "ai_second") is the weakest signal assign_documents_detailed produces -
+                    # a narrow, loosely-worded "does this ALSO contain Y" call with no regex
+                    # anchor, consulted only because nothing more reliable recognised the
+                    # wording. Found live: it accepted an ordinary invoice's own routine
+                    # freight cost line as "this is ALSO a Freight Certificate", and separately
+                    # accepted a plain single-page House BL as "this is ALSO a Packing List" -
+                    # two different document pairs, same underlying weak-signal cause. Rather
+                    # than keep hand-tuning prompts pair by pair, a weak claim never silently
+                    # fills a real slot at all - it is dropped, and (unless the SAME page also
+                    # has a real claim from a stronger source) the page stays staged as
+                    # Unclassified for a person to resolve by hand.
+                    strong_claims = [c for c in claims if c.get("source") != "ai_second"]
+                    weak_claims = [c for c in claims if c.get("source") == "ai_second"]
+                    for c in weak_claims:
+                        logger.info(
+                            "email classify: %s - dropped a weak AI second-opinion claim on "
+                            "%s (page(s) %s) - left for an operator to confirm instead of "
+                            "silently duplicating into that slot",
+                            item["name"], slot_meta.get(c["key"], {}).get("name", c["key"]),
+                            c["pages"])
+                    keys = [c["key"] for c in strong_claims]
+                    # Every page a STRONG claim actually covers is now a real JobDocument - its
+                    # staging row has done its job (and would otherwise show the operator a
+                    # page that already lives somewhere real). A page only a weak claim covered
+                    # is deliberately NOT pruned - see above. Mirrors Smart Upload's own prune
+                    # step, extended with the same strong/weak distinction.
+                    claimed_pages = {p for c in strong_claims for p in c["pages"]}
+                    for i, row in enumerate(unmatched_rows, start=1):
+                        if row is not None and i in claimed_pages:
+                            db.delete(row)
                     # Say what the analyser decided, per file. Without this a document that
                     # goes unrouted leaves no trace at all: the job simply has an empty slot
                     # and nothing to explain why. The character count matters too - a file the
@@ -1177,12 +1247,12 @@ def _pull_one_mailbox(
                         or "NO SLOT MATCHED")
                     # A combined attachment (one PDF carrying both the Invoice and the Packing
                     # List) must give each slot only ITS pages, not the whole thing.
-                    split = len(claims) > 1 and item["ext"] == ".pdf"
+                    split = len(strong_claims) > 1 and item["ext"] == ".pdf"
                     kept_original = (
                         kept_page_to_original(item["page_count"], item["drop_pages"])
                         if split else []
                     )
-                    for claim in claims:
+                    for claim in strong_claims:
                         key = claim["key"]
                         jd = slots.get(key)
                         if jd is None:
@@ -1263,26 +1333,44 @@ def _pull_one_mailbox(
                 continue
 
             if not filled:
-                # The customer was recognised, but not one attachment belongs in any of their
-                # slots. Keeping the job would put an empty shell in the operator's queue, and
-                # marking the mail read would make it unpullable - so the job goes and the mail
-                # stays. Usually it means the template is missing a document type, and once
-                # that is added the same mail can be pulled again.
-                for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
-                    db.delete(jd)
-                db.delete(job)
-                db.commit()
-                _record(db, mid, sender, subject, "unrouted",
-                        f"identified {group.name}, but none of the {len(files)} attachment(s) "
-                        f"fits any of their document slots",
-                        group_id=group.id, evidence=who.get("evidence") or "")
-                processed.append({
-                    "from": sender, "subject": subject, "matched": group.name,
-                    "reason": (f"identified {group.name}, but nothing attached fits their "
-                               "document slots — no job created"),
-                    "left_unread": True,
-                })
-                continue
+                unclassified_count = (
+                    db.query(UnmatchedUploadPage)
+                    .filter(UnmatchedUploadPage.job_id == job.id)
+                    .count()
+                )
+                if not unclassified_count:
+                    # The customer was recognised, not one attachment belongs in any of their
+                    # slots, AND nothing survived as genuinely Unclassified either (every page
+                    # was blank/unreadable) - there is truly nothing to show an operator.
+                    # Keeping the job would put an empty shell in the queue, and marking the
+                    # mail read would make it unpullable - so the job goes and the mail stays.
+                    # Usually it means the template is missing a document type, and once that
+                    # is added the same mail can be pulled again.
+                    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+                        db.delete(jd)
+                    db.delete(job)
+                    db.commit()
+                    _record(db, mid, sender, subject, "unrouted",
+                            f"identified {group.name}, but none of the {len(files)} attachment(s) "
+                            f"fits any of their document slots",
+                            group_id=group.id, evidence=who.get("evidence") or "")
+                    processed.append({
+                        "from": sender, "subject": subject, "matched": group.name,
+                        "reason": (f"identified {group.name}, but nothing attached fits their "
+                                   "document slots — no job created"),
+                        "left_unread": True,
+                    })
+                    continue
+                # Nothing auto-filled a slot, but at least one page survived as genuinely
+                # Unclassified - a real page the classifier could not confidently place, or
+                # one that lost a same-slot arbitration to another file's page (the exact
+                # "real packing list and freight certificate were silently dropped" case the
+                # comment above assign_documents_detailed's own call describes). Keep the job
+                # so an operator can resolve it by hand via the same Unclassified-pages tray
+                # Smart Upload already has, instead of losing it with no trace.
+                logger.info(
+                    "email classify: %s - nothing auto-filled, but %s page(s) kept as "
+                    "Unclassified for an operator to resolve", mid[:60], unclassified_count)
 
             try:
                 run_extraction(db, job)
