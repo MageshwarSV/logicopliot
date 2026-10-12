@@ -43,13 +43,55 @@ def test_no_keys_at_all_and_one_file_per_slot_is_still_one_set():
     assert assign_sets(files) == {"inv1": 1, "pl1": 1}
 
 
-def test_no_keys_at_all_and_multiple_files_in_a_slot_is_unpaired():
+def test_no_keys_at_all_and_multiple_invoices_still_get_distinct_sets():
+    """Was `{"inv1": None, "inv2": None, "pl1": None}` - genuinely wrong: two SEPARATE invoice
+    files, each uploaded on its own, collapsed onto the SAME set=None just because neither
+    one's own invoice number could be read. Every per-row field (CTH, container type, ...) for
+    one of them then silently lost its slot to the other, since both were "row 1 of set None".
+    A file in the primary (invoice) slot is never "the whole job" the way a lone Bill of
+    Lading can be, so it always gets its own set - packing-list-doc here (one file, not the
+    primary slot) correctly stays unpaired, since there is genuinely no way to tell which
+    invoice it belongs to."""
     files = [
         _file("inv1", "invoice-doc", 0, key=None),
         _file("inv2", "invoice-doc", 1, key=None),
         _file("pl1", "packing-list-doc", 0, key=None),
     ]
-    assert assign_sets(files) == {"inv1": None, "inv2": None, "pl1": None}
+    sets = assign_sets(files)
+    assert sorted(v for v in (sets["inv1"], sets["inv2"])) == [1, 2]
+    assert sets["pl1"] is None
+
+
+def test_an_unkeyed_invoice_among_keyed_ones_gets_its_own_set_not_none():
+    # Same bug, partially keyed: the real job this was found on had 3 invoices uploaded, only
+    # the first one's own invoice number read cleanly.
+    files = [
+        _file("inv1", "invoice-doc", 0, key="E26000505"),
+        _file("inv2", "invoice-doc", 1, key=None),
+        _file("inv3", "invoice-doc", 2, key=None),
+        _file("pl1", "packing-list-doc", 0, key=None),
+    ]
+    sets = assign_sets(files)
+    assert sets["inv1"] == 1
+    assert sets["inv2"] is not None and sets["inv2"] != 1
+    assert sets["inv3"] is not None and sets["inv3"] != 1
+    assert sets["inv2"] != sets["inv3"]
+    assert sets["pl1"] is None
+
+
+def test_an_ambiguous_invoice_still_gets_its_own_set_not_none():
+    # inv3's key is a short-form suffix of BOTH inv1's and inv2's own numbers - genuinely
+    # ambiguous which it pairs with, but it is still its OWN invoice file and must not
+    # collide with either of the other two.
+    files = [
+        _file("inv1", "invoice-doc", 0, key="E26000505"),
+        _file("inv2", "invoice-doc", 1, key="F99000505"),
+        _file("inv3", "invoice-doc", 2, key="505"),
+    ]
+    sets = assign_sets(files)
+    assert sets["inv1"] == 1
+    assert sets["inv2"] == 2
+    assert sets["inv3"] not in (None, 1, 2)
 
 
 def test_multiple_invoices_pair_with_their_own_packing_list_by_matching_number():

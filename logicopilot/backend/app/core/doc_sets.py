@@ -104,23 +104,32 @@ def assign_sets(files: list[dict]) -> dict[str, int | None]:
         return {f["id"]: 1 for f in files}
 
     keyed = [f for f in files if f.get("key")]
-    if not keyed:
-        return {f["id"]: None for f in files}
 
     # Sets are numbered in the order the INVOICES were attached — not the order files
     # happened to arrive across all slots, which would let a packing list uploaded first
     # decide that invoice 507 is set 2. The invoice slot is the one carrying the most
     # numbers; ties go to whichever slot the template lists first, which is the order
-    # `files` arrives in.
+    # `files` arrives in. Falls back to the slot with the most FILES (keyed or not) when
+    # nothing is keyed at all - still the best guess at "the invoice slot", and needed below
+    # regardless of whether anything could be keyed.
     order: list[str] = []
     counts: dict[str, int] = {}
-    for f in keyed:
+    for f in (keyed or files):
         tid = f.get("template_document_id")
         if tid not in counts:
             counts[tid] = 0
             order.append(tid)
         counts[tid] += 1
     primary = max(order, key=lambda t: (counts[t], -order.index(t)))
+
+    if not keyed:
+        out = {f["id"]: None for f in files}
+        next_set = 0
+        for f in sorted((x for x in files if x.get("template_document_id") == primary),
+                        key=lambda f: (f.get("file_index") or 0)):
+            next_set += 1
+            out[f["id"]] = next_set
+        return out
 
     numbers: list[str] = []
 
@@ -147,6 +156,27 @@ def assign_sets(files: list[dict]) -> dict[str, int | None]:
         hits = [i for i, n in enumerate(numbers, start=1) if _same_number(key, n)]
         # Ambiguous is unpaired. Better to say "this one needs a look" than to guess.
         out[f["id"]] = hits[0] if len(hits) == 1 else None
+
+    # A file in the PRIMARY (invoice-carrying) slot is never "the whole job" the way a lone
+    # Bill of Lading can be - it is one specific invoice, uploaded as its own file, same as
+    # every other file in that slot. If its own invoice number could not be read at all (or
+    # read ambiguously), that is a reason to say so loudly elsewhere, never a reason to let it
+    # share set=None with a genuinely-unrelated document and have its product lines silently
+    # collide with another invoice's - row 1 of invoice 2 is not row 1 of invoice 1's packing
+    # list, no matter whose number failed to read. Found live on a 3-invoice job where only
+    # the first invoice's number read cleanly: the other two both landed on set=None, and
+    # every per-row field (CTH, container type, ...) for one of them silently lost its slot to
+    # the other, because both were asking for "row 1" under the same set key.
+    #
+    # Each gets its own, NEW set number, in upload order - after every number already assigned
+    # above - so a genuinely-shared document (a BL with no key, not in this slot) is completely
+    # unaffected and keeps meaning exactly what it always has: unpaired.
+    next_set = len(numbers)
+    for f in sorted((x for x in files if x.get("template_document_id") == primary),
+                    key=lambda f: (f.get("file_index") or 0)):
+        if out.get(f["id"]) is None:
+            next_set += 1
+            out[f["id"]] = next_set
     return out
 
 
