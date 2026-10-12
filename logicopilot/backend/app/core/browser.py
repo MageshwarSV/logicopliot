@@ -2703,6 +2703,27 @@ def _perform_step(page, step: dict, val: str) -> None:
                     f"after {OVERLAY_WAIT_MS // 1000}s - the ERP still has something open over "
                     "it. Whatever that is has to be dealt with before this step can run.")
             loc.click(timeout=8000, **_click_spot(loc, step))
+            # A click that takes the ERP to a genuinely NEW screen races the very next step:
+            # that step's own "is my element on screen" check runs right after this returns,
+            # and if the OLD screen happens to still have an element that coincidentally
+            # matches the NEXT step's selector, it gets clicked there - on the wrong screen -
+            # before the real new screen with the real button has even appeared. Found live: a
+            # 3-screen flow where the button meant for screen 3 was pressed on screen 2
+            # instead, because nothing here waited for screen 2 to actually leave first.
+            #
+            # _settle() is normally only called once the WHOLE step has finished (by the
+            # caller, after perform() returns) - too late to help THIS race, since the next
+            # step's own element check runs before that happens. Calling it here too, right
+            # after the click that might have triggered the transition, closes the gap: it
+            # already knows how to wait out this exact ERP's ASP.NET postback flag (a direct,
+            # reliable read of server-side "still working" state - not a guess about whether a
+            # navigation has started yet, which is what makes a bare wait_for_load_state() here
+            # unreliable) as well as an ordinary full-page navigation. Calling it twice per
+            # click is deliberately cheap when nothing is actually in flight: once the page HAS
+            # already settled, every wait inside it resolves immediately, so an ordinary
+            # non-navigating click pays only what _settle() costs when there is truly nothing
+            # to wait for - already measured and kept small by _settle() itself.
+            _settle(page)
     elif action == "double_click":
         if step.get("_hover_opener"):
             _press_held(page, step["_hover_opener"], loc, dbl=True)
