@@ -32,6 +32,7 @@ export function SettingsPage() {
   const [busyKey, setBusyKey] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keySaved, setKeySaved] = useState(false);
+  const [replacingApiKey, setReplacingApiKey] = useState(false);
   const [keyPool, setKeyPool] = useState<systemSettingsApi.OpenAIPoolKey[] | null>(null);
   const [poolLabelInput, setPoolLabelInput] = useState("");
   const [poolKeyInput, setPoolKeyInput] = useState("");
@@ -155,6 +156,7 @@ export function SettingsPage() {
       setSettings((prev) => (prev ? { ...prev, openai_api_key_set: result.openai_api_key_set } : prev));
       setApiKeyInput("");
       setKeySaved(true);
+      setReplacingApiKey(false);
     } catch (err) {
       // OpenAI rejected it live — nothing was saved, the old key (if any) is still in effect.
       setKeyError(
@@ -541,21 +543,52 @@ export function SettingsPage() {
               Verified against OpenAI before saving — a wrong key is rejected, never saved.
               Applies immediately, no restart.
             </p>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-              <div className="flex-1">
-                <Input
-                  label="New API key"
-                  type="password"
-                  autoComplete="off"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="sk-..."
-                />
+            {settings.openai_api_key_set && !replacingApiKey ? (
+              <div className="mt-3 flex items-center justify-between gap-2 text-sm">
+                <span className="text-emerald-600 dark:text-emerald-400">Connected</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setReplacingApiKey(true);
+                    setKeySaved(false);
+                    setKeyError(null);
+                  }}
+                >
+                  Replace Key
+                </Button>
               </div>
-              <Button size="sm" onClick={saveApiKey} disabled={busyKey || !apiKeyInput.trim()}>
-                {busyKey ? "Verifying…" : "Save Key"}
-              </Button>
-            </div>
+            ) : (
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <Input
+                    label="New API key"
+                    type="password"
+                    autoComplete="off"
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                    placeholder="sk-..."
+                  />
+                </div>
+                <Button size="sm" onClick={saveApiKey} disabled={busyKey || !apiKeyInput.trim()}>
+                  {busyKey ? "Verifying…" : settings.openai_api_key_set ? "Save New Key" : "Save Key"}
+                </Button>
+                {settings.openai_api_key_set && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setReplacingApiKey(false);
+                      setApiKeyInput("");
+                      setKeyError(null);
+                    }}
+                    disabled={busyKey}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            )}
             {keySaved && (
               <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
                 Saved and verified — every AI call from now on uses this key.
