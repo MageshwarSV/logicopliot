@@ -1908,9 +1908,16 @@ def _settle_postback(page, timeout: int = 6000, frames=None) -> None:
     # 6-second poll came to ~31s per call - and a step settles twice, so three slow steps could
     # spend a whole 180s job budget waiting. In the ordinary case every wait below returns at
     # once; this only bounds the pathological page.
+    #
+    # The caller's own `timeout`, not the separate _FRAME_SETTLE_BUDGET_MS constant - every
+    # existing call site passes the default (6000, the same number that constant held), so
+    # this changes nothing for them. A caller that deliberately asks for longer - a step that
+    # just submitted an uploaded file for slow server-side validation, say - used to have that
+    # ignored here even though `frames` is exactly the scope doing the actual waiting; the
+    # longer budget only ever reached the top page's own wait, never the frame's.
     import time as _t
 
-    frame_budget = _FRAME_SETTLE_BUDGET_MS
+    frame_budget = timeout
     started = _t.monotonic()
 
     def _left() -> int:
@@ -3598,6 +3605,18 @@ class RecorderSession:
                     # domcontentloaded, both wait networkidle, and only the second reads the
                     # WebForms postback flag - so calling both paid for the same answer twice
                     # at every settle point, four times per step.
+                    #
+                    # The PREVIOUS step's own frame too, when it differs from this one's. An
+                    # Upload click inside #WinCommon_ifrmCommon kicks off server-side Excel
+                    # parsing/validation that keeps running in THAT frame; the very next
+                    # recorded step (Save, on the top page, frames=[]) used to settle only
+                    # frames=[] here - already idle at once, since nothing happened on the top
+                    # page - so Save fired while the iframe's own import was still in flight.
+                    # Found live: Save reported "ok" and the ERP never actually saved, because
+                    # the import it depended on had not finished validating yet.
+                    prev_frames = steps[i - 1].get("frames") if i > 0 else None
+                    if prev_frames and prev_frames != frames:
+                        _settle_postback(page, frames=prev_frames)
                     _settle_postback(page, frames=frames)
 
                     use, note = st, ""
@@ -3749,7 +3768,17 @@ class RecorderSession:
                         i += 1          # the outer loop advances past this one too
 
                     # 5. and wait for whatever it set off - in the step's own frame.
-                    _settle_postback(page, frames=frames)
+                    #
+                    # Longer, when this step is the click right after an "upload" step: that
+                    # click is what actually hands the attached file to the ERP, which can mean
+                    # genuine server-side work - parsing and validating every sheet of a real
+                    # Excel workbook - far past an ordinary postback's few hundred milliseconds.
+                    # The usual 6s budget gave up while the import was still running, so the
+                    # very next recorded step (almost always Save) fired before the ERP had
+                    # actually finished with the file, and Save then did nothing - it reported
+                    # "ok" because the click itself landed, not because anything was saved.
+                    just_uploaded = i > 0 and (steps[i - 1].get("action") or "") == "upload"
+                    _settle_postback(page, timeout=30000 if just_uploaded else 6000, frames=frames)
 
                     # 6. a typed value that did not STAY is worse than one that errored: the
                     #    log would say "ok" while the field sat empty, and every later step
@@ -5636,7 +5665,16 @@ def play_steps(
                         # in an iframe the top page is idle at once, so a blind sleep let the
                         # next step start mid-render and land on a node the postback replaced.
                         _settle(page)
-                        _settle_postback(page, frames=step.get("frames") or [])
+                        # Longer, when this step is the click right after an "upload" step: that
+                        # click is what actually hands the attached file to the ERP, which can
+                        # mean genuine server-side work - parsing and validating every sheet of a
+                        # real Excel workbook - far past an ordinary postback. The usual 6s
+                        # budget gave up while the import was still running, so the very next
+                        # recorded step (almost always Save) fired before the ERP had actually
+                        # finished with the file and did nothing, while still logging "ok".
+                        just_uploaded = i > 0 and (steps[i - 1].get("action") or "") == "upload"
+                        _settle_postback(page, timeout=30000 if just_uploaded else 6000,
+                                         frames=step.get("frames") or [])
                         # Value fields: verify the value STAYS (lookups clear unrecognised
                         # values). Re-enter up to 3 times; if it still won't hold → error.
                         if action in ("fill", "autocomplete", "select"):
