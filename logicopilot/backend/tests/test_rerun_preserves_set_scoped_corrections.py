@@ -31,7 +31,7 @@ def _make_template(db_session, tenant):
 
     invoice_no_mark = FieldMark(tenant_id=tenant.id, document_id=tdoc.id, label_name="Invoice No",
                                page_number=1, x=0.1, y=0.1, width=0.2, height=0.05)
-    line_mark = FieldMark(tenant_id=tenant.id, document_id=tdoc.id, label_name="item_description",
+    line_mark = FieldMark(tenant_id=tenant.id, document_id=tdoc.id, label_name="product_description",
                           page_number=1, x=0.1, y=0.2, width=0.2, height=0.05, is_multi_value=True)
     db_session.add_all([invoice_no_mark, line_mark])
     db_session.commit()
@@ -69,7 +69,7 @@ def _run(db_session, job, jd1, jd2):
         return {"Invoice No": "INV-001" if "INV-001" in ocr_text else "INV-002"}
 
     def _rows_for(ocr_text, fields, expected_row_count=None, image_paths=None):
-        return [{"item_description": "Widget A" if "INV-001" in ocr_text else "Widget B"}]
+        return [{"product_description": "Widget A" if "INV-001" in ocr_text else "Widget B"}]
 
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \

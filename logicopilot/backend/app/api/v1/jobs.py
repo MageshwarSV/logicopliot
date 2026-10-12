@@ -5566,10 +5566,20 @@ def run_extraction(db: Session, job: Job) -> None:
     # that document — (set 2, line 3), not "line 3". Counting row_index alone returned 5 for
     # three five-line invoices, so ten of the fifteen products would have had no slot created
     # for their CTH at all, and nothing would have said so.
+    #
+    # Anchored on product_description specifically, NOT on every row-indexed field on the job -
+    # a container's own per-row fields (container_type, container_number) use this SAME
+    # row_index numbering for a completely different count (how many containers, not how many
+    # products). A job with 1 product but 2 containers used to union the two into "2 lines",
+    # handing a PRODUCT field (Dump CTH Number, Document CTH, RITC No., ...) a phantom second
+    # slot that matched no real product at all. product_description is the one label already
+    # treated everywhere else in this file as "one row = one real product line" - see
+    # _line_key_values, recompute_custom_field's descs, etc.
     line_keys: list[tuple[int, int]] = sorted({
         ((r[0] or 1), r[1])
         for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name == "product_description")
         .distinct().all()
     })
     line_count = len(line_keys)
@@ -5603,6 +5613,9 @@ def run_extraction(db: Session, job: Job) -> None:
                     cf.label_name, job.id,
                 )
             looked_up: dict[tuple[int, int], str] = {}
+            # The product-anchored set, unless the "lookup" branch below extends it for a
+            # field keyed on something other than a product (see field_keys there).
+            field_keys = line_keys
             if cf.kind == "lookup":
                 # Loaded per field, because two fields can ask the same sheet different
                 # questions - the CTH from one column, a duty rate from another. Parsing is
@@ -5628,9 +5641,18 @@ def run_extraction(db: Session, job: Job) -> None:
                 keys = _line_values(key_label) if key_label else {}
                 codes = keys or _line_values("item_material_code")
                 descs = _line_values("product_description")
+                # product_description's own rows, UNIONED with this field's own key_label's
+                # rows - not line_keys alone, and not keys.keys() alone. A field keyed on
+                # something that is not a product at all (container_type, say) still needs ONE
+                # slot per container, which can outnumber the job's real products; keys.keys()
+                # supplies that. A field whose own key_label is sparse on some genuinely real
+                # product (the Nokia material-code gap found earlier this session) must not
+                # lose that product's slot just because ITS OWN key happened to be blank there;
+                # line_keys (now product-anchored, see above) is the safety net for that side.
+                field_keys = sorted(set(line_keys) | set(keys.keys()))
                 hits = 0
                 cache_hits = 0
-                for key in line_keys:
+                for key in field_keys:
                     desc = descs.get(key, "")
                     material = material_from(codes.get(key, ""), desc)
                     # The part number first, then the description - the customer's list is
@@ -5748,7 +5770,7 @@ def run_extraction(db: Session, job: Job) -> None:
                 for key in line_keys:
                     pieces = [_composite_piece_value(p, piece_values, key) for p in pieces_cfg]
                     looked_up[key] = " ".join(p for p in pieces if p)
-            for key in line_keys:
+            for key in field_keys:
                 value = looked_up.get(key) or cf.hardcoded_value or ""
                 # Idempotent on purpose: the top-of-function delete means this is normally a
                 # fresh insert every time, but a second run_extraction racing this one (closed
@@ -6146,10 +6168,13 @@ def _recompute_per_row_custom_field(
     included) even though only the field-reference pieces of it get remembered for the
     consignee going forward - see _effective_composite_pieces.
     """
+    # Anchored on product_description, not every row-indexed field on the job - see the
+    # identical reasoning in run_extraction's own line_keys above.
     line_keys: list[tuple[int, int]] = sorted({
         ((r[0] or 1), r[1])
         for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name == "product_description")
         .distinct().all()
     })
     if not line_keys:
@@ -6175,6 +6200,9 @@ def _recompute_per_row_custom_field(
         return out
 
     computed: dict[tuple[int, int], str] = {}
+    # The product-anchored set, unless the "lookup" branch below extends it for a field keyed
+    # on something other than a product - see the identical field_keys in run_extraction.
+    field_keys = line_keys
     if cf.kind == "lookup":
         from app.core.material_master import load_master, lookup_cth, material_from
         from app.core.reference_cache import lookup_reference
@@ -6190,7 +6218,10 @@ def _recompute_per_row_custom_field(
         keys = _row_values(key_label) if key_label else {}
         codes = keys or _row_values("item_material_code")
         descs = _row_values("product_description")
-        for key in line_keys:
+        # product_description's rows, unioned with this field's own key_label's rows - see the
+        # identical reasoning (and field_keys) in run_extraction's own per-row lookup block.
+        field_keys = sorted(set(line_keys) | set(keys.keys()))
+        for key in field_keys:
             desc = descs.get(key, "")
             material = material_from(codes.get(key, ""), desc)
             code = lookup_cth(material, master, description=desc)
@@ -6260,7 +6291,7 @@ def _recompute_per_row_custom_field(
             computed[key] = " ".join(p for p in pieces if p)
 
     rows: list[JobFieldValue] = []
-    for set_index, row_index in line_keys:
+    for set_index, row_index in field_keys:
         value = computed.get((set_index, row_index), cf.hardcoded_value or "")
         existing = (
             db.query(JobFieldValue)

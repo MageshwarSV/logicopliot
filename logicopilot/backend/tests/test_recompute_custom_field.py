@@ -318,7 +318,7 @@ def test_per_row_field_backfills_one_value_per_existing_line(client, db_session)
     # this field existed.
     for set_index, row_index in [(1, 1), (1, 2), (2, 1)]:
         db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
-                                     label_name="item_material_code", extracted_value="X",
+                                     label_name="product_description", extracted_value="X",
                                      set_index=set_index, row_index=row_index))
     db_session.commit()
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
@@ -348,7 +348,7 @@ def test_per_row_field_second_call_updates_the_same_rows_not_new_ones(client, db
     group, tdoc = _make_template(db_session, tenant)
     job = _make_extracted_job(db_session, tenant, group, tdoc)
     db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
-                                 label_name="item_material_code", extracted_value="X",
+                                 label_name="product_description", extracted_value="X",
                                  set_index=1, row_index=1))
     db_session.commit()
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Basic_NotnSrNo",
@@ -381,7 +381,7 @@ def test_per_row_field_drops_a_stale_job_level_row_left_from_before_the_switch(c
     group, tdoc = _make_template(db_session, tenant)
     job = _make_extracted_job(db_session, tenant, group, tdoc)
     db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
-                                 label_name="item_material_code", extracted_value="X",
+                                 label_name="product_description", extracted_value="X",
                                  set_index=1, row_index=1))
     db_session.commit()
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
@@ -413,7 +413,7 @@ def test_per_row_field_keeps_a_stale_job_level_row_if_it_was_actually_corrected(
     group, tdoc = _make_template(db_session, tenant)
     job = _make_extracted_job(db_session, tenant, group, tdoc)
     db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id,
-                                 label_name="item_material_code", extracted_value="X",
+                                 label_name="product_description", extracted_value="X",
                                  set_index=1, row_index=1))
     db_session.commit()
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AIDC_LevyNotnSrNo",
