@@ -5608,7 +5608,16 @@ def run_extraction(db: Session, job: Job) -> None:
                 # questions - the CTH from one column, a duty rate from another. Parsing is
                 # cached on the file and the chosen columns, so this costs nothing after the
                 # first job.
-                master = load_master(
+                #
+                # Skipped entirely when skip_material_master is set: this field's own key is
+                # not a product at all (a container type, say), so the master's DESCRIPTION
+                # fallback below (lookup_cth trying the line's product_description as a second
+                # candidate key) could exact-match some UNRELATED product in the customer's own
+                # catalog and hand back THAT product's CTH as if it were this field's answer -
+                # found live, where a container-type field got a real HS code back instead of a
+                # blank. A field like this has nothing to look up there at all; only its own
+                # reference sheet (lookup_reference, below) ever applies.
+                master = {} if getattr(cf, "skip_material_master", False) else load_master(
                     group.id,
                     match_columns=getattr(cf, "lookup_match_columns", None),
                     return_column=getattr(cf, "lookup_return_column", None),
@@ -6149,7 +6158,9 @@ def _recompute_per_row_custom_field(
         from app.core.material_master import load_master, lookup_cth, material_from
         from app.core.reference_cache import lookup_reference
 
-        master = load_master(
+        # skip_material_master - see the identical guard (and its full reasoning) in
+        # run_extraction's own per-row lookup block.
+        master = {} if getattr(cf, "skip_material_master", False) else load_master(
             job.group_id,
             match_columns=getattr(cf, "lookup_match_columns", None),
             return_column=getattr(cf, "lookup_return_column", None),

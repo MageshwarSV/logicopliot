@@ -68,6 +68,13 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # question: match the part, return the duty rate instead of the classification.
     lookup_match_columns: Mapped[list | None] = mapped_column(JSON, nullable=True)
     lookup_return_column: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # kind="lookup" only: this field's own key has nothing to do with the customer's product
+    # catalog (a container type, say, not a part number) - so never try the material master at
+    # all, only this field's own reference sheet. Without this, the master's DESCRIPTION-match
+    # fallback (see lookup_cth) can exact-match whatever unrelated product happens to share this
+    # line's row number and hand back THAT product's CTH as if it were this field's own answer -
+    # found live on a container-type field, which got a real HS code back instead of a blank.
+    skip_material_master: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Mirrors FieldMark.verify_with_other_document: this field is meant to be cross-checked
     # against a mark on another document (e.g. "Total Amount (Calculated)" vs the Invoice's own
