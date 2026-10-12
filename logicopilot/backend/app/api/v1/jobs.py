@@ -5634,6 +5634,17 @@ def run_extraction(db: Session, job: Job) -> None:
                         # typed this exact material/description once before, on this job or an
                         # earlier one, and that answer was kept rather than asked for twice.
                         cached = lookup_reference(db, cf.id, [material, desc])
+                        if not cached and desc:
+                            # material ALONE, when the two-key match found nothing. A field
+                            # keyed on something other than a product line (a container type,
+                            # say) still gets handed whatever product happens to share its row
+                            # number as "desc" - real, but meaningless to THIS field, and
+                            # different on every job, so a reference row can never be stored to
+                            # match it. Only tried after the two-key match has already failed,
+                            # so a field where the description genuinely disambiguates (two
+                            # products sharing one material code) keeps matching on both exactly
+                            # as before - this never overrides a match that already exists.
+                            cached = lookup_reference(db, cf.id, [material])
                         if cached:
                             code = cached
                             cache_hits += 1
@@ -6152,7 +6163,11 @@ def _recompute_per_row_custom_field(
             material = material_from(codes.get(key, ""), desc)
             code = lookup_cth(material, master, description=desc)
             if not code and (material or desc):
+                # material+desc first, then material ALONE - see the identical fallback (and
+                # its full reasoning) in run_extraction's own per-row lookup block above.
                 code = lookup_reference(db, cf.id, [material, desc]) or ""
+                if not code and desc:
+                    code = lookup_reference(db, cf.id, [material]) or ""
             computed[key] = code
     elif cf.kind == "ai":
         from app.core.llm import compute_custom_field_per_row
