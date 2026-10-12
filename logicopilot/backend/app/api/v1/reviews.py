@@ -301,10 +301,10 @@ def format_check(
     if not settings.openai_api_key or not source_value:
         return {"formatted_value": source_value}
     try:
-        from openai import OpenAI
+        from app.core.llm import create_chat_completion_with_retry
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=20,
             model=settings.openai_model,
             max_tokens=100,
             messages=[

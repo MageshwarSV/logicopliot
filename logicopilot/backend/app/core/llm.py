@@ -47,7 +47,7 @@ def _rate_limit_wait_seconds(exc: Exception) -> float | None:
     return float(value) / 1000.0 if unit == "ms" else float(value)
 
 
-def create_chat_completion_with_retry(client, **kwargs):
+def create_chat_completion_with_retry(client=None, *, timeout: float = 30, **kwargs):
     """The one place every OpenAI chat-completion call in this codebase goes through, instead
     of calling `client.chat.completions.create(**kwargs)` directly. Every caller here used to
     catch ANY exception from that bare call and silently degrade to an empty/default value,
@@ -61,23 +61,56 @@ def create_chat_completion_with_retry(client, **kwargs):
     the document" (see _rate_limit_wait_seconds's own docstring for how this is told apart
     from an error no retry can fix).
 
-    Retries up to `_MAX_RATE_LIMIT_RETRIES` times, waiting the exact time OpenAI's own error
-    message suggests each time, and ONLY for a genuine rate_limit_exceeded - every other
-    error, including insufficient_quota/credit_balance_exhausted, is raised immediately
-    exactly as before this existed."""
-    from openai import RateLimitError
+    Retries up to `_MAX_RATE_LIMIT_RETRIES` times on the SAME key, waiting the exact time
+    OpenAI's own error message suggests each time. Once that budget is spent on one key - or
+    the key hits something no amount of waiting fixes (insufficient_quota,
+    credit_balance_exhausted, a revoked key) - and app/core/openai_pool.py has another key
+    configured (see its own module docstring: normally a SEPARATE OpenAI Project, so it has
+    its own separate rate-limit budget), this key is put on cooldown and the whole call is
+    retried fresh on the next one, before finally raising only once every pooled key has been
+    tried. With no pool configured this degrades to exactly today's single-key behavior.
 
-    last_exc: RateLimitError | None = None
-    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-        try:
-            return client.chat.completions.create(**kwargs)
-        except RateLimitError as exc:
-            wait = _rate_limit_wait_seconds(exc)
-            if wait is None or attempt == _MAX_RATE_LIMIT_RETRIES:
-                raise
-            last_exc = exc
-            time.sleep(wait)
-    raise last_exc  # pragma: no cover - the loop above always returns or raises
+    `client` may still be passed for an existing caller that built its own (back-compat);
+    a NEW caller should omit it and pass `timeout=` instead, letting this function pull a
+    client from the pool itself so a failover has another key to build a fresh client from."""
+    from openai import AuthenticationError, RateLimitError
+
+    from app.core.openai_pool import get_openai_client, get_pool_size, mark_key_cooldown
+
+    own_client = client is None
+    # Bounded by total PASSES, not distinct keys tried: if every pooled key is cooling down
+    # at once, get_openai_client() hands back the soonest-to-clear one on more than one pass,
+    # and counting only unique ids would loop forever on a key that fails the same way every
+    # time (insufficient_quota, say). A fixed number of passes always terminates regardless.
+    max_passes = get_pool_size() if own_client else 1
+    last_exc: Exception | None = None
+    for _pass in range(max_passes):
+        if own_client:
+            client, key_id = get_openai_client(timeout=timeout)
+        else:
+            key_id = "default"  # a caller-supplied client has no pool id to cool down
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                return client.chat.completions.create(**kwargs)
+            except RateLimitError as exc:
+                last_exc = exc
+                wait = _rate_limit_wait_seconds(exc)
+                if wait is not None and attempt < _MAX_RATE_LIMIT_RETRIES:
+                    time.sleep(wait)
+                    continue
+                if own_client:
+                    mark_key_cooldown(key_id)
+                break
+            except AuthenticationError as exc:
+                last_exc = exc
+                if own_client:
+                    # A revoked/rotated key - far longer than a rate limit, it will not fix
+                    # itself; stays out of rotation until the pool itself is refreshed.
+                    mark_key_cooldown(key_id, seconds=3600.0)
+                break
+        # Another pass tries whatever key is next in rotation (ideally a different, still-
+        # live one; see the docstring above for why a repeat is still safe, just wasted).
+    raise last_exc
 
 
 # Every reasoning-family chat model released so far shares this prefix set. Confirmed live
@@ -159,11 +192,8 @@ def evaluate_ruling(
         return {"required_documents": all_document_names, "decision": None, "needs_input": False,
                 "question": "", "reason": "AI not configured — requiring all documents."}
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -237,12 +267,9 @@ def describe_failure_screen(screenshot_b64: str, log_tail: list[str] | None = No
     if not settings.openai_api_key or not screenshot_b64:
         return ""
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         tail = "\n".join((log_tail or [])[-6:])
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=settings.openai_model,
             temperature=0,
             max_tokens=220,
@@ -278,11 +305,8 @@ def ai_classify_outcome(page_text: str, field_stats: dict | None = None) -> dict
     if not settings.openai_api_key:
         return {"outcome": "blocked", "reason": "Form fields became read-only after entry."}
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=20,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -344,11 +368,8 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
     if not settings.openai_api_key:
         return ""
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -412,12 +433,9 @@ def resolve_fuzzy_candidate_with_ai(
         return ""
     valid_codes = {code for _, code in candidates}
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=30)
         listing = "\n".join(f'- {name!r} -> {code}' for name, code in candidates)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=30,
             model=settings.openai_model,
             temperature=0,
             max_tokens=100,
@@ -472,11 +490,8 @@ def normalize_place_name_with_ai(name: str, *, field_description: str = "a place
     if not settings.openai_api_key or not (name or "").strip():
         return ""
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=20,
             model=settings.openai_model,
             temperature=0,
             max_tokens=60,
@@ -526,11 +541,8 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
     if not settings.openai_api_key:
         return []
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=settings.openai_model,
             temperature=0,
             max_tokens=1500,
@@ -596,11 +608,8 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
     if not settings.openai_api_key:
         return [""] * len(row_context)
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=settings.openai_model,
             temperature=0,
             max_tokens=1500,
@@ -698,11 +707,8 @@ def suggest_field_mapping(
     if not settings.openai_api_key or not candidate_fields:
         return _heuristic()
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=20,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -773,14 +779,11 @@ def ai_choose_action(goal: str, elements: list[dict], values: dict[str, str] | N
     if not settings.openai_api_key or not elements:
         return _heuristic()
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
         listing = "\n".join(
             f"{i}: <{e.get('tag')}> \"{(e.get('text') or '').strip()}\"" for i, e in enumerate(elements)
         )
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=20,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -834,16 +837,13 @@ def resolve_ai_value(prompt: str, values: dict[str, str], options: list[str] | N
                     return o
         return ""
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=20)
         opt_line = (
             f"\nThe field is a dropdown. Your answer MUST be exactly one of these options: {options}."
             if options
             else ""
         )
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=20,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -913,11 +913,8 @@ def build_field_profile(
         else ""
     )
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=30)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=30,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as

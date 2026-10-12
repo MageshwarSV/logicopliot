@@ -32,6 +32,12 @@ export function SettingsPage() {
   const [busyKey, setBusyKey] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keySaved, setKeySaved] = useState(false);
+  const [keyPool, setKeyPool] = useState<systemSettingsApi.OpenAIPoolKey[] | null>(null);
+  const [poolLabelInput, setPoolLabelInput] = useState("");
+  const [poolKeyInput, setPoolKeyInput] = useState("");
+  const [busyPool, setBusyPool] = useState(false);
+  const [poolError, setPoolError] = useState<string | null>(null);
+  const [busyPoolKeyId, setBusyPoolKeyId] = useState<string | null>(null);
   const [adminKeyInput, setAdminKeyInput] = useState("");
   const [busyAdminKey, setBusyAdminKey] = useState(false);
   const [adminKeyError, setAdminKeyError] = useState<string | null>(null);
@@ -59,6 +65,11 @@ export function SettingsPage() {
       setEngineInput(s.extraction_engine);
     } catch {
       setError("Could not load system settings.");
+    }
+    try {
+      setKeyPool(await systemSettingsApi.listOpenAIKeyPool());
+    } catch {
+      setPoolError("Could not load the key pool.");
     }
   }
 
@@ -151,6 +162,63 @@ export function SettingsPage() {
       );
     } finally {
       setBusyKey(false);
+    }
+  }
+
+  async function addPoolKey() {
+    if (!poolLabelInput.trim() || !poolKeyInput.trim()) return;
+    setBusyPool(true);
+    setPoolError(null);
+    try {
+      const row = await systemSettingsApi.addOpenAIKeyPoolKey(poolLabelInput.trim(), poolKeyInput.trim());
+      setKeyPool((prev) => [...(prev ?? []), row]);
+      setPoolLabelInput("");
+      setPoolKeyInput("");
+      setSettings((prev) =>
+        prev ? { ...prev, openai_key_pool_active_count: prev.openai_key_pool_active_count + 1 } : prev,
+      );
+    } catch (err) {
+      setPoolError(
+        axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not verify that key." : "Could not verify that key.",
+      );
+    } finally {
+      setBusyPool(false);
+    }
+  }
+
+  async function togglePoolKeyActive(row: systemSettingsApi.OpenAIPoolKey) {
+    setBusyPoolKeyId(row.id);
+    setPoolError(null);
+    try {
+      const updated = await systemSettingsApi.setOpenAIKeyPoolKeyActive(row.id, !row.is_active);
+      setKeyPool((prev) => (prev ?? []).map((k) => (k.id === updated.id ? updated : k)));
+      setSettings((prev) =>
+        prev
+          ? { ...prev, openai_key_pool_active_count: prev.openai_key_pool_active_count + (updated.is_active ? 1 : -1) }
+          : prev,
+      );
+    } catch {
+      setPoolError("Could not update that key.");
+    } finally {
+      setBusyPoolKeyId(null);
+    }
+  }
+
+  async function removePoolKey(row: systemSettingsApi.OpenAIPoolKey) {
+    setBusyPoolKeyId(row.id);
+    setPoolError(null);
+    try {
+      await systemSettingsApi.deleteOpenAIKeyPoolKey(row.id);
+      setKeyPool((prev) => (prev ?? []).filter((k) => k.id !== row.id));
+      if (row.is_active) {
+        setSettings((prev) =>
+          prev ? { ...prev, openai_key_pool_active_count: prev.openai_key_pool_active_count - 1 } : prev,
+        );
+      }
+    } catch {
+      setPoolError("Could not remove that key.");
+    } finally {
+      setBusyPoolKeyId(null);
     }
   }
 
@@ -496,6 +564,95 @@ export function SettingsPage() {
             {keyError && (
               <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
                 {keyError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {settings && (
+          <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">OpenAI key pool</h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Add several keys and calls are spread across them in rotation, so one key's rate
+              limit never blocks everything. This only raises real throughput when each key
+              comes from a SEPARATE OpenAI Project (platform.openai.com → Settings → Projects
+              → API keys) — OpenAI meters rate limits per project, so several keys from the
+              SAME project still share one budget. With no keys added here, every call keeps
+              using the single key above, exactly as before.
+              {" "}Write-only, same as the key above — never shown back once saved.
+              {settings.openai_key_pool_active_count > 0 && (
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                  {" "}{settings.openai_key_pool_active_count} active key{settings.openai_key_pool_active_count === 1 ? "" : "s"} in rotation.
+                </span>
+              )}
+            </p>
+
+            {keyPool && keyPool.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-2">
+                {keyPool.map((row) => (
+                  <li
+                    key={row.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
+                  >
+                    <span className="truncate text-slate-800 dark:text-slate-200">{row.label}</span>
+                    <span className="flex items-center gap-2">
+                      {row.is_active ? (
+                        <span className="text-xs text-emerald-600 dark:text-emerald-400">Active</span>
+                      ) : (
+                        <span className="text-xs text-slate-400">Paused</span>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => togglePoolKeyActive(row)}
+                        disabled={busyPoolKeyId === row.id}
+                      >
+                        {row.is_active ? "Pause" : "Resume"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => removePoolKey(row)}
+                        disabled={busyPoolKeyId === row.id}
+                      >
+                        Remove
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="w-full sm:w-40">
+                <Input
+                  label="Label"
+                  value={poolLabelInput}
+                  onChange={(e) => setPoolLabelInput(e.target.value)}
+                  placeholder="Project A"
+                />
+              </div>
+              <div className="flex-1">
+                <Input
+                  label="API key"
+                  type="password"
+                  autoComplete="off"
+                  value={poolKeyInput}
+                  onChange={(e) => setPoolKeyInput(e.target.value)}
+                  placeholder="sk-..."
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={addPoolKey}
+                disabled={busyPool || !poolLabelInput.trim() || !poolKeyInput.trim()}
+              >
+                {busyPool ? "Verifying…" : "Add Key"}
+              </Button>
+            </div>
+            {poolError && (
+              <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                {poolError}
               </p>
             )}
           </div>

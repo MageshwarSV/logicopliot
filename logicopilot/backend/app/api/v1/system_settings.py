@@ -14,6 +14,12 @@ from app.core.openai_admin import (
     fetch_daily_token_usage,
     fetch_projects,
 )
+from app.core.openai_pool import (
+    add_api_key,
+    delete_api_key,
+    list_api_keys,
+    set_api_key_active,
+)
 from app.core.system_settings import (
     VALID_EXTRACTION_ENGINES,
     InvalidExtractionEngine,
@@ -63,6 +69,15 @@ class OpenAIBalanceIn(BaseModel):
     expiry_date: date | None = None
 
 
+class OpenAIPoolKeyIn(BaseModel):
+    label: str
+    api_key: str
+
+
+class OpenAIPoolKeyActiveIn(BaseModel):
+    is_active: bool
+
+
 @router.get("")
 def read_system_settings(
     db: Session = Depends(get_db),
@@ -90,6 +105,9 @@ def read_system_settings(
         # app/models/system_setting.py's extraction_engine column docstring. Never affects
         # the Template Wizard's own training flow, which always stays on OCR + gpt-4o-mini.
         "extraction_engine": row.extraction_engine,
+        # How many of the pooled keys below are actually in rotation right now - see
+        # app/core/openai_pool.py. 0 means every OpenAI call still uses the single key above.
+        "openai_key_pool_active_count": sum(1 for k in list_api_keys(db) if k.is_active),
     }
 
 
@@ -382,6 +400,63 @@ def set_openai_key(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"OpenAI rejected this key: {exc}")
     return {"openai_api_key_set": has_custom_openai_key(db)}
+
+
+def _pool_key_out(k) -> dict:
+    return {"id": k.id, "label": k.label, "is_active": k.is_active, "sort_order": k.sort_order}
+
+
+@router.get("/openai-key-pool")
+def list_openai_key_pool(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> list[dict]:
+    """Every pooled key, by label only - never the key itself, same write-only rule as the
+    single key above. See app/core/openai_pool.py for how these are actually used (round-
+    robinned, each ideally from a SEPARATE OpenAI Project so the ceiling one project's rate
+    limit hits is not the whole app's own ceiling)."""
+    return [_pool_key_out(k) for k in list_api_keys(db)]
+
+
+@router.post("/openai-key-pool", status_code=status.HTTP_201_CREATED)
+def add_openai_key_pool_key(
+    payload: OpenAIPoolKeyIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Verified live against OpenAI itself before saving, same as the single key. Takes
+    effect immediately - the very next call anywhere in the app may land on this key."""
+    try:
+        row = add_api_key(db, payload.label, payload.api_key)
+    except InvalidOpenAIKey as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"OpenAI rejected this key: {exc}")
+    return _pool_key_out(row)
+
+
+@router.patch("/openai-key-pool/{key_id}")
+def set_openai_key_pool_key_active(
+    key_id: str,
+    payload: OpenAIPoolKeyActiveIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Takes a key out of rotation (hit its billing limit, being retired) without losing its
+    label the way deleting it would - flip is_active back on to bring it back."""
+    row = set_api_key_active(db, key_id, payload.is_active)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such key")
+    return _pool_key_out(row)
+
+
+@router.delete("/openai-key-pool/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_openai_key_pool_key(
+    key_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> None:
+    if not delete_api_key(db, key_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such key")
 
 
 class SpendAnalyticsDay(BaseModel):

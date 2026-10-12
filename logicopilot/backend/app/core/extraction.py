@@ -504,11 +504,8 @@ def extract_document_fields(
     field_lines = _field_lines(fields)
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=45,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -768,11 +765,8 @@ def extract_document_rows(
         return collected
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=90)
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=90,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -896,9 +890,6 @@ def extract_document_fields_from_images(
         return {label: None for label in labels}
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=90)
         content: list[dict] = [
             {
                 "type": "text",
@@ -928,7 +919,7 @@ def extract_document_fields_from_images(
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=90,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -970,9 +961,6 @@ def extract_document_rows_from_images(
         return []
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key, timeout=120)
         content: list[dict] = [
             {
                 "type": "text",
@@ -1003,7 +991,7 @@ def extract_document_rows_from_images(
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = create_chat_completion_with_retry(
-            client,
+            timeout=120,
             model=effective_model,
             # On a reasoning-family model this pin is translated/dropped - see
             # reasoning_safe_chat_params.

@@ -12,6 +12,25 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 
+@pytest.fixture(autouse=True)
+def _reset_openai_key_pool():
+    """app.core.openai_pool keeps its pool in plain process memory (by design - see its own
+    module docstring: every OpenAI call site needs this with no `db` session of its own).
+    That memory is NOT scoped to a test's own throwaway database the way db_session is, so a
+    test that adds a pooled key would otherwise leak it into every test that runs after it
+    in the same pytest process. Reset to pristine ("never loaded") before and after every
+    single test, regardless of whether that test touches the pool at all."""
+    import app.core.openai_pool as _pool_module
+
+    _pool_module._pool = None
+    _pool_module._cooldowns.clear()
+    _pool_module._rr_index = 0
+    yield
+    _pool_module._pool = None
+    _pool_module._cooldowns.clear()
+    _pool_module._rr_index = 0
+
+
 @pytest.fixture()
 def test_engine():
     engine = create_engine(

@@ -178,9 +178,8 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
         "A claim you cannot back with an exact quote must be false."
     )
     try:
-        from openai import OpenAI
+        from app.core.llm import create_chat_completion_with_retry
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         if text and text.strip():
             content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + text[:9000]
         elif image_path and image_path.exists():
@@ -191,7 +190,8 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
             ]
         else:
             return None
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=45,
             model=settings.openai_model,
             max_tokens=300,
             temperature=0,
@@ -371,9 +371,8 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         'Return a JSON object: {"keys": [ ...matching key strings... ]}.'
     )
     try:
-        from openai import OpenAI
+        from app.core.llm import create_chat_completion_with_retry
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=45)
         if ocr_text and ocr_text.strip():
             user_content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + ocr_text[:8000]
         elif image_b64:
@@ -383,7 +382,8 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
             ]
         else:
             user_content = instruction
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=45,
             model=settings.openai_model,
             max_tokens=200,
             temperature=0,
@@ -502,10 +502,12 @@ def identify_customer(mail_subject: str, mail_body: str, doc_texts: list[tuple[s
         '"evidence": "the exact words in the documents that decided it"}'
     )
     try:
-        from openai import APIError, OpenAI
+        from openai import APIError
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
-        resp = client.chat.completions.create(
+        from app.core.llm import create_chat_completion_with_retry
+
+        resp = create_chat_completion_with_retry(
+            timeout=60,
             model=settings.openai_model,
             max_tokens=400,
             temperature=0,
@@ -686,11 +688,13 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
 
     instruction = _classification_instruction(filename, candidates)
     try:
-        from openai import APIError, OpenAI
+        from openai import APIError
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
+        from app.core.llm import create_chat_completion_with_retry
+
         content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + ocr_text[:9000]
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=60,
             model=settings.openai_model,
             # Was 600 - a file with several instances of the same type (three invoices in
             # one PDF) now returns one entry per instance instead of one per type, and got
@@ -765,17 +769,17 @@ def classify_document_from_image(filename: str, image_path: Path | None,
         "gives you real evidence for.)"
     )
     try:
-        from openai import APIError, OpenAI
+        from openai import APIError
 
-        from app.core.llm import reasoning_safe_chat_params
+        from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
         b64 = base64.b64encode(image_path.read_bytes()).decode()
         content = [
             {"type": "text", "text": instruction},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
         ]
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=60,
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
@@ -871,17 +875,17 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         "types fit this page."
     )
     try:
-        from openai import APIError, OpenAI
+        from openai import APIError
 
-        from app.core.llm import reasoning_safe_chat_params
+        from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
 
-        client = OpenAI(api_key=settings.openai_api_key, timeout=60)
         b64 = base64.b64encode(image_path.read_bytes()).decode()
         content = [
             {"type": "text", "text": instruction},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
         ]
-        resp = client.chat.completions.create(
+        resp = create_chat_completion_with_retry(
+            timeout=60,
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],

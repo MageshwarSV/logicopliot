@@ -23,6 +23,9 @@ export interface SystemSettings {
    *  "gpt5_mini_vision" (the page image, read directly by gpt-5-mini). Never affects the
    *  Template Wizard's own training flow, which always stays on OCR text + gpt-4o-mini. */
   extraction_engine: "ocr_gpt4o_mini" | "gpt5_mini_vision";
+  /** How many pooled keys (see listOpenAIKeyPool) are actually in rotation right now. 0
+   *  means every OpenAI call still uses the single key above. */
+  openai_key_pool_active_count: number;
 }
 
 export const EXTRACTION_ENGINE_OPTIONS: { value: SystemSettings["extraction_engine"]; label: string }[] = [
@@ -115,6 +118,48 @@ export async function setEmailPollWorkers(count: number): Promise<{ email_poll_w
     { count },
   );
   return data;
+}
+
+export interface OpenAIPoolKey {
+  id: string;
+  label: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+/** Every pooled key, by label only - never the key itself. Each should normally come from a
+ *  SEPARATE OpenAI Project (OpenAI meters rate limits per project, so keys from the same
+ *  project share one TPM/RPM budget and spreading calls across them would not help at all -
+ *  only keys from different projects each bring their own separate budget). The backend
+ *  round-robins across active keys and skips one temporarily if it hits a blocking error -
+ *  see app/core/openai_pool.py. With no keys here, every call falls back to the single key
+ *  above, exactly as before this existed. */
+export async function listOpenAIKeyPool(): Promise<OpenAIPoolKey[]> {
+  const { data } = await apiClient.get<OpenAIPoolKey[]>("/system-settings/openai-key-pool");
+  return data;
+}
+
+/** Verified live against OpenAI before being saved, same as the single key - rejects with a
+ *  400 (message in err.response.data.detail) if OpenAI itself rejects it. */
+export async function addOpenAIKeyPoolKey(label: string, apiKey: string): Promise<OpenAIPoolKey> {
+  const { data } = await apiClient.post<OpenAIPoolKey>("/system-settings/openai-key-pool", {
+    label,
+    api_key: apiKey,
+  });
+  return data;
+}
+
+/** Takes a key out of rotation (hit its billing limit, being retired) without losing its
+ *  label the way deleting it would - pass true to bring it back. */
+export async function setOpenAIKeyPoolKeyActive(id: string, isActive: boolean): Promise<OpenAIPoolKey> {
+  const { data } = await apiClient.patch<OpenAIPoolKey>(`/system-settings/openai-key-pool/${id}`, {
+    is_active: isActive,
+  });
+  return data;
+}
+
+export async function deleteOpenAIKeyPoolKey(id: string): Promise<void> {
+  await apiClient.delete(`/system-settings/openai-key-pool/${id}`);
 }
 
 export interface SpendAnalyticsDay {

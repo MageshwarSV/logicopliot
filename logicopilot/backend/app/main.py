@@ -119,6 +119,22 @@ def create_app() -> FastAPI:
             db.close()
 
     @app.on_event("startup")
+    def _load_openai_key_pool() -> None:
+        """The pooled keys (if any) a Super Admin has added from Settings - loaded into this
+        process's own memory once up front, the same reason the single key above is applied
+        at startup rather than read fresh per call. See app/core/openai_pool.py."""
+        from app.core.openai_pool import refresh_pool
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            refresh_pool(db)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("could not load the OpenAI key pool")
+        finally:
+            db.close()
+
+    @app.on_event("startup")
     def _start_email_poller() -> None:
         # Automatic inbox polling (no-op unless EMAIL_POLL_MINUTES > 0 and creds set).
         # Uvicorn's --workers forks several of this whole process; without the singleton
