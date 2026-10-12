@@ -200,6 +200,26 @@ def sheet_plans(config: dict) -> list[dict]:
     }]
 
 
+def _leading_digits(value: str) -> str:
+    """The leading numeric run in a value like "40HC" or "20'GP" -> "40"/"20" - a container's
+    own SIZE, split off from its TYPE CODE (the letters after it: HC, GP, RF, OT, ...). Added
+    for the CONTAINERS sheet's own ContainerSize column, which this template's source field
+    (container_type) never carried on its own - it only ever printed the two glued together,
+    e.g. "40HC". Returns "" (never the original string) when nothing at the front is numeric,
+    so a column that expects a plain size figure never receives letters it cannot use."""
+    m = re.match(r"\s*(\d+)", value or "")
+    return m.group(1) if m else ""
+
+
+# Every named transform a column's own "transform" key may ask for - applied to the value
+# AFTER the ordinary field/literal lookup below, so adding one here is the only step needed
+# to let any column derive a narrower value from what extraction actually produced, without
+# that derivation needing its own separate CustomField/FieldMark.
+_TRANSFORMS = {
+    "leading_digits": _leading_digits,
+}
+
+
 def _literals(col: dict) -> list | None:
     """The literal(s) a column carries, if any.
 
@@ -262,42 +282,42 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
         # On an invoice-scoped sheet, a job-level label takes THAT invoice's value.
         per_set = _set_values(rows)
         row_values = per_set[i] if plan["scope"] == "invoice" and i < len(per_set) else None
-        for label, lit in zip(labels, lits):
+        for col, label, lit in zip(cols, labels, lits):
             if lit is not None:
                 # One literal repeats down the sheet; a list gives each row its own value.
-                raw = lit[i] if i < len(lit) else (lit[0] if len(lit) == 1 else "")
+                val = lit[i] if i < len(lit) else (lit[0] if len(lit) == 1 else "")
                 # A literal may name a field instead of holding a value, using the same
                 # [[field]] form the engine uses elsewhere. EXCHANGE_RATE needs it: row one is
                 # always the rupee at 1.000000, row two is the month's customs rate, which has
                 # to live in one editable place rather than inside the mapping.
-                if raw.startswith("[[") and raw.endswith("]]"):
-                    raw = str(values.get(raw[2:-2], "") or "")
-                line.append(raw)
-                continue
-            if not label:
-                line.append("")
-                continue
-            if label == SERIAL_ROW:
+                if val.startswith("[[") and val.endswith("]]"):
+                    val = str(values.get(val[2:-2], "") or "")
+            elif not label:
+                val = ""
+            elif label == SERIAL_ROW:
                 # 1-based position in this sheet: ItemSrNo down ITEMS, InvSrNo down INVOICES.
-                line.append(str(i + 1))
-                continue
-            if label == SERIAL_INVOICE:
+                val = str(i + 1)
+            elif label == SERIAL_INVOICE:
                 # Which invoice an item belongs to. Extraction does not currently record that
                 # per item, so with a single invoice every item is 1. When a job really has
                 # several invoices this needs the extractor to tag each item with its invoice -
                 # writing a guess here would attach items to the wrong invoice.
-                line.append(str(invoice_of(i, values, rows)))
-                continue
-            if row_values is not None:
+                val = str(invoice_of(i, values, rows))
+            elif row_values is not None:
                 # This row IS invoice i+1, so its own reading of the field wins; the job-wide
                 # value is the fallback for anything that document does not carry.
-                line.append(row_values.get(label, values.get(label, "")))
-                continue
-            seq = rows.get(label)
-            if isinstance(seq, list) and seq:
-                line.append(seq[i] if i < len(seq) else "")
+                val = row_values.get(label, values.get(label, ""))
             else:
-                line.append(values.get(label, ""))
+                seq = rows.get(label)
+                val = seq[i] if isinstance(seq, list) and seq and i < len(seq) else values.get(label, "")
+            # A column may derive a narrower value from what was actually looked up above -
+            # see _TRANSFORMS. Applied last, after every other source (literal, serial,
+            # per-invoice, per-line, job-level), so it works the same regardless of where the
+            # raw value came from.
+            transform = _TRANSFORMS.get(col.get("transform") or "")
+            if transform is not None:
+                val = transform(val if isinstance(val, str) else str(val or ""))
+            line.append(val)
         # Apply each column's own width limit, if it has one.
         line = [(v if cap is None or v is None or len(str(v)) <= cap else str(v)[:cap])
                 for v, cap in zip(line, caps)]

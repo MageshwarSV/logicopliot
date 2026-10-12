@@ -124,3 +124,43 @@ def test_a_job_scoped_sheet_still_always_produces_exactly_one_row():
            "columns": [{"column": "A", "field": "consignee"}]}
     data = _rows_for_plan(plan, values={"consignee": "ACME"}, rows={})
     assert len(data) == 1
+
+
+# ---- _rows_for_plan: a column's own "transform", e.g. ContainerSize deriving its value ------- #
+# from container_type ("40HC" -> "40") without needing its own separate CustomField/FieldMark.
+
+def test_leading_digits_transform_splits_the_size_off_a_container_type_code():
+    plan = {"scope": "line", "header_row": 1,
+           "columns": [
+               {"column": "A", "field": "container_type"},
+               {"column": "B", "field": "container_type", "transform": "leading_digits"},
+           ]}
+    rows = {"container_type": ["40HC", "20GP", "45RF"]}
+    data = _rows_for_plan(plan, values={}, rows=rows)
+    # Column A (no transform) is unaffected - the raw value, exactly as every existing
+    # mapping already behaves.
+    assert [r[0] for r in data] == ["40HC", "20GP", "45RF"]
+    # Column B (transformed) carries only the leading numeric size.
+    assert [r[1] for r in data] == ["40", "20", "45"]
+
+
+def test_leading_digits_transform_is_blank_when_nothing_at_the_front_is_numeric():
+    plan = {"scope": "line", "header_row": 1,
+           "columns": [{"column": "A", "field": "container_type", "transform": "leading_digits"}]}
+    rows = {"container_type": ["", "GP"]}
+    data = _rows_for_plan(plan, values={}, rows=rows)
+    assert [r[0] for r in data] == ["", ""]
+
+
+def test_an_unknown_transform_name_is_ignored_not_raised():
+    plan = {"scope": "job", "header_row": 1,
+           "columns": [{"column": "A", "field": "consignee", "transform": "not_a_real_transform"}]}
+    data = _rows_for_plan(plan, values={"consignee": "ACME"}, rows={})
+    assert data == [["ACME"]]
+
+
+def test_transform_applies_to_a_job_level_value_too_not_only_per_line_rows():
+    plan = {"scope": "job", "header_row": 1,
+           "columns": [{"column": "A", "field": "container_type", "transform": "leading_digits"}]}
+    data = _rows_for_plan(plan, values={"container_type": "40HC"}, rows={})
+    assert data == [["40"]]
