@@ -416,6 +416,38 @@ def _is_valid_container_number(value) -> bool:
     return bool(_CONTAINER_NUMBER_RE.match(str(value or "").strip().upper()))
 
 
+_BL_DATE_NEVER_FUTURE_LABELS = {"HBL Date", "MBL Date"}
+
+
+def _clamp_bl_date_not_future(label_name: str, value: str | None) -> str | None:
+    """A Bill of Lading's own issue/on-board date is never in the future - the shipment has
+    already been made by the time this document exists. Found live on JOB-3DA007: an
+    Expeditors sea waybill printed "10/11/26", read day-first (the fixed rule every date
+    prompt uses) as 10 Nov 2026 - a date still in the future - when the carrier actually
+    meant 11 Oct 2026, month-first. Most carriers really do print day-first, so the prompt's
+    assumption stays the default; this is the deterministic backstop for the ones that
+    don't: whenever that reading lands after today, swapping the day and month back is what
+    was actually printed, since a BL can only be dated today or earlier.
+    """
+    if label_name not in _BL_DATE_NEVER_FUTURE_LABELS or not value:
+        return value
+    try:
+        parsed = datetime.strptime(value, "%d-%b-%Y").date()
+    except ValueError:
+        return value
+    today = datetime.now(timezone.utc).date()
+    if parsed <= today:
+        return value
+    if not (1 <= parsed.day <= 12):
+        # Can't be reread as a month - the order was never ambiguous, nothing to swap.
+        return value
+    try:
+        swapped = date(parsed.year, parsed.day, parsed.month)
+    except ValueError:
+        return value
+    return swapped.strftime("%d-%b-%Y") if swapped <= today else value
+
+
 def _is_truncated_reference_number(value: str, ocr_text: str) -> bool:
     """A real container number is always printed as its own complete 11-character token -
     never as the front of a longer run of digits. Found live on a 3-page OOCL waybill: the
@@ -5957,6 +5989,7 @@ def run_extraction(db: Session, job: Job) -> None:
             from app.core.llm import compute_custom_field
 
             value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+        value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
         # the per-row custom field loop's own comment for why.
@@ -6554,6 +6587,7 @@ def recompute_custom_field(
         from app.core.llm import compute_custom_field
 
         value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+        value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
 
     existing = (db.query(JobFieldValue)
