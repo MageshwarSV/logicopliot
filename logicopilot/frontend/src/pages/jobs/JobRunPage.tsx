@@ -4451,10 +4451,21 @@ function ExtractionReview({
                             .map((id) => byCustomFieldId.get(id))
                             .filter((fv): fv is JobFieldValue => !!fv),
                         }));
+                      // Only a pair that actually has something to pick between gets pulled out
+                      // of `rest` into the picker UI below - DualSourcePicker itself renders
+                      // nothing when `other` has no value (see its own `if (!other ||
+                      // !otherValue) return null`), so marking primary "paired" regardless left
+                      // it with NO box anywhere on this line: not here (excluded from rest),
+                      // not in the picker (which bailed out) - the exact same "nothing to type
+                      // into" trap the hidden_from_capture fix just addressed elsewhere. A pair
+                      // with nothing to choose between falls through to `rest` and renders as a
+                      // plain editable field instead, same as an unpaired one.
                       const pairedIds = new Set<string>();
                       pairs.forEach(({ primary, other }) => {
+                        const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
+                        if (!other || !otherValue) return;
                         pairedIds.add(primary.id);
-                        if (other) pairedIds.add(other.id);
+                        pairedIds.add(other.id);
                       });
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       return (
