@@ -5795,6 +5795,50 @@ def play_steps(
                                 i += 1
                                 resumed = True
                     for attempt in (range(ai_attempts) if not resumed else ()):
+                        # A "close the form?" popup can fire PARTWAY THROUGH an AI attempt, not
+                        # only before the loop starts (see the identical check above it) - found
+                        # live on JOB-3DA007: the popup first appeared partway through the FIRST
+                        # AI guess, so the one-time pre-loop check above missed it entirely, and
+                        # the loop kept asking the AI to guess (which kept clicking a "Close"
+                        # control that re-raised the SAME popup, round and round) instead of
+                        # pressing Save again the moment it was actually dismissed and out of the
+                        # way. Re-checked on every attempt for exactly this reason.
+                        if dismissed_destructive["flag"]:
+                            dismissed_destructive["flag"] = False
+                            prev_step = last_click_step["step"]
+                            if (prev_step and prev_step.get("action") in ("click", "submit")
+                                    and prev_step.get("selector")):
+                                prev_desc = prev_step.get("description") or prev_step.get("selector")
+                                log.append(
+                                    f"step {i + 1} {action}: a 'close the form?' popup was just "
+                                    f"dismissed - retrying {prev_desc!r} instead of guessing")
+                                try:
+                                    if present(prev_step["selector"], prev_step.get("frames") or [],
+                                              timeout=4000):
+                                        perform(prev_step, resolve(prev_step.get("value")))
+                                        _heal_page()
+                                        _settle(page)
+                                        _settle_postback(page, frames=prev_step.get("frames") or [])
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                if present(sel, frames, timeout=5000):
+                                    perform(step, val)
+                                    _heal_page()
+                                    _settle(page)
+                                    _settle_postback(page, frames=step.get("frames") or [])
+                                    log.append(f"step {i + 1} {action} ok (recorded script resumed "
+                                              f"after retrying {prev_desc!r})")
+                                    executed.add(i)
+                                    if action in ("click", "submit"):
+                                        last_click_step["step"] = step
+                                    if action in ("click", "fill", "select", "autocomplete", "submit"):
+                                        blocked = check_blocked()
+                                        if blocked:
+                                            log.append(f"Form locked after step {i + 1} — "
+                                                      f"{blocked['outcome']}: {blocked['reason']}")
+                                    i += 1
+                                    resumed = True
+                                    break
                         msg = ai_takeover(
                             f"An unexpected screen/dialog is blocking the recorded flow (e.g. an "
                             f"'already logged in, continue?' prompt, a cookie/confirmation dialog, a "
