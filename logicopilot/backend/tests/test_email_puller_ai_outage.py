@@ -1,4 +1,4 @@
-"""When the AI service itself fails (OpenAI quota exhausted, rate limited, connection error,
+﻿"""When the AI service itself fails (OpenAI quota exhausted, rate limited, connection error,
 5xx) mid-message, that message must NOT be recorded as "no customer identified" or "no
 document matched" - those are permanent verdicts that block every future ordinary poll from
 trying again, and a quota outage has nothing to do with whether the message actually matches a
@@ -75,7 +75,7 @@ def test_identify_customer_outage_leaves_the_message_completely_unclaimed(db_ses
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
          patch("app.core.classifier.identify_customer",
                side_effect=AIServiceUnavailable("insufficient_quota")):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
 
@@ -103,7 +103,7 @@ def test_classify_document_outage_rolls_back_the_tentative_job_and_unclaims(db_s
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
          patch("app.core.classifier.assign_documents_detailed",
                side_effect=AIServiceUnavailable("rate limited")):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op2@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
 
@@ -133,7 +133,7 @@ def test_a_deferred_message_is_retried_by_the_very_next_ordinary_poll(db_session
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
          patch("app.core.classifier.identify_customer",
                side_effect=AIServiceUnavailable("insufficient_quota")):
-        first = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        first = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                   mail_email="outage-op3@zoho.com", mail_app_password="x",
                                   mail_host="imap.zoho.com")
     assert first["processed"][0]["deferred"] is True
@@ -148,7 +148,7 @@ def test_a_deferred_message_is_retried_by_the_very_next_ordinary_poll(db_session
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
-        second = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        second = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op3@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
 

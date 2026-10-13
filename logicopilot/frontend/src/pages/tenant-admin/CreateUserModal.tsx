@@ -8,7 +8,7 @@ import * as usersApi from "../../api/users";
 import * as jobsApi from "../../api/jobs";
 import * as userTypesApi from "../../api/userTypes";
 import { customTypeIdOf, selectionFor, type TypeSelection, type UserType } from "../../api/userTypes";
-import type { MailProvider, Role, User } from "../../types/auth";
+import type { Role, User } from "../../types/auth";
 import { MODES } from "../../types/onboarding";
 
 type CreatableRole = "operator" | "gk2" | "manager";
@@ -52,16 +52,11 @@ export function CreateUserModal({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Gate Keeper 1 (operator) only: real access control (templates) + mailbox + an optional
-  // tab-filter (modes). mailAppPassword blank on edit means "leave the connection as-is";
-  // disconnectMail is the only way to actually clear it.
+  // Gate Keeper 1 (operator) only: real access control (templates) + an optional tab-filter
+  // (modes). Mailbox connection lives on its own, standalone Email Puller screen now (Super
+  // Admin > Settings > Email Puller) - connecting mail is no longer part of creating a user.
   const [templates, setTemplates] = useState<jobsApi.AvailableGroup[]>([]);
   const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
-  const [mailProvider, setMailProvider] = useState<MailProvider | "">("");
-  const [mailEmail, setMailEmail] = useState("");
-  const [mailAppPassword, setMailAppPassword] = useState("");
-  const [mailConnected, setMailConnected] = useState(false);
-  const [disconnectMail, setDisconnectMail] = useState(false);
 
   // Gate Keeper 1 (optional, tab-filter only) and Gate Keeper 2 (required, the real access
   // gate) both use this — Manager never does, it sees every job in the tenant unrestricted.
@@ -86,9 +81,6 @@ export function CreateUserModal({
       setModes(editUser.modes ?? []);
       if (editUser.role === "operator") {
         usersApi.getUserTemplates(editUser.id).then(setSelectedTemplates).catch(() => setSelectedTemplates([]));
-        setMailProvider(editUser.mail_provider ?? "");
-        setMailEmail(editUser.mail_email ?? "");
-        setMailConnected(!!editUser.mail_connected);
       }
     } else {
       setSelection(initialRole);
@@ -97,12 +89,7 @@ export function CreateUserModal({
       setPassword("");
       setSelectedTemplates([]);
       setModes([]);
-      setMailProvider("");
-      setMailEmail("");
-      setMailConnected(false);
     }
-    setMailAppPassword("");
-    setDisconnectMail(false);
     setError(null);
   }, [open, editUser, initialRole]);
 
@@ -112,10 +99,6 @@ export function CreateUserModal({
 
     if (role === "gk2" && modes.length === 0) {
       setError("Pick at least one shipment mode for this user to review.");
-      return;
-    }
-    if (role === "operator" && !isEdit && Boolean(mailEmail) !== Boolean(mailAppPassword)) {
-      setError("Email and app password are both required to connect a mailbox — or leave both blank.");
       return;
     }
 
@@ -128,11 +111,6 @@ export function CreateUserModal({
           ...(password ? { password } : {}),
           ...(role === "operator" || role === "gk2" ? { modes } : {}),
           ...(role === "operator" ? { template_ids: selectedTemplates } : {}),
-          ...(role === "operator" && (disconnectMail
-            ? { mail_app_password: "" }
-            : mailAppPassword
-              ? { ...(mailProvider ? { mail_provider: mailProvider } : {}), mail_email: mailEmail || undefined, mail_app_password: mailAppPassword }
-              : {})),
         });
       } else {
         await usersApi.createUser({
@@ -140,9 +118,6 @@ export function CreateUserModal({
           ...(selectedCustom ? { user_type_id: selectedCustom.id } : {}),
           ...(role === "operator" || role === "gk2" ? { modes } : {}),
           ...(role === "operator" ? { template_ids: selectedTemplates } : {}),
-          ...(role === "operator" && mailEmail && mailAppPassword
-            ? { ...(mailProvider ? { mail_provider: mailProvider } : {}), mail_email: mailEmail, mail_app_password: mailAppPassword }
-            : {}),
         });
       }
       onCreated();
@@ -205,76 +180,26 @@ export function CreateUserModal({
         />
 
         {role === "operator" && (
-          <>
-            <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-              <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
-                Connect this user's mailbox <span className="font-normal text-slate-400">(optional)</span>
-              </p>
-              {mailConnected && !disconnectMail ? (
-                <div className="flex items-center justify-between gap-2 text-sm">
-                  <span className="text-emerald-600 dark:text-emerald-400">
-                    Connected: {mailEmail} ({mailProvider})
-                  </span>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setDisconnectMail(true)}>
-                    Disconnect
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {disconnectMail && (
-                    <div className="flex items-center justify-between gap-2 text-xs text-amber-600 dark:text-amber-400">
-                      <span>The mailbox will be disconnected when you save.</span>
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setDisconnectMail(false)}>Undo</Button>
-                    </div>
-                  )}
-                  <Input label="Mailbox email" type="email" value={mailEmail} onChange={(e) => setMailEmail(e.target.value)} placeholder="user@company.com, or a custom domain either way" />
-                  <Input
-                    label="App password"
-                    type="text"
-                    value={mailAppPassword}
-                    onChange={(e) => setMailAppPassword(e.target.value)}
-                    placeholder={isEdit && mailConnected ? "Leave blank to keep the current connection" : "16-character app password"}
-                  />
-                  <p className="text-xs text-slate-400">
-                    Not the account password — a Google or Zoho app password, generated in that mailbox's own security settings.
-                  </p>
-                  <div className="flex gap-3 text-sm">
-                    <label className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                      <input type="radio" name="mail_provider" checked={mailProvider === ""} onChange={() => setMailProvider("")} />
-                      Auto-detect
-                    </label>
-                    {(["gmail", "zoho"] as const).map((p) => (
-                      <label key={p} className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                        <input type="radio" name="mail_provider" checked={mailProvider === p} onChange={() => setMailProvider(p)} />
-                        {p === "gmail" ? "Google" : "Zoho"}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Templates this user can use</p>
-              {templates.length === 0 ? (
-                <p className="text-xs text-slate-400">No approved templates yet — approve one under Data Transformation first.</p>
-              ) : (
-                <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-slate-200 p-2 dark:border-slate-700">
-                  {templates.map((t) => (
-                    <label key={t.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={selectedTemplates.includes(t.id)}
-                        onChange={(e) => setSelectedTemplates((arr) => (e.target.checked ? [...arr, t.id] : arr.filter((x) => x !== t.id)))}
-                      />
-                      {t.name}
-                    </label>
-                  ))}
-                </div>
-              )}
-              <p className="mt-1 text-xs text-slate-400">Leave all unchecked to allow every approved template.</p>
-            </div>
-          </>
+          <div>
+            <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Templates this user can use</p>
+            {templates.length === 0 ? (
+              <p className="text-xs text-slate-400">No approved templates yet — approve one under Data Transformation first.</p>
+            ) : (
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                {templates.map((t) => (
+                  <label key={t.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selectedTemplates.includes(t.id)}
+                      onChange={(e) => setSelectedTemplates((arr) => (e.target.checked ? [...arr, t.id] : arr.filter((x) => x !== t.id)))}
+                    />
+                    {t.name}
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="mt-1 text-xs text-slate-400">Leave all unchecked to allow every approved template.</p>
+          </div>
         )}
 
         {(role === "operator" || role === "gk2") && (

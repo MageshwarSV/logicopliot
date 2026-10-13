@@ -1,15 +1,35 @@
-"""Multi-mailbox email pulling: per-operator mailbox discovery, host selection, and the
-today-only date window on the IMAP search."""
+"""Multi-mailbox email pulling: Connected Mailbox discovery, host selection, and the
+today-only date window on the IMAP search.
+
+Mailboxes are their own thing now (ConnectedMailbox), independent of any operator user - see
+app/models/connected_mailbox.py's own docstring. A mailbox's tenant_id/group_id (set from the
+Email Puller settings screen) replace what used to be an operator's own UserTemplateAssignment
+scoping (see test_connected_mailboxes.py for the assignment-flow tests themselves)."""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from app.core.email_puller import _candidate_groups, _imap_host_for, _operator_mailboxes, _pull_one_mailbox
+from app.core.email_puller import _candidate_groups, _connected_mailboxes, _imap_host_for, _pull_one_mailbox
 from app.core.mail_crypto import encrypt_secret
+from app.models.connected_mailbox import ConnectedMailbox
 from app.models.custom_field import CustomField
 from app.models.template_group import TemplateGroup
-from app.models.user_template import UserTemplateAssignment
-from tests.conftest import make_tenant, make_user
+from tests.conftest import make_tenant
+
+
+def _make_mailbox(db_session, tenant=None, group=None, email="connected@zoho.com",
+                  provider="zoho", password="realsecret", paused=False):
+    mb = ConnectedMailbox(
+        provider=provider, email=email, host=_imap_host_for(provider),
+        app_password_encrypted=encrypt_secret(password),
+        tenant_id=tenant.id if tenant else None,
+        group_id=group.id if group else None,
+        paused=paused,
+    )
+    db_session.add(mb)
+    db_session.commit()
+    db_session.refresh(mb)
+    return mb
 
 
 def test_imap_host_for_provider():
@@ -18,56 +38,62 @@ def test_imap_host_for_provider():
     assert _imap_host_for(None) == "imap.gmail.com"  # unset defaults to gmail, not an error
 
 
-def test_operator_mailboxes_returns_only_operators_with_a_connected_inbox(db_session):
+def test_connected_mailboxes_excludes_unassigned_ones(db_session):
     tenant = make_tenant(db_session)
-    connected = make_user(db_session, role="operator", tenant=tenant, full_name="Connected Op",
-                          email="connected@example.com")
-    connected.mail_provider = "zoho"
-    connected.mail_email = "connected@zoho.com"
-    connected.mail_app_password_encrypted = encrypt_secret("realsecret")
-    not_connected = make_user(db_session, role="operator", tenant=tenant, full_name="No Mailbox",
-                              email="no-mailbox@example.com")
-    inactive = make_user(db_session, role="operator", tenant=tenant, full_name="Inactive",
-                         email="inactive@example.com", is_active=False)
-    inactive.mail_provider = "gmail"
-    inactive.mail_email = "inactive@gmail.com"
-    inactive.mail_app_password_encrypted = encrypt_secret("whatever")
-    db_session.add_all([connected, not_connected, inactive])
-    db_session.commit()
+    _make_mailbox(db_session, tenant=tenant, email="assigned@zoho.com")
+    _make_mailbox(db_session, tenant=None, email="unassigned@zoho.com")  # no tenant yet
 
-    out = _operator_mailboxes(db_session)
+    out = _connected_mailboxes(db_session)
+    emails = {m["email"] for m in out}
+    assert "assigned@zoho.com" in emails
+    assert "unassigned@zoho.com" not in emails
+
+
+def test_connected_mailboxes_excludes_a_paused_one(db_session):
+    tenant = make_tenant(db_session)
+    _make_mailbox(db_session, tenant=tenant, email="active@zoho.com")
+    _make_mailbox(db_session, tenant=tenant, email="paused@zoho.com", paused=True)
+
+    out = _connected_mailboxes(db_session)
+    emails = {m["email"] for m in out}
+    assert "active@zoho.com" in emails
+    assert "paused@zoho.com" not in emails
+
+
+def test_connected_mailboxes_returns_decrypted_password_and_host(db_session):
+    tenant = make_tenant(db_session)
+    _make_mailbox(db_session, tenant=tenant, email="connected@zoho.com", provider="zoho",
+                  password="realsecret")
+
+    out = _connected_mailboxes(db_session)
     assert len(out) == 1
-    assert out[0]["operator_id"] == connected.id
     assert out[0]["email"] == "connected@zoho.com"
     assert out[0]["password"] == "realsecret"
     assert out[0]["host"] == "imap.zoho.com"
+    assert out[0]["tenant_id"] == tenant.id
+    assert out[0]["group_id"] is None
 
 
-def test_operator_mailboxes_scopes_to_tenant(db_session):
+def test_connected_mailboxes_scopes_to_tenant(db_session):
     tenant_a = make_tenant(db_session, name="Tenant A")
     tenant_b = make_tenant(db_session, name="Tenant B")
-    op_a = make_user(db_session, role="operator", tenant=tenant_a, email="opa@example.com")
-    op_a.mail_provider, op_a.mail_email = "gmail", "a@gmail.com"
-    op_a.mail_app_password_encrypted = encrypt_secret("pw-a")
-    op_b = make_user(db_session, role="operator", tenant=tenant_b, email="opb@example.com")
-    op_b.mail_provider, op_b.mail_email = "gmail", "b@gmail.com"
-    op_b.mail_app_password_encrypted = encrypt_secret("pw-b")
-    db_session.add_all([op_a, op_b])
-    db_session.commit()
+    _make_mailbox(db_session, tenant=tenant_a, email="a@gmail.com", provider="gmail")
+    _make_mailbox(db_session, tenant=tenant_b, email="b@gmail.com", provider="gmail")
 
-    out = _operator_mailboxes(db_session, tenant_id=tenant_a.id)
+    out = _connected_mailboxes(db_session, tenant_id=tenant_a.id)
     assert [m["email"] for m in out] == ["a@gmail.com"]
 
 
-def test_operator_mailboxes_skips_undecryptable_password_without_raising(db_session, caplog):
+def test_connected_mailboxes_skips_undecryptable_password_without_raising(db_session):
     tenant = make_tenant(db_session)
-    op = make_user(db_session, role="operator", tenant=tenant, email="broken-pw@example.com")
-    op.mail_provider, op.mail_email = "gmail", "broken@gmail.com"
-    op.mail_app_password_encrypted = "not-actually-encrypted-garbage"
-    db_session.add(op)
+    mb = ConnectedMailbox(
+        provider="gmail", email="broken@gmail.com", host="imap.gmail.com",
+        app_password_encrypted="not-actually-encrypted-garbage", tenant_id=tenant.id,
+    )
+    db_session.add(mb)
     db_session.commit()
 
-    out = _operator_mailboxes(db_session)  # must not raise
+    out = _connected_mailboxes(db_session)  # must not raise
     assert out == []
 
 
@@ -79,9 +105,7 @@ def _mock_conn_no_messages():
 
 def test_pull_one_mailbox_searches_only_todays_unread_mail(db_session):
     tenant = make_tenant(db_session)
-    operator = make_user(db_session, role="operator", tenant=tenant, email="puller-op@example.com")
-    group = TemplateGroup(tenant_id=tenant.id, name="Test Customer", status="ready",
-                          pull_operator_id=operator.id)
+    group = TemplateGroup(tenant_id=tenant.id, name="Test Customer", status="ready")
     db_session.add(group)
     db_session.flush()
     db_session.add(CustomField(
@@ -92,7 +116,7 @@ def test_pull_one_mailbox_searches_only_todays_unread_mail(db_session):
 
     conn = _mock_conn_no_messages()
     with patch("app.core.email_puller._connect", return_value=conn):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=operator.id)
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id)
 
     assert result["ok"] is True
     conn.select.assert_called_once_with("INBOX")
@@ -113,9 +137,7 @@ def test_reexamine_searches_all_mail_not_just_unread(db_session):
     # exclude the very message reexamine is meant to reach. Confirms the search widens to
     # ALL, still within today's date window, when reexamine=True.
     tenant = make_tenant(db_session)
-    operator = make_user(db_session, role="operator", tenant=tenant, email="reexamine-op@example.com")
-    group = TemplateGroup(tenant_id=tenant.id, name="Test Customer 2", status="ready",
-                          pull_operator_id=operator.id)
+    group = TemplateGroup(tenant_id=tenant.id, name="Test Customer 2", status="ready")
     db_session.add(group)
     db_session.flush()
     db_session.add(CustomField(
@@ -126,7 +148,8 @@ def test_reexamine_searches_all_mail_not_just_unread(db_session):
 
     conn = _mock_conn_no_messages()
     with patch("app.core.email_puller._connect", return_value=conn):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=operator.id, reexamine=True)
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
+                                   reexamine=True)
 
     assert result["ok"] is True
     args = conn.search.call_args[0]
@@ -136,71 +159,34 @@ def test_reexamine_searches_all_mail_not_just_unread(db_session):
 def test_pull_one_mailbox_with_no_candidate_groups_never_connects(db_session):
     tenant = make_tenant(db_session)
     with patch("app.core.email_puller._connect") as mock_connect:
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id="nobody")
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id)
     mock_connect.assert_not_called()
     assert result["ok"] is True
     assert result["processed"] == []
 
 
 # --------------------------------------------------------------------------- #
-# _candidate_groups — a personal mailbox is scoped by TEMPLATE ASSIGNMENTS, not
-# pull_operator_id, so several operators can each have their own mailbox pulling
-# into the very same template.
+# _candidate_groups — tenant filtering only now; a mailbox's own group_id (forced_group_id,
+# see _pull_one_mailbox above) is what used to be operator-scoped assignment.
 # --------------------------------------------------------------------------- #
 
-def test_candidate_groups_for_operator_uses_template_assignment_not_pull_operator_id(db_session):
-    tenant = make_tenant(db_session)
-    op = make_user(db_session, role="operator", tenant=tenant, email="assigned-op@example.com")
-    other_op = make_user(db_session, role="operator", tenant=tenant, email="other-pull-op@example.com")
-    # pull_operator_id points at a COMPLETELY different operator - the old single-operator
-    # field - yet `op` is still a valid candidate purely from their own assignment.
-    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="ready",
-                          pull_operator_id=other_op.id)
-    db_session.add(group)
-    db_session.flush()
-    db_session.add(UserTemplateAssignment(tenant_id=tenant.id, user_id=op.id, group_id=group.id))
+def test_candidate_groups_scopes_to_tenant(db_session):
+    tenant_a = make_tenant(db_session, name="Tenant A")
+    tenant_b = make_tenant(db_session, name="Tenant B")
+    g1 = TemplateGroup(tenant_id=tenant_a.id, name="A", status="ready")
+    g2 = TemplateGroup(tenant_id=tenant_b.id, name="B", status="ready")
+    db_session.add_all([g1, g2])
     db_session.commit()
 
-    result = _candidate_groups(db_session, tenant.id, op.id)
-    assert [g.id for g in result] == [group.id]
+    assert [g.id for g in _candidate_groups(db_session, tenant_a.id)] == [g1.id]
 
 
-def test_candidate_groups_lets_two_operators_share_the_same_template(db_session):
+def test_candidate_groups_with_no_tenant_sees_every_template(db_session):
     tenant = make_tenant(db_session)
-    priya = make_user(db_session, role="operator", tenant=tenant, email="priya@example.com")
-    arun = make_user(db_session, role="operator", tenant=tenant, email="arun@example.com")
-    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="ready")
-    db_session.add(group)
-    db_session.flush()
-    db_session.add(UserTemplateAssignment(tenant_id=tenant.id, user_id=priya.id, group_id=group.id))
-    db_session.add(UserTemplateAssignment(tenant_id=tenant.id, user_id=arun.id, group_id=group.id))
-    db_session.commit()
-
-    assert [g.id for g in _candidate_groups(db_session, tenant.id, priya.id)] == [group.id]
-    assert [g.id for g in _candidate_groups(db_session, tenant.id, arun.id)] == [group.id]
-
-
-def test_candidate_groups_with_no_assignments_sees_every_template_in_tenant(db_session):
-    tenant = make_tenant(db_session)
-    op = make_user(db_session, role="operator", tenant=tenant, email="unrestricted@example.com")
     g1 = TemplateGroup(tenant_id=tenant.id, name="A", status="ready")
     g2 = TemplateGroup(tenant_id=tenant.id, name="B", status="ready")
     db_session.add_all([g1, g2])
     db_session.commit()
 
-    result = {g.id for g in _candidate_groups(db_session, tenant.id, op.id)}
-    assert result == {g1.id, g2.id}
-
-
-def test_candidate_groups_assignment_to_one_template_excludes_the_other(db_session):
-    tenant = make_tenant(db_session)
-    op = make_user(db_session, role="operator", tenant=tenant, email="restricted@example.com")
-    g1 = TemplateGroup(tenant_id=tenant.id, name="Allowed", status="ready")
-    g2 = TemplateGroup(tenant_id=tenant.id, name="Not allowed", status="ready")
-    db_session.add_all([g1, g2])
-    db_session.flush()
-    db_session.add(UserTemplateAssignment(tenant_id=tenant.id, user_id=op.id, group_id=g1.id))
-    db_session.commit()
-
-    result = [g.id for g in _candidate_groups(db_session, tenant.id, op.id)]
-    assert result == [g1.id]
+    result = {g.id for g in _candidate_groups(db_session, None)}
+    assert {g1.id, g2.id} <= result

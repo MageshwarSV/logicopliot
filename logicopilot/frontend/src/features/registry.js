@@ -31,4 +31,8 @@ export const superAdminFeatures = [
   // letterhead page) and any future email-pulled document containing a near-identical page
   // has it dropped automatically - pure text comparison, never AI.
   { path: "/super-admin/filter-pages", navLabel: "Page Filter", order: 10 },
+  // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
+  // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
+  // "New User" form.
+  { path: "/super-admin/email-puller", navLabel: "Email Puller", order: 11 },
 ].sort((a, b) => a.order - b.order);

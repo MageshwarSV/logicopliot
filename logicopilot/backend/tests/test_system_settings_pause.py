@@ -1,4 +1,4 @@
-"""A Super Admin's live pause switches for email pull and extraction - a database-backed
+﻿"""A Super Admin's live pause switches for email pull and extraction - a database-backed
 setting (not app.core.config.Settings, which is cached for the process lifetime) so a button
 press takes effect on the very next call, no restart. Turning email pull's pause ON also
 clears any message caught mid-read ("working" verdict): it was opened but nothing completed
@@ -33,7 +33,7 @@ def test_pull_inbox_does_nothing_at_all_when_email_pull_is_paused(db_session):
     db_session.commit()
 
     with patch("app.core.email_puller._connect") as mock_connect, \
-         patch("app.core.email_puller._operator_mailboxes") as mock_mailboxes:
+         patch("app.core.email_puller._connected_mailboxes") as mock_mailboxes:
         result = pull_inbox(db_session)
 
     assert result["ok"] is True

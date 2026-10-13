@@ -11,6 +11,7 @@ from app.api.v1.jobs import router as jobs_router
 from app.api.v1.reviews import router as reviews_router
 from app.api.v1.erp_scripts import router as erp_scripts_router
 from app.api.v1.email import router as email_router
+from app.api.v1.email_puller_mailboxes import router as email_puller_mailboxes_router
 from app.api.v1.entry_browser import router as entry_browser_router
 from app.api.v1.pending_mail import router as pending_mail_router
 from app.api.v1.system_settings import router as system_settings_router
@@ -29,6 +30,7 @@ api_router.include_router(jobs_router)
 api_router.include_router(reviews_router)
 api_router.include_router(erp_scripts_router)
 api_router.include_router(email_router)
+api_router.include_router(email_puller_mailboxes_router)
 api_router.include_router(entry_browser_router)
 api_router.include_router(pending_mail_router)
 api_router.include_router(system_settings_router)

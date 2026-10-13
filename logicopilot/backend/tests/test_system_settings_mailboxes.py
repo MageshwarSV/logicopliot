@@ -1,7 +1,12 @@
 """Per-mailbox pause (User.mail_paused) - lets a Super Admin stop ONE operator's noisy or
 misconfigured mailbox from the Settings page without touching the system-wide email_pull_paused
-switch (test_system_settings_pause.py) or any other operator's inbox."""
-from app.core.email_puller import _operator_mailboxes
+switch (test_system_settings_pause.py) or any other operator's inbox.
+
+This is the OLD User-based mailbox mechanism, kept in place (unused by the live puller, which
+now reads ConnectedMailbox instead - see test_email_puller.py / test_connected_mailboxes.py)
+for reversibility, per app/models/connected_mailbox.py's own migration note. These endpoints
+(app/api/v1/system_settings.py) were deliberately left untouched, so this coverage stays
+valid for them specifically."""
 from tests.conftest import login, make_tenant, make_user
 
 
@@ -12,27 +17,6 @@ def _connect_mailbox(db_session, user, email="op@example.com", provider="zoho"):
     db_session.commit()
     db_session.refresh(user)
     return user
-
-
-def test_operator_mailboxes_excludes_a_paused_one(db_session):
-    tenant = make_tenant(db_session)
-    active_op = make_user(db_session, role="operator", tenant=tenant, email="active-op@example.com")
-    _connect_mailbox(db_session, active_op, email="active-op-mail@example.com")
-
-    paused_op = make_user(db_session, role="operator", tenant=tenant, email="paused-op@example.com")
-    _connect_mailbox(db_session, paused_op, email="paused-op-mail@example.com")
-    paused_op.mail_paused = True
-    db_session.commit()
-
-    from unittest.mock import patch
-    # decrypt_secret is imported inline inside _operator_mailboxes - patch its real home so
-    # that late import picks up the stub instead of trying to decrypt the fake secret above.
-    with patch("app.core.mail_crypto.decrypt_secret", side_effect=lambda v: v):
-        boxes = _operator_mailboxes(db_session)
-
-    emails = {b["email"] for b in boxes}
-    assert "active-op-mail@example.com" in emails
-    assert "paused-op-mail@example.com" not in emails
 
 
 def test_list_mailboxes_requires_super_admin(client, db_session):

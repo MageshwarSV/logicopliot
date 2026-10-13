@@ -23,6 +23,7 @@ import { DataTransformationPage } from "../pages/super-admin/DataTransformationP
 import { DataTransformationDetailPage } from "../pages/super-admin/DataTransformationDetailPage";
 import { PendingMailPage } from "../pages/super-admin/PendingMailPage";
 import { SettingsPage } from "../pages/super-admin/SettingsPage";
+import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 
@@ -92,6 +93,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <SettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/email-puller"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <EmailPullerPage />
           </ProtectedRoute>
         }
       />

@@ -35,8 +35,10 @@ def email_pull(
     """Pull unread messages and auto-create jobs for the customer the DOCUMENTS name.
 
     - Super Admin: all tenants' customers.
-    - Tenant Admin: their tenant's customers.
-    - Operator: only customers routed to them (their own mail).
+    - Tenant Admin / Operator: their own tenant's customers - every mailbox connected and
+      assigned to it (see ConnectedMailbox), not just one person's own mail. A mailbox is
+      never owned by one operator any more (see the Email Puller settings screen), so there
+      is no narrower "my own mail" to restrict an operator's own press of this button to.
 
     `reexamine=true` looks again at messages already examined and set aside. Use it after
     configuring a customer who had none: their earlier mail was deliberately left unread for
@@ -44,6 +46,4 @@ def email_pull(
     """
     if user.role == SUPER_ADMIN:
         return pull_inbox(db, reexamine=reexamine)
-    if user.role == TENANT_ADMIN:
-        return pull_inbox(db, tenant_id=user.tenant_id, reexamine=reexamine)
-    return pull_inbox(db, tenant_id=user.tenant_id, operator_id=user.id, reexamine=reexamine)
+    return pull_inbox(db, tenant_id=user.tenant_id, reexamine=reexamine)

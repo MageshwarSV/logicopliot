@@ -1,4 +1,4 @@
-"""Email auto-pull now classifies every page of a combined/multi-page attachment from its
+﻿"""Email auto-pull now classifies every page of a combined/multi-page attachment from its
 own image under the vision engine, the same fix Smart Upload already got - a page landing in
 the wrong slot is just as real a bug arriving by mail as uploaded by hand. Confirms
 _pull_one_mailbox reaches assign_documents_detailed with per_page_vision=True regardless of
@@ -64,7 +64,7 @@ def test_email_pull_reaches_assign_documents_detailed_with_per_page_vision(db_se
          patch("app.core.docai.ocr_page_image", return_value={"text": "bill of lading", "tokens": []}), \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]) as mock_assign:
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="vis-op@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
 
@@ -86,7 +86,7 @@ def test_email_pull_under_the_vision_engine_also_passes_per_page_vision(db_sessi
          patch("app.core.docai.ocr_page_image", return_value={"text": "bill of lading", "tokens": []}), \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]) as mock_assign:
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="vis-op2@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
 

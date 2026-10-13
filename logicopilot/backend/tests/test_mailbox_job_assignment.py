@@ -1,10 +1,11 @@
-"""Every new job starts Unassigned, even one pulled from an operator's own connected
-mailbox - assignment is now always a deliberate action from the Jobs list' own dropdown,
-never an automatic side effect of WHICH MAILBOX it arrived in or the template's
-pull_operator_id. The one exception: the message's own SENDER is themselves a real,
-already-registered operator (their login email or their own connected mailbox) - there the
-job already has an unambiguous owner the moment it lands, and leaving it Unassigned just
-made that operator hunt through the shared list for what they had just sent in."""
+"""Every new job starts Unassigned, even one pulled from a mailbox explicitly assigned to one
+template (ConnectedMailbox.group_id - see forced_group_id in _pull_one_mailbox) - assignment
+is now always a deliberate action from the Jobs list' own dropdown, never an automatic side
+effect of WHICH MAILBOX it arrived in or the template's pull_operator_id. The one exception:
+the message's own SENDER is themselves a real, already-registered operator (their own LOGIN
+email) - there the job already has an unambiguous owner the moment it lands, and leaving it
+Unassigned just made that operator hunt through the shared list for what they had just sent
+in."""
 
 import email
 import io
@@ -72,7 +73,7 @@ def test_job_from_personal_mailbox_starts_unassigned_regardless_of_pull_operator
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=mailbox_owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email=mailbox_owner.mail_email or "owner@zoho.com",
                                    mail_app_password="whatever", mail_host="imap.zoho.com")
 
@@ -111,7 +112,7 @@ def test_job_auto_assigns_when_the_sender_is_themselves_a_registered_operator(db
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=mailbox_owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email=mailbox_owner.mail_email or "owner@zoho.com",
                                    mail_app_password="whatever", mail_host="imap.zoho.com")
 
@@ -122,10 +123,11 @@ def test_job_auto_assigns_when_the_sender_is_themselves_a_registered_operator(db
 
 
 def test_single_template_mailbox_routes_without_any_customer_identifier_configured(db_session):
-    # The real case that prompted this: an operator's mailbox connected to exactly ONE
-    # template, with NO consignee/IEC/GSTIN configured on it at all - previously this
-    # would have been rejected outright ("no candidates"). A dedicated single-template
-    # mailbox has nowhere else the mail could belong, so it must still route successfully.
+    # The real case that prompted this: a mailbox assigned to exactly ONE template
+    # (ConnectedMailbox.group_id, i.e. forced_group_id here), with NO consignee/IEC/GSTIN
+    # configured on it at all - previously this would have been rejected outright ("no
+    # candidates"). A dedicated single-template mailbox has nowhere else the mail could
+    # belong, so it must still route successfully.
     tenant = make_tenant(db_session)
     owner = make_user(db_session, role="operator", tenant=tenant, email="solo-owner@example.com")
     group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="ready")
@@ -144,7 +146,7 @@ def test_single_template_mailbox_routes_without_any_customer_identifier_configur
          patch("app.core.classifier.identify_customer") as mock_identify, \
          patch("app.core.classifier.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="solo-owner@zoho.com", mail_app_password="whatever",
                                    mail_host="imap.zoho.com")
 
@@ -156,10 +158,11 @@ def test_single_template_mailbox_routes_without_any_customer_identifier_configur
     assert jobs[0].assigned_operator_id is None
 
 
-def test_operator_with_two_templates_still_requires_content_identification(db_session):
-    # The safety behaviour this must NOT remove: an operator connected to more than one
-    # template still needs the documents to say which one they belong to - there IS
-    # ambiguity to resolve here, unlike the single-template case above.
+def test_tenant_assigned_mailbox_with_two_templates_still_requires_content_identification(db_session):
+    # The safety behaviour this must NOT remove: a mailbox assigned to a TENANT but not one
+    # specific template (forced_group_id left unset) still needs the documents to say which
+    # one they belong to - there IS ambiguity to resolve here, unlike the single-template
+    # case above.
     tenant = make_tenant(db_session)
     owner = make_user(db_session, role="operator", tenant=tenant, email="multi-owner@example.com")
     group_a = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="ready")
@@ -180,7 +183,7 @@ def test_operator_with_two_templates_still_requires_content_identification(db_se
          patch("app.core.classifier.identify_customer",
                return_value={"keys": [], "reason": "no match", "evidence": ""}) as mock_identify, \
          patch("app.core.classifier.assign_documents_detailed", return_value=[[]]):
-        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, operator_id=owner.id,
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="multi-owner@zoho.com", mail_app_password="whatever",
                                    mail_host="imap.zoho.com")
 
@@ -194,15 +197,6 @@ def test_operator_matching_sender_matches_by_login_email(db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="malar@example.com")
 
     assert _operator_matching_sender(db_session, tenant.id, "MALAR@example.com") == op.id
-
-
-def test_operator_matching_sender_matches_by_connected_mailbox(db_session):
-    tenant = make_tenant(db_session)
-    op = make_user(db_session, role="operator", tenant=tenant, email="internal-login@example.com")
-    op.mail_email = "malar@zoho.com"
-    db_session.commit()
-
-    assert _operator_matching_sender(db_session, tenant.id, "malar@zoho.com") == op.id
 
 
 def test_operator_matching_sender_returns_none_for_an_unregistered_address(db_session):

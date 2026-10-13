@@ -1,4 +1,4 @@
-"""_pull_inbox used to read every connected mailbox ONE AFTER ANOTHER in a single loop - a
+﻿"""_pull_inbox used to read every connected mailbox ONE AFTER ANOTHER in a single loop - a
 real bottleneck once more than a couple of operators connect their own mailbox, since reading
 one is minutes of work (OCR every page, then AI calls per document). A mailbox near the end of
 the list could go unchecked through an entire poll cycle. These tests exercise the fix: each
@@ -16,7 +16,8 @@ from app.core.email_puller import _pull_inbox, _record_cycle_status, get_last_cy
 
 def _sources(n: int) -> list[dict]:
     return [
-        {"operator_id": f"op-{i}", "email": f"op{i}@example.com", "password": "pw", "host": "imap.zoho.in"}
+        {"mailbox_id": f"mb-{i}", "email": f"op{i}@example.com", "password": "pw",
+         "host": "imap.zoho.in", "tenant_id": f"tenant-{i}", "group_id": None}
         for i in range(n)
     ]
 
@@ -28,7 +29,7 @@ def _patched(sources, side_effect=None, return_value=None, workers=None):
     settings.gmail_user = ""
     patches = [
         patch("app.core.email_puller.get_settings", return_value=settings),
-        patch("app.core.email_puller._operator_mailboxes", return_value=sources),
+        patch("app.core.email_puller._connected_mailboxes", return_value=sources),
         patch("app.db.session.SessionLocal", return_value=MagicMock()),
         patch("app.core.system_settings.get_email_poll_workers",
              return_value=workers if workers is not None else 4),
@@ -53,8 +54,8 @@ def _exit_all(patches):
 def test_pull_inbox_reports_how_many_mailboxes_were_attempted_and_how_many_succeeded():
     sources = _sources(5)
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
-        if operator_id in ("op-1", "op-3"):
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
+        if kw.get("mail_email") in ("op1@example.com", "op3@example.com"):
             return {"ok": False, "error": "bad credentials"}
         return {"ok": True, "processed": []}
 
@@ -86,10 +87,11 @@ def test_every_connected_mailbox_is_pulled_not_just_the_first_few():
 def test_results_from_every_mailbox_are_merged_including_errors_and_notes():
     sources = _sources(3)
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
-        if operator_id == "op-0":
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
+        email = kw.get("mail_email")
+        if email == "op0@example.com":
             return {"ok": True, "processed": [{"job_id": "job-a"}]}
-        if operator_id == "op-1":
+        if email == "op1@example.com":
             return {"ok": False, "error": "bad credentials"}
         return {"ok": True, "processed": [], "note": "nothing new"}
 
@@ -107,10 +109,11 @@ def test_results_from_every_mailbox_are_merged_including_errors_and_notes():
 def test_one_mailbox_raising_an_exception_does_not_stop_the_others():
     sources = _sources(3)
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
-        if operator_id == "op-1":
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
+        email = kw.get("mail_email")
+        if email == "op1@example.com":
             raise RuntimeError("IMAP connection reset")
-        return {"ok": True, "processed": [{"job_id": operator_id}]}
+        return {"ok": True, "processed": [{"job_id": email}]}
 
     patches = _patched(sources, side_effect=side_effect)
     _enter_all(patches)
@@ -120,7 +123,7 @@ def test_one_mailbox_raising_an_exception_does_not_stop_the_others():
         _exit_all(patches)
 
     processed_ids = {p["job_id"] for p in result["processed"]}
-    assert processed_ids == {"op-0", "op-2"}
+    assert processed_ids == {"op0@example.com", "op2@example.com"}
     assert any("IMAP connection reset" in e for e in result["mailbox_errors"])
 
 
@@ -131,7 +134,7 @@ def test_mailboxes_are_actually_read_concurrently_not_one_after_another():
     # relabelled version of the old loop.
     sources = _sources(10)
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
         time.sleep(0.1)
         return {"ok": True, "processed": []}
 
@@ -153,7 +156,7 @@ def test_worker_count_never_exceeds_the_configured_limit():
     max_seen = 0
     lock = threading.Lock()
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
         nonlocal in_flight, max_seen
         with lock:
             in_flight += 1
@@ -190,13 +193,13 @@ def test_each_mailbox_gets_its_own_db_session_not_the_callers():
     sources = _sources(3)
     seen_sessions = []
 
-    def side_effect(db, tenant_id, max_messages, operator_id, reexamine, **kw):
+    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
         seen_sessions.append(db)
         return {"ok": True, "processed": []}
 
     patches = [
         patch("app.core.email_puller.get_settings", return_value=MagicMock(gmail_user="")),
-        patch("app.core.email_puller._operator_mailboxes", return_value=sources),
+        patch("app.core.email_puller._connected_mailboxes", return_value=sources),
         patch("app.db.session.SessionLocal", side_effect=lambda: MagicMock()),
         patch("app.core.system_settings.get_email_poll_workers", return_value=4),
         patch("app.core.email_puller._pull_one_mailbox", side_effect=side_effect),

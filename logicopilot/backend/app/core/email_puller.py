@@ -104,8 +104,8 @@ def get_last_cycle_status(db: "_Session") -> dict:
 
 def start_scheduler() -> bool:
     """Start the background inbox poller if enabled and any mailbox is configured — the
-    tenant's shared inbox, or at least one operator's own. Idempotent — calling it more than
-    once is a no-op. Returns True if it started."""
+    tenant's shared inbox, or at least one connected (and tenant-assigned) mailbox. Idempotent
+    — calling it more than once is a no-op. Returns True if it started."""
     global _scheduler_started
     settings = get_settings()
     interval = max(0, settings.email_poll_minutes)
@@ -116,11 +116,11 @@ def start_scheduler() -> bool:
 
         db = SessionLocal()
         try:
-            has_operator_mailbox = bool(_operator_mailboxes(db))
+            has_connected_mailbox = bool(_connected_mailboxes(db))
         finally:
             db.close()
-        if not has_operator_mailbox:
-            logger.info("email poller disabled: no mailbox configured (shared or per-operator)")
+        if not has_connected_mailbox:
+            logger.info("email poller disabled: no mailbox configured (shared or connected)")
             return False
 
     def _loop():
@@ -200,50 +200,52 @@ def _connect(email: str | None = None, app_password: str | None = None,
     return conn
 
 
-def _operator_mailboxes(db: Session, tenant_id: str | None = None) -> list[dict]:
-    """Every active, non-paused operator with their own mailbox connected, credentials
-    decrypted and ready to hand to _connect(). A mailbox that fails to decrypt (a rotated JWT
-    secret, most likely) is skipped rather than raised — the shared inbox and every other
-    operator's mailbox must still get polled.
+def _connected_mailboxes(db: Session, tenant_id: str | None = None) -> list[dict]:
+    """Every connected, non-paused, TENANT-ASSIGNED mailbox, credentials decrypted and ready
+    to hand to _connect(). Unassigned (tenant_id is null) mailboxes are excluded here, not
+    just elsewhere - there is nowhere for their mail to be routed to yet. A mailbox that fails
+    to decrypt (a rotated JWT secret, most likely) is skipped rather than raised - every other
+    mailbox must still get polled.
 
-    User.mail_paused (a per-mailbox switch, Super Admin's Settings page) is excluded here the
-    same way the system-wide email_pull_paused flag is checked before this function is ever
-    called — one mailbox can be stopped without touching anyone else's."""
-    from app.models.user import OPERATOR, User
+    paused (the Email Puller screen's own per-mailbox switch) is excluded here the same way
+    the system-wide email_pull_paused flag is checked before this function is ever called -
+    one mailbox can be stopped without touching anyone else's."""
+    from app.core.mail_crypto import decrypt_secret
+    from app.models.connected_mailbox import ConnectedMailbox
 
-    query = db.query(User).filter(
-        User.role == OPERATOR, User.is_active.is_(True),
-        User.mail_email.isnot(None), User.mail_app_password_encrypted.isnot(None),
-        User.mail_paused.is_(False),
+    query = db.query(ConnectedMailbox).filter(
+        ConnectedMailbox.tenant_id.isnot(None), ConnectedMailbox.paused.is_(False),
     )
     if tenant_id:
-        query = query.filter(User.tenant_id == tenant_id)
+        query = query.filter(ConnectedMailbox.tenant_id == tenant_id)
     out = []
-    for u in query.all():
+    for mb in query.all():
         try:
-            from app.core.mail_crypto import decrypt_secret
-
-            password = decrypt_secret(u.mail_app_password_encrypted)
+            password = decrypt_secret(mb.app_password_encrypted)
         except Exception:  # noqa: BLE001
-            logger.exception("could not decrypt mail credentials for operator %s", u.id)
+            logger.exception("could not decrypt mail credentials for mailbox %s", mb.id)
             continue
         out.append({
-            "operator_id": u.id, "email": u.mail_email, "password": password,
+            "mailbox_id": mb.id, "email": mb.email, "password": password,
             # The exact host verified at connect time (matters for Zoho's regional data
-            # centers) - a mailbox connected before this existed has none, so it falls
-            # back to the provider's global default until re-verified.
-            "host": u.mail_host or _imap_host_for(u.mail_provider),
+            # centers) - an empty one (carried over from a pre-this-table mailbox that never
+            # had it) falls back to the provider's global default.
+            "host": mb.host or _imap_host_for(mb.provider),
+            "tenant_id": mb.tenant_id, "group_id": mb.group_id,
         })
     return out
 
 
 def _operator_matching_sender(db: Session, tenant_id: str, sender: str) -> str | None:
-    """The active operator this message's SENDER actually is, if any - matched against
-    either their login email or their own connected mailbox (User.mail_email; see
-    _operator_mailboxes above), whichever the message came from. Not a mailbox-routing
-    rule (see the job-creation comment this feeds): a shared inbox forwarding six
-    importers' mail is never "one operator's" jobs, but a message FROM a real operator's
-    own address unambiguously already has one.
+    """The active operator this message's SENDER actually is, if any - matched against their
+    own LOGIN email. Not a mailbox-routing rule (see the job-creation comment this feeds): a
+    shared inbox forwarding six importers' mail is never "one operator's" jobs, but a message
+    FROM a real operator's own address unambiguously already has one.
+
+    Used to also match User.mail_email (an operator's own connected mailbox, back when a
+    mailbox was owned by one operator user) - mailboxes are their own thing now (see
+    ConnectedMailbox), never tied to a specific operator, so that half no longer has anything
+    meaningful to compare against for a mailbox connected since.
     """
     sender = (sender or "").strip().lower()
     if not sender:
@@ -252,7 +254,7 @@ def _operator_matching_sender(db: Session, tenant_id: str, sender: str) -> str |
         db.query(User)
         .filter(
             User.tenant_id == tenant_id, User.role == OPERATOR, User.is_active.is_(True),
-            (func.lower(User.email) == sender) | (func.lower(User.mail_email) == sender),
+            func.lower(User.email) == sender,
         )
         .first()
     )
@@ -391,41 +393,26 @@ def _body_text(msg: email.message.Message) -> str:
     return ""
 
 
-def _candidate_groups(db: Session, tenant_id: str | None,
-                      operator_id: str | None) -> list[TemplateGroup]:
+def _candidate_groups(db: Session, tenant_id: str | None) -> list[TemplateGroup]:
     """Every customer this pull is allowed to route to.
 
     Note what is NOT here: a filter on pull_email. Which customer a document belongs to is read
     off the document, so a customer with no address configured is still a candidate - that is
     exactly the case (a first-time sender) the old address matching could never handle.
 
-    `operator_id` scopes to ONE operator's OWN connected mailbox (see _operator_mailboxes) -
-    the shared inbox is never scoped this way (it always passes None; a shared customer's mail
-    is matched against every template, and which operator SEES the resulting job is decided
-    afterwards, from that template's own pull_operator_id, once the match is known).
+    `tenant_id` scopes a mailbox-specific pull to that ONE mailbox's own assigned tenant (see
+    _connected_mailboxes) - the shared inbox passes whatever the caller's own tenant filter is
+    (None = every tenant), since it is never assigned to one tenant itself.
 
-    A personal mailbox is scoped by this operator's own TEMPLATE ASSIGNMENTS (the same "which
-    templates can this operator use" list the wizard and available_groups already use) - NOT
-    by pull_operator_id, which is a single field and so could only ever name ONE operator per
-    template. Several operators, each with their own connected mailbox, need to be able to
-    share the very same template - Sea Import handled by both Priya and Arun, say - and that
-    is only possible if each one's own mailbox is scoped by their OWN assignment, not by a
-    field that can hold just one operator's id at a time.
+    Used to also narrow further by an operator's own UserTemplateAssignment rows, back when a
+    mailbox was owned by one operator user - mailboxes are their own thing now (see
+    ConnectedMailbox), each with its own tenant_id/group_id assigned directly, so that
+    narrowing has moved to the caller (_pull_one_mailbox's own forced_group_id) rather than
+    living here.
     """
     query = db.query(TemplateGroup)
     if tenant_id:
         query = query.filter(TemplateGroup.tenant_id == tenant_id)
-    if operator_id:
-        from app.models.user_template import UserTemplateAssignment
-
-        assigned = [
-            a.group_id for a in
-            db.query(UserTemplateAssignment).filter(UserTemplateAssignment.user_id == operator_id).all()
-        ]
-        # No assignments recorded = this operator may use every one of their tenant's
-        # templates (same convention as available_groups), not zero.
-        if assigned:
-            query = query.filter(TemplateGroup.id.in_(assigned))
     return query.all()
 
 
@@ -698,13 +685,13 @@ def _save_pending_email(db: Session, message_id: str, sender: str, subject: str,
 
 def pull_inbox(
     db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    operator_id: str | None = None, reexamine: bool = False, skip_if_busy: bool = False,
+    reexamine: bool = False, skip_if_busy: bool = False,
 ) -> dict:
     """Read unread mail, decide from the DOCUMENTS whose it is, and create the job.
 
-    `tenant_id` limits to one tenant's customers; `operator_id` further limits to customers
-    routed to that operator. `reexamine=True` ignores the "already examined" record, for when a
-    customer has just been configured and their earlier mail should be looked at again.
+    `tenant_id` limits to one tenant's customers. `reexamine=True` ignores the "already
+    examined" record, for when a customer has just been configured and their earlier mail
+    should be looked at again.
 
     `skip_if_busy` is for the BACKGROUND poller only, so its timer cycles cannot stack up on a
     slow mailbox. A person pressing Check mail is never turned away: correctness comes from
@@ -727,33 +714,29 @@ def pull_inbox(
             return {"ok": True, "processed": [], "busy": True,
                     "note": "A run was already in progress; this cycle was skipped."}
         try:
-            return _pull_inbox(db, tenant_id, max_messages, operator_id, reexamine)
+            return _pull_inbox(db, tenant_id, max_messages, reexamine)
         finally:
             _pull_lock.release()
-    return _pull_inbox(db, tenant_id, max_messages, operator_id, reexamine)
+    return _pull_inbox(db, tenant_id, max_messages, reexamine)
 
 
 def _pull_inbox(
     db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    operator_id: str | None = None, reexamine: bool = False,
+    reexamine: bool = False,
 ) -> dict:
     """Poll every mailbox this call is allowed to read, and merge the results: the tenant's
-    shared inbox (only when not restricted to one operator — a personal mailbox and the
-    shared one are different sources of mail, not alternatives), plus every operator's own
-    connected mailbox. Held under _pull_lock by its caller."""
+    shared inbox, plus every Connected Mailbox assigned to a tenant (see
+    _connected_mailboxes) - each carrying its OWN tenant/template assignment now, independent
+    of any operator. Held under _pull_lock by its caller."""
     settings = get_settings()
     sources: list[dict] = []
-    if operator_id is None and settings.gmail_user and _app_password():
-        sources.append({"operator_id": None, "email": None, "password": None, "host": None})
-    for m in _operator_mailboxes(db, tenant_id):
-        if operator_id and m["operator_id"] != operator_id:
-            continue
-        sources.append(m)
+    if settings.gmail_user and _app_password():
+        sources.append({"mailbox_id": None, "email": None, "password": None, "host": None,
+                        "tenant_id": tenant_id, "group_id": None})
+    sources.extend(_connected_mailboxes(db, tenant_id))
 
     if not sources:
-        note = ("No mailbox is connected for you yet — add one under Operator Creation."
-                if operator_id else "No mailbox is configured yet.")
-        return {"ok": True, "processed": [], "note": note}
+        return {"ok": True, "processed": [], "note": "No mailbox is configured yet."}
 
     # Read every mailbox AT ONCE rather than one after another. Reading a message is minutes
     # of work — OCR every page, then AI calls per document — so a sequential loop meant one
@@ -767,8 +750,9 @@ def _pull_inbox(
         worker_db = SessionLocal()
         try:
             return _pull_one_mailbox(
-                worker_db, tenant_id, max_messages, src["operator_id"], reexamine,
+                worker_db, src["tenant_id"], max_messages, reexamine,
                 mail_email=src["email"], mail_app_password=src["password"], mail_host=src["host"],
+                forced_group_id=src["group_id"],
             )
         finally:
             worker_db.close()
@@ -814,9 +798,9 @@ def _pull_inbox(
 
 def _pull_one_mailbox(
     db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    operator_id: str | None = None, reexamine: bool = False,
+    reexamine: bool = False,
     mail_email: str | None = None, mail_app_password: str | None = None,
-    mail_host: str | None = None,
+    mail_host: str | None = None, forced_group_id: str | None = None,
 ) -> dict:
     """Everything pull_inbox used to do end to end, now for exactly ONE mailbox."""
     from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
@@ -835,21 +819,18 @@ def _pull_one_mailbox(
     extraction_engine = get_extraction_engine(db)
     vision_engine_model = get_settings().vision_engine_model
     custom_filter_texts = get_active_custom_filter_texts(db)
-    groups = _candidate_groups(db, tenant_id, operator_id)
-    if not groups:
-        note = ("No customers are routed to you yet - ask your admin to assign one to you."
-                if operator_id else "No customers are configured yet.")
-        return {"ok": True, "processed": [], "note": note}
 
-    # A personal mailbox connected to exactly ONE template has nowhere else its mail could
-    # possibly belong - unlike a shared inbox serving several different customers at once
-    # (a forwarding agent mailing for six importers from one address), there is no ambiguity
-    # here for the documents' content to resolve. Every message is trusted to be for this one
-    # template directly, whether or not the exporter/consignee on it has ever been configured
-    # as a known identifier - that requirement only exists to arbitrate BETWEEN customers, and
-    # there is only one here. An operator connected to several templates (or the shared inbox,
-    # operator_id=None) still needs the documents to say who they are.
-    single_group = groups[0] if (operator_id and len(groups) == 1) else None
+    # A mailbox explicitly assigned to exactly ONE template (forced_group_id, set on the
+    # Email Puller screen) has nowhere else its mail could possibly belong - unlike a shared
+    # inbox serving several different customers at once (a forwarding agent mailing for six
+    # importers from one address), there is no ambiguity here for the documents' content to
+    # resolve. Every message is trusted to be for this one template directly, whether or not
+    # the exporter/consignee on it has ever been configured as a known identifier - that
+    # requirement only exists to arbitrate BETWEEN customers, and there is only one here.
+    single_group = db.get(TemplateGroup, forced_group_id) if forced_group_id else None
+    groups: list[TemplateGroup] = [single_group] if single_group else _candidate_groups(db, tenant_id)
+    if not groups:
+        return {"ok": True, "processed": [], "note": "No customers are configured yet."}
 
     ident: dict[str, dict] = {}
     candidates: list[dict] = []
