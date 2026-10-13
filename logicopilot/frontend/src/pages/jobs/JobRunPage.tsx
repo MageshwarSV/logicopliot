@@ -63,6 +63,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code",
   ],
   Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
+  Custom: ["Frt_Currency", "Misc_Charge_Currency"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
@@ -258,7 +259,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   ],
   Custom: [
     { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
-    { heading: "Charges", labels: ["Freight Amount", "Misc Charge Amount"] },
+    { heading: "Charges", labels: ["Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency"] },
     { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
   ],
 };
