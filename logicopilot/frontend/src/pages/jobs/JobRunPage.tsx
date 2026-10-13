@@ -109,6 +109,7 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     "Gross Wt": "Gross Weight (kg)",
     container_number: "Container Number",
     container_type: "Container Type",
+    ContainerTypeCode: "CTR ISO CODE",
   },
   Invoice: {
     "Invoice No": "Invoice Number",
@@ -164,6 +165,33 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
     { value: "SEZ-V", label: "SEZ-V | Movement of Goods" },
     { value: "SEZ-S", label: "SEZ-S | DTA Clearance of Goods" },
     { value: "SEZ-W", label: "SEZ-W | SEZ to Customs Bonded Warehouse" },
+  ],
+  // ISO 6346 size/type codes - the same closed list app.core.llm's classify_container_type_code
+  // constrains its own AI fallback to, so a wrong read is always pickable from here instead of
+  // retyped freehand. Only ever applies to an FCL shipment - see run_extraction's own
+  // container-field blanking pass for every other shipment type.
+  ContainerTypeCode: [
+    { value: "22B0", label: "20 Bulk (22B0)" },
+    { value: "22G0", label: "20 Standard Dry (22G0)" },
+    { value: "22G1", label: "20 Ft. Dry Container (22G1)" },
+    { value: "22P1", label: "20 Flat Rack (22P1)" },
+    { value: "22P3", label: "20 Collapsible Flat Rack (22P3)" },
+    { value: "22R1", label: "20 Reefer (22R1)" },
+    { value: "22U1", label: "20 Open Top (22U1)" },
+    { value: "22UP", label: "20 Hard Top (22UP)" },
+    { value: "29P0", label: "20 Platform (29P0)" },
+    { value: "42G0", label: "40 Standard Dry (42G0)" },
+    { value: "42G1", label: "40 Ft. Dry Container (42G1)" },
+    { value: "42P1", label: "40 Flat Rack (42P1)" },
+    { value: "42P3", label: "40 Collapsible Flat Rack (42P3)" },
+    { value: "42R1", label: "40 Reefer (42R1)" },
+    { value: "42U1", label: "40 Open Top (42U1)" },
+    { value: "42UP", label: "40 Hard Top (42UP)" },
+    { value: "45G0", label: "40 High Cube (45G0)" },
+    { value: "45R1", label: "40 Reefer High Cube (45R1)" },
+    { value: "49P0", label: "40 Platform (49P0)" },
+    { value: "L5G1", label: "45 High Cube (L5G1)" },
+    { value: "L5R1", label: "45 Reefer High Cube (L5R1)" },
   ],
 };
 // Fields whose dropdown options come from the server instead of the fixed list above - a
@@ -1194,8 +1222,18 @@ export function JobRunPage() {
         // ask for something the operator has no box to type into at all - a stage that can
         // never finish. It still computes and writes a value on every row exactly as normal;
         // it just never needs a human to confirm it.
+        //
+        // ask_operator_required === false excluded too: a self-filled field is mandatory by
+        // default (a Bill of Entry cannot go without a CTH), but not every one genuinely is -
+        // ContainerTypeCode only ever applies to an FCL shipment (blank on purpose for every
+        // other shipment type, see run_extraction's own container-field blanking pass) and
+        // must never hold up a job that has nothing to put there at all.
         const blank = job.field_values.filter(
-          (fv) => fv.self_filled === true && !fv.hidden_from_capture && !(fv.value ?? "").trim(),
+          (fv) =>
+            fv.self_filled === true &&
+            !fv.hidden_from_capture &&
+            fv.ask_operator_required !== false &&
+            !(fv.value ?? "").trim(),
         );
         if (blank.length) {
           return `${blank.length} value(s) were not found on the reference sheet and need typing: ${[
@@ -1369,7 +1407,11 @@ export function JobRunPage() {
       const isGk2Tab = user?.role === "gk2";
       const docsApproved = uploaded.every((d) => (isGk2Tab ? d.gk2_approved : d.approved));
       const noSelfFilledBlanks = !job.field_values.some(
-        (fv) => fv.self_filled === true && !fv.hidden_from_capture && !(fv.value ?? "").trim(),
+        (fv) =>
+          fv.self_filled === true &&
+          !fv.hidden_from_capture &&
+          fv.ask_operator_required !== false &&
+          !(fv.value ?? "").trim(),
       );
       if (blocker.key === "extraction" && docsApproved && noSelfFilledBlanks && unconfirmedButFilled) {
         setActiveTab("extraction");
@@ -4444,7 +4486,13 @@ function ExtractionReview({
                   </div>
                   <div className="flex flex-col gap-2">
                     {lineRows.map(([n, cells]) => {
-                      const lookedUp = docIsStandalone ? [] : (lookedUpByRow.get(n) ?? []);
+                      // A field keyed on a standalone mark (ContainerTypeCode, keyed on
+                      // container_type) belongs on THAT mark's own card (Container Detail),
+                      // never a product card and vice versa - see standalone_multi_value's
+                      // own derivation (job-detail serialization, cf_standalone).
+                      const lookedUp = (lookedUpByRow.get(n) ?? []).filter((fv) =>
+                        docIsStandalone ? fv.standalone_multi_value === true : !fv.standalone_multi_value,
+                      );
                       // Any field whose own config names a pairing (primary) gets matched, on
                       // THIS row, to the field it names (other) and whatever it lists as sync
                       // targets - by custom_field_id, never by label text, since a Super Admin
@@ -4510,6 +4558,7 @@ function ExtractionReview({
                                 small
                                 tone="reference"
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                options={FIELD_SELECT_OPTIONS[fv.label_name]}
                               />
                             ))}
                           </div>

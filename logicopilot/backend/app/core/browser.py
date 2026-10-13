@@ -1587,24 +1587,45 @@ def _dialog_answer(page, message: str = "", assume_pick_confirm: bool = False) -
 
     Defaults to accepting, which is what a person clicking through by hand would do and what
     keeps the page - and the recorder screenshot - from freezing on an unanswered alert. The
-    one exception: an UN-ARMED dialog (see _DESTRUCTIVE_DIALOG_WORDS) whose own wording is
-    asking permission to close/leave/discard something defaults to DISMISS instead - the
-    safe read of "close the form?" is "no, don't", not "sure, go ahead", when nothing
-    recorded ever said otherwise.
+    one exception: a dialog whose own wording is asking permission to close/leave/discard
+    something (see _DESTRUCTIVE_DIALOG_WORDS) defaults to DISMISS instead - the safe read of
+    "close the form?" is "no, don't", not "sure, go ahead" - UNLESS the step that armed an
+    answer was ITSELF recorded against a dialog that also talked about closing/discarding (the
+    recorder genuinely saw and accepted exactly this kind of prompt here), in which case the
+    recorded answer is trusted as originally intended rather than second-guessed.
 
-    assume_pick_confirm flips that one exception back to accept: the live run passes it when
-    a double_click (always a list-picker row selection here, never anything else) just ran -
-    the popup confirming it wants to close right after a row was picked IS the pick, not a
-    warning about losing work.
+    An armed answer that carries the dialog message it was ACTUALLY recorded against (see
+    _arm_dialog's own `description`) is checked against this one too - found live on
+    JOB-3DA007: a credit-limit warning armed "accept" early in the run (recorded for a message
+    naming one customer's own credit limit), stayed armed for the rest of the run since that
+    credit-limit dialog itself never actually fired, and then blindly accepted a LATER,
+    completely unrelated "are you sure you want to close the form ?" popup instead of the safe
+    dismiss - discarding a save the ERP had actually rejected. An arm recorded against a
+    NON-destructive message must never cover for a genuinely destructive one it was never
+    recorded against. An arm carrying no description at all (anything armed outside the normal
+    _arm_dialog path) still wins outright exactly as before - only a real, described arm gets
+    this comparison.
+
+    assume_pick_confirm flips the destructive-wording exception back to accept: the live run
+    passes it when a double_click (always a list-picker row selection here, never anything
+    else) just ran - the popup confirming it wants to close right after a row was picked IS
+    the pick, not a warning about losing work.
     """
     try:
         cell = _DIALOG_ANSWERS.get(page) if page is not None else None
     except TypeError:      # not weak-referenceable
         cell = None
-    if cell:
-        return bool(cell[0]), cell[1]
     low = (message or "").lower()
-    if any(w in low for w in _DESTRUCTIVE_DIALOG_WORDS):
+    is_destructive = any(w in low for w in _DESTRUCTIVE_DIALOG_WORDS)
+    if cell:
+        armed_accept, armed_reply = bool(cell[0]), cell[1]
+        if len(cell) > 2:
+            armed_description = (cell[2] or "").lower()
+            armed_is_destructive = any(w in armed_description for w in _DESTRUCTIVE_DIALOG_WORDS)
+            if is_destructive and not armed_is_destructive:
+                return assume_pick_confirm, ""
+        return armed_accept, armed_reply
+    if is_destructive:
         return assume_pick_confirm, ""
     return True, ""
 
@@ -1677,12 +1698,17 @@ def _arm_dialog(page, step: dict) -> str:
     """
     accept = str(step.get("value") or "accept").strip().lower() != "dismiss"
     reply = step.get("prompt_text") or ""
+    # The dialog THIS step was actually recorded against, e.g. "Credit Limit for NOKIA... has
+    # exhausted" - compared against whatever dialog really fires, in _dialog_answer, so an
+    # armed "accept" can never blindly override the destructive-wording safety net for some
+    # LATER, unrelated dialog it was never recorded against (see that function's own comment).
+    description = step.get("description") or ""
     cell = _DIALOG_ANSWERS.get(page)
     if cell is None:
-        _DIALOG_ANSWERS[page] = [accept, reply]
+        _DIALOG_ANSWERS[page] = [accept, reply, description]
 
         def _on_dialog(d, page=page):
-            a, r = _dialog_answer(page)
+            a, r = _dialog_answer(page, d.message)
             try:
                 d.accept(r) if a else d.dismiss()
             except Exception:  # noqa: BLE001
@@ -1691,6 +1717,10 @@ def _arm_dialog(page, step: dict) -> str:
         page.on("dialog", _on_dialog)
     else:
         cell[0], cell[1] = accept, reply
+        if len(cell) > 2:
+            cell[2] = description
+        else:
+            cell.append(description)
     return "accept" if accept else "dismiss"
 
 

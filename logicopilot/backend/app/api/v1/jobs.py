@@ -142,6 +142,17 @@ def generate_job_no() -> str:
     return "JOB-" + uuid.uuid4().hex[:6].upper()
 
 
+def _standalone_mark_labels(group: TemplateGroup) -> set[str]:
+    """Which marks are their own table (FieldMark.standalone_multi_value) - a container count
+    off the Bill of Lading, say - rather than one-per-product like the invoice's own line
+    items. A lookup field keyed on one of these (CustomField.lookup_key_label) needs exactly
+    one slot per ACTUAL row of that mark, never padded out to the job's product count - see
+    both call sites' own comments for the bug this avoids."""
+    return {
+        m.label_name for tdoc in group.documents for m in tdoc.marks if m.standalone_multi_value
+    }
+
+
 def _render_pages(original: Path, pages_dir: Path, skip: list[int] | None = None) -> int:
     """Render a document's pages for the operator to look at. Returns how many were kept.
 
@@ -2618,7 +2629,17 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_group_heading: dict[str, str | None] = {
         m.id: m.standalone_group_heading for tdoc in group.documents for m in tdoc.marks
     }
-    cf_standalone = {c.id: c.multi_value_from_document for c in cf_rows}
+    # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
+    # THAT mark's own card (Container Detail), not the product line-item cards - same
+    # screen-placement rule an AI field ticked multi_value_from_document already gets,
+    # derived here instead of a second column since lookup_key_label already says which mark
+    # this field is really keyed on.
+    standalone_labels = _standalone_mark_labels(group)
+    cf_standalone = {
+        c.id: c.multi_value_from_document
+        or (c.kind == "lookup" and (c.lookup_key_label or "").strip() in standalone_labels)
+        for c in cf_rows
+    }
     cf_hidden = {c.id: c.hidden_from_capture for c in cf_rows}
     field_values = []
     for fv in fvs:
@@ -5607,6 +5628,7 @@ def run_extraction(db: Session, job: Job) -> None:
                 fv.corrected_value or fv.extracted_value or "").strip()
         return out
 
+    standalone_mark_labels = _standalone_mark_labels(group)
     for cf in custom_fields:
         if getattr(cf, "per_row", False):
             if line_count == 0:
@@ -5643,15 +5665,24 @@ def run_extraction(db: Session, job: Job) -> None:
                 keys = _line_values(key_label) if key_label else {}
                 codes = keys or _line_values("item_material_code")
                 descs = _line_values("product_description")
-                # product_description's own rows, UNIONED with this field's own key_label's
-                # rows - not line_keys alone, and not keys.keys() alone. A field keyed on
-                # something that is not a product at all (container_type, say) still needs ONE
-                # slot per container, which can outnumber the job's real products; keys.keys()
-                # supplies that. A field whose own key_label is sparse on some genuinely real
-                # product (the Nokia material-code gap found earlier this session) must not
-                # lose that product's slot just because ITS OWN key happened to be blank there;
-                # line_keys (now product-anchored, see above) is the safety net for that side.
-                field_keys = sorted(set(line_keys) | set(keys.keys()))
+                if key_label in standalone_mark_labels:
+                    # Keyed on its own standalone mark (container_type, say) - exactly one
+                    # slot per ACTUAL row of that mark (however many containers there really
+                    # are), never padded out with the job's product rows too. Unioning in
+                    # line_keys here (the one case below this doesn't) used to hand a
+                    # container-keyed field a blank, unanswerable slot for every product that
+                    # has no container of its own - nowhere on screen to type it into (it
+                    # belongs on the container's own card, not any product's), yet still
+                    # counted as "needs typing" and blocked the job regardless.
+                    field_keys = sorted(set(keys.keys()))
+                else:
+                    # product_description's own rows, UNIONED with this field's own key_label's
+                    # rows - not line_keys alone, and not keys.keys() alone. A field whose own
+                    # key_label is sparse on some genuinely real product (the Nokia material-
+                    # code gap found earlier this session) must not lose that product's slot
+                    # just because ITS OWN key happened to be blank there; line_keys (now
+                    # product-anchored, see above) is the safety net for that side.
+                    field_keys = sorted(set(line_keys) | set(keys.keys()))
                 hits = 0
                 cache_hits = 0
                 for key in field_keys:
@@ -5927,6 +5958,26 @@ def run_extraction(db: Session, job: Job) -> None:
     # them would be lost. A job with a single set is unchanged and still reads "Invoice".
     multi_set = len({d.set_index for lst in docs_by_tdoc.values() for d in lst
                      if d.file_path and d.set_index}) > 1
+    # Container Type / ContainerTypeCode only ever apply to a Full Container Load shipment -
+    # an LCL (or any other) shipment's cargo shares someone else's container, so nothing
+    # about a container belongs on this customer's own paperwork at all, in the UI or in the
+    # Excel export either. Read once, before the loop below might restore a PRIOR correction
+    # onto either of these two fields - a job re-extracted after its own Consignment Type
+    # changed must not carry forward a container value answered under the earlier type.
+    #
+    # Only applies when this template actually HAS a Consignment Type concept at all - most
+    # templates don't, and a job with no such field is not "not FCL", it is simply a template
+    # this rule has nothing to say about; blanking its container fields regardless broke an
+    # unrelated job entirely (no Consignment Type mark anywhere on its template).
+    shipment_type_row = (
+        db.query(JobFieldValue.extracted_value)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.label_name == "Consignment Type",
+                JobFieldValue.row_index.is_(None))
+        .first()
+    )
+    has_shipment_type_field = shipment_type_row is not None
+    is_fcl = has_shipment_type_field and (shipment_type_row[0] or "").strip().upper() == "FCL"
+    container_field_labels = {"container_type", "ContainerTypeCode"}
     keyouted: dict[str, dict] = {}
     for fv in sorted(
         db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all(),
@@ -5936,6 +5987,9 @@ def run_extraction(db: Session, job: Job) -> None:
             restored = old_corrections.get(_correction_key(fv))
             if restored is not None:
                 fv.corrected_value = restored
+        if has_shipment_type_field and not is_fcl and fv.label_name in container_field_labels:
+            fv.extracted_value = ""
+            fv.corrected_value = None
         if fv.custom_field_id:
             bucket = "Custom"
         else:
@@ -6209,6 +6263,8 @@ def _recompute_per_row_custom_field(
         from app.core.material_master import load_master, lookup_cth, material_from
         from app.core.reference_cache import lookup_reference
 
+        standalone_mark_labels = _standalone_mark_labels(db.get(TemplateGroup, job.group_id))
+
         # skip_material_master - see the identical guard (and its full reasoning) in
         # run_extraction's own per-row lookup block.
         master = {} if getattr(cf, "skip_material_master", False) else load_master(
@@ -6220,9 +6276,15 @@ def _recompute_per_row_custom_field(
         keys = _row_values(key_label) if key_label else {}
         codes = keys or _row_values("item_material_code")
         descs = _row_values("product_description")
-        # product_description's rows, unioned with this field's own key_label's rows - see the
-        # identical reasoning (and field_keys) in run_extraction's own per-row lookup block.
-        field_keys = sorted(set(line_keys) | set(keys.keys()))
+        if key_label in standalone_mark_labels:
+            # Keyed on its own standalone mark (container_type, say) - one slot per ACTUAL
+            # row of that mark only, same reasoning as run_extraction's identical branch.
+            field_keys = sorted(set(keys.keys()))
+        else:
+            # product_description's rows, unioned with this field's own key_label's rows -
+            # see the identical reasoning (and field_keys) in run_extraction's own per-row
+            # lookup block.
+            field_keys = sorted(set(line_keys) | set(keys.keys()))
         for key in field_keys:
             desc = descs.get(key, "")
             material = material_from(codes.get(key, ""), desc)

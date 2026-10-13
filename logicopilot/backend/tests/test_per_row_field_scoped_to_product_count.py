@@ -53,8 +53,8 @@ def _make_template(db_session, tenant):
     return group, tdoc, cth, container_code
 
 
-def _make_job(db_session, tenant, group, tdoc):
-    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-1PRODUCT-2CONTAINERS",
+def _make_job(db_session, tenant, group, tdoc, reference="JOB-1PRODUCT-2CONTAINERS"):
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference=reference,
              status="extracting")
     db_session.add(job)
     db_session.commit()
@@ -105,3 +105,127 @@ def test_a_product_keyed_field_gets_one_slot_per_product_not_per_container(db_se
     # The container-keyed field: one slot per container, correctly MORE than the product count.
     assert len(container_rows) == 2
     assert sorted(r.row_index for r in container_rows) == [1, 2]
+
+
+def test_a_container_keyed_field_gets_one_slot_per_container_not_per_product(db_session):
+    """The real bug (JOB-3DA007): 5 products, 1 container. A container-keyed field must get
+    exactly ONE slot (matching the one real container), never padded out to 5 slots to match
+    the product count - a padded slot has no container to belong to, nowhere on the job
+    screen it could ever render (Container Detail only ever shows real container rows), yet
+    used to still count as "needs typing" and block the job regardless."""
+    tenant = make_tenant(db_session)
+    group, tdoc, cth, container_code = _make_template(db_session, tenant)
+    job, jd = _make_job(db_session, tenant, group, tdoc)
+
+    def _ocr_for(job_doc_dir, page):
+        return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
+
+    def _fields_for(ocr_text, fields, image_paths=None):
+        return {}
+
+    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+        labels = [spec["label"] for spec in row_specs]
+        if "product_description" in labels:
+            return [{"product_description": f"WIDGET {i}"} for i in range(5)]  # five products
+        if "container_type" in labels:
+            return [{"container_type": "40 HC"}]  # one container
+        return []
+
+    with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
+         patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
+         patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
+        run_extraction(db_session, job)
+
+    cth_rows = (db_session.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cth.id).all())
+    container_rows = (db_session.query(JobFieldValue)
+                      .filter(JobFieldValue.job_id == job.id,
+                              JobFieldValue.custom_field_id == container_code.id).all())
+
+    assert len(cth_rows) == 5
+    assert len(container_rows) == 1
+    assert container_rows[0].row_index == 1
+
+
+def test_container_fields_are_blanked_for_anything_other_than_fcl(db_session):
+    """Container Type and ContainerTypeCode only ever apply to a Full Container Load
+    shipment - an LCL (or any other) shipment's cargo shares someone else's container, so
+    nothing about a container belongs on this customer's own paperwork, in the UI or the
+    Excel export either. Confirmed by forcing a real value through extraction, then checking
+    it was blanked anyway because Consignment Type read "LCL"."""
+    tenant = make_tenant(db_session)
+    group, tdoc, cth, container_code = _make_template(db_session, tenant)
+    shipment_type_mark = FieldMark(tenant_id=tenant.id, document_id=tdoc.id,
+                                   label_name="Consignment Type", page_number=1,
+                                   x=0.1, y=0.3, width=0.2, height=0.05, is_multi_value=False)
+    db_session.add(shipment_type_mark)
+    db_session.commit()
+    job, jd = _make_job(db_session, tenant, group, tdoc, reference="JOB-LCL-SHIPMENT")
+
+    def _ocr_for(job_doc_dir, page):
+        return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
+
+    def _fields_for(ocr_text, fields, image_paths=None):
+        return {"Consignment Type": "LCL"}
+
+    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+        labels = [spec["label"] for spec in row_specs]
+        if "product_description" in labels:
+            return [{"product_description": "WIDGET"}]
+        if "container_type" in labels:
+            return [{"container_type": "40 HC"}]
+        return []
+
+    with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
+         patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
+         patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
+        run_extraction(db_session, job)
+
+    container_mark_rows = (db_session.query(JobFieldValue)
+                           .filter(JobFieldValue.job_id == job.id,
+                                   JobFieldValue.label_name == "container_type").all())
+    container_code_rows = (db_session.query(JobFieldValue)
+                           .filter(JobFieldValue.job_id == job.id,
+                                   JobFieldValue.custom_field_id == container_code.id).all())
+
+    assert len(container_mark_rows) == 1
+    assert container_mark_rows[0].value == ""
+    assert len(container_code_rows) == 1
+    assert container_code_rows[0].value == ""
+
+
+def test_container_fields_are_kept_for_an_fcl_shipment(db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc, cth, container_code = _make_template(db_session, tenant)
+    shipment_type_mark = FieldMark(tenant_id=tenant.id, document_id=tdoc.id,
+                                   label_name="Consignment Type", page_number=1,
+                                   x=0.1, y=0.3, width=0.2, height=0.05, is_multi_value=False)
+    db_session.add(shipment_type_mark)
+    db_session.commit()
+    job, jd = _make_job(db_session, tenant, group, tdoc, reference="JOB-FCL-SHIPMENT")
+
+    def _ocr_for(job_doc_dir, page):
+        return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
+
+    def _fields_for(ocr_text, fields, image_paths=None):
+        return {"Consignment Type": "FCL"}
+
+    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+        labels = [spec["label"] for spec in row_specs]
+        if "product_description" in labels:
+            return [{"product_description": "WIDGET"}]
+        if "container_type" in labels:
+            return [{"container_type": "40 HC"}]
+        return []
+
+    with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
+         patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
+         patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
+        run_extraction(db_session, job)
+
+    container_mark_rows = (db_session.query(JobFieldValue)
+                           .filter(JobFieldValue.job_id == job.id,
+                                   JobFieldValue.label_name == "container_type").all())
+
+    assert len(container_mark_rows) == 1
+    assert container_mark_rows[0].value == "40 HC"
