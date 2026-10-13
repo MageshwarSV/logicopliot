@@ -60,9 +60,9 @@ const ADDITIONAL_DETAILS_ID = "additional-details";
 const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   BL: [
     "HBL Date", "Consignment Type", "TransportModeCode",
-    "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code",
+    "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code", "Package Unit",
   ],
-  Invoice: ["Currency_type", "Product Value", "Package Unit", "Consignee", "Shipper Address", "Consignee Address"],
+  Invoice: ["Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address"],
   Custom: ["Frt_Currency", "Misc_Charge_Currency"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
@@ -235,7 +235,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
         "Shipment Port Code", "port_of_entry", "CustomsHouseCode",
       ],
     },
-    { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt"] },
+    { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt", "Package Unit"] },
     {
       heading: "Shipper Details",
       labels: ["Supplier Name", "Supplier Address"],
@@ -245,7 +245,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No"] },
     {
       heading: "Value & Quantity Details",
-      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Package Unit", "Gross Wt"],
+      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Gross Wt"],
     },
     {
       heading: "Party Details",
