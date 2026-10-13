@@ -142,6 +142,24 @@ def generate_job_no() -> str:
     return "JOB-" + uuid.uuid4().hex[:6].upper()
 
 
+def _wrap_address_lines(text: str, width: int = 71) -> str:
+    """Re-flow an address into lines of at most `width` characters (spaces counted), breaking
+    only at whole words - a word that would push a line past the limit moves to the next line
+    whole, never split mid-word. Existing line breaks are collapsed first, so a one-line
+    address and an already-multi-line one both come out wrapped consistently. The ERP's own
+    address box is a fixed set of discrete lines, not a free-flowing textarea - one long
+    unwrapped string risks being cut off wherever the ERP's own per-line limit falls, a point
+    our own screen never shows."""
+    import textwrap
+
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return ""
+    return "\n".join(
+        textwrap.wrap(normalized, width=width, break_long_words=False, break_on_hyphens=False)
+    )
+
+
 def _standalone_mark_labels(group: TemplateGroup) -> set[str]:
     """Which marks are their own table (FieldMark.standalone_multi_value) - a container count
     off the Bill of Lading, say - rather than one-per-product like the invoice's own line
@@ -3387,6 +3405,23 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
             deduped.append(per_set[k])
         if len(deduped) > 1:
             rows[SET_VALUES_KEY] = deduped
+
+    # Every "...Address" field, wherever it landed above (job-level, per-row, or per-invoice-
+    # set) - re-flowed to the ERP's own line width, not whatever width the source document
+    # happened to print it at. One shared pass here reaches the live ERP automation's own
+    # `fill` steps and the Excel workbook build alike, since both call this same function.
+    for label in list(values):
+        if "address" in label.lower():
+            values[label] = _wrap_address_lines(values[label])
+    for label in list(rows):
+        if label in (LINE_SET_KEY, SET_VALUES_KEY):
+            continue
+        if "address" in label.lower():
+            rows[label] = [_wrap_address_lines(v) for v in rows[label]]
+    for d in rows.get(SET_VALUES_KEY) or []:
+        for label in list(d):
+            if "address" in label.lower():
+                d[label] = _wrap_address_lines(d[label])
     return values, rows
 
 
