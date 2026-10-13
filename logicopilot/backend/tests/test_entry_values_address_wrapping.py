@@ -3,11 +3,14 @@ line, breaking only at whole words - the ERP's own address box is a fixed set of
 lines, not a free-flowing textarea, so one long unwrapped string risks being cut off wherever
 the ERP's own per-line limit falls. Applies wherever the field landed: job-level, per-row, or
 per-invoice-set - the live ERP automation's own `fill` steps and the Excel workbook build both
-read values/rows straight from this one shared function."""
+read values/rows straight from this one shared function. The job detail API (GET /jobs/{id})
+wraps the SAME way, so the operator sees an address exactly as it will actually be submitted,
+not an unwrapped copy that only gets wrapped later at submission time."""
 from app.api.v1.jobs import _wrap_address_lines, entry_values_and_rows
-from app.models.job import Job, JobFieldValue
+from app.models.job import Job, JobDocument, JobFieldValue
+from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
-from tests.conftest import make_tenant
+from tests.conftest import login, make_tenant, make_user
 
 
 def _make_group_and_job(db_session, tenant):
@@ -99,3 +102,36 @@ def test_entry_values_wraps_a_per_row_address_field(db_session):
     values, rows = entry_values_and_rows(db_session, job)
 
     assert all(len(line) <= 71 for line in rows["Consignee Address"][0].split("\n"))
+
+
+def test_job_detail_api_shows_an_address_field_wrapped(client, db_session):
+    tenant = make_tenant(db_session)
+    group, job = _make_group_and_job(db_session, tenant)
+    tdoc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="BL", doc_type="BL")
+    db_session.add(tdoc)
+    db_session.commit()
+    db_session.refresh(tdoc)
+    db_session.add(JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=tdoc.id,
+                               file_path="fake/does-not-exist.pdf", page_count=1))
+    long_address = (
+        "Plot No-G65, SUR NO-120,122,123,160 VADAGAL B KANCHIPURAM ROAD MALAJABAD TALUK "
+        "KANCHIPURAM, TAMIL NADU 631604 INDIA"
+    )
+    db_session.add(JobFieldValue(
+        tenant_id=tenant.id, job_id=job.id, label_name="Shipper Address",
+        extracted_value=long_address, template_document_id=tdoc.id,
+    ))
+    db_session.commit()
+
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-addrwrap1@example.com")
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.status_code == 200, resp.text
+    by_label = {fv["label_name"]: fv for fv in resp.json()["field_values"]}
+
+    shipper = by_label["Shipper Address"]
+    assert all(len(line) <= 71 for line in shipper["extracted_value"].split("\n"))
+    assert all(len(line) <= 71 for line in shipper["value"].split("\n"))
+    # Rejoining the wrapped lines reconstructs every original word, in order.
+    assert " ".join(shipper["value"].split("\n")) == " ".join(long_address.split())

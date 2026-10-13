@@ -2662,6 +2662,16 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     field_values = []
     for fv in fvs:
         mp = mark_pos.get(fv.mark_id)
+        # Shown wrapped to the SAME width the ERP will actually receive (see
+        # entry_values_and_rows's identical wrapping) - an operator checking an address
+        # against the source document should see it the way it is really going to be
+        # submitted, not an unwrapped copy that only gets wrapped later at submission time.
+        if "address" in fv.label_name.lower():
+            ev = _wrap_address_lines(fv.extracted_value) if fv.extracted_value is not None else None
+            cv = _wrap_address_lines(fv.corrected_value) if fv.corrected_value is not None else None
+            val = cv if fv.corrected_value is not None else ev
+        else:
+            ev, cv, val = fv.extracted_value, fv.corrected_value, fv.value
         field_values.append(
             JobFieldValueOut(
                 id=fv.id,
@@ -2674,9 +2684,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     else (tdoc_by_id[fv.template_document_id].name if fv.template_document_id in tdoc_by_id else "?")
                 ),
                 label_name=fv.label_name,
-                extracted_value=fv.extracted_value,
-                corrected_value=fv.corrected_value,
-                value=fv.value,
+                extracted_value=ev,
+                corrected_value=cv,
+                value=val,
                 is_custom=bool(fv.custom_field_id),
                 ask_operator=(fv.mark_id in ask_ids) or (fv.custom_field_id in ask_ids),
                 ask_operator_required=(fv.mark_id in required_ids) or (fv.custom_field_id in required_ids),
