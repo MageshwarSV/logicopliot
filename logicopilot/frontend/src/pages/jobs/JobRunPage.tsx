@@ -1188,8 +1188,14 @@ export function JobRunPage() {
         // Formerly Dump Data's own gate: a part the reference sheet does not carry is left
         // blank on purpose rather than guessed — and a Bill of Entry cannot go without a CTH.
         // Blank is the one thing that holds this up; the rest of that section is a view.
+        //
+        // hidden_from_capture excluded: that field never renders anywhere on this screen (see
+        // lookedUpByRow/DumpDataView's own identical exclusion), so blocking on it here would
+        // ask for something the operator has no box to type into at all - a stage that can
+        // never finish. It still computes and writes a value on every row exactly as normal;
+        // it just never needs a human to confirm it.
         const blank = job.field_values.filter(
-          (fv) => fv.self_filled === true && !(fv.value ?? "").trim(),
+          (fv) => fv.self_filled === true && !fv.hidden_from_capture && !(fv.value ?? "").trim(),
         );
         if (blank.length) {
           return `${blank.length} value(s) were not found on the reference sheet and need typing: ${[
@@ -1363,7 +1369,7 @@ export function JobRunPage() {
       const isGk2Tab = user?.role === "gk2";
       const docsApproved = uploaded.every((d) => (isGk2Tab ? d.gk2_approved : d.approved));
       const noSelfFilledBlanks = !job.field_values.some(
-        (fv) => fv.self_filled === true && !(fv.value ?? "").trim(),
+        (fv) => fv.self_filled === true && !fv.hidden_from_capture && !(fv.value ?? "").trim(),
       );
       if (blocker.key === "extraction" && docsApproved && noSelfFilledBlanks && unconfirmedButFilled) {
         setActiveTab("extraction");
