@@ -46,6 +46,14 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ask_operator: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Guidance shown to the operator at Submit Entry, e.g. "T for Transaction, D for Deferred".
     ask_operator_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # This field's own computed/looked-up value is never shown anywhere on the job screen
+    # (not on the product card, not on Dump Data) - it still computes and writes a real
+    # JobFieldValue on every row, exactly as any other field does, purely for something else
+    # to read later (an ERP script's own field mapping). Built for ContainerTypeCode: the
+    # operator never needs to see or re-verify it, only SOFTLINK's own container-type
+    # dropdown does, and showing it next to CTH/RITC on the product card made it look like
+    # one more thing the operator was expected to check.
+    hidden_from_capture: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Mandatory or optional when ask_operator is on. True = Submit Entry is blocked until the
     # operator supplies it; False = still asked for, but the job can be sent without it (an IGM
     # number that has not arrived yet). Ignored entirely when ask_operator is False.

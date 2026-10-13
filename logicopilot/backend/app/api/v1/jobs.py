@@ -2619,6 +2619,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         m.id: m.standalone_group_heading for tdoc in group.documents for m in tdoc.marks
     }
     cf_standalone = {c.id: c.multi_value_from_document for c in cf_rows}
+    cf_hidden = {c.id: c.hidden_from_capture for c in cf_rows}
     field_values = []
     for fv in fvs:
         mp = mark_pos.get(fv.mark_id)
@@ -2671,6 +2672,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     or cf_standalone.get(fv.custom_field_id, False)
                 ),
                 standalone_group_heading=mark_group_heading.get(fv.mark_id),
+                hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
             )
         )
 
@@ -6325,10 +6327,12 @@ def _recompute_per_row_custom_field(
     for row in rows:
         db.refresh(row)
         results.append(JobFieldValueOut(
-            id=row.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
+            id=row.id, mark_id=None, custom_field_id=cf.id, template_document_id=None,
+            document_name="✨ Custom",
             label_name=row.label_name, extracted_value=row.extracted_value,
             corrected_value=row.corrected_value, value=row.value, is_custom=True,
             origin="computed", set_index=row.set_index, row_index=row.row_index,
+            hidden_from_capture=cf.hidden_from_capture,
         ))
     return results
 
@@ -6461,10 +6465,11 @@ def recompute_custom_field(
     db.commit()
     db.refresh(existing)
     return [JobFieldValueOut(
-        id=existing.id, mark_id=None, template_document_id=None, document_name="✨ Custom",
+        id=existing.id, mark_id=None, custom_field_id=cf.id, template_document_id=None,
+        document_name="✨ Custom",
         label_name=existing.label_name, extracted_value=existing.extracted_value,
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
-        origin="computed",
+        origin="computed", hidden_from_capture=cf.hidden_from_capture,
     )]
 
 

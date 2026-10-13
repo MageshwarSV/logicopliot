@@ -3150,7 +3150,7 @@ function DumpDataView({
   const lookedUp = useMemo(() => {
     const rows = new Map<number, JobFieldValue[]>();
     for (const fv of job.field_values) {
-      if (fv.self_filled !== true) continue;
+      if (fv.self_filled !== true || fv.hidden_from_capture) continue;
       if (fv.row_index != null && rowsWithDocumentLineItem.has(fv.row_index)) continue;
       const key = fv.row_index ?? 0;
       const arr = rows.get(key) ?? [];
@@ -3177,7 +3177,11 @@ function DumpDataView({
   const all = lookedUp.flatMap((r) => r.items);
   const missing = all.filter((fv) => !(fv.value ?? "").trim()).length;
   const mergedElsewhere = job.field_values.filter(
-    (fv) => fv.self_filled === true && fv.row_index != null && rowsWithDocumentLineItem.has(fv.row_index),
+    (fv) =>
+      fv.self_filled === true &&
+      !fv.hidden_from_capture &&
+      fv.row_index != null &&
+      rowsWithDocumentLineItem.has(fv.row_index),
   ).length;
 
   if (all.length === 0) {
@@ -4112,8 +4116,12 @@ function ExtractionReview({
       // A reference-sheet lookup (self_filled) or either half of a picker pairing belongs
       // here. A plain "ask the operator" per-row field with no pairing of its own (a duty
       // notification number, say) belongs ONLY on Additional Details' "One value per
-      // product line" - showing it here too is the same box in two places.
-      const belongs = fvs.filter((fv) => fv.self_filled === true || pairedIds.has(fv.id));
+      // product line" - showing it here too is the same box in two places. A field marked
+      // hidden_from_capture (e.g. ContainerTypeCode, computed purely for an ERP script's own
+      // mapping) never belongs anywhere on this screen at all.
+      const belongs = fvs.filter(
+        (fv) => !fv.hidden_from_capture && (fv.self_filled === true || pairedIds.has(fv.id)),
+      );
       if (belongs.length) rows.set(Number(rowPart), belongs);
     }
     return rows;

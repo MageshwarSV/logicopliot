@@ -187,6 +187,10 @@ class JobFieldValueOut(BaseModel):
     # from FieldMark.standalone_group_heading - wordable per tenant/template. None/blank
     # falls back to the field's own label_name.
     standalone_group_heading: str | None = None
+    # Denormalized from CustomField.hidden_from_capture's own docstring - this value is never
+    # shown on the job screen (product card or Dump Data), only ever written for something
+    # else to read later. True only for a custom field; a mark-sourced value is always False.
+    hidden_from_capture: bool = False
 
 
 class VerificationRow(BaseModel):

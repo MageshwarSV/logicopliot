@@ -619,6 +619,7 @@ def create_custom_field(
         lookup_return_column=payload.lookup_return_column,
         skip_material_master=payload.skip_material_master,
         lookup_ai_fallback=payload.lookup_ai_fallback,
+        hidden_from_capture=payload.hidden_from_capture,
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
         example_value=payload.example_value,
@@ -673,7 +674,7 @@ def edit_custom_field(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Label cannot be empty")
         updates["label_name"] = updates["label_name"].strip()
     # NOT NULL columns: an explicit null means "off", never a failed commit.
-    for flag in ("ask_operator", "ask_operator_required"):
+    for flag in ("ask_operator", "ask_operator_required", "hidden_from_capture"):
         if flag in updates and updates[flag] is None:
             updates[flag] = flag == "ask_operator_required"
     if "source_document_ids" in updates and updates["source_document_ids"] is None:

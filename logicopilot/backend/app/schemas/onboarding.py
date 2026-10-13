@@ -103,6 +103,10 @@ class CustomFieldOut(BaseModel):
     # reference sheet - see CustomField.skip_material_master's own docstring.
     skip_material_master: bool = False
     lookup_ai_fallback: bool = False
+    # Never shown on the job screen (product card or Dump Data) - computed and stored exactly
+    # as normal, purely for something else to read (e.g. an ERP script's field mapping). See
+    # CustomField.hidden_from_capture's own docstring.
+    hidden_from_capture: bool = False
     # See CrossDocLink.source_custom_field_id - this field is linked to a mark on another
     # document for cross-verification. The tick itself; the actual pairing(s) are separate rows.
     verify_with_other_document: bool = False
@@ -144,6 +148,7 @@ class CustomFieldCreate(BaseModel):
     lookup_return_column: str | None = None
     skip_material_master: bool = False
     lookup_ai_fallback: bool = False
+    hidden_from_capture: bool = False
     is_target_value: bool = False
     fuzzy_match: bool = False
     example_value: str | None = None
@@ -173,6 +178,7 @@ class CustomFieldEdit(BaseModel):
     lookup_return_column: str | None = None
     skip_material_master: bool | None = None
     lookup_ai_fallback: bool | None = None
+    hidden_from_capture: bool | None = None
     ask_operator: bool | None = None
     ask_operator_required: bool | None = None
     per_row: bool | None = None
