@@ -3674,7 +3674,15 @@ function DualSourcePicker({
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
 
-  if (!other || !otherValue) return null;
+  // `other` missing entirely (no such field on this row at all) is the only real bail-out -
+  // guards the unconditional other.id/other.label_name reads below. A BLANK otherValue used
+  // to bail out here too, which looked right (nothing to pick between) but actually broke
+  // two things at once: the field vanished (see the parent's own pairedIds fix) AND, once
+  // that was fixed to fall back to a plain box instead, typing a correction into it no longer
+  // reached syncTargets (RITC No., etc.) the way commitPrimary below does - only this
+  // component propagates a sync. Always rendering the picker, blank or not, is what keeps
+  // sync working on every row, not just the ones where both sides happened to read something.
+  if (!other) return null;
 
   const choose = async (which: "primary" | "other") => {
     if (readOnly || saving || which === selected) return;
@@ -4451,19 +4459,17 @@ function ExtractionReview({
                             .map((id) => byCustomFieldId.get(id))
                             .filter((fv): fv is JobFieldValue => !!fv),
                         }));
-                      // Only a pair that actually has something to pick between gets pulled out
-                      // of `rest` into the picker UI below - DualSourcePicker itself renders
-                      // nothing when `other` has no value (see its own `if (!other ||
-                      // !otherValue) return null`), so marking primary "paired" regardless left
-                      // it with NO box anywhere on this line: not here (excluded from rest),
-                      // not in the picker (which bailed out) - the exact same "nothing to type
-                      // into" trap the hidden_from_capture fix just addressed elsewhere. A pair
-                      // with nothing to choose between falls through to `rest` and renders as a
-                      // plain editable field instead, same as an unpaired one.
+                      // A pair whose `other` half genuinely exists on this row always goes
+                      // through the picker below (DualSourcePicker renders it regardless of
+                      // whether either side has a value yet - see its own comment) rather than
+                      // falling back to a plain box here: typing a correction only reaches
+                      // syncTargets (RITC No., etc.) through the picker's own commit handlers,
+                      // so a plain box would silently drop that sync. `other` missing entirely
+                      // (no such field on this row at all) is the one real case with nothing to
+                      // pair against - that falls through to `rest` as an ordinary field.
                       const pairedIds = new Set<string>();
                       pairs.forEach(({ primary, other }) => {
-                        const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
-                        if (!other || !otherValue) return;
+                        if (!other) return;
                         pairedIds.add(primary.id);
                         pairedIds.add(other.id);
                       });
