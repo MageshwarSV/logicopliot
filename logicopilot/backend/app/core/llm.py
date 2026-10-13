@@ -89,6 +89,21 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, **kwa
             client, key_id = get_openai_client(timeout=timeout)
         else:
             key_id = "default"  # a caller-supplied client has no pool id to cool down
+        # The SAME document read twice must answer the SAME way twice - found live, two jobs
+        # made from the one email (the mailbox pulled it twice) disagreed on which of two
+        # names printed close together was the real consignee, because each extraction run is
+        # its own independent call with no memory of the other's answer. A fixed seed is
+        # OpenAI's own documented lever for this: the same {seed, model, messages, every other
+        # parameter} is "best-effort" reproducible rather than independently re-decided each
+        # time - not a perfect guarantee (the API can still drift across a backend model
+        # update, reported via the response's own system_fingerprint), but a real, systemic
+        # reduction in run-to-run disagreement, applied once here rather than per prompt.
+        # Reasoning-family models (gpt-5*, o1, o3, o4) are left alone - unconfirmed whether
+        # they accept this parameter at all, and this codebase has already been burned once by
+        # assuming a plain parameter carries over to that family unchanged (see
+        # reasoning_safe_chat_params below).
+        if "seed" not in kwargs and not is_reasoning_model(str(kwargs.get("model") or "")):
+            kwargs["seed"] = 7
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             try:
                 return client.chat.completions.create(**kwargs)
