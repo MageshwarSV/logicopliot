@@ -123,7 +123,6 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     unit: "Quantity Unit",
     shipper: "Shipper Name",
     Consignee: "Consignee Name",
-    "ERP Importer Address / Branch Code": "Importer Branch Code",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
@@ -215,6 +214,9 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
 const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
+// A label too long to read fully under the shared truncate style wraps onto a second line
+// instead of being cut off mid-word.
+const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
 // ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
@@ -3364,6 +3366,7 @@ function ExtractedField({
   defaultValue,
   hideBlankOption,
   multiline,
+  wrapLabel,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3396,6 +3399,9 @@ function ExtractedField({
   /** A full address reads better as a few short lines in a taller box than as one long line
    *  scrolled sideways through - see MULTILINE_FIELD_LABELS. */
   multiline?: boolean;
+  /** A label too long to read under the default single-line truncate - see
+   *  WRAP_LABEL_FIELD_LABELS. */
+  wrapLabel?: boolean;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3429,7 +3435,7 @@ function ExtractedField({
     <div className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
         <p
-          className={`truncate font-semibold text-slate-900 dark:text-slate-100 ${
+          className={`${wrapLabel ? "break-words" : "truncate"} font-semibold text-slate-900 dark:text-slate-100 ${
             small ? "text-[11px] font-medium text-slate-500 dark:text-slate-400" : "text-sm"
           }`}
         >
@@ -4429,6 +4435,7 @@ function ExtractionReview({
                         labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                         options={options}
                         multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                        wrapLabel={WRAP_LABEL_FIELD_LABELS.has(fv.label_name)}
                         note={
                           isMark && from && from !== fv.document_name
                             ? `Cross-check only — the entry uses ${from}'s copy.`
