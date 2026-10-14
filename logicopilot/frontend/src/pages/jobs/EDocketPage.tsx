@@ -256,8 +256,13 @@ export function EDocketPage() {
       .filter(Boolean);
     // The count goes in front of the list (e.g. "3 x WHSU1234567 (40 SD) , ...") - the row's
     // own heading is literally "No. of Container...", so the count itself is the first thing
-    // it should say, not just how many entries happen to follow it.
-    const containers = containerList.length ? `${containerList.length} x ${containerList.join(" , ")}` : "";
+    // it should say, not just how many entries happen to follow it. The Shipment Type (the
+    // same FCL/LCL/B.B this job's own tick-box above reads) closes the value out.
+    const shipmentTypeDisplay = mappedFclLcl || (shipmentType?.value ?? "").trim();
+    const containers = containerList.length
+      ? `${containerList.length} x ${containerList.join(" , ")}`
+        + (shipmentTypeDisplay ? ` / (${shipmentTypeDisplay})` : "")
+      : "";
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
