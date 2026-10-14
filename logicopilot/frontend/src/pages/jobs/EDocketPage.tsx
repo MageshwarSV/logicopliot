@@ -283,6 +283,17 @@ export function EDocketPage() {
       if (!("No. of Container 20” & 40” / LCL" in prev) && containers) {
         next["No. of Container 20” & 40” / LCL"] = containers;
       }
+      // "Weight (Gross)" always reads as three decimals plus the unit (e.g. "725.000 KG"),
+      // whatever precision/format the BL's own "Gross Wt" mark happened to read as.
+      if (!("Weight (Gross)" in prev) && next["Weight (Gross)"]) {
+        const num = Number(next["Weight (Gross)"].replace(/[^0-9.]/g, ""));
+        if (!Number.isNaN(num)) next["Weight (Gross)"] = `${num.toFixed(3)} KG`;
+      }
+      // "Chargeable Weight" is an air-freight concept (the greater of actual vs volumetric
+      // weight) - a sea shipment is never charged this way, so it always reads "NA" there.
+      if (!("Chargeable Weight" in prev) && /sea/i.test(job.mode ?? "")) {
+        next["Chargeable Weight"] = "NA";
+      }
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
