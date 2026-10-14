@@ -213,6 +213,13 @@ export function ErpScriptRecorderPage() {
    *  cannot be relied on here — the view is a relayed screenshot, so the first tap has already
    *  been sent and recorded by the time the second one is judged. Arming says it up front. */
   const [dblArmed, setDblArmed] = useState(false);
+  /** 🔓 Unblock armed: the NEXT recorded step (click, double-click, fill, whatever it turns
+   *  out to be) gets force_enable: true - strip the element's `disabled` state first. For a
+   *  control that starts disabled until something the script never actually does would
+   *  normally enable it (a dependent dropdown auto-filled and locked when there's only one
+   *  option, say) - Playwright otherwise just waits out the full click timeout on it.
+   *  Composes with Double Click (arm both for "unblock, then double-click"). */
+  const [forceEnableArmed, setForceEnableArmed] = useState(false);
   /** Armed "Search & Select": the next thing touched opens the value popup, but confirming it
    *  records a click/double-click matched to whichever field's value is on screen — not a
    *  fill. For a search popup's result row, where the recorded position is never trustworthy
@@ -403,7 +410,9 @@ export function ErpScriptRecorderPage() {
     return { action: "check", value: String(el.is_toggle === "radio" ? true : want) };
   }
 
-  function pushStep(s: ErpStep) {
+  function pushStep(rawStep: ErpStep) {
+    const s = forceEnableArmed ? { ...rawStep, force_enable: true } : rawStep;
+    if (forceEnableArmed) setForceEnableArmed(false);
     if (rowCapture) {
       const key = rowCapture.phase === "row" ? "row_steps" : "end_steps";
       setSteps((arr) =>
@@ -1792,6 +1801,33 @@ export function ErpScriptRecorderPage() {
                   >
                     ⌖ {dblArmed ? "Double click — armed" : "Double click"}
                   </button>
+                  {/* Some controls start DISABLED until something the script never actually
+                      does would normally enable them (a dependent dropdown auto-filled and
+                      locked when there's only one option, say). Arm this, then touch/double-
+                      click the control as usual - the recorded step strips `disabled` first,
+                      so Playwright can actually interact with it instead of waiting out the
+                      full click timeout. Composes with Double Click above. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !forceEnableArmed;
+                      setForceEnableArmed(next);
+                      setStatus(
+                        next
+                          ? "Unblock armed — the next recorded step strips the element's disabled state first."
+                          : "Unblock off.",
+                      );
+                    }}
+                    disabled={busy}
+                    title="Arm Unblock: the next recorded step strips the target element's `disabled` state first, so a control that starts disabled (e.g. a dropdown with only one option) can still be clicked/double-clicked"
+                    className={`shrink-0 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:opacity-40 ${
+                      forceEnableArmed
+                        ? "border-amber-400 bg-amber-100 text-amber-900 dark:border-amber-500/50 dark:bg-amber-500/20 dark:text-amber-200"
+                        : "border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    🔓 {forceEnableArmed ? "Unblock — armed" : "Unblock"}
+                  </button>
                   {/* Waits for the PAGE itself to finish loading/settling - not tied to any
                       element, so it needs no arming or touch; press it and the step is added
                       right where you are in the sequence. */}
@@ -2482,6 +2518,22 @@ export function ErpScriptRecorderPage() {
                   className={`rounded px-1 text-xs ${s.is_optional ? "text-sky-600" : "text-slate-300 hover:bg-slate-100 hover:text-sky-600 dark:hover:bg-slate-800"}`}
                 >
                   ?
+                </button>
+                {/* Unblock: strip the element's `disabled` state before this step runs - for
+                    a control that starts disabled until something the script never actually
+                    does would normally enable it. Fixes an already-recorded step without
+                    needing to re-record it. */}
+                <button
+                  type="button"
+                  title={s.force_enable
+                    ? "Unblock armed — strips the element's disabled state first. Press to turn off."
+                    : "Unblock: strip the element's disabled state right before this click/double-click, for a control that starts disabled"}
+                  onClick={() =>
+                    setSteps((arr) => arr.map((st, j) => (j === i ? { ...st, force_enable: !st.force_enable } : st)))
+                  }
+                  className={`rounded px-1 text-xs ${s.force_enable ? "text-amber-600" : "text-slate-300 hover:bg-slate-100 hover:text-amber-600 dark:hover:bg-slate-800"}`}
+                >
+                  🔓
                 </button>
                 <button
                   type="button"

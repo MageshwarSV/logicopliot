@@ -67,6 +67,16 @@ class ErpStep(BaseModel):
     # there, ignore it when it is not.
     is_optional: bool | None = None
 
+    # Strip the element's `disabled` state (via JS, best-effort) immediately before a
+    # click/double_click - some controls (a dependent <select>, say) start disabled until
+    # something ELSE the script never actually does would normally enable them, e.g. an
+    # organisation with only one branch auto-fills and disables its own address picker since
+    # there is nothing left to choose, while one with several branches leaves it enabled for
+    # a real pick. Playwright refuses to interact with a disabled element at all - it just
+    # waits out the full click timeout - so this is how a Super Admin records "press it
+    # anyway" for a control that would otherwise never become clickable on its own.
+    force_enable: bool | None = None
+
     # Marks this step as the SUCCESS SIGNAL: the text or element that proves the ERP accepted
     # the entry. When it passes the job is completed; when it fails the screen is handed to AI
     # for a plain-words explanation and the entry is reported as failed.

@@ -36,6 +36,11 @@ export interface ErpStep {
    *  "are you sure?" confirm, a new-version notice. Recorded as an ordinary click, each of
    *  those breaks every run where it does NOT appear. */
   is_optional?: boolean | null;
+  /** Strip the element's `disabled` state (JS, best-effort) right before a click/double_click -
+   *  for a control that starts disabled until something the script never does would normally
+   *  enable it (e.g. a dependent dropdown auto-filled and locked when there's only one option).
+   *  Playwright otherwise just waits out the full click timeout on a disabled element. */
+  force_enable?: boolean | null;
   /** This step is THE success signal — the text/element proving the ERP accepted the entry.
    *  Passes -> job completed. Fails -> the screen is diagnosed by AI and the job is failed. */
   is_success_check?: boolean | null;

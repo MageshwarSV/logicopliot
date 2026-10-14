@@ -2724,6 +2724,19 @@ def _perform_step(page, step: dict, val: str) -> None:
                 "the recorded path no longer points at the control on screen. Re-record this "
                 "step, or use Insert here")
     loc = _one(raw)
+    if step.get("force_enable"):
+        # The recorder's own "Unblock" arm - some controls (a dependent <select>, say) start
+        # DISABLED until some OTHER thing the script never does enables them on its own, e.g.
+        # an org with only one branch auto-fills it and disables the picker since there is
+        # nothing left to choose - but another org with several branches needs the SAME
+        # control picked by hand. Playwright refuses to click/dblclick a disabled element at
+        # all (it just waits out the full timeout), so a Super Admin recording the step can
+        # mark it to strip `disabled` first - best-effort, never raises, since an element that
+        # was never disabled to begin with just no-ops here.
+        try:
+            loc.first.evaluate("el => { el.disabled = false; el.removeAttribute('disabled'); }")
+        except Exception:  # noqa: BLE001
+            pass
     if action in ("click", "submit"):
         # A step that had to be revealed by hovering is pressed where it stands - moving the
         # pointer to it would close the very menu that just brought it back. See _press_held().
