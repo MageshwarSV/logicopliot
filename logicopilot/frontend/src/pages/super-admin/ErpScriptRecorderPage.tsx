@@ -66,19 +66,26 @@ function groupEvents(
   events.forEach((ev, i) => {
     const tag = (ev.tag || "").toLowerCase();
     const type = (ev.input_type || "").toLowerCase();
-    let group = "Other";
-    if (tag === "button" || type === "submit" || type === "button") group = "Buttons";
-    else if (tag === "a") group = "Links";
-    else if (tag === "select") group = "Dropdowns";
-    else if (type === "checkbox" || type === "radio") group = "Checkboxes & radios";
-    else if (tag === "input" || tag === "textarea") group = "Text inputs";
-    else if (tag === "td" || tag === "th" || tag === "tr") group = "Table cells";
+    // Everything sitting inside an open dialog/modal/popup goes together, whatever tag it
+    // is — that is the ERP's own custom popup (its real button set, e.g. "Yes / No /
+    // Cancel"), not just one more button lost in the page's full list. Takes priority over
+    // the tag-based buckets below.
+    let group = ev.in_dialog ? "In the open popup" : "Other";
+    if (!ev.in_dialog) {
+      if (tag === "button" || type === "submit" || type === "button") group = "Buttons";
+      else if (tag === "a") group = "Links";
+      else if (tag === "select") group = "Dropdowns";
+      else if (type === "checkbox" || type === "radio") group = "Checkboxes & radios";
+      else if (tag === "input" || tag === "textarea") group = "Text inputs";
+      else if (tag === "td" || tag === "th" || tag === "tr") group = "Table cells";
+    }
     const arr = buckets.get(group) ?? [];
     arr.push({ ev, i });
     buckets.set(group, arr);
   });
-  // Buttons first — that is what a success signal usually is.
-  const order = ["Buttons", "Links", "Text inputs", "Dropdowns", "Checkboxes & radios", "Table cells", "Other"];
+  // The open popup's own buttons first (if any are on screen) — that is what a person is
+  // actually looking at. Plain buttons next, as that is what a success signal usually is.
+  const order = ["In the open popup", "Buttons", "Links", "Text inputs", "Dropdowns", "Checkboxes & radios", "Table cells", "Other"];
   return order.filter((g) => buckets.has(g)).map((g) => [g, buckets.get(g)!]);
 }
 
@@ -457,6 +464,7 @@ export function ErpScriptRecorderPage() {
         action: "dialog",
         value: "accept",
         description: (d.message || d.type || "alert").slice(0, 80),
+        dialog_type: d.type || "alert",
       });
     }
     setStatus(
@@ -2297,15 +2305,17 @@ export function ErpScriptRecorderPage() {
                 /* Grouped by what the element IS — buttons, links, inputs, dropdowns — because
                    a flat list of forty rows tells you nothing about which is which. */
                 <div className="max-h-72 space-y-3 overflow-y-auto">
-                  {groupEvents(events).map(([groupName, items]) => (
+                  {groupEvents(events).map(([groupName, items]) => {
+                    const isPopup = groupName === "In the open popup";
+                    return (
                     <div key={groupName}>
-                      <p className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                        {groupName}
-                        <span className="rounded-full bg-slate-100 px-1.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
+                      <p className={`mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${isPopup ? "text-amber-600 dark:text-amber-400" : "text-slate-400"}`}>
+                        {isPopup ? "⚠️ " : ""}{groupName}
+                        <span className={`rounded-full px-1.5 text-[10px] font-medium ${isPopup ? "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`}>
                           {items.length}
                         </span>
                       </p>
-                      <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-700">
+                      <div className={`divide-y rounded-lg border ${isPopup ? "divide-amber-100 border-amber-200 dark:divide-amber-500/20 dark:border-amber-500/30" : "divide-slate-100 border-slate-200 dark:divide-slate-800 dark:border-slate-700"}`}>
                         {items.map(({ ev, i }) => (
                           <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-sm ${aiPick?.index === i ? "bg-violet-50 dark:bg-violet-500/10" : ""}`}>
                             <span className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
@@ -2331,7 +2341,7 @@ export function ErpScriptRecorderPage() {
                         ))}
                       </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )}
             </div>
@@ -2425,8 +2435,8 @@ export function ErpScriptRecorderPage() {
                 {s.field_label ? <span className="text-emerald-600">[{s.field_label}] </span> : null}
                 {s.goal ? <span className="text-violet-600">🤖 AI: {s.goal} · </span> : null}
                 {s.prompt ? <span className="text-violet-600">🤖 rule: {s.prompt} · </span> : null}
-                {s.value ? <span className="font-semibold text-indigo-600 dark:text-indigo-400">= {displayValue(s)} </span> : null}
-                {s.description ? <span className="text-slate-500">{s.description} · </span> : null}
+                {s.value && s.action !== "dialog" ? <span className="font-semibold text-indigo-600 dark:text-indigo-400">= {displayValue(s)} </span> : null}
+                {s.description && s.action !== "dialog" ? <span className="text-slate-500">{s.description} · </span> : null}
                 <span className="font-mono text-xs text-slate-400">{s.selector || "—"}</span>
               </span>
               {/* Where in the element this step will press. A recorded click is otherwise
@@ -2569,6 +2579,51 @@ export function ErpScriptRecorderPage() {
                   ⚑ CHECKPOINT · steps 1–{i + 1} are login &amp; setup
                 </span>
                 <span className="h-px flex-1 bg-amber-300 dark:bg-amber-500/40" />
+              </div>
+            )}
+            {/* Mini mock-up of the native alert itself: the message it showed (content), then
+                the button(s) it actually offered (OK alone for a plain alert; OK + Cancel for
+                a confirm/prompt), with whichever one this step answers highlighted solid.
+                Clicking the other one flips the step to answer that way on replay instead. */}
+            {s.action === "dialog" && (
+              <div className="ml-9 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/5">
+                <span className="mt-0.5 text-base leading-none">⚠️</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs text-amber-900 dark:text-amber-200">
+                    {s.description || "(no message captured)"}
+                  </p>
+                  {s.dialog_type === "prompt" && s.value !== "dismiss" && (
+                    <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+                      types: <span className="font-mono">{s.prompt_text || "(empty)"}</span>
+                    </p>
+                  )}
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => patchStep(i, { value: "accept" })}
+                      className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                        s.value !== "dismiss"
+                          ? "bg-emerald-600 text-white"
+                          : "border border-slate-300 bg-white text-slate-400 hover:text-slate-600 dark:border-slate-700 dark:bg-slate-800"
+                      }`}
+                    >
+                      OK
+                    </button>
+                    {s.dialog_type !== "alert" && (
+                      <button
+                        type="button"
+                        onClick={() => patchStep(i, { value: "dismiss" })}
+                        className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                          s.value === "dismiss"
+                            ? "bg-rose-600 text-white"
+                            : "border border-slate-300 bg-white text-slate-400 hover:text-slate-600 dark:border-slate-700 dark:bg-slate-800"
+                        }`}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
             {editIndex === i && (

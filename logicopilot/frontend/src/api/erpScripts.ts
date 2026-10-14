@@ -378,6 +378,10 @@ export interface PageEvent {
   selector: string;
   frames: string[] | null;
   input_type: string;
+  /** Sits inside an open dialog/modal/popup right now - e.g. a custom "Yes / No / Cancel"
+   *  box the ERP draws itself, not a real native alert() (those never carry custom buttons
+   *  at all, so they go through the separate `dialog` step/LiveDialog path instead). */
+  in_dialog?: boolean;
 }
 
 export async function recorderEvents(scriptId: string, sid: string): Promise<PageEvent[]> {

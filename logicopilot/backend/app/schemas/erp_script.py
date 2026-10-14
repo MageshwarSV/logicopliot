@@ -28,6 +28,9 @@ class ErpStep(BaseModel):
     capture_as: str | None = None  # key under which get_text stores the value (e.g. be_number)
     timeout: float | str | None = None  # wait_for / wait_gone: seconds before giving up
     prompt_text: str | None = None  # dialog: text typed into a prompt() box
+    dialog_type: str | None = None  # dialog: the native kind seen while recording - alert
+    # (OK only) | confirm (OK/Cancel) | prompt (OK/Cancel + text box) - purely so the recorded
+    # step can show the same buttons the ERP actually raised, not a guess.
 
     # A step can PUT data into the ERP or PICK data back out of it. When picking, the operator
     # needs to know what they are looking at once the job finishes, so the label and this

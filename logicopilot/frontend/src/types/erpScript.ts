@@ -19,6 +19,9 @@ export interface ErpStep {
   timeout?: number | string | null;
   /** dialog: text to type into a prompt() box. Empty for alert/confirm. */
   prompt_text?: string | null;
+  /** dialog: the native kind seen while recording - alert (OK only), confirm (OK/Cancel),
+   *  or prompt (OK/Cancel + text box) - so the recorded step shows the real buttons. */
+  dialog_type?: string | null;
   /** "Pick data" steps: what kind of thing is being read out, and the description the
    *  operator sees beside it on their Completed screen. */
   capture_kind?: "value" | "text" | "document" | null;
