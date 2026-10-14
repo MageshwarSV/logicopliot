@@ -64,6 +64,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   ],
   Invoice: [
     "Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address",
+    "ERP Importer Address / Branch Code",
   ],
   Custom: ["Frt_Currency", "Misc_Charge_Currency"],
 };
@@ -79,13 +80,8 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 // Supplier Country's own Excel export mapping (INVOICES!AH, Supplier_Country_Code) was
 // cleared at the same time, so nothing downstream still reads it either. Display only - the
 // fields themselves, ask_operator, and extraction are unchanged.
-// "ERP Importer Address / Branch Code" never had a real value (kind="hardcoded" with an
-// empty hardcoded_value, ask_operator=false - nothing ever set it), and its one job -
-// feeding the Excel GENERAL!E "Branch Name" column - is now done directly by "branch_name"
-// ("ERP Quotation Branch") instead, so it has nothing left to show anywhere.
 const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
   "Cont Type", "consignee_full_name", "Supplier City", "Supplier Country",
-  "ERP Importer Address / Branch Code",
 ]);
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
@@ -220,7 +216,7 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
 const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
-const WRAP_LABEL_FIELD_LABELS = new Set<string>([]);
+const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
 // ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
@@ -259,7 +255,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     },
     {
       heading: "Party Details",
-      labels: ["shipper", "Shipper Address", "Consignee", "Consignee Address"],
+      labels: [
+        "shipper", "Shipper Address", "Consignee", "Consignee Address",
+        "ERP Importer Address / Branch Code",
+      ],
     },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
   ],
