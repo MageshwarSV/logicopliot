@@ -54,6 +54,11 @@ const SHIPMENT_TYPE_TO_FCL_OPTION: Record<string, (typeof FCL_OPTIONS)[number]> 
 interface DocketRow {
   label: string;
   patterns?: RegExp[];
+  /** Restrict matching to fields from exactly this document - e.g. "Gross Wt" exists on four
+   *  documents (BL, Invoice, Packing List, Fright Certificate); the docket's own "Weight
+   *  (Gross)" must always read the Bill of Lading's own copy, never whichever one happens to
+   *  come first in the job's field list. */
+  docName?: string;
   /** Two labels sharing one row (Bill of Entry No. + its Date) - shown as two half-width cells. */
   pairWith?: { label: string; patterns?: RegExp[] };
 }
@@ -70,10 +75,13 @@ function formatDateDDMMYYYY(iso: string | null | undefined): string {
   return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
-function bestValue(fields: JobFieldValue[], patterns: RegExp[] | undefined): string {
+function bestValue(
+  fields: JobFieldValue[], patterns: RegExp[] | undefined, docName?: string,
+): string {
   if (!patterns) return "";
+  const pool = docName ? fields.filter((f) => f.document_name === docName) : fields;
   for (const pattern of patterns) {
-    const hit = fields.find((f) => pattern.test(f.label_name) && (f.value ?? "").trim());
+    const hit = pool.find((f) => pattern.test(f.label_name) && (f.value ?? "").trim());
     if (hit) return (hit.value ?? "").trim();
   }
   return "";
@@ -112,7 +120,11 @@ function rows(isExport: boolean): DocketRow[] {
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
     },
     { label: "No. of Container 20\u201d & 40\u201d / LCL", patterns: [/container/i] },
-    { label: "Weight (Gross)", patterns: [/gross\s*weight/i, /\bweight\b/i] },
+    {
+      label: "Weight (Gross)",
+      docName: "Bill of lading",
+      patterns: [/^gross wt\.?$/i, /gross\s*weight/i, /\bweight\b/i],
+    },
     { label: "Chargeable Weight", patterns: [/chargeable\s*weight/i, /\bcbm\b/i, /volume/i] },
     {
       label: "Bill of Entry No.",
@@ -122,7 +134,14 @@ function rows(isExport: boolean): DocketRow[] {
     { label: "Ass. Value", patterns: [/assessable\s*value/i, /ass(essment)?\.?\s*value/i] },
     { label: "Duty" },
     { label: "Consol / Liner Delivery Order Charges" },
-    { label: "INCO Terms", patterns: [/incoterm/i, /terms\s*of\s*(delivery|payment)/i] },
+    {
+      label: "INCO Terms",
+      docName: "Invoice",
+      // "TOI" (Additional Details, shown there as "Terms of Invoice") is the real source -
+      // it's a 3-letter label, nothing like "incoterm" in its own text, so the old patterns
+      // never actually matched it.
+      patterns: [/^toi$/i, /incoterm/i, /terms\s*of\s*(delivery|payment)/i],
+    },
     { label: "Name of the CFS / Charges" },
     { label: "Cleared on" },
     { label: "Transporter Name" },
@@ -185,16 +204,60 @@ export function EDocketPage() {
     ];
     if (mappedFclLcl) setFclLcl(mappedFclLcl);
     const receivedOn = formatDateDDMMYYYY(job.created_at);
+    // "No. of Cartons / Pallet / Drum" - the Bill of Lading's OWN "Package Count" and
+    // "Package Unit" together (e.g. "4 CTN"), not a document-text guess. package_count is a
+    // mark on three documents (Packing List, Bill of lading, Fright Certificate) - document_name
+    // picks out the BL's own copy specifically, matching Package Unit's own BL-only source.
+    const blPackageCount = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "package_count" && f.document_name === "Bill of lading",
+    );
+    const packageUnit = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "package unit",
+    );
+    const cartons = [blPackageCount?.value, packageUnit?.value]
+      .map((v) => (v ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    // "No. of Container 20"/40"/LCL" - every container on the Bill of Lading, each as
+    // "NUMBER (TYPE)" (e.g. "WHSU1234567 (40 SD)"), joined " , " in container order. Both
+    // marks are standalone multi-value rows on the BL, paired by their shared row_index (the
+    // SAME container's own number and type always share one row - confirmed on a real
+    // 3-container job). A type missing for some row just shows the bare number, rather than
+    // dropping the container or blocking on an incomplete read.
+    const blContainerNumbers = job.field_values
+      .filter((f) => f.label_name.toLowerCase() === "container_number" && f.document_name === "Bill of lading")
+      .slice()
+      .sort((a, b) => (a.row_index ?? 0) - (b.row_index ?? 0));
+    const typeByRow = new Map(
+      job.field_values
+        .filter((f) => f.label_name.toLowerCase() === "container_type" && f.document_name === "Bill of lading")
+        .map((f) => [f.row_index, (f.value ?? "").trim()]),
+    );
+    const containers = blContainerNumbers
+      .map((f) => {
+        const number = (f.value ?? "").trim();
+        if (!number) return "";
+        const type = typeByRow.get(f.row_index) || "";
+        return type ? `${number} (${type})` : number;
+      })
+      .filter(Boolean)
+      .join(" , ");
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
-        if (!(row.label in next)) next[row.label] = bestValue(job.field_values, row.patterns);
+        if (!(row.label in next)) next[row.label] = bestValue(job.field_values, row.patterns, row.docName);
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
           next[row.pairWith.label + "\u0000" + row.label] = bestValue(job.field_values, row.pairWith.patterns);
         }
       }
       if (!("Documents Received on" in prev) && receivedOn) {
         next["Documents Received on"] = receivedOn;
+      }
+      if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
+        next["No. of Cartons / Pallet / Drum"] = cartons;
+      }
+      if (!("No. of Container 20” & 40” / LCL" in prev) && containers) {
+        next["No. of Container 20” & 40” / LCL"] = containers;
       }
       return next;
     });
