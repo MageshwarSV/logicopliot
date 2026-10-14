@@ -123,6 +123,7 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     unit: "Quantity Unit",
     shipper: "Shipper Name",
     Consignee: "Consignee Name",
+    "ERP Importer Address / Branch Code": "Importer Branch Code",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
