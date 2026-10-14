@@ -98,6 +98,10 @@ function partyRow(isExport: boolean): DocketRow {
 function rows(isExport: boolean): DocketRow[] {
   return [
     partyRow(isExport),
+    // "ERP Quotation Name" (Additional Details' "Erp Entry Name" field) - the reference-
+    // resolved forwarder name the ERP itself uses, not the raw "Quotation Name" read off
+    // the document.
+    { label: "Quotation Name", patterns: [/^erp entry name$/i] },
     { label: "Documents Received on" },
     { label: "HAWB BL No.", patterns: [/house.*(bl|bill|way\s*bill)/i, /\bhawb\b/i, /\bhbl\b/i] },
     {
@@ -136,7 +140,9 @@ function rows(isExport: boolean): DocketRow[] {
       patterns: [/assessable\s*value/i, /ass(essment)?\.?\s*value/i],
     },
     { label: "Duty" },
-    { label: "Consol / Liner Delivery Order Charges" },
+    // F.F = the same "ERP Quotation Name" (Erp Entry Name) the standalone row above shows;
+    // Consol and Liner Name have no field of their own and start blank, filled in by hand.
+    { label: "F.F / Consol / Liner Name" },
     {
       label: "INCO Terms",
       docName: "Invoice",
@@ -277,6 +283,13 @@ export function EDocketPage() {
       .map((v) => (v ?? "").trim())
       .filter(Boolean)
       .join(" ");
+    // "F.F / Consol / Liner Name" - F.F is the same "ERP Quotation Name" (Erp Entry Name) as
+    // the standalone row above; Consol and Liner Name have no field of their own, so they
+    // stay literally blank (e.g. "A FREIGHT KOREA CO., LTD / /").
+    const erpQuotationName = job.field_values.find((f) => f.label_name.toLowerCase() === "erp entry name");
+    const ffConsolLiner = (erpQuotationName?.value ?? "").trim()
+      ? `${(erpQuotationName?.value ?? "").trim()} / /`
+      : "";
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
@@ -311,6 +324,9 @@ export function EDocketPage() {
       if (!("Ass. Value / Invoice Value" in prev) && invoiceValueDisplay) {
         const assValue = next["Ass. Value / Invoice Value"] ?? "";
         next["Ass. Value / Invoice Value"] = `${assValue} / ${invoiceValueDisplay}`;
+      }
+      if (!("F.F / Consol / Liner Name" in prev) && ffConsolLiner) {
+        next["F.F / Consol / Liner Name"] = ffConsolLiner;
       }
       return next;
     });
