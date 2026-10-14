@@ -108,7 +108,7 @@ function rows(isExport: boolean): DocketRow[] {
       // itself still blank.
       patterns: [/^mbl no\.?$/i, /master.*(bl|bill|way\s*bill)/i, /\bmawb\b/i, /\bmbl\b/i],
     },
-    { label: "Vessel Name", patterns: [/vessel/i, /flight/i] },
+    { label: "Vessel Name / Voyage No" },
     {
       label: "Inward Date / IGM Date",
       // "IGM Date" (Additional Details) tried first, exactly - the loose /\bigm\b/i alone
@@ -204,6 +204,19 @@ export function EDocketPage() {
     ];
     if (mappedFclLcl) setFclLcl(mappedFclLcl);
     const receivedOn = formatDateDDMMYYYY(job.created_at);
+    // "Vessel Name / Voyage No" - the Bill of Lading's own "vessel_name" + "voyage_number"
+    // (e.g. "TS SINGAPORE / 2607W"). Either one alone still shows on its own, rather than
+    // being dropped for want of the other.
+    const vesselName = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "vessel_name" && f.document_name === "Bill of lading",
+    );
+    const voyageNumber = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "voyage_number" && f.document_name === "Bill of lading",
+    );
+    const vesselVoyage = [vesselName?.value, voyageNumber?.value]
+      .map((v) => (v ?? "").trim())
+      .filter(Boolean)
+      .join(" / ");
     // "No. of Cartons / Pallet / Drum" - the Bill of Lading's OWN "Package Count" and
     // "Package Unit" together (e.g. "4 CTN"), not a document-text guess. package_count is a
     // mark on three documents (Packing List, Bill of lading, Fright Certificate) - document_name
@@ -255,6 +268,9 @@ export function EDocketPage() {
       }
       if (!("Documents Received on" in prev) && receivedOn) {
         next["Documents Received on"] = receivedOn;
+      }
+      if (!("Vessel Name / Voyage No" in prev) && vesselVoyage) {
+        next["Vessel Name / Voyage No"] = vesselVoyage;
       }
       if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
         next["No. of Cartons / Pallet / Drum"] = cartons;
@@ -378,7 +394,7 @@ export function EDocketPage() {
           <div className="flex gap-1.5" style={{ gridColumn: "1", gridRow: "1" }}>
             <div className="flex border-2 border-black text-xs font-semibold">
               <span className="border-r border-black px-2 py-1.5">RMS</span>
-              <span className="px-2 py-1.5">GROUP - FCA</span>
+              <span className="px-2 py-1.5">GROUP - FAG</span>
             </div>
             <div className="flex flex-1 border-2 border-black">
               {FCL_OPTIONS.map((o, i) => (
