@@ -108,7 +108,7 @@ const PARK_TONE: Record<string, string> = {
 const ACTIONS = [
   "navigate", "click", "fill", "select", "autocomplete", "submit", "wait", "ai_action", "switch_tab",
   "get_text", "assert_text", "download", "screenshot",
-  "wait_for", "wait_gone",
+  "wait_for", "wait_gone", "wait_full_load",
   "hover", "send_keys", "check", "radio", "clear", "dialog",
   "pick_date", "upload", "row_action", "double_click", "scroll",
 ];
@@ -1491,7 +1491,7 @@ export function ErpScriptRecorderPage() {
     // capture_as or timeout left over from a different action the user was looking at.
     const step: ErpStep = { ...draft };
     if (step.action !== "get_text") delete step.capture_as;
-    if (step.action !== "wait_for" && step.action !== "wait_gone") delete step.timeout;
+    if (step.action !== "wait_for" && step.action !== "wait_gone" && step.action !== "wait_full_load") delete step.timeout;
     if (step.action !== "dialog") delete step.prompt_text;
     if (step.action === "get_text" && !step.capture_as) step.capture_as = "captured";
     setSteps((s) => [...s, step]);
@@ -1791,6 +1791,43 @@ export function ErpScriptRecorderPage() {
                     }`}
                   >
                     ⌖ {dblArmed ? "Double click — armed" : "Double click"}
+                  </button>
+                  {/* Waits for the PAGE itself to finish loading/settling - not tied to any
+                      element, so it needs no arming or touch; press it and the step is added
+                      right where you are in the sequence. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pushStep({ action: "wait_full_load", timeout: 15 });
+                      setStatus("Added: wait for the page to finish loading (15s timeout).");
+                    }}
+                    disabled={busy}
+                    title="Add a step that waits for the whole page to finish loading/settling before continuing - for a slow navigation or postback, not one element"
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    ⏳ Wait full page load
+                  </button>
+                  {/* A quick fixed pause, inserted right in the sequence - the same "wait"
+                      action the manual-add form already offers, just one press away instead
+                      of filling in the action dropdown + value box. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const raw = window.prompt("Wait how many seconds?", "2");
+                      if (raw === null) return;
+                      const secs = Number(raw);
+                      if (!Number.isFinite(secs) || secs <= 0) {
+                        setStatus("Enter a positive number of seconds.");
+                        return;
+                      }
+                      pushStep({ action: "wait", value: String(secs) });
+                      setStatus(`Added: wait ${secs}s.`);
+                    }}
+                    disabled={busy}
+                    title="Add a fixed wait of however many seconds you choose, then continue the sequence"
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    ⏱ Wait Ns
                   </button>
                   {/* A search popup's result row is the one place a recorded CLICK position is
                       never trustworthy — a different value returns a different number of
@@ -2512,12 +2549,12 @@ export function ErpScriptRecorderPage() {
                     <option value="">— none (use Value) —</option>
                     {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
                   </Select>
-                  {(s.action === "wait_for" || s.action === "wait_gone") && (
+                  {(s.action === "wait_for" || s.action === "wait_gone" || s.action === "wait_full_load") && (
                     <Input
                       label="Timeout (seconds)"
                       value={String(s.timeout ?? "")}
                       onChange={(e) => patchStep(i, { timeout: e.target.value })}
-                      placeholder="20"
+                      placeholder={s.action === "wait_full_load" ? "15" : "20"}
                     />
                   )}
                   {(s.action === "get_text" || s.action === "download") && (
@@ -2607,7 +2644,7 @@ export function ErpScriptRecorderPage() {
             </div>
             {/* Extra inputs that only some actions need. Hidden otherwise so the common case
                 stays a single row rather than a form full of empty boxes. */}
-            {(draft.action === "get_text" || draft.action === "wait_for" || draft.action === "wait_gone" || draft.action === "dialog") && (
+            {(draft.action === "get_text" || draft.action === "wait_for" || draft.action === "wait_gone" || draft.action === "wait_full_load" || draft.action === "dialog") && (
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
                 {draft.action === "get_text" && (
                   <Input
@@ -2617,12 +2654,12 @@ export function ErpScriptRecorderPage() {
                     placeholder="be_number"
                   />
                 )}
-                {(draft.action === "wait_for" || draft.action === "wait_gone") && (
+                {(draft.action === "wait_for" || draft.action === "wait_gone" || draft.action === "wait_full_load") && (
                   <Input
                     label="Timeout (seconds)"
                     value={draft.timeout ?? ""}
                     onChange={(e) => setDraft({ ...draft, timeout: e.target.value })}
-                    placeholder="20"
+                    placeholder={draft.action === "wait_full_load" ? "15" : "20"}
                   />
                 )}
                 {draft.action === "dialog" && (

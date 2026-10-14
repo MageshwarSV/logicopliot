@@ -2532,7 +2532,7 @@ ELEMENT_ACTIONS = frozenset({
 })
 CONTROL_ACTIONS = frozenset({
     "ai_action", "assert_text", "dialog", "download", "get_text", "navigate", "switch_tab",
-    "wait", "wait_for", "wait_gone",
+    "wait", "wait_for", "wait_gone", "wait_full_load",
 })
 ALL_ACTIONS = ELEMENT_ACTIONS | CONTROL_ACTIONS
 
@@ -3579,6 +3579,10 @@ class RecorderSession:
                     secs = float(st.get("timeout") or 15)
                     _scoped(page, frames, st.get("selector")).first.wait_for(
                         state=state, timeout=secs * 1000)
+                elif act == "wait_full_load":
+                    budget_ms = int(float(st.get("timeout") or 15) * 1000)
+                    _settle(page, timeout=budget_ms, network_wait=min(budget_ms, 5000))
+                    _settle_postback(page, timeout=budget_ms)
                 elif act == "switch_tab":
                     # NOT skippable. This used to sit in the skip list below on the grounds
                     # that it "reads or branches" — but a tab switch is exactly how the flow
@@ -4218,6 +4222,15 @@ class RecorderSession:
                 self._done_components += 1
                 return {"ok": True, "status": "loaded", "action": "wait",
                         "description": "Waited", "ran": ran}
+            if action == "wait_full_load":
+                budget_ms = int(float(step.get("timeout") or 15) * 1000)
+                _settle(p, timeout=budget_ms, network_wait=min(budget_ms, 5000))
+                _settle_postback(p, timeout=budget_ms)
+                self._done_set.add(self._idx)
+                self._idx += 1
+                self._done_components += 1
+                return {"ok": True, "status": "loaded", "action": "wait_full_load",
+                        "description": "Waited for the page to finish loading", "ran": ran}
             # Scroll has no element, so it must be handled before the _present() check below —
             # otherwise it looks like a missing element and stalls the operator's run.
             if action == "scroll":
@@ -5318,6 +5331,21 @@ def play_steps(
                             log.append(f"step {i + 1} {action} TIMED OUT after {secs}s: {exc}")
                             aborted = True
                             break
+                        executed.add(i)
+                        i += 1
+                        continue
+                    if action == "wait_full_load":
+                        # Unlike "wait" (a fixed pause) or "wait_for"/"wait_gone" (watching one
+                        # element), this waits for the PAGE ITSELF to finish loading/settling -
+                        # the same domcontentloaded + networkidle + ASP.NET postback-flag check
+                        # _settle/_settle_postback already run automatically after every click,
+                        # just given a longer, operator-set budget for a screen genuinely slow
+                        # to render (reuses `timeout`, in seconds, same field wait_for/wait_gone
+                        # already use - default 15s).
+                        budget_ms = int(float(step.get("timeout") or 15) * 1000)
+                        _settle(page, timeout=budget_ms, network_wait=min(budget_ms, 5000))
+                        _settle_postback(page, timeout=budget_ms)
+                        log.append(f"step {i + 1} wait_full_load ok")
                         executed.add(i)
                         i += 1
                         continue

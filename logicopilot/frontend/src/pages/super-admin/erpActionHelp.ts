@@ -188,6 +188,15 @@ export const ACTION_HELP: Record<string, ActionHelp> = {
     how: ["Click the spinner/overlay in the live browser", "Optionally set a timeout in seconds"],
     example: "action:   wait_gone\nselector: .loading-overlay\ntimeout:  30",
   },
+  wait_full_load: {
+    title: "Wait for the full page to load",
+    what: "Pauses until the whole page finishes loading and settling - not just one element. Use it after a navigation or submit that reloads the entire screen (or a slow ASP.NET postback) and the next step keeps landing before it's ready.",
+    how: [
+      "Add the step manually - no selector needed, it waits on the page itself",
+      "Optionally set a timeout in seconds (default 15)",
+    ],
+    example: "action:   wait_full_load\ntimeout:  15\n\n-> waits for the page to finish loading, then continues",
+  },
   hover: {
     title: "Hover the mouse",
     what: "Moves the pointer over an element without clicking. Needed for menus that only open on hover — clicking them directly does nothing.",
