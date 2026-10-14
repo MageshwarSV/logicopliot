@@ -1345,6 +1345,12 @@ def _absent_and_settled(page, sel: str, frames: list, budget_ms: int = 15000,
     floor = _t.monotonic() + min_ms / 1000.0
     while True:
         if _present(page, sel, frames, timeout=GLANCE_MS):
+            # On screen, but DISABLED (an auto-filled dependent dropdown with nothing else to
+            # choose, say) - there is nothing for an optional step to do here either, same as
+            # if it had never appeared at all. A control the ERP left genuinely usable still
+            # counts as present below, so a real optional pick is never skipped by mistake.
+            if _disabled_now(page, sel, frames):
+                return True
             return False                       # it IS there - not absent at all
         try:
             busy = bool(page.evaluate(_POSTBACK_BUSY_JS)) or page.evaluate(
@@ -1355,6 +1361,27 @@ def _absent_and_settled(page, sel: str, frames: list, budget_ms: int = 15000,
         if now >= deadline or (not busy and now >= floor):
             return True
         page.wait_for_timeout(250)
+
+
+def _disabled_now(page, sel: str, frames: list) -> bool:
+    """Is the recorded element on screen but DISABLED right now - a control the ERP itself has
+    locked (an auto-filled dependent dropdown with nothing left to choose, say) - as opposed to
+    one that simply has not appeared yet. Used only to tell an OPTIONAL step's two kinds of
+    "nothing to do here" apart (see _absent_and_settled's own use of this): a non-optional step
+    still times out plainly on a disabled target, which is the honest answer when a real pick
+    is actually expected there.
+    """
+    if not sel:
+        return False
+    try:
+        loc = _scoped(page, frames, sel)
+        for k in range(min(loc.count(), 10)):
+            el = loc.nth(k)
+            if el.is_visible():
+                return el.is_disabled()
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 def _repair_selector(page, step: dict, frames: list, timeout: int = 2500) -> str | None:
