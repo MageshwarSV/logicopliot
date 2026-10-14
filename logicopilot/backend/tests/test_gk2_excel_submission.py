@@ -511,6 +511,10 @@ def test_download_as_excel_returns_a_workbook(client, db_session):
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # Every download is rebuilt fresh from this job's CURRENT data (see _build_job_excel's own
+    # docstring) but always written to the same path/filename - without this header, a browser
+    # could still serve back an earlier download for the same URL instead of re-fetching.
+    assert resp.headers["cache-control"] == "no-store"
 
 
 def test_download_as_excel_reports_a_clear_error_when_the_workbook_would_be_empty(client, db_session):

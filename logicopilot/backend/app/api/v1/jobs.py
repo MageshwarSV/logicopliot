@@ -2426,6 +2426,11 @@ def download_job_excel(
     return FileResponse(
         book, filename=book.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        # This is rebuilt fresh on every call but always written to the SAME path under the
+        # SAME filename (job_excel/{job.id}/{job.reference}.xlsx) - without this, a browser
+        # that caches by URL (or a Last-Modified/ETag revalidation that happens to match) can
+        # serve back an earlier download instead of ever re-fetching this freshly-built one.
+        headers={"Cache-Control": "no-store"},
     )
 
 
