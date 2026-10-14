@@ -233,15 +233,18 @@ export function EDocketPage() {
         .filter((f) => f.label_name.toLowerCase() === "container_type" && f.document_name === "Bill of lading")
         .map((f) => [f.row_index, (f.value ?? "").trim()]),
     );
-    const containers = blContainerNumbers
+    const containerList = blContainerNumbers
       .map((f) => {
         const number = (f.value ?? "").trim();
         if (!number) return "";
         const type = typeByRow.get(f.row_index) || "";
         return type ? `${number} (${type})` : number;
       })
-      .filter(Boolean)
-      .join(" , ");
+      .filter(Boolean);
+    // The count goes in front of the list (e.g. "3 x WHSU1234567 (40 SD) , ...") - the row's
+    // own heading is literally "No. of Container...", so the count itself is the first thing
+    // it should say, not just how many entries happen to follow it.
+    const containers = containerList.length ? `${containerList.length} x ${containerList.join(" , ")}` : "";
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
