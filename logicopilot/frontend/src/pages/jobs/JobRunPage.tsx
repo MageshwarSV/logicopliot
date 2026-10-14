@@ -62,7 +62,10 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "HBL Date", "Consignment Type", "TransportModeCode",
     "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code", "Package Unit",
   ],
-  Invoice: ["Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address"],
+  Invoice: [
+    "Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address",
+    "ERP Importer Address / Branch Code",
+  ],
   Custom: ["Frt_Currency", "Misc_Charge_Currency"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
@@ -249,7 +252,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     },
     {
       heading: "Party Details",
-      labels: ["shipper", "Shipper Address", "Consignee", "Consignee Address"],
+      labels: [
+        "shipper", "Shipper Address", "Consignee", "Consignee Address",
+        "ERP Importer Address / Branch Code",
+      ],
     },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
   ],
