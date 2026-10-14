@@ -131,7 +131,10 @@ function rows(isExport: boolean): DocketRow[] {
       patterns: [/bill\s*of\s*entry\s*(no|number)/i, /\bboe\s*(no|number)\b/i],
       pairWith: { label: "Date", patterns: [/bill\s*of\s*entry\s*date/i, /\bboe\s*date\b/i] },
     },
-    { label: "Ass. Value", patterns: [/assessable\s*value/i, /ass(essment)?\.?\s*value/i] },
+    {
+      label: "Ass. Value / Invoice Value",
+      patterns: [/assessable\s*value/i, /ass(essment)?\.?\s*value/i],
+    },
     { label: "Duty" },
     { label: "Consol / Liner Delivery Order Charges" },
     {
@@ -263,6 +266,17 @@ export function EDocketPage() {
       ? `${containerList.length} x ${containerList.join(" , ")}`
         + (shipmentTypeDisplay ? ` / (${shipmentTypeDisplay})` : "")
       : "";
+    // "Ass. Value / Invoice Value" - the Invoice's own "Currency_type" + "Product Value"
+    // ("Total Invoice Value") custom fields, appended after whatever Ass. Value itself
+    // auto-filled to. Both are job-level custom fields (one value per job, not per-document),
+    // so no document filter is needed or possible - a custom field always reports itself as
+    // "✨ Custom" regardless of which document it actually reads from.
+    const currencyType = job.field_values.find((f) => f.label_name.toLowerCase() === "currency_type");
+    const totalInvoiceValue = job.field_values.find((f) => f.label_name.toLowerCase() === "product value");
+    const invoiceValueDisplay = [currencyType?.value, totalInvoiceValue?.value]
+      .map((v) => (v ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
@@ -293,6 +307,10 @@ export function EDocketPage() {
       // weight) - a sea shipment is never charged this way, so it always reads "NA" there.
       if (!("Chargeable Weight" in prev) && /sea/i.test(job.mode ?? "")) {
         next["Chargeable Weight"] = "NA";
+      }
+      if (!("Ass. Value / Invoice Value" in prev) && invoiceValueDisplay) {
+        const assValue = next["Ass. Value / Invoice Value"] ?? "";
+        next["Ass. Value / Invoice Value"] = `${assValue} / ${invoiceValueDisplay}`;
       }
       return next;
     });
