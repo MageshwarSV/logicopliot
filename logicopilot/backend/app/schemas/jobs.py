@@ -252,6 +252,10 @@ class JobDetailOut(BaseModel):
     duplicate_of_job_id: str | None = None
     duplicate_of_reference: str | None = None
     eta_date: str | None = None
+    # When this job was created - the E-Docket's "Documents Received on" reads this (the
+    # same moment the Jobs list's own "Date" column shows), rather than asking the operator
+    # to retype a date the system already has.
+    created_at: datetime | None = None
     documents: list[JobDocumentOut]
     field_values: list[JobFieldValueOut]
     verifications: list[VerificationRow]

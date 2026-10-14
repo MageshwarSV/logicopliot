@@ -2848,6 +2848,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         duplicate_of_job_id=job.duplicate_of_job_id,
         duplicate_of_reference=_duplicate_of_reference(db, job),
         eta_date=job.eta_date,
+        created_at=job.created_at,
         documents=documents,
         field_values=field_values,
         verifications=verifications,
@@ -3709,6 +3710,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
             erp_url=getattr(script, "url", "") or "",
             reason=reason, details=details[:4000], status="open"))
 
+    # A job can reach this function through the REGULAR entry screen (any authorized role,
+    # including a Super Admin running the live entry directly) after an EARLIER, unrelated
+    # GK2 attempt already left job.gk2_status on "failed" or "submitted" - _outer_status()
+    # checks gk2_status FIRST, before job.status, so that stale value would otherwise keep
+    # showing "Failed" (or mask a fresh failure behind an old "AI - ERP Submitted") forever,
+    # no matter what THIS run just achieved. _run_gk2_submission's own wrapper sets gk2_status
+    # again right after calling this function based on the fresh outcome, so clearing it here
+    # unconditionally is harmless for that caller and is exactly what the regular caller needs.
+    job.gk2_status = None
     if status == "duplicated":
         # The form locked after entry - the record already exists. Not a failure.
         job.status = "duplicate"

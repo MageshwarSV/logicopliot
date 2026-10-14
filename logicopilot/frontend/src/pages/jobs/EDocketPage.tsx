@@ -20,6 +20,30 @@ const FCL_OPTIONS = ["FCL", "LCL", "B.B"] as const;
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
 const TRANSACTION_MODES = ["Deferred", "Transaction"] as const;
 const PRIORITY_TYPES = ["Advance", "Prior", "Normal"] as const;
+// The docket's own Transaction Mode is the same choice as the job's "Payment Method" field
+// (shown under Additional Details, stored as the single letter the ERP itself expects - T for
+// Transaction, D for Deferred) - never a separate decision the operator makes twice.
+const PAYMENT_METHOD_TO_TRANSACTION_MODE: Record<string, (typeof TRANSACTION_MODES)[number]> = {
+  T: "Transaction",
+  D: "Deferred",
+};
+// Same pairing for Priority Type - the job's own "AdvancePriorNormal" field, shown under
+// Additional Details as "Bill of Entry Type" (see JobRunPage's own FIELD_LABEL_OVERRIDES -
+// not to be confused with "BETypeCode", a different field shown there as "BE Type").
+const BILL_OF_ENTRY_TYPE_TO_PRIORITY_TYPE: Record<string, (typeof PRIORITY_TYPES)[number]> = {
+  A: "Advance",
+  P: "Prior",
+  N: "Normal",
+};
+// Same pairing for the FCL/LCL/B.B tick-box row - the Bill of Lading's own "Consignment
+// Type" field, shown there as "Shipment Type" (see JobRunPage's own FIELD_LABEL_OVERRIDES).
+// Normalised (upper-case, no dots/spaces) since "B.B" could come back as "BB" or "Break Bulk".
+const SHIPMENT_TYPE_TO_FCL_OPTION: Record<string, (typeof FCL_OPTIONS)[number]> = {
+  FCL: "FCL",
+  LCL: "LCL",
+  BB: "B.B",
+  BREAKBULK: "B.B",
+};
 
 /** One row on the docket. `patterns` are tried in order against every field's label_name
  *  (case-insensitive); the first field with a matching label AND a non-empty value wins -
@@ -32,6 +56,18 @@ interface DocketRow {
   patterns?: RegExp[];
   /** Two labels sharing one row (Bill of Entry No. + its Date) - shown as two half-width cells. */
   pairWith?: { label: string; patterns?: RegExp[] };
+}
+
+/** "Documents Received on" has no field of its own to read - it's the moment this job itself
+ *  was created (the same instant the Jobs list's own "Date" column shows), formatted the way
+ *  the physical docket always has: DD/MM/YYYY. */
+function formatDateDDMMYYYY(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
 function bestValue(fields: JobFieldValue[], patterns: RegExp[] | undefined): string {
@@ -56,9 +92,21 @@ function rows(isExport: boolean): DocketRow[] {
     partyRow(isExport),
     { label: "Documents Received on" },
     { label: "HAWB BL No.", patterns: [/house.*(bl|bill|way\s*bill)/i, /\bhawb\b/i, /\bhbl\b/i] },
-    { label: "MAWB BL No.", patterns: [/master.*(bl|bill|way\s*bill)/i, /\bmawb\b/i, /\bmbl\b/i] },
+    {
+      label: "MAWB BL No.",
+      // "MBL No" (Additional Details) tried first, exactly - it's the authoritative, typed/
+      // corrected value, not a guess off whatever document happens to print something
+      // MBL-shaped. The looser patterns stay as a fallback for a job whose "MBL No" field is
+      // itself still blank.
+      patterns: [/^mbl no\.?$/i, /master.*(bl|bill|way\s*bill)/i, /\bmawb\b/i, /\bmbl\b/i],
+    },
     { label: "Vessel Name", patterns: [/vessel/i, /flight/i] },
-    { label: "Inward Date / IGM Date", patterns: [/\bigm\b/i, /inward\s*date/i, /arrival\s*date/i, /eta/i] },
+    {
+      label: "Inward Date / IGM Date",
+      // "IGM Date" (Additional Details) tried first, exactly - the loose /\bigm\b/i alone
+      // could just as easily match "IGM No" first and put the IGM NUMBER on a date row.
+      patterns: [/^igm date\.?$/i, /\bigm\b/i, /inward\s*date/i, /arrival\s*date/i, /eta/i],
+    },
     {
       label: "No. of Cartons / Pallet / Drum",
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
@@ -119,6 +167,24 @@ export function EDocketPage() {
   // overwrites something the operator has already typed on a re-render.
   useEffect(() => {
     if (!job) return;
+    const paymentMethod = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "payment method",
+    );
+    const mappedMode = PAYMENT_METHOD_TO_TRANSACTION_MODE[(paymentMethod?.value ?? "").trim().toUpperCase()];
+    if (mappedMode) setTransactionMode(mappedMode);
+    const billOfEntryType = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "advancepriornormal",
+    );
+    const mappedPriority = BILL_OF_ENTRY_TYPE_TO_PRIORITY_TYPE[(billOfEntryType?.value ?? "").trim().toUpperCase()];
+    if (mappedPriority) setPriorityType(mappedPriority);
+    const shipmentType = job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "consignment type",
+    );
+    const mappedFclLcl = SHIPMENT_TYPE_TO_FCL_OPTION[
+      (shipmentType?.value ?? "").trim().toUpperCase().replace(/[^A-Z]/g, "")
+    ];
+    if (mappedFclLcl) setFclLcl(mappedFclLcl);
+    const receivedOn = formatDateDDMMYYYY(job.created_at);
     setValues((prev) => {
       const next = { ...prev };
       for (const row of rows(isExport)) {
@@ -126,6 +192,9 @@ export function EDocketPage() {
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
           next[row.pairWith.label + "\u0000" + row.label] = bestValue(job.field_values, row.pairWith.patterns);
         }
+      }
+      if (!("Documents Received on" in prev) && receivedOn) {
+        next["Documents Received on"] = receivedOn;
       }
       return next;
     });

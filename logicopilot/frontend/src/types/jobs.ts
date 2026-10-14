@@ -203,6 +203,7 @@ export interface JobDetail {
   duplicate_of_job_id?: string | null;
   duplicate_of_reference?: string | null;
   eta_date?: string | null;
+  created_at?: string | null;
   documents: JobDocument[];
   field_values: JobFieldValue[];
   verifications: VerificationRow[];
