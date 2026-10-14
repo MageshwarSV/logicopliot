@@ -94,6 +94,30 @@ def test_a_single_key_returns_none_without_querying_or_calling_the_ai(db_session
     pick_mocked.assert_not_called()
 
 
+def test_an_informal_country_name_falls_back_to_a_substring_prefilter(db_session):
+    """Live bug: JOB-7A2B4E's own Shipment Country/City ("Korea"/"Busan") returned nothing at
+    all, because the exact pre-filter on the country key alone already came back empty - the
+    sheet only ever spells it "SOUTH KOREA" - before the city's own fuzzy matching (the part
+    actually built to catch a spelling difference like "Busan" vs the sheet's old-romanisation
+    "Pusan") ever got a chance to run. A substring match on the country key only ever widens an
+    otherwise-empty result, so it is tried only after an exact match has already failed."""
+    cf = _make_field(db_session)
+    remember_reference(db_session, cf.id, ["SOUTH KOREA", "Pusan"], "KRPUS")
+    remember_reference(db_session, cf.id, ["NORTH KOREA", "Pyongyang"], "KPFNJ")
+    db_session.commit()
+
+    with _NO_RENAME, \
+         patch("app.core.llm.resolve_fuzzy_candidate_with_ai", return_value="KRPUS") as mocked:
+        result = lookup_reference_ai_assisted(db_session, cf.id, ["Korea", "Busan"])
+
+    assert result == "KRPUS"
+    # Both Korea rows get offered - a plain substring match on the country key can't tell
+    # North from South by itself - but only the genuinely close city name ("Pusan" vs "Busan")
+    # realistically wins the AI's own pick (mocked here to confirm that candidate list).
+    offered = {code for _, code in mocked.call_args.args[1]}
+    assert offered == {"KRPUS", "KPFNJ"}
+
+
 def test_candidate_list_is_capped_even_with_many_rows_sharing_the_first_key(db_session):
     from app.core.reference_cache import AI_ASSISTED_CANDIDATE_LIMIT
 

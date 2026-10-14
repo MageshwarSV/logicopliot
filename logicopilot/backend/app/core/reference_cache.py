@@ -205,12 +205,28 @@ def lookup_reference_ai_assisted(
         CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2,
         CustomFieldReferenceValue.match_value_3, CustomFieldReferenceValue.match_value_4,
     ]
-    query = db.query(CustomFieldReferenceValue).filter(
-        CustomFieldReferenceValue.custom_field_id == custom_field_id,
-    )
-    for i in range(real_keys - 1):
-        query = query.filter(exact_columns[i] == slots[i])
-    candidates = query.all()
+
+    def _prefiltered(exact: bool) -> list[CustomFieldReferenceValue]:
+        query = db.query(CustomFieldReferenceValue).filter(
+            CustomFieldReferenceValue.custom_field_id == custom_field_id,
+        )
+        for i in range(real_keys - 1):
+            col = exact_columns[i]
+            query = query.filter(col == slots[i] if exact else col.ilike(f"%{slots[i]}%"))
+        return query.all()
+
+    candidates = _prefiltered(exact=True)
+    if not candidates:
+        # The pre-filter key (e.g. a shipment's own country) is sometimes a common/informal
+        # name the sheet itself never uses verbatim - "Korea" where the world port table's
+        # own spelling is "SOUTH KOREA" - so an exact match finds nothing before the LAST
+        # key's own fuzzy matching (below) ever gets a chance to run at all. Falling back to a
+        # substring match only ever WIDENS an empty result - an exact match is always also a
+        # substring match, so a lookup that already worked is completely unaffected - and the
+        # last key still has to agree (ranked, then AI-confirmed) before anything is returned,
+        # so a wider country net can never by itself produce a wrong port; at worst it fails
+        # to narrow the field down as much as an exact country match would have.
+        candidates = _prefiltered(exact=False)
     if not candidates:
         return None
     last_idx = real_keys - 1
