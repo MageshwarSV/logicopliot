@@ -92,7 +92,11 @@ function bestValue(
 function partyRow(isExport: boolean): DocketRow {
   return isExport
     ? { label: "Name of the Exporter", patterns: [/exporter/i, /shipper/i, /consignor/i] }
-    : { label: "Name of the Importer", patterns: [/importer/i, /consignee/i, /\bbuyer\b/i] };
+    // Consignee is tried first and matters most: "ERP Importer Address / Branch Code" (a
+    // branch/address picker, unrelated to the party name) also matches /importer/i by
+    // coincidence of its own label - trying that pattern first would let an operator-typed
+    // branch code outrank the real consignee name the moment that field has any value.
+    : { label: "Name of the Importer", patterns: [/consignee/i, /\bbuyer\b/i, /importer/i] };
 }
 
 function rows(isExport: boolean): DocketRow[] {
