@@ -113,7 +113,7 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     CountryOfShipmentCode: "Shipment Country Code",
     TransportModeCode: "Transport Mode Code",
     package_count: "Package Count",
-    "Gross Wt": "Gross Weight (kg)",
+    "Gross Wt": "Gross Weight",
     container_number: "Container Number",
     container_type: "Container Type",
     ContainerTypeCode: "CTR ISO CODE",
@@ -155,6 +155,10 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
     { value: "S", label: "S" },
     { value: "A", label: "A" },
+  ],
+  "Gross Weight Unit": [
+    { value: "KGS", label: "KGS" },
+    { value: "MTS", label: "MTS" },
   ],
   "Payment Method": [
     { value: "T", label: "Transaction" },
@@ -261,7 +265,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
         "Shipment Port Code", "port_of_entry", "CustomsHouseCode",
       ],
     },
-    { heading: "Package & Weight Details", labels: ["package_count", "Gross Wt", "Package Unit"] },
+    {
+      heading: "Package & Weight Details",
+      labels: ["package_count", "Gross Wt", "Gross Weight Unit", "Package Unit"],
+    },
     {
       heading: "Shipper Details",
       labels: ["Supplier Name", "Supplier Address"],
