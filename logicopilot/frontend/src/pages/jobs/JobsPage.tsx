@@ -423,6 +423,18 @@ export function JobsPage() {
     return [...s].sort();
   }, [jobs]);
 
+  // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
+  // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
+  // rewinds a local midnight (or any local morning timestamp) onto the PREVIOUS day's date, which
+  // is exactly how "Today" ended up also matching everything from yesterday evening onward: the
+  // filter's own start-of-day boundary rounded down a day before the comparison even began.
+  function localDayKey(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
   // The window the quick filter means, unless explicit dates override it.
   const quickRange = useMemo(() => {
     if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
@@ -431,13 +443,13 @@ export function JobsPage() {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - days);
-    return { from: start.toISOString().slice(0, 10), to: "" };
+    return { from: localDayKey(start), to: "" };
   }, [quick, dateFrom, dateTo]);
 
   function dayKey(iso: string | null | undefined): string {
     if (!iso) return "";
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+    return Number.isNaN(d.getTime()) ? "" : localDayKey(d);
   }
 
   // Jobs arrive newest-first (the server sorts by created_at desc). The quick/date-range,
