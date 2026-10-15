@@ -3700,7 +3700,7 @@ function ExtractedField({
       {flagged && flagNote && (
         <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
       )}
-      {hint && <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{hint}</p>}
+      {hint && <p className="mt-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">{hint}</p>}
     </div>
   );
 }
