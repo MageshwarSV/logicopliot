@@ -14,13 +14,13 @@ from app.models.template_group import TemplateGroup
 from tests.conftest import make_tenant
 
 
-def _make_job(db_session, gk2_status=None):
+def _make_job(db_session, gk2_status=None, reference="JOB-GK2STALE"):
     tenant = make_tenant(db_session)
     group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
     db_session.add(group)
     db_session.commit()
     db_session.refresh(group)
-    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-GK2STALE",
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference=reference,
              status="extracted", gk2_status=gk2_status)
     db_session.add(job)
     db_session.commit()
@@ -67,3 +67,35 @@ def test_a_run_with_no_prior_gk2_status_is_unaffected(db_session):
     persist_run_outcome(db_session, job, script=None, result={"status": "ok", "log": ["ok"]})
     assert job.status == "completed"
     assert job.gk2_status is None
+
+
+def test_a_captured_erp_job_no_replaces_the_placeholder_reference(db_session):
+    """A job auto-created from an incoming email starts with a random placeholder reference
+    (generate_job_no(), "JOB-XXXXXX"). Once a real ERP run captures the ERP's own job number,
+    that becomes the job's real identity everywhere the placeholder was shown."""
+    job = _make_job(db_session, reference="JOB-7F3A9C")
+    persist_run_outcome(db_session, job, script=None, result={
+        "status": "ok", "log": ["ok"],
+        "captured": {"ERP_Job_No": {"label": "ERP_Job_No", "value": "MAA/SI/03324/26-27",
+                                     "kind": "value", "usage": "output"}},
+    })
+    assert job.reference == "MAA/SI/03324/26-27"
+
+
+def test_a_custom_reference_set_on_purpose_is_never_overwritten(db_session):
+    """A reference that does not match the placeholder shape (someone set it deliberately,
+    e.g. via payload.reference at creation) is left alone even once a real ERP job number
+    comes in - only an untouched, auto-generated placeholder ever gets replaced."""
+    job = _make_job(db_session, reference="CUSTOM-REF-1")
+    persist_run_outcome(db_session, job, script=None, result={
+        "status": "ok", "log": ["ok"],
+        "captured": {"ERP_Job_No": {"label": "ERP_Job_No", "value": "MAA/SI/03324/26-27",
+                                     "kind": "value", "usage": "output"}},
+    })
+    assert job.reference == "CUSTOM-REF-1"
+
+
+def test_no_captured_erp_job_no_leaves_the_placeholder_reference_alone(db_session):
+    job = _make_job(db_session, reference="JOB-7F3A9C")
+    persist_run_outcome(db_session, job, script=None, result={"status": "ok", "log": ["ok"]})
+    assert job.reference == "JOB-7F3A9C"

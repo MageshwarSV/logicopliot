@@ -3748,6 +3748,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     # An override says where a job is WAITING. It has just finished, so there is nothing left
     # to wait on - and leaving it behind is what made a completed job read "ERP Entry".
     job.stage_override = None
+    # A job auto-created from an incoming email (or any job that never got a real reference of
+    # its own) carries a placeholder ("JOB-7F3A9C" - see generate_job_no()) until the real ERP
+    # entry exists. The moment it does, the ERP's own job number IS the job's real identity -
+    # the placeholder has done its job and should stop being what everyone sees (the page
+    # title, the Jobs list, the E-Docket's own "JOB No." field, which reads this same value).
+    # Only ever replaces an untouched placeholder, never a reference someone set on purpose.
+    erp_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
+    if erp_job_no and re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
+        job.reference = erp_job_no
     db.commit()
     return erp
 
