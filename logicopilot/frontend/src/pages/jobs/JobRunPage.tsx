@@ -3465,6 +3465,8 @@ function ExtractedField({
   hideBlankOption,
   multiline,
   wrapLabel,
+  flagged,
+  flagNote,
   comboOptions,
   onBeforeSave,
 }: {
@@ -3502,6 +3504,11 @@ function ExtractedField({
   /** A label too long to read under the default single-line truncate - see
    *  WRAP_LABEL_FIELD_LABELS. */
   wrapLabel?: boolean;
+  /** Painted red regardless of tone/corrected state, with `flagNote` shown under it - e.g. a
+   *  product description that was translated from another language, so the operator knows to
+   *  double-check it against the original printed text rather than trusting it blindly. */
+  flagged?: boolean;
+  flagNote?: string;
   /** Previously-typed values offered alongside free text (see COMBOBOX_REFERENCE_FIELD_LABELS) -
    *  unlike `options`, picking one of these never closes off typing something new. */
   comboOptions?: string[];
@@ -3568,7 +3575,9 @@ function ExtractedField({
         const boxClassName = `w-full rounded-lg border px-3 py-2 text-sm transition-colors placeholder:italic placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none ${
           failed
             ? "border-rose-300 text-slate-700 dark:border-rose-500/40 dark:text-slate-200"
-            : corrected
+            : flagged
+              ? "border-rose-300 bg-rose-50/60 text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
+              : corrected
               ? // An operator's own correction outranks the source colour: what matters most
                 // about this value is no longer where it came from, but that a person changed it.
                 "border-amber-200 bg-amber-50/60 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
@@ -3678,6 +3687,9 @@ function ExtractedField({
       )}
       </div>
       {note && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{note}</p>}
+      {flagged && flagNote && (
+        <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
+      )}
     </div>
   );
 }
@@ -4730,6 +4742,15 @@ function ExtractionReview({
                         pairedIds.add(other.id);
                       });
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
+                      // Purely a backing flag for product_description/Combined Description's own
+                      // red highlight below - never a field of its own on screen (see
+                      // TRANSLATED_FLAG_SOURCE_LABELS).
+                      const languageFlag = cells.find((fv) => fv.label_name === "Product Description Language");
+                      const isNonEnglish = (
+                        (languageFlag?.corrected_value ?? languageFlag?.extracted_value ?? "").trim().toUpperCase()
+                        === "NON-ENGLISH"
+                      );
+                      const visibleCells = cells.filter((fv) => fv.label_name !== "Product Description Language");
                       return (
                         <div
                           key={n}
@@ -4741,7 +4762,7 @@ function ExtractionReview({
                               : `Product ${n}`}
                           </p>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                            {cells.map((fv) => (
+                            {visibleCells.map((fv) => (
                               <ExtractedField
                                 key={fv.id}
                                 fv={fv}
@@ -4751,6 +4772,8 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                flagged={isNonEnglish && fv.label_name === "product_description"}
+                                flagNote="Not originally in English — translated."
                               />
                             ))}
                             {/* Looked up in the customer's own reference sheet by the part
@@ -4763,6 +4786,8 @@ function ExtractionReview({
                                 fv={fv}
                                 readOnly={readOnly}
                                 reload={reload}
+                                flagged={isNonEnglish && fv.label_name === "Combined Description"}
+                                flagNote="Not originally in English — translated."
                                 small
                                 tone="reference"
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
