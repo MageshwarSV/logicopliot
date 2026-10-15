@@ -1095,8 +1095,12 @@ export function JobRunPage() {
   // to that one's state.
   const [comboReferenceOptions, setComboReferenceOptions] =
     useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
+  // `job` is nullable at the top of this component - read once here (where it's already been
+  // null-checked for everything above) rather than inside the effect below, where a closure
+  // loses that narrowing and tsc rightly refuses to compile `job.field_values`.
+  const jobFieldValues = job?.field_values ?? [];
   useEffect(() => {
-    const toFetch = job.field_values.filter(
+    const toFetch = jobFieldValues.filter(
       (fv) =>
         COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
         fv.custom_field_id &&
@@ -1119,7 +1123,7 @@ export function JobRunPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job.field_values, jobId]);
+  }, [jobFieldValues, jobId]);
   // Named sections for Additional Details - see ADDITIONAL_DETAILS_GROUPS. Computed and
   // manual-ask fields are pooled together here (an operator doesn't care which one worked a
   // value out); a field not listed in any group still renders, under a final "Other" section.
