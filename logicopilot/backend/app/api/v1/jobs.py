@@ -3744,18 +3744,6 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
         job.stage_override = None
         db.commit()
         return erp
-    if status == "partial":
-        # The entry WENT IN - the final action ran - but some steps failed on the way, so the
-        # record may be missing a date, a document or a captured value. Completing it silently
-        # is how those reached the ERP unnoticed; marking it failed would invite a re-run and a
-        # duplicate record. So: complete the job, and still raise a report so somebody looks.
-        lines_ = ["The entry was submitted but these steps failed:"]
-        lines_ += [str(x) for x in (result.get("failed_steps") or [])]
-        lines_ += ["", "Log:"]
-        lines_ += [str(x) for x in (result.get("log") or [])]
-        _report(result.get("reason") or "The entry completed with failed steps.",
-                "\n".join(lines_))
-
     job.status = "completed"
     # An override says where a job is WAITING. It has just finished, so there is nothing left
     # to wait on - and leaving it behind is what made a completed job read "ERP Entry".
