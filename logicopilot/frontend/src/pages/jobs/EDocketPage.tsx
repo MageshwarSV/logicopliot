@@ -389,7 +389,7 @@ export function EDocketPage() {
         >
           <div className="text-center" style={{ gridColumn: "1", gridRow: "1 / span 2" }}>
             <img src={FOUR_S_LOGO} alt="4S Logisticsolutions" className="mx-auto h-16 w-auto" />
-            <p className="mt-0.5 whitespace-nowrap text-xs font-bold">4S Logistics Solution PVT LTD</p>
+            <p className="mt-0.5 whitespace-nowrap text-xs font-bold">4S Logisticsolutions Pvt Ltd</p>
           </div>
           <div
             className="border-2 border-black py-1.5 text-center text-lg font-bold tracking-wide"
