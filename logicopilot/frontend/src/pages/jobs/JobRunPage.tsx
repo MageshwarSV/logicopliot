@@ -1088,6 +1088,38 @@ export function JobRunPage() {
   // blank. Listing them here as well put the same box on two screens, and two editable copies
   // of one value is how an edit gets typed into the one nobody is reading.
   const manualFields = askFields.filter((fv) => fv.self_filled !== true);
+  // Dropdown options for an Additional Details combobox field (COMBOBOX_REFERENCE_FIELD_LABELS)
+  // - every value previously saved for this custom field, fetched once per custom_field_id.
+  // Separate from ExtractionReview's own copy of this same idea (a different component further
+  // down this file, for the Data Extraction tab's relocated fields) - this page has no access
+  // to that one's state.
+  const [comboReferenceOptions, setComboReferenceOptions] =
+    useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
+  useEffect(() => {
+    const toFetch = job.field_values.filter(
+      (fv) =>
+        COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
+        fv.custom_field_id &&
+        !(fv.custom_field_id in comboReferenceOptions),
+    );
+    if (!toFetch.length) return;
+    let cancelled = false;
+    toFetch.forEach((fv) => {
+      jobsApi
+        .listCustomFieldReferenceOptions(jobId, fv.custom_field_id!)
+        .then((options) => {
+          if (cancelled) return;
+          setComboReferenceOptions((prev) => ({ ...prev, [fv.custom_field_id!]: options }));
+        })
+        .catch(() => {
+          if (!cancelled) setComboReferenceOptions((prev) => ({ ...prev, [fv.custom_field_id!]: [] }));
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.field_values, jobId]);
   // Named sections for Additional Details - see ADDITIONAL_DETAILS_GROUPS. Computed and
   // manual-ask fields are pooled together here (an operator doesn't care which one worked a
   // value out); a field not listed in any group still renders, under a final "Other" section.
@@ -2489,7 +2521,7 @@ export function JobRunPage() {
                               ? "NO MBL"
                               : undefined;
                         const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                          ? (dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
+                          ? (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
                           : undefined;
                         return (
                           <div key={fv.id}>
@@ -4096,14 +4128,9 @@ function ExtractionReview({
   const [dynamicReferenceOptions, setDynamicReferenceOptions] =
     useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
   useEffect(() => {
-    // Two different reasons a field needs this fetch: a relocated field narrowed by another
-    // field's value (DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY), or an Additional Details combobox
-    // field (COMBOBOX_REFERENCE_FIELD_LABELS) - the latter isn't in relocatedFields at all, so
-    // this reads straight off the job's full field list rather than just that one subset.
-    const toFetch = job.field_values.filter(
+    const toFetch = relocatedFields.filter(
       (fv) =>
-        (fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY ||
-          COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) &&
+        fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY &&
         fv.custom_field_id &&
         !(fv.custom_field_id in dynamicReferenceOptions),
     );
@@ -4124,7 +4151,7 @@ function ExtractionReview({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job.field_values, jobId]);
+  }, [relocatedFields, jobId]);
 
   // Named sections for the flat field grid above (visibleFields + relocatedFields combined),
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
