@@ -22,6 +22,7 @@ def _user_out(user: User) -> UserOut:
     out = UserOut.model_validate(user)
     out.mail_connected = bool(user.mail_app_password_encrypted)
     out.modes = user.assigned_modes
+    out.assigned_operator_ids = user.assigned_operator_ids
     out.user_type_name = user.user_type.name if user.user_type else None
     return out
 
@@ -206,6 +207,21 @@ def create_user(
         else:
             detected_provider, detected_host = _detect_and_verify_mailbox(payload.mail_email, mail_app_password)
 
+    # A fresh gk2 account starts able to see every CURRENT operator's jobs, explicitly listed
+    # (not left null) - null means "unrestricted" for an EXISTING row this field has never
+    # touched (see the model's own comment), but a brand-new account has no such history to
+    # preserve; it should read as "every operator, for now" and narrow only once the Tenant
+    # Admin actually unticks someone. An explicit list (including an empty one) in the
+    # payload is always respected as given instead.
+    if effective_role == GK2:
+        operator_ids = (
+            sorted(set(payload.assigned_operator_ids)) if payload.assigned_operator_ids is not None
+            else [row[0] for row in
+                  db.query(User.id).filter(User.tenant_id == tenant_id, User.role == OPERATOR).all()]
+        )
+    else:
+        operator_ids = None
+
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
@@ -215,6 +231,7 @@ def create_user(
         created_by_id=creator.id,
         user_type_id=user_type.id if user_type else None,
         assigned_modes=sorted(set(payload.modes)) if effective_role in (GK2, OPERATOR) and payload.modes else None,
+        assigned_operator_ids=operator_ids,
     )
     if detected_provider:
         user.mail_provider = detected_provider
@@ -366,6 +383,12 @@ def update_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Manager accounts do not use shipment modes — they see every job in the tenant.",
         )
+
+    if payload.assigned_operator_ids is not None and user.role == GK2:
+        # An empty list is a genuine, deliberate choice here (unlike modes above, which
+        # treats an empty list the same as "unset") - "no operators yet" is a real state a
+        # Tenant Admin can put a gk2 account into (every box unticked), not an error.
+        user.assigned_operator_ids = sorted(set(payload.assigned_operator_ids))
 
     if payload.template_ids is not None and user.role == MANAGER:
         raise HTTPException(

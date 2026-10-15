@@ -228,6 +228,12 @@ def _load_job(db: Session, job_id: str, scope: TenantScope, user: User | None = 
         group = db.get(TemplateGroup, job.group_id)
         if group is None or group.mode not in (user.assigned_modes or []):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        # Second, independent gate: which GK1/operator's jobs this gk2 account may see at
+        # all (see User.assigned_operator_ids) - null/empty means unrestricted (opposite of
+        # assigned_modes' own null meaning, see that field's own comment), so this only
+        # narrows anything once the Tenant Admin has actually set a list.
+        if user.assigned_operator_ids and job.assigned_operator_id not in user.assigned_operator_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
 
 
@@ -1614,6 +1620,12 @@ def list_jobs(
             )
         else:
             query = query.filter(False)
+        # Second, independent narrowing: which GK1/operator's jobs this gk2 account is
+        # allowed to see (see User.assigned_operator_ids) - null/empty means unrestricted
+        # (opposite of assigned_modes' own null meaning just above), so most gk2 accounts
+        # are untouched by this until a Tenant Admin actually unticks someone.
+        if user.assigned_operator_ids:
+            query = query.filter(Job.assigned_operator_id.in_(user.assigned_operator_ids))
     elif user.role == MANAGER:
         # Read-only observer over the WHOLE tenant, on purpose - every job, every GK1/GK2's
         # work, unrestricted by template, mode, or gk2_status. Bounded only by scoped_query's

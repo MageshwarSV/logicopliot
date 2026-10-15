@@ -18,6 +18,9 @@ export async function createUser(payload: {
   mail_app_password?: string;
   // Shipment modes a GK2 user reviews — required for role "gk2", ignored otherwise.
   modes?: string[];
+  // GK2 only: which operators' jobs this account may see — omitted defaults to every
+  // CURRENT operator (server fills this in); an explicit list (incl. empty) is used as-is.
+  assigned_operator_ids?: string[];
   // A Tenant Admin's own custom type to create this account under — its base_role wins
   // over `role` above server-side.
   user_type_id?: string;
@@ -37,6 +40,7 @@ export async function updateUser(
     email?: string; full_name?: string; password?: string; is_active?: boolean; template_ids?: string[];
     mail_provider?: MailProvider; mail_email?: string; mail_app_password?: string;
     modes?: string[];
+    assigned_operator_ids?: string[];
   },
 ): Promise<User> {
   const response = await apiClient.patch<User>(`/users/${userId}`, payload);

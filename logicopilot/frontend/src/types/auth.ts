@@ -15,6 +15,9 @@ export interface User {
   // tab-filter convenience only for "operator" (their real access stays template-based);
   // meaningless for every other role, including "manager" (sees every job, unrestricted).
   modes?: string[] | null;
+  // GK2 only: which operators' jobs this account may see/act on — null/empty means every
+  // operator (unrestricted); meaningless for every other role.
+  assigned_operator_ids?: string[] | null;
   // Set only when this account was created under a Tenant Admin's own custom type (e.g.
   // "Supervisor") — role above still carries that type's underlying base role.
   user_type_id?: string | null;

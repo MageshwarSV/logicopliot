@@ -30,6 +30,9 @@ class UserOut(BaseModel):
     # Which shipment modes this user is scoped to - required for gk2, optional (tab-filter
     # only) for operator, meaningless for every other role including manager.
     modes: list[str] | None = None
+    # Which GK1/operator users' jobs this gk2 user may see/act on - null/empty means every
+    # operator (unrestricted), meaningless for every other role. See User model's own comment.
+    assigned_operator_ids: list[str] | None = None
     # Set only when this account was created under a Tenant Admin's own custom type (e.g.
     # "Supervisor") instead of plain Gate Keeper 1/2/Manager. `role` above still carries the
     # type's underlying base_role — these two are purely the label to show for it.
@@ -57,6 +60,11 @@ class UserCreate(BaseModel):
     # Required for role="gk2" (which shipment modes this user reviews); optional for
     # role="operator" (tab-filter only); rejected for every other role.
     modes: list[str] | None = None
+    # gk2 only: which GK1/operator users' jobs this account may see/act on. Omitted (None) for
+    # a NEW gk2 user means "default to every current operator" (the create endpoint fills
+    # this in explicitly) - an empty list is a deliberate, different choice ("no operators
+    # yet") and is kept as given, not treated the same as omitted.
+    assigned_operator_ids: list[str] | None = None
 
     @field_validator("role")
     @classmethod
@@ -104,6 +112,9 @@ class UserUpdate(BaseModel):
     # None = leave as-is; a list (possibly empty) replaces a gk2/operator user's assigned
     # modes. Rejected (non-empty) for manager.
     modes: list[str] | None = None
+    # None = leave as-is; a list (possibly empty) replaces which operators' jobs a gk2 user
+    # may see/act on. Meaningless for every other role.
+    assigned_operator_ids: list[str] | None = None
 
     @field_validator("password")
     @classmethod

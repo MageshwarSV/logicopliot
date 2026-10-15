@@ -77,6 +77,20 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # unrestricted, on purpose). Mirrors Tenant.allowed_modes.
     assigned_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # Which GK1/operator users' jobs a gk2 user is allowed to see/act on, by user id - an
+    # independent second dimension from assigned_modes above (that one scopes by template
+    # mode, this one scopes by WHO submitted the job). Opposite null semantics on purpose:
+    # null/empty here means UNRESTRICTED (every operator's jobs, same as before this field
+    # existed) rather than "sees nothing" - assigned_modes is mandatory at creation and has
+    # been on every gk2 account since the role existed, so defaulting it to "nothing" was
+    # always safe; this field is being added onto gk2 accounts that already exist and already
+    # work, and defaulting an untouched row to "sees nothing" would silently break every one
+    # of them the moment this column landed. A freshly created gk2 user is still given the
+    # full current operator list explicitly (so the box starts all-ticked and genuinely
+    # narrows what they see only once the Super Admin unticks someone) - it is only ever
+    # None for a row nobody has touched since migration. Meaningless for every other role.
+    assigned_operator_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     # Set only for a user created under a Tenant Admin's custom type (e.g. "Supervisor").
     # `role` above still carries that type's base_role, so every existing role check
     # (require_role, GK2's mode gate, Manager's read-only lock) works completely unchanged;

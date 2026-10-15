@@ -66,6 +66,17 @@ export function CreateUserModal({
     setModes((prev) => (prev.includes(mode) ? prev.filter((m) => m !== mode) : [...prev, mode]));
   }
 
+  // Gate Keeper 2 only: a second, independent narrowing — which operators' jobs this account
+  // sees at all. Starts with every CURRENT operator ticked (both for a brand-new account and
+  // for an existing one nobody has ever scoped, i.e. assigned_operator_ids is null) so the box
+  // only actually narrows anything once the Tenant Admin unticks someone.
+  const [operators, setOperators] = useState<User[]>([]);
+  const [selectedOperatorIds, setSelectedOperatorIds] = useState<string[]>([]);
+
+  function toggleOperator(id: string) {
+    setSelectedOperatorIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
   useEffect(() => {
     if (!open) return;
     jobsApi
@@ -73,6 +84,17 @@ export function CreateUserModal({
       .then((gs) => setTemplates(gs.filter((g) => g.status === "approved")))
       .catch(() => setTemplates([]));
     userTypesApi.listUserTypes().then(setUserTypes).catch(() => setUserTypes([]));
+    usersApi
+      .listUsers()
+      .then((users) => {
+        const ops = users.filter((u) => u.role === "operator");
+        setOperators(ops);
+        // null/undefined (never scoped, or a brand-new account) means "every operator" -
+        // resolved here, once the real operator list is in hand, rather than left as an
+        // empty box that would misleadingly read as "nobody".
+        setSelectedOperatorIds(editUser?.assigned_operator_ids ?? ops.map((o) => o.id));
+      })
+      .catch(() => setOperators([]));
     if (editUser) {
       setSelection(selectionFor(editUser.user_type_id, editUser.role));
       setFullName(editUser.full_name);
@@ -111,6 +133,7 @@ export function CreateUserModal({
           ...(password ? { password } : {}),
           ...(role === "operator" || role === "gk2" ? { modes } : {}),
           ...(role === "operator" ? { template_ids: selectedTemplates } : {}),
+          ...(role === "gk2" ? { assigned_operator_ids: selectedOperatorIds } : {}),
         });
       } else {
         await usersApi.createUser({
@@ -118,6 +141,7 @@ export function CreateUserModal({
           ...(selectedCustom ? { user_type_id: selectedCustom.id } : {}),
           ...(role === "operator" || role === "gk2" ? { modes } : {}),
           ...(role === "operator" ? { template_ids: selectedTemplates } : {}),
+          ...(role === "gk2" ? { assigned_operator_ids: selectedOperatorIds } : {}),
         });
       }
       onCreated();
@@ -228,6 +252,34 @@ export function CreateUserModal({
                 </label>
               ))}
             </div>
+          </div>
+        )}
+
+        {role === "gk2" && (
+          <div>
+            <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
+              Operators whose jobs this user reviews
+            </p>
+            <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
+              Starts with every operator ticked. Untick someone to stop their jobs showing in
+              this user's queue — you can change this anytime.
+            </p>
+            {operators.length === 0 ? (
+              <p className="text-xs text-slate-400">No Gate Keeper 1 (operator) accounts yet.</p>
+            ) : (
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                {operators.map((op) => (
+                  <label key={op.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selectedOperatorIds.includes(op.id)}
+                      onChange={() => toggleOperator(op.id)}
+                    />
+                    {op.full_name} <span className="text-xs text-slate-400">({op.email})</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
