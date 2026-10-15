@@ -2929,6 +2929,52 @@ def list_custom_field_reference_options(
     }
 
 
+@router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/suggested-value")
+def suggest_custom_field_value(
+    job_id: str,
+    custom_field_id: str,
+    keyed_on_label: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """A suggested starting value for a plain ask_operator field, read off THIS job's own value
+    for another field (keyed_on_label - e.g. "Consignee") against this field's reference table -
+    same fuzzy-aware lookup_reference every is_target_value field already uses, but offered as a
+    SUGGESTION (the operator can still pick anything else or type a new one) rather than the
+    field becoming read-only/system-resolved. Used for Insurance Rate (%): different customers
+    often carry a fixed premium rate quoted once and reused job after job, under a name that
+    varies slightly each time (fuzzy_match handles that) - so a Nokia shipment should start
+    pre-filled with Nokia's own known rate without forcing every insurance field, everywhere,
+    into the stricter system-resolved shape.
+    """
+    from app.core.reference_cache import lookup_reference
+    from app.models.custom_field import CustomField
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, custom_field_id)
+    if cf is None or cf.group_id != job.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    keyed_on = (
+        db.query(JobFieldValue)
+        .filter(
+            JobFieldValue.job_id == job.id,
+            JobFieldValue.row_index.is_(None),
+            JobFieldValue.label_name == keyed_on_label,
+        )
+        .first()
+    )
+    key_value = ((keyed_on.corrected_value if keyed_on else None)
+                 or (keyed_on.extracted_value if keyed_on else None) or "").strip()
+    if not key_value:
+        return {"value": None}
+    value = lookup_reference(db, custom_field_id=cf.id, match_values=[key_value], fuzzy=cf.fuzzy_match)
+    return {"value": value}
+
+
 # A table the size of the world port list (tens of thousands of rows) can never be listed
 # whole for the browser to search client-side - this bounds a single search response instead.
 REFERENCE_SEARCH_RESULT_LIMIT = 50
@@ -4166,6 +4212,7 @@ def _supporting_doc_dir(doc_id: str) -> Path:
 def _supporting_document_out(row) -> dict:
     return {
         "id": row.id, "label": row.label, "files": row.files or [],
+        "reason_text": row.reason_text,
         "uploaded_by": row.uploaded_by, "created_at": row.created_at.isoformat(),
     }
 
@@ -4237,6 +4284,78 @@ def upload_supporting_documents(
         shutil.rmtree(ddir, ignore_errors=True)
         raise HTTPException(status_code=422, detail="Every file selected was empty.")
     row.files = stored
+    db.commit()
+    db.refresh(row)
+    return _supporting_document_out(row)
+
+
+@router.post("/jobs/{job_id}/custom-fields/{custom_field_id}/supporting-document-or-reason",
+             status_code=status.HTTP_201_CREATED)
+def upload_supporting_document_or_reason(
+    job_id: str,
+    custom_field_id: str,
+    label: str = Form(...),
+    reason: str | None = Form(None),
+    files: list[UploadFile] | None = File(None),
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Exactly one of a file (or files) or a typed reason - e.g. Insurance Rate (%)'s own save
+    popup: upload the insurance premium certificate, or say why there isn't one. Stored as an
+    ordinary SupportingDocument - same table, same disk layout as IRN Documents Upload - so it
+    shows up on IRN Processing's own document list (_document_groups, public_irn.py) the same
+    way any other attached file already does, with no separate wiring needed. A reason with no
+    file is recorded the same way: the row simply has reason_text set and an empty files list."""
+    from app.models.custom_field import CustomField
+    from app.models.supporting_document import SupportingDocument
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, custom_field_id)
+    if cf is None or cf.group_id != job.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    label = (label or "").strip()
+    reason = (reason or "").strip()
+    real_files = [f for f in (files or []) if f.filename]
+    if not label:
+        raise HTTPException(status_code=422, detail="Give this document a name.")
+    if real_files and reason:
+        raise HTTPException(status_code=422, detail="Upload a file, or give a reason - not both.")
+    if not real_files and not reason:
+        raise HTTPException(
+            status_code=422,
+            detail="Upload a file, or give a reason for not uploading one.",
+        )
+
+    row = SupportingDocument(tenant_id=job.tenant_id, job_id=job.id, label=label,
+                             files=[], reason_text=reason or None, uploaded_by=user.id)
+    db.add(row)
+    db.flush()
+    if real_files:
+        ddir = _supporting_doc_dir(row.id)
+        ddir.mkdir(parents=True, exist_ok=True)
+        stored = []
+        for idx, f in enumerate(real_files):
+            content = f.file.read(MAX_SUPPORTING_FILE_BYTES + 1)
+            if len(content) > MAX_SUPPORTING_FILE_BYTES:
+                raise HTTPException(status_code=413, detail=f"{f.filename}: exceeds the 25 MB limit.")
+            if not content:
+                continue
+            ext = Path(f.filename or "").suffix
+            stored_as = f"{idx}{ext}"
+            (ddir / stored_as).write_bytes(content)
+            stored.append({
+                "stored_as": stored_as, "original_name": (f.filename or "")[:255],
+                "size": len(content),
+            })
+        if not stored:
+            db.rollback()
+            shutil.rmtree(ddir, ignore_errors=True)
+            raise HTTPException(status_code=422, detail="Every file selected was empty.")
+        row.files = stored
     db.commit()
     db.refresh(row)
     return _supporting_document_out(row)
@@ -6243,12 +6362,18 @@ def correct_field_value(
             material, desc = _line_key_values(
                 db, fv.job_id, fv.set_index, fv.row_index, key_label=cf.lookup_key_label)
             remember_reference(db, cf.id, [material, desc], payload.corrected_value or "")
-        elif cf is not None and cf.ask_operator:
+        elif cf is not None and cf.ask_operator and cf.label_name != "insurance_percentage":
             # A plain ask_operator field with no extraction of its own (e.g. "Erp Entry Name",
             # purely operator-typed) has nothing else to key on - what was just typed is both
             # the key and the answer, self-keyed. Lets the frontend offer it back as a dropdown
             # next time (see COMBOBOX_REFERENCE_FIELD_LABELS) with no extra opt-in flag needed -
             # any ask_operator field with nothing extracted already qualifies for free.
+            #
+            # Insurance Rate (%) is deliberately excluded here: its reference sheet (Consignee
+            # -> rate, see suggest_custom_field_value) is a FIXED lookup, never self-learning.
+            # An operator picking a different customer's rate for one odd job - or typing an
+            # outlier - must never rewrite what every FUTURE job for that same customer gets
+            # suggested; only the one job's own saved value changes.
             remember_reference(db, cf.id, [payload.corrected_value or ""],
                                 payload.corrected_value or "", fuzzy=cf.fuzzy_match)
     # is_target_value (mark or custom field): the reference table had nothing for what this

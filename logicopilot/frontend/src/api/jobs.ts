@@ -228,6 +228,10 @@ export interface SupportingDocument {
   id: string;
   label: string;
   files: SupportingDocumentFile[];
+  /** Set instead of files for a row created via uploadSupportingDocumentOrReason when the
+   *  operator gave a reason instead of uploading something - e.g. why no insurance premium
+   *  certificate was attached. */
+  reason_text: string | null;
   uploaded_by: string | null;
   created_at: string;
 }
@@ -249,6 +253,26 @@ export async function uploadSupportingDocuments(
   for (const file of files) form.append("files", file);
   const { data } = await apiClient.post<SupportingDocument>(
     `/jobs/${jobId}/supporting-documents`,
+    form,
+  );
+  return data;
+}
+
+/** Exactly one of `files` or `reason` - e.g. Insurance Rate (%)'s own save popup: upload the
+ *  insurance premium certificate, or say why there isn't one. Stored the same way as any other
+ *  supporting document, so it shows up on IRN Processing's own document list automatically. */
+export async function uploadSupportingDocumentOrReason(
+  jobId: string,
+  customFieldId: string,
+  label: string,
+  opts: { files?: File[]; reason?: string },
+): Promise<SupportingDocument> {
+  const form = new FormData();
+  form.append("label", label);
+  if (opts.reason) form.append("reason", opts.reason);
+  for (const file of opts.files ?? []) form.append("files", file);
+  const { data } = await apiClient.post<SupportingDocument>(
+    `/jobs/${jobId}/custom-fields/${customFieldId}/supporting-document-or-reason`,
     form,
   );
   return data;
@@ -374,6 +398,21 @@ export async function listCustomFieldReferenceOptions(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
   );
   return data.options;
+}
+
+/** A suggested starting value for a plain ask_operator field, read off another field on the
+ * SAME job (keyed_on_label) against this field's own reference table - the operator can still
+ * pick anything else or type a new one, this is only ever a default. See Insurance Rate (%),
+ * which starts pre-filled with a customer's own previously-quoted rate (fuzzy-matched on their
+ * Consignee name, which rarely prints identically twice). */
+export async function suggestCustomFieldValue(
+  jobId: string, customFieldId: string, keyedOnLabel: string,
+): Promise<string | null> {
+  const { data } = await apiClient.get<{ value: string | null }>(
+    `/jobs/${jobId}/custom-fields/${customFieldId}/suggested-value`,
+    { params: { keyed_on_label: keyedOnLabel } },
+  );
+  return data.value;
 }
 
 export interface CustomFieldReferenceSearchResult {

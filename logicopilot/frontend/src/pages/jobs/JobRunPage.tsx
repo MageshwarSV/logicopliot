@@ -222,7 +222,15 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
 // brand-new typed value - unlike that one, this never replaces free text with a closed
 // <select>: the operator can pick a known name or type one that's not there yet, and either
 // way the save path (correct_field_value) remembers it so it shows up next time too.
-const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name"]);
+const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage"]);
+// A combobox field whose starting value should be SUGGESTED (not forced) from another field on
+// the same job, fuzzy-matched against this field's own reference table - see
+// suggestCustomFieldValue. Different customers often carry a fixed, previously-quoted premium
+// rate, so a Nokia shipment should start pre-filled with Nokia's own known rate rather than a
+// blank box or yesterday's customer's rate.
+const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
+  insurance_percentage: "Consignee",
+};
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
 const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
@@ -1124,6 +1132,36 @@ export function JobRunPage() {
         })
         .catch(() => {
           if (!cancelled) setComboReferenceOptions((prev) => ({ ...prev, [fv.custom_field_id!]: [] }));
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobFieldValues, jobId]);
+  // Suggested starting value for a SUGGESTED_VALUE_KEYED_ON_LABEL field (e.g. Insurance Rate
+  // (%), suggested off this job's own Consignee) - only ever a default, never forced; the
+  // operator can still pick a different option or type a new one. Only fetched while the field
+  // is still blank (current ?? "" empty) - once it has a real value, a later Consignee
+  // correction must never silently overwrite what was already saved or confirmed.
+  const [suggestedValues, setSuggestedValues] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    const toFetch = jobFieldValues.filter((fv) => {
+      const keyedOn = SUGGESTED_VALUE_KEYED_ON_LABEL[fv.label_name];
+      const current = fv.corrected_value ?? fv.extracted_value ?? "";
+      return keyedOn && fv.custom_field_id && !current.trim() && !(fv.custom_field_id in suggestedValues);
+    });
+    if (!toFetch.length) return;
+    let cancelled = false;
+    toFetch.forEach((fv) => {
+      jobsApi
+        .suggestCustomFieldValue(jobId, fv.custom_field_id!, SUGGESTED_VALUE_KEYED_ON_LABEL[fv.label_name])
+        .then((value) => {
+          if (cancelled) return;
+          setSuggestedValues((prev) => ({ ...prev, [fv.custom_field_id!]: value }));
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestedValues((prev) => ({ ...prev, [fv.custom_field_id!]: null }));
         });
     });
     return () => {
@@ -3421,6 +3459,7 @@ function ExtractedField({
   multiline,
   wrapLabel,
   comboOptions,
+  onBeforeSave,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3459,6 +3498,11 @@ function ExtractedField({
   /** Previously-typed values offered alongside free text (see COMBOBOX_REFERENCE_FIELD_LABELS) -
    *  unlike `options`, picking one of these never closes off typing something new. */
   comboOptions?: string[];
+  /** Runs before a save reaches the server - resolve false to cancel the save outright (the
+   *  draft stays as typed, nothing is sent). Insurance Rate (%) uses this to require an
+   *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
+   *  field leaves this unset and saves exactly as before. */
+  onBeforeSave?: (value: string) => Promise<boolean>;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3475,6 +3519,10 @@ function ExtractedField({
 
   const commit = async () => {
     if (!dirty || readOnly) return;
+    if (onBeforeSave) {
+      const proceed = await onBeforeSave(draft);
+      if (!proceed) return;
+    }
     setSaving(true);
     setFailed(false);
     try {
@@ -4134,14 +4182,17 @@ function ExtractionReview({
     return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
   }, [job.field_values, active]);
 
-  // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field (e.g. CustomsHouseCode),
-  // fetched once per custom_field_id rather than hardcoded - see listCustomFieldReferenceOptions.
+  // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field (e.g. CustomsHouseCode)
+  // or a COMBOBOX_REFERENCE_FIELD_LABELS field relocated onto a document tab (Insurance Rate
+  // (%), on Fright Certificate) - fetched once per custom_field_id rather than hardcoded, see
+  // listCustomFieldReferenceOptions.
   const [dynamicReferenceOptions, setDynamicReferenceOptions] =
     useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
   useEffect(() => {
     const toFetch = relocatedFields.filter(
       (fv) =>
-        fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY &&
+        (fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY ||
+          COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) &&
         fv.custom_field_id &&
         !(fv.custom_field_id in dynamicReferenceOptions),
     );
@@ -4163,6 +4214,43 @@ function ExtractionReview({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relocatedFields, jobId]);
+  // Suggested starting value for a SUGGESTED_VALUE_KEYED_ON_LABEL field relocated onto a
+  // document tab - see suggestCustomFieldValue and JobRunPage's own copy of this same idea
+  // (that one serves Additional Details fields; this component renders relocated ones instead,
+  // so it needs its own state).
+  const [suggestedValues, setSuggestedValues] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    const toFetch = relocatedFields.filter((fv) => {
+      const keyedOn = SUGGESTED_VALUE_KEYED_ON_LABEL[fv.label_name];
+      const current = fv.corrected_value ?? fv.extracted_value ?? "";
+      return keyedOn && fv.custom_field_id && !current.trim() && !(fv.custom_field_id in suggestedValues);
+    });
+    if (!toFetch.length) return;
+    let cancelled = false;
+    toFetch.forEach((fv) => {
+      jobsApi
+        .suggestCustomFieldValue(jobId, fv.custom_field_id!, SUGGESTED_VALUE_KEYED_ON_LABEL[fv.label_name])
+        .then((value) => {
+          if (cancelled) return;
+          setSuggestedValues((prev) => ({ ...prev, [fv.custom_field_id!]: value }));
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestedValues((prev) => ({ ...prev, [fv.custom_field_id!]: null }));
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relocatedFields, jobId]);
+
+  // Insurance Rate (%)'s own save-gate: ExtractedField's onBeforeSave resolves this promise
+  // once InsuranceCertificatePopup is answered (a file uploaded, a reason typed, or cancelled).
+  const [insurancePopup, setInsurancePopup] =
+    useState<{ customFieldId: string; resolve: (ok: boolean) => void } | null>(null);
+  function requireInsuranceCertificate(customFieldId: string): Promise<boolean> {
+    return new Promise((resolve) => setInsurancePopup({ customFieldId, resolve }));
+  }
 
   // Named sections for the flat field grid above (visibleFields + relocatedFields combined),
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
@@ -4494,6 +4582,10 @@ function ExtractionReview({
                   const showSearchFallback =
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
                     !currentValue && !!fv.custom_field_id;
+                  const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
+                    ? (dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
+                    : undefined;
+                  const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   return (
                     <div key={fv.id}>
                       <ExtractedField
@@ -4504,6 +4596,13 @@ function ExtractionReview({
                         onFocusField={isMark ? setFocusedFv : undefined}
                         labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                         options={options}
+                        comboOptions={comboOptions}
+                        defaultValue={suggestedDefault ?? undefined}
+                        onBeforeSave={
+                          fv.label_name === "insurance_percentage" && fv.custom_field_id
+                            ? () => requireInsuranceCertificate(fv.custom_field_id!)
+                            : undefined
+                        }
                         multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
                         wrapLabel={WRAP_LABEL_FIELD_LABELS.has(fv.label_name)}
                         note={
@@ -4825,7 +4924,96 @@ function ExtractionReview({
           </div>
         </div>
       </Modal>
+      {insurancePopup && (
+        <InsuranceCertificatePopup
+          jobId={jobId}
+          customFieldId={insurancePopup.customFieldId}
+          onResolve={(ok) => {
+            insurancePopup.resolve(ok);
+            setInsurancePopup(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Insurance Rate (%)'s own save gate - exactly one of an uploaded insurance premium
+ *  certificate or a typed reason for not having one, before the rate itself is allowed to
+ *  save (see ExtractedField's onBeforeSave). Saved as an ordinary SupportingDocument, so it
+ *  shows up on IRN Processing's own document list the same way any other attached file does. */
+function InsuranceCertificatePopup({
+  jobId,
+  customFieldId,
+  onResolve,
+}: {
+  jobId: string;
+  customFieldId: string;
+  onResolve: (ok: boolean) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = Boolean(file) !== Boolean(reason.trim());
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await jobsApi.uploadSupportingDocumentOrReason(
+        jobId, customFieldId, "Insurance Premium Certificate",
+        file ? { files: [file] } : { reason: reason.trim() },
+      );
+      onResolve(true);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Could not save this - try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={() => onResolve(false)} title="Insurance Premium Certificate" maxWidth="max-w-2xl">
+      <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+        Upload the certificate, or say why there isn't one — exactly one of the two is needed
+        before this rate can be saved.
+      </p>
+      <div className="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            Upload the insurance premium certificate
+          </label>
+          <input
+            type="file"
+            disabled={busy || Boolean(reason.trim())}
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-indigo-700 disabled:opacity-50 dark:text-slate-300 dark:file:bg-indigo-500/10 dark:file:text-indigo-300"
+          />
+          {file && <p className="mt-1.5 truncate text-xs text-slate-500">{file.name}</p>}
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            Reason for not uploading insurance premium certificate
+          </label>
+          <textarea
+            rows={4}
+            disabled={busy || Boolean(file)}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. covered under an annual blanket policy"
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800"
+          />
+        </div>
+      </div>
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" onClick={() => onResolve(false)} disabled={busy}>Cancel</Button>
+        <Button onClick={submit} isLoading={busy} disabled={!canSubmit}>Save</Button>
+      </div>
+    </Modal>
   );
 }
 

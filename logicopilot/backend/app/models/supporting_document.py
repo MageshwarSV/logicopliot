@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, JSON, String
+from sqlalchemy import ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -26,3 +26,8 @@ class SupportingDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     uploaded_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Set instead of `files` for a row created via the "upload this OR say why not" flow (see
+    # upload_supporting_document_or_reason) - a typed reason there is the operator's genuine
+    # answer, not a missing upload, and needs to read as one on IRN Processing's own document
+    # list exactly the way a real attached file would.
+    reason_text: Mapped[str | None] = mapped_column(Text, nullable=True)
