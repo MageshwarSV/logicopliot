@@ -92,11 +92,14 @@ function bestValue(
 function partyRow(isExport: boolean): DocketRow {
   return isExport
     ? { label: "Name of the Exporter", patterns: [/exporter/i, /shipper/i, /consignor/i] }
-    // Consignee is tried first and matters most: "ERP Importer Address / Branch Code" (a
-    // branch/address picker, unrelated to the party name) also matches /importer/i by
-    // coincidence of its own label - trying that pattern first would let an operator-typed
-    // branch code outrank the real consignee name the moment that field has any value.
-    : { label: "Name of the Importer", patterns: [/consignee/i, /\bbuyer\b/i, /importer/i] };
+    // The real field is exactly "Consignee" - matched exactly, not by substring. A loose
+    // /consignee/i also matches "consignee_name" (a stale mark, wrong value on at least one
+    // real job), "consignee_full_name" (a known duplicate, already hidden elsewhere) and
+    // "Consignee Address" (an address, not a name) - and the backend's own query has no
+    // explicit order, so whichever of those happened to come back first silently won.
+    // "ERP Importer Address / Branch Code" (a branch/address picker, unrelated to the party
+    // name) also matches /importer/i by coincidence of its own label, so that stays last.
+    : { label: "Name of the Importer", patterns: [/^consignee$/i, /\bbuyer\b/i, /importer/i] };
 }
 
 function rows(isExport: boolean): DocketRow[] {
