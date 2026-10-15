@@ -6234,6 +6234,14 @@ def correct_field_value(
             material, desc = _line_key_values(
                 db, fv.job_id, fv.set_index, fv.row_index, key_label=cf.lookup_key_label)
             remember_reference(db, cf.id, [material, desc], payload.corrected_value or "")
+        elif cf is not None and cf.ask_operator:
+            # A plain ask_operator field with no extraction of its own (e.g. "Erp Entry Name",
+            # purely operator-typed) has nothing else to key on - what was just typed is both
+            # the key and the answer, self-keyed. Lets the frontend offer it back as a dropdown
+            # next time (see COMBOBOX_REFERENCE_FIELD_LABELS) with no extra opt-in flag needed -
+            # any ask_operator field with nothing extracted already qualifies for free.
+            remember_reference(db, cf.id, [payload.corrected_value or ""],
+                                payload.corrected_value or "", fuzzy=cf.fuzzy_match)
     # is_target_value (mark or custom field): the reference table had nothing for what this
     # field actually extracted (target_value_raw), now filled in by hand - remember it against
     # THAT raw value, so the same raw extraction is resolved automatically next time instead of

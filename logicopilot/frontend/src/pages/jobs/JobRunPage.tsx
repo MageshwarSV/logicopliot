@@ -211,6 +211,12 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
   CustomsHouseCode: "port_of_entry",
 };
+// Fields that offer every previously-typed value as a dropdown (same server-side reference
+// table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
+// brand-new typed value - unlike that one, this never replaces free text with a closed
+// <select>: the operator can pick a known name or type one that's not there yet, and either
+// way the save path (correct_field_value) remembers it so it shows up next time too.
+const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name"]);
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
 const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
@@ -2482,6 +2488,9 @@ export function JobRunPage() {
                             : fv.label_name === "MBL No" && advanceValue === "A"
                               ? "NO MBL"
                               : undefined;
+                        const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
+                          ? (dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
+                          : undefined;
                         return (
                           <div key={fv.id}>
                             <ExtractedField
@@ -2493,6 +2502,7 @@ export function JobRunPage() {
                               options={FIELD_SELECT_OPTIONS[fv.label_name]}
                               defaultValue={defaultValue}
                               hideBlankOption={NO_BLANK_DROPDOWN_OPTION_LABELS.has(fv.label_name)}
+                              comboOptions={comboOptions}
                             />
                             {fv.ask_operator_hint && (
                               <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
@@ -3367,6 +3377,7 @@ function ExtractedField({
   hideBlankOption,
   multiline,
   wrapLabel,
+  comboOptions,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3402,6 +3413,9 @@ function ExtractedField({
   /** A label too long to read under the default single-line truncate - see
    *  WRAP_LABEL_FIELD_LABELS. */
   wrapLabel?: boolean;
+  /** Previously-typed values offered alongside free text (see COMBOBOX_REFERENCE_FIELD_LABELS) -
+   *  unlike `options`, picking one of these never closes off typing something new. */
+  comboOptions?: string[];
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3517,22 +3531,35 @@ function ExtractedField({
             className={`${boxClassName} resize-y`}
           />
         ) : (
-          <input
-            value={draft}
-            readOnly={readOnly}
-            onChange={(e) => setDraft(e.target.value)}
-            onFocus={() => onFocusField?.(fv)}
-            // Blur still saves, as a safety net for anyone who types and tabs away. The button
-            // below suppresses its own mousedown so it never takes focus from the input, so the
-            // two cannot both fire — without that, blur would save and reload, unmounting the
-            // button before its own click landed.
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-            placeholder="not found"
-            className={boxClassName}
-          />
+          <>
+            <input
+              value={draft}
+              readOnly={readOnly}
+              list={comboOptions ? `combo-${fv.id}` : undefined}
+              onChange={(e) => setDraft(e.target.value)}
+              onFocus={() => onFocusField?.(fv)}
+              // Blur still saves, as a safety net for anyone who types and tabs away. The button
+              // below suppresses its own mousedown so it never takes focus from the input, so the
+              // two cannot both fire — without that, blur would save and reload, unmounting the
+              // button before its own click landed.
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              placeholder="not found"
+              className={boxClassName}
+            />
+            {/* A native datalist: filters as you type, shows every known value, and still
+                takes anything typed that isn't in the list - the save path is what remembers
+                a genuinely new one for next time (see correct_field_value). */}
+            {comboOptions && (
+              <datalist id={`combo-${fv.id}`}>
+                {comboOptions.map((opt) => (
+                  <option key={opt} value={opt} />
+                ))}
+              </datalist>
+            )}
+          </>
         );
       })()}
       {!readOnly && !options && (dirty || saving) && (
@@ -4069,9 +4096,14 @@ function ExtractionReview({
   const [dynamicReferenceOptions, setDynamicReferenceOptions] =
     useState<Record<string, jobsApi.CustomFieldReferenceOption[]>>({});
   useEffect(() => {
-    const toFetch = relocatedFields.filter(
+    // Two different reasons a field needs this fetch: a relocated field narrowed by another
+    // field's value (DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY), or an Additional Details combobox
+    // field (COMBOBOX_REFERENCE_FIELD_LABELS) - the latter isn't in relocatedFields at all, so
+    // this reads straight off the job's full field list rather than just that one subset.
+    const toFetch = job.field_values.filter(
       (fv) =>
-        fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY &&
+        (fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY ||
+          COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) &&
         fv.custom_field_id &&
         !(fv.custom_field_id in dynamicReferenceOptions),
     );
@@ -4092,7 +4124,7 @@ function ExtractionReview({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relocatedFields, jobId]);
+  }, [job.field_values, jobId]);
 
   // Named sections for the flat field grid above (visibleFields + relocatedFields combined),
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
