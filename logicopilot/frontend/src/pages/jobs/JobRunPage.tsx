@@ -4091,9 +4091,26 @@ function ExtractionReview({
     };
   }, [focusedFv]);
 
+  const [approveError, setApproveError] = useState<string | null>(null);
   const approveActive = async () => {
     if (!active) return;
     const approving = !isApproved(active);
+    // Insurance Rate (%) lives on this document (relocated here from Additional Details) and
+    // is mandatory at the job level already (ask_operator_required) - but that check only ever
+    // runs at the job's own Final Submit, long after this document is approved. Catching it
+    // here too means the operator finds out right where the field actually is, not several
+    // screens later.
+    if (approving && active.doc_type === "Custom") {
+      const insuranceFv = job.field_values.find(
+        (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
+      );
+      const insuranceValue = (insuranceFv?.corrected_value ?? insuranceFv?.extracted_value ?? "").trim();
+      if (!insuranceValue) {
+        setApproveError("You need to select or enter the insurance value.");
+        return;
+      }
+    }
+    setApproveError(null);
     setApprovingId(active.id);
     try {
       await jobsApi.approveDocument(jobId, active.id, approving);
@@ -4776,6 +4793,7 @@ function ExtractionReview({
         </Card>
       </div>
 
+      {approveError && <Alert>{approveError}</Alert>}
       {!readOnly && active && (
         <div className="flex items-center justify-end gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700">
           {isApproved(active) ? (
