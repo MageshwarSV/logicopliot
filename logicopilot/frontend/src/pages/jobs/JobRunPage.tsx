@@ -147,6 +147,11 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     insurance_percentage: "Insurance Rate (%)",
   },
 };
+// A static, informational caption under a field - background on a business rule applied to
+// it, not tied to this job's own data (see ExtractedField's own `hint` prop).
+const FIELD_HINTS: Record<string, string> = {
+  TOI: "EXW, EX-WORK and FCA are all taken as FOB for this declaration.",
+};
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
 // (and so what the ERP export reads) - e.g. picking "Transaction" saves "T", not the word.
@@ -3467,6 +3472,7 @@ function ExtractedField({
   wrapLabel,
   flagged,
   flagNote,
+  hint,
   comboOptions,
   onBeforeSave,
 }: {
@@ -3509,6 +3515,10 @@ function ExtractedField({
    *  double-check it against the original printed text rather than trusting it blindly. */
   flagged?: boolean;
   flagNote?: string;
+  /** A static, lightly-styled caption under the box - background on a business rule applied
+   *  to this field (e.g. TOI's own EXW/FCA -> FOB mapping), not a warning and not tied to
+   *  this job's own data the way `note`/`flagNote` are. */
+  hint?: string;
   /** Previously-typed values offered alongside free text (see COMBOBOX_REFERENCE_FIELD_LABELS) -
    *  unlike `options`, picking one of these never closes off typing something new. */
   comboOptions?: string[];
@@ -3690,6 +3700,7 @@ function ExtractedField({
       {flagged && flagNote && (
         <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
       )}
+      {hint && <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{hint}</p>}
     </div>
   );
 }
@@ -4646,6 +4657,7 @@ function ExtractionReview({
                             ? `Cross-check only — the entry uses ${from}'s copy.`
                             : undefined
                         }
+                        hint={FIELD_HINTS[fv.label_name]}
                       />
                       {showSearchFallback && (
                         <ReferenceSearchPicker
