@@ -82,6 +82,9 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 // fields themselves, ask_operator, and extraction are unchanged.
 const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
   "Cont Type", "consignee_full_name", "Supplier City", "Supplier Country",
+  // Removed by request - no longer mapped into the Excel export either (see excel_config.
+  // GENERAL!F, repointed to send nothing). Display only - the field/extraction is unchanged.
+  "ad_code",
 ]);
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
@@ -287,7 +290,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
 const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
   {
     heading: "ERP Reference Mapping",
-    labels: ["Quotation Name", "Erp Entry Name", "branch_name", "ad_code"],
+    labels: ["Quotation Name", "Erp Entry Name", "branch_name"],
   },
   { heading: "Duty & Insurance Details", labels: ["Payment Method", "insurance_percentage"] },
   {
@@ -301,7 +304,6 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   "Erp Entry Name": "ERP Quotation Name",
   branch_name: "ERP Quotation Branch",
   "Payment Method": "Duty Payment Method",
-  ad_code: "AD Code",
   insurance_percentage: "Insurance Rate (%)",
   AdvancePriorNormal: "Bill of Entry Type",
   BETypeCode: "BE Type",
