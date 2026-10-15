@@ -66,7 +66,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address",
     "ERP Importer Address / Branch Code",
   ],
-  Custom: ["Frt_Currency", "Misc_Charge_Currency"],
+  Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
@@ -142,6 +142,9 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
   PackingList: {
     package_count: "Package Count",
     total_quantity: "Total Quantity",
+  },
+  Custom: {
+    insurance_percentage: "Insurance Rate (%)",
   },
 };
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
@@ -277,7 +280,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   ],
   Custom: [
     { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
-    { heading: "Charges", labels: ["Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency"] },
+    {
+      heading: "Charges",
+      labels: ["Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency", "insurance_percentage"],
+    },
     { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
   ],
 };
@@ -292,7 +298,7 @@ const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
     heading: "ERP Reference Mapping",
     labels: ["Quotation Name", "Erp Entry Name", "branch_name"],
   },
-  { heading: "Duty & Insurance Details", labels: ["Payment Method", "insurance_percentage"] },
+  { heading: "Duty Details", labels: ["Payment Method"] },
   {
     heading: "Bill of Entry & Manifest Details",
     labels: ["BETypeCode", "AdvancePriorNormal", "IGM No", "IGM Date", "MBL No", "MBL Date"],
@@ -304,7 +310,6 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   "Erp Entry Name": "ERP Quotation Name",
   branch_name: "ERP Quotation Branch",
   "Payment Method": "Duty Payment Method",
-  insurance_percentage: "Insurance Rate (%)",
   AdvancePriorNormal: "Bill of Entry Type",
   BETypeCode: "BE Type",
   "IGM No": "IGM Number",
