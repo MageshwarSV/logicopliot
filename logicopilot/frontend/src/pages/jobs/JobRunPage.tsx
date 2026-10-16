@@ -244,6 +244,12 @@ const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_pe
 // reference table - fetched by LABEL (listCustomFieldReferenceOptionsByLabel), since there is
 // no JobFieldValue to read a custom_field_id off of the usual way.
 const QUOTATION_ADDRESS_LABEL = "quotation_address";
+// A reference table backing a combobox/dropdown is a LEARNED (raw text -> corrected value)
+// mapping, not a plain list of unique names - the same resolved value can legitimately be
+// re-learned from several different raw texts (operator corrections on different jobs), so the
+// rows themselves are never deduped. The dropdown built FROM them must dedupe its own option
+// list, or a value learned twice shows twice.
+const dedupe = (values: string[]): string[] => [...new Set(values)];
 // A combobox field whose starting value should be SUGGESTED (not forced) from another field on
 // the same job, fuzzy-matched against this field's own reference table - see
 // suggestCustomFieldValue. Different customers often carry a fixed, previously-quoted premium
@@ -2640,7 +2646,15 @@ export function JobRunPage() {
                         const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
                         let comboOptions: string[] | undefined;
                         if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
-                          comboOptions = (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value);
+                          // dedupe() - the reference table is a LEARNED (raw text -> corrected
+                          // value) mapping, not a plain list of unique names: the same resolved
+                          // value legitimately gets re-learned from several different raw texts
+                          // (e.g. "EXPEDITORS INTERNATIONAL (INDIA) PVT LTD" corrected from both
+                          // "EXPEDITORS KOREA LTD." and its own name on two different jobs) - a
+                          // dropdown showing each resolved value once per row showed it twice.
+                          comboOptions = dedupe(
+                            (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value),
+                          );
                         } else if (fv.custom_field_id && filterByLabel) {
                           // e.g. branch_name ("ERP Quotation Branch") narrowed to the branches
                           // of whichever forwarder is currently set as ERP Quotation Name
@@ -2653,11 +2667,13 @@ export function JobRunPage() {
                             .trim()
                             .toUpperCase();
                           const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
-                          comboOptions = (
-                            filterValue
-                              ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                              : rows
-                          ).map((o) => o.value);
+                          comboOptions = dedupe(
+                            (
+                              filterValue
+                                ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
+                                : rows
+                            ).map((o) => o.value),
+                          );
                         }
                         return (
                           <div key={fv.id}>
@@ -4739,14 +4755,14 @@ function ExtractionReview({
                     const rows = filterValue
                       ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
                       : dynamicRows;
-                    options = rows.map((r) => ({ value: r.value, label: r.value }));
+                    options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
                   }
                   const currentValue = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
                   const showSearchFallback =
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
                     !currentValue && !!fv.custom_field_id;
                   const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                    ? (dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
+                    ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
                     : undefined;
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   return (
