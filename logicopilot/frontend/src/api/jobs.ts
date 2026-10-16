@@ -400,6 +400,25 @@ export async function listCustomFieldReferenceOptions(
   return data.options;
 }
 
+/** Same as listCustomFieldReferenceOptions, resolved by the field's own label on this job's
+ * template instead of a known custom_field_id - for a reference table backing a field that is
+ * never itself asked/computed on a job (no JobFieldValue to read a custom_field_id off of),
+ * e.g. ERP Quotation Address: looked up purely client-side from two OTHER fields' current
+ * values. Resolves to an empty list (not an error) when this job's template has no such field -
+ * most templates other than 4S Logistics' Sea Import, where this one is scoped. */
+export async function listCustomFieldReferenceOptionsByLabel(
+  jobId: string, label: string,
+): Promise<CustomFieldReferenceOption[]> {
+  try {
+    const { data } = await apiClient.get<{ options: CustomFieldReferenceOption[] }>(
+      `/jobs/${jobId}/custom-fields/by-label/${encodeURIComponent(label)}/reference-options`,
+    );
+    return data.options;
+  } catch {
+    return [];
+  }
+}
+
 /** A suggested starting value for a plain ask_operator field, read off another field on the
  * SAME job (keyed_on_label) against this field's own reference table - the operator can still
  * pick anything else or type a new one, this is only ever a default. See Insurance Rate (%),

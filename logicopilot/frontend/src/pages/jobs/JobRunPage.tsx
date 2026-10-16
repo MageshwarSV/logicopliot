@@ -237,6 +237,13 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
 // <select>: the operator can pick a known name or type one that's not there yet, and either
 // way the save path (correct_field_value) remembers it so it shows up next time too.
 const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage"]);
+// "ERP Quotation Address" - 4S Logistics only, UI-only (no JobFieldValue, no export mapping,
+// no ERP script reads it - see check_jfv_exists.py). A read-only wide box shown right after
+// "ERP Quotation Branch" in the "ERP Reference Mapping" card, resolved two-key (ERP Quotation
+// Name + ERP Quotation Branch's own current values) against the quotation_address CustomField's
+// reference table - fetched by LABEL (listCustomFieldReferenceOptionsByLabel), since there is
+// no JobFieldValue to read a custom_field_id off of the usual way.
+const QUOTATION_ADDRESS_LABEL = "quotation_address";
 // A combobox field whose starting value should be SUGGESTED (not forced) from another field on
 // the same job, fuzzy-matched against this field's own reference table - see
 // suggestCustomFieldValue. Different customers often carry a fixed, previously-quoted premium
@@ -323,6 +330,11 @@ const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
     heading: "ERP Reference Mapping",
     labels: ["Quotation Name", "Erp Entry Name", "branch_name"],
   },
+  // "ERP Quotation Address" (below) is NOT listed here - unlike every other field in this
+  // group, it has no JobFieldValue at all (a brand-new CustomField created after jobs were
+  // already extracted - see check_jfv_exists.py). It is looked up purely client-side (two-key:
+  // ERP Quotation Name + ERP Quotation Branch's own current values) and rendered directly in
+  // the "ERP Reference Mapping" card below, right after branch_name.
   { heading: "Duty Details", labels: ["Payment Method"] },
   {
     heading: "Bill of Entry & Manifest Details",
@@ -1169,6 +1181,24 @@ export function JobRunPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobFieldValues, jobId]);
+  // ERP Quotation Address's own reference rows (see QUOTATION_ADDRESS_LABEL) - fetched once by
+  // label rather than custom_field_id, and empty (not an error) on any template other than 4S
+  // Logistics' Sea Import. Only fetched once branch_name actually appears on this job, so this
+  // never fires an extra request on every other template.
+  const hasBranchField = jobFieldValues.some((fv) => fv.label_name === "branch_name");
+  const [quotationAddressOptions, setQuotationAddressOptions] =
+    useState<jobsApi.CustomFieldReferenceOption[] | null>(null);
+  useEffect(() => {
+    if (!hasBranchField || quotationAddressOptions !== null) return;
+    let cancelled = false;
+    jobsApi.listCustomFieldReferenceOptionsByLabel(jobId, QUOTATION_ADDRESS_LABEL).then((options) => {
+      if (!cancelled) setQuotationAddressOptions(options);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasBranchField, jobId, quotationAddressOptions]);
   // Suggested starting value for a SUGGESTED_VALUE_KEYED_ON_LABEL field (e.g. Insurance Rate
   // (%), suggested off this job's own Consignee) - only ever a default, never forced; the
   // operator can still pick a different option or type a new one. Only fetched while the field
@@ -2649,6 +2679,47 @@ export function JobRunPage() {
                         );
                       })}
                     </div>
+
+                    {heading === "ERP Reference Mapping" && quotationAddressOptions?.length ? (
+                      (() => {
+                        const nameFv = job.field_values.find(
+                          (x) => x.row_index == null && x.label_name === "Erp Entry Name",
+                        );
+                        const branchFv = job.field_values.find(
+                          (x) => x.row_index == null && x.label_name === "branch_name",
+                        );
+                        const nameValue = (nameFv?.corrected_value ?? nameFv?.extracted_value ?? "")
+                          .trim()
+                          .toUpperCase();
+                        const branchValue = (branchFv?.corrected_value ?? branchFv?.extracted_value ?? "")
+                          .trim()
+                          .toUpperCase();
+                        const match = quotationAddressOptions.find(
+                          (o) =>
+                            (o.match_values[0] ?? "").toUpperCase() === nameValue &&
+                            (o.match_values[1] ?? "").toUpperCase() === branchValue,
+                        );
+                        return (
+                          <div className="mt-3">
+                            <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">
+                              ERP Quotation Address
+                            </label>
+                            <textarea
+                              readOnly
+                              disabled
+                              rows={3}
+                              value={match?.value ?? ""}
+                              placeholder={
+                                nameValue && branchValue
+                                  ? "No address on file for this quotation name/branch."
+                                  : "Pick an ERP Quotation Name and ERP Quotation Branch first."
+                              }
+                              className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200"
+                            />
+                          </div>
+                        );
+                      })()
+                    ) : null}
                   </Card>
                 );
               })}

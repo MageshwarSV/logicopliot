@@ -2959,7 +2959,6 @@ def list_custom_field_reference_options(
     job can see this.
     """
     from app.models.custom_field import CustomField
-    from app.models.custom_field_reference import CustomFieldReferenceValue
 
     job = _load_job(db, job_id, scope, user)
     cf = db.get(CustomField, custom_field_id)
@@ -2968,6 +2967,12 @@ def list_custom_field_reference_options(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Custom field not found on this job's template.",
         )
+    return _reference_options_payload(db, custom_field_id)
+
+
+def _reference_options_payload(db: Session, custom_field_id: str) -> dict:
+    from app.models.custom_field_reference import CustomFieldReferenceValue
+
     rows = (
         db.query(CustomFieldReferenceValue)
         .filter(CustomFieldReferenceValue.custom_field_id == custom_field_id)
@@ -2984,6 +2989,36 @@ def list_custom_field_reference_options(
             if r.resolved_value
         ]
     }
+
+
+@router.get("/jobs/{job_id}/custom-fields/by-label/{label}/reference-options")
+def list_custom_field_reference_options_by_label(
+    job_id: str,
+    label: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """Same payload as list_custom_field_reference_options, resolved by the field's own LABEL
+    on this job's template instead of a known custom_field_id - for a reference table backing
+    a field that is never itself asked/computed on a job (no JobFieldValue ever exists for it
+    to read a custom_field_id off of), e.g. ERP Quotation Address: looked up purely client-side
+    from two OTHER fields' current values (ERP Quotation Name + ERP Quotation Branch), never
+    saved or submitted anywhere itself."""
+    from app.models.custom_field import CustomField
+
+    job = _load_job(db, job_id, scope, user)
+    cf = (
+        db.query(CustomField)
+        .filter(CustomField.group_id == job.group_id, CustomField.label_name == label)
+        .first()
+    )
+    if cf is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    return _reference_options_payload(db, cf.id)
 
 
 @router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/suggested-value")
