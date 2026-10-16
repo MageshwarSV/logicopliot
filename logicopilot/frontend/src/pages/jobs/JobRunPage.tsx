@@ -1205,6 +1205,31 @@ export function JobRunPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasBranchField, jobId, quotationAddressOptions]);
+  // ERP Quotation Address previews off whatever is currently PICKED in ERP Quotation Name /
+  // ERP Quotation Branch, before either is saved - the operator wants to see the address while
+  // still choosing, not only after committing a value (ExtractedField's own saved
+  // corrected_value only updates post-save). ExtractedField's onDraftChange reports every
+  // keystroke/pick; these re-sync to the saved value whenever IT changes (mirrors
+  // ExtractedField's own draft/current resync), so a different field's save elsewhere on the
+  // job can never clobber an in-progress, not-yet-saved pick here.
+  const savedErpEntryName = (
+    jobFieldValues.find((fv) => fv.row_index == null && fv.label_name === "Erp Entry Name")
+      ?.corrected_value ??
+    jobFieldValues.find((fv) => fv.row_index == null && fv.label_name === "Erp Entry Name")
+      ?.extracted_value ??
+    ""
+  ).trim();
+  const savedBranchName = (
+    jobFieldValues.find((fv) => fv.row_index == null && fv.label_name === "branch_name")
+      ?.corrected_value ??
+    jobFieldValues.find((fv) => fv.row_index == null && fv.label_name === "branch_name")
+      ?.extracted_value ??
+    ""
+  ).trim();
+  const [liveErpEntryName, setLiveErpEntryName] = useState(savedErpEntryName);
+  const [liveBranchName, setLiveBranchName] = useState(savedBranchName);
+  useEffect(() => setLiveErpEntryName(savedErpEntryName), [savedErpEntryName]);
+  useEffect(() => setLiveBranchName(savedBranchName), [savedBranchName]);
   // Suggested starting value for a SUGGESTED_VALUE_KEYED_ON_LABEL field (e.g. Insurance Rate
   // (%), suggested off this job's own Consignee) - only ever a default, never forced; the
   // operator can still pick a different option or type a new one. Only fetched while the field
@@ -2687,6 +2712,13 @@ export function JobRunPage() {
                               defaultValue={defaultValue}
                               hideBlankOption={NO_BLANK_DROPDOWN_OPTION_LABELS.has(fv.label_name)}
                               comboOptions={comboOptions}
+                              onDraftChange={
+                                fv.label_name === "Erp Entry Name"
+                                  ? setLiveErpEntryName
+                                  : fv.label_name === "branch_name"
+                                    ? setLiveBranchName
+                                    : undefined
+                              }
                             />
                             {fv.ask_operator_hint && (
                               <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
@@ -2698,18 +2730,10 @@ export function JobRunPage() {
 
                     {heading === "ERP Reference Mapping" && quotationAddressOptions?.length ? (
                       (() => {
-                        const nameFv = job.field_values.find(
-                          (x) => x.row_index == null && x.label_name === "Erp Entry Name",
-                        );
-                        const branchFv = job.field_values.find(
-                          (x) => x.row_index == null && x.label_name === "branch_name",
-                        );
-                        const nameValue = (nameFv?.corrected_value ?? nameFv?.extracted_value ?? "")
-                          .trim()
-                          .toUpperCase();
-                        const branchValue = (branchFv?.corrected_value ?? branchFv?.extracted_value ?? "")
-                          .trim()
-                          .toUpperCase();
+                        // Live, pre-save drafts (see liveErpEntryName/liveBranchName above) -
+                        // previews as the operator picks, not only once each is saved.
+                        const nameValue = liveErpEntryName.toUpperCase();
+                        const branchValue = liveBranchName.toUpperCase();
                         const match = quotationAddressOptions.find(
                           (o) =>
                             (o.match_values[0] ?? "").toUpperCase() === nameValue &&
@@ -3607,6 +3631,7 @@ function ExtractedField({
   hint,
   comboOptions,
   onBeforeSave,
+  onDraftChange,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3659,6 +3684,11 @@ function ExtractedField({
    *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
    *  field leaves this unset and saves exactly as before. */
   onBeforeSave?: (value: string) => Promise<boolean>;
+  /** Fires on every keystroke/pick, BEFORE any save - the saved value (fv.corrected_value)
+   *  only updates once the operator blurs/commits. A caller previewing something derived from
+   *  this field live (e.g. ERP Quotation Address, keyed on ERP Quotation Name + ERP Quotation
+   *  Branch) needs the in-progress draft, not the last-saved value. */
+  onDraftChange?: (value: string) => void;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3668,7 +3698,10 @@ function ExtractedField({
   // The job reloads after every save, so props change under us; re-sync unless the operator
   // is mid-edit on this very box.
   useEffect(() => {
-    setDraft(current || defaultValue || "");
+    const next = current || defaultValue || "";
+    setDraft(next);
+    onDraftChange?.(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, defaultValue]);
 
   const dirty = draft !== current;
@@ -3745,6 +3778,7 @@ function ExtractedField({
             onChange={async (e) => {
               const next = e.target.value;
               setDraft(next);
+              onDraftChange?.(next);
               if (readOnly || next === current) return;
               setSaving(true);
               setFailed(false);
@@ -3785,7 +3819,10 @@ function ExtractedField({
               value={draft}
               readOnly={readOnly}
               list={comboOptions ? `combo-${fv.id}` : undefined}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                onDraftChange?.(e.target.value);
+              }}
               onFocus={() => onFocusField?.(fv)}
               // Blur still saves, as a safety net for anyone who types and tabs away. The button
               // below suppresses its own mousedown so it never takes focus from the input, so the
