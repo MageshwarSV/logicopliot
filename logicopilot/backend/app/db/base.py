@@ -26,6 +26,7 @@ from app.models.job_event import JobEvent  # noqa: F401
 from app.models.pending_email import PendingEmail  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401
 from app.models.custom_filter_page import CustomFilterPage  # noqa: F401
+from app.models.tenant_billing_config import TenantBillingConfig  # noqa: F401
 
 # Importing this installs the before_flush listener that writes a job's history. It
 # lives here so every entry point that touches the database gets it - the API, the

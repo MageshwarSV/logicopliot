@@ -33,6 +33,35 @@ export async function updateTenant(
   return response.data;
 }
 
+/** Pure reference data for the Super Admin's own records - what this tenant is billed for
+ *  CARGORA itself (platform fee + two-tier AI page rate) and which TrackContainer.in plan
+ *  they're on. Returns the standard published rates when nothing has been saved yet. */
+export interface TenantBillingConfig {
+  cargora_monthly_fee: number;
+  cargora_tier1_rate_per_page: number;
+  cargora_tier1_page_limit: number;
+  cargora_tier2_rate_per_page: number;
+  trackcontainer_plan: "starter" | "professional" | null;
+  trackcontainer_starter_price: number;
+  trackcontainer_starter_container_limit: number;
+  trackcontainer_professional_price: number;
+  trackcontainer_professional_container_limit: number;
+}
+
+export async function getTenantBillingConfig(tenantId: string): Promise<TenantBillingConfig> {
+  const response = await apiClient.get<TenantBillingConfig>(`/tenants/${tenantId}/billing-config`);
+  return response.data;
+}
+
+/** Only the fields included are changed - leave the rest out to keep them as they are. */
+export async function updateTenantBillingConfig(
+  tenantId: string,
+  payload: Partial<TenantBillingConfig>,
+): Promise<TenantBillingConfig> {
+  const response = await apiClient.put<TenantBillingConfig>(`/tenants/${tenantId}/billing-config`, payload);
+  return response.data;
+}
+
 export async function createTenant(payload: {
   name: string;
   region?: string;

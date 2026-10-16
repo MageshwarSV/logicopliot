@@ -8,8 +8,16 @@ from app.core.deps import get_current_user, get_db, require_role
 from app.core.modes import MODES
 from app.core.security import hash_password
 from app.models.tenant import Tenant
+from app.models.tenant_billing_config import TenantBillingConfig
 from app.models.user import ADMIN, GK2, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
-from app.schemas.tenant import TenantCreate, TenantOut, TenantUpdate
+from app.schemas.tenant import (
+    TRACKCONTAINER_PLANS,
+    TenantBillingConfigOut,
+    TenantBillingConfigUpdate,
+    TenantCreate,
+    TenantOut,
+    TenantUpdate,
+)
 
 WRITE_TOGGLE_ROLES = (OPERATOR, GK2)
 
@@ -140,6 +148,63 @@ def update_tenant(
     db.commit()
     db.refresh(tenant)
     return TenantOut.model_validate(tenant)
+
+
+@router.get("/{tenant_id}/billing-config", response_model=TenantBillingConfigOut)
+def get_tenant_billing_config(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantBillingConfigOut:
+    """Pure reference data for the Super Admin's own records - what this tenant is billed for
+    CARGORA itself and the TrackContainer.in integration. Returns the model's own defaults
+    (the standard published rates) when nothing has been saved for this tenant yet, rather
+    than 404ing - there is nothing wrong with a tenant nobody has configured this for."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    config = db.get(TenantBillingConfig, tenant_id)
+    if config is not None:
+        return TenantBillingConfigOut.model_validate(config)
+    # No row saved yet - the model's own `default=` only ever applies at INSERT time, so a
+    # transient, never-flushed instance has plain None on every column; the standard published
+    # rates are spelled out again here instead; keep in sync with TenantBillingConfig's own
+    # column defaults.
+    return TenantBillingConfigOut(
+        cargora_monthly_fee=4999.0, cargora_tier1_rate_per_page=2.50, cargora_tier1_page_limit=25000,
+        cargora_tier2_rate_per_page=2.00, trackcontainer_plan=None, trackcontainer_starter_price=2999.0,
+        trackcontainer_starter_container_limit=500, trackcontainer_professional_price=5999.0,
+        trackcontainer_professional_container_limit=1500,
+    )
+
+
+@router.put("/{tenant_id}/billing-config", response_model=TenantBillingConfigOut)
+def update_tenant_billing_config(
+    tenant_id: str,
+    payload: TenantBillingConfigUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantBillingConfigOut:
+    """Creates the row on first save (a tenant has none until a Super Admin actually sets
+    something) or updates the existing one - only the fields sent are changed, same
+    leave-the-rest-alone contract every other partial update in this codebase uses."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if payload.trackcontainer_plan is not None and payload.trackcontainer_plan not in TRACKCONTAINER_PLANS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"trackcontainer_plan must be one of {TRACKCONTAINER_PLANS}",
+        )
+    config = db.get(TenantBillingConfig, tenant_id)
+    if config is None:
+        config = TenantBillingConfig(tenant_id=tenant_id)
+        db.add(config)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(config, field, value)
+    db.commit()
+    db.refresh(config)
+    return TenantBillingConfigOut.model_validate(config)
 
 
 @router.post("/{tenant_id}/irn-pending-key", response_model=TenantOut)

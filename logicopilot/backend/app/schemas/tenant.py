@@ -39,3 +39,35 @@ class TenantOut(BaseModel):
     allowed_modes: list[str] | None = None
     role_write_enabled: dict[str, bool] | None = None
     irn_pending_access_key: str | None = None
+
+
+TRACKCONTAINER_PLANS = ("starter", "professional")
+
+
+class TenantBillingConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    cargora_monthly_fee: float
+    cargora_tier1_rate_per_page: float
+    cargora_tier1_page_limit: int
+    cargora_tier2_rate_per_page: float
+    trackcontainer_plan: str | None
+    trackcontainer_starter_price: float
+    trackcontainer_starter_container_limit: int
+    trackcontainer_professional_price: float
+    trackcontainer_professional_container_limit: int
+
+
+class TenantBillingConfigUpdate(BaseModel):
+    # All optional — only provided fields are changed. A field left out keeps its current
+    # (or default) value rather than being reset, so editing one number never clobbers the rest.
+    cargora_monthly_fee: float | None = None
+    cargora_tier1_rate_per_page: float | None = None
+    cargora_tier1_page_limit: int | None = None
+    cargora_tier2_rate_per_page: float | None = None
+    # null = not subscribed to TrackContainer at all.
+    trackcontainer_plan: str | None = None
+    trackcontainer_starter_price: float | None = None
+    trackcontainer_starter_container_limit: int | None = None
+    trackcontainer_professional_price: float | None = None
+    trackcontainer_professional_container_limit: int | None = None

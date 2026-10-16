@@ -6,6 +6,8 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
 import * as systemSettingsApi from "../../api/systemSettings";
+import * as tenantsApi from "../../api/tenants";
+import type { Tenant } from "../../types/tenant";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
 
@@ -50,6 +52,16 @@ export function SettingsPage() {
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineSaved, setEngineSaved] = useState(false);
 
+  // Per-tenant pricing reference (CARGORA + TrackContainer.in) - pure record-keeping, not
+  // tied to any billing enforcement. Picking a tenant loads (or defaults) its own numbers.
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [billingTenantId, setBillingTenantId] = useState("");
+  const [billingDraft, setBillingDraft] = useState<tenantsApi.TenantBillingConfig | null>(null);
+  const [loadingBilling, setLoadingBilling] = useState(false);
+  const [busyBilling, setBusyBilling] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingSaved, setBillingSaved] = useState(false);
+
   async function load() {
     try {
       const s = await systemSettingsApi.getSystemSettings();
@@ -68,7 +80,55 @@ export function SettingsPage() {
 
   useEffect(() => {
     load();
+    tenantsApi.listTenants().then(setTenants).catch(() => setTenants([]));
   }, []);
+
+  useEffect(() => {
+    if (!billingTenantId) {
+      setBillingDraft(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingBilling(true);
+    setBillingError(null);
+    setBillingSaved(false);
+    tenantsApi
+      .getTenantBillingConfig(billingTenantId)
+      .then((config) => {
+        if (!cancelled) setBillingDraft(config);
+      })
+      .catch(() => {
+        if (!cancelled) setBillingError("Could not load this tenant's pricing.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingBilling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [billingTenantId]);
+
+  function patchBillingDraft(patch: Partial<tenantsApi.TenantBillingConfig>) {
+    setBillingDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+  }
+
+  async function saveBillingConfig() {
+    if (!billingTenantId || !billingDraft) return;
+    setBusyBilling(true);
+    setBillingError(null);
+    setBillingSaved(false);
+    try {
+      const result = await tenantsApi.updateTenantBillingConfig(billingTenantId, billingDraft);
+      setBillingDraft(result);
+      setBillingSaved(true);
+    } catch (err) {
+      setBillingError(
+        axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not save this tenant's pricing." : "Could not save this tenant's pricing.",
+      );
+    } finally {
+      setBusyBilling(false);
+    }
+  }
 
   async function toggleEmailPull() {
     if (!settings) return;
@@ -403,6 +463,148 @@ export function SettingsPage() {
             )}
           </div>
         )}
+
+        <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Tenant pricing</h3>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            CARGORA's own platform fee and AI page-processing rate, and which TrackContainer.in
+            plan a tenant is on. Pure reference numbers for your own records — nothing here
+            changes what the tenant can actually do on the platform.
+          </p>
+          <div className="mt-3 sm:max-w-xs">
+            <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Tenant</label>
+            <select
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              value={billingTenantId}
+              onChange={(e) => setBillingTenantId(e.target.value)}
+            >
+              <option value="">Choose a tenant…</option>
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {loadingBilling && <p className="mt-3 text-xs text-slate-400">Loading…</p>}
+
+          {billingDraft && !loadingBilling && (
+            <div className="mt-4 flex flex-col gap-5">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  CARGORA
+                </p>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Input
+                    label="Monthly fee (₹)"
+                    type="number"
+                    min={0}
+                    value={billingDraft.cargora_monthly_fee}
+                    onChange={(e) => patchBillingDraft({ cargora_monthly_fee: Number(e.target.value) })}
+                  />
+                  <Input
+                    label="Rate up to limit (₹/page)"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={billingDraft.cargora_tier1_rate_per_page}
+                    onChange={(e) => patchBillingDraft({ cargora_tier1_rate_per_page: Number(e.target.value) })}
+                  />
+                  <Input
+                    label="Page limit"
+                    type="number"
+                    min={0}
+                    value={billingDraft.cargora_tier1_page_limit}
+                    onChange={(e) => patchBillingDraft({ cargora_tier1_page_limit: Number(e.target.value) })}
+                  />
+                  <Input
+                    label="Rate above limit (₹/page)"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={billingDraft.cargora_tier2_rate_per_page}
+                    onChange={(e) => patchBillingDraft({ cargora_tier2_rate_per_page: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  TrackContainer.in
+                </p>
+                <div className="mb-3 sm:max-w-xs">
+                  <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Plan
+                  </label>
+                  <select
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    value={billingDraft.trackcontainer_plan ?? ""}
+                    onChange={(e) =>
+                      patchBillingDraft({
+                        trackcontainer_plan: (e.target.value || null) as tenantsApi.TenantBillingConfig["trackcontainer_plan"],
+                      })
+                    }
+                  >
+                    <option value="">Not subscribed</option>
+                    <option value="starter">Starter</option>
+                    <option value="professional">Professional</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Input
+                    label="Starter price (₹ + GST)"
+                    type="number"
+                    min={0}
+                    value={billingDraft.trackcontainer_starter_price}
+                    onChange={(e) => patchBillingDraft({ trackcontainer_starter_price: Number(e.target.value) })}
+                  />
+                  <Input
+                    label="Starter container limit"
+                    type="number"
+                    min={0}
+                    value={billingDraft.trackcontainer_starter_container_limit}
+                    onChange={(e) =>
+                      patchBillingDraft({ trackcontainer_starter_container_limit: Number(e.target.value) })
+                    }
+                  />
+                  <Input
+                    label="Professional price (₹ + GST)"
+                    type="number"
+                    min={0}
+                    value={billingDraft.trackcontainer_professional_price}
+                    onChange={(e) =>
+                      patchBillingDraft({ trackcontainer_professional_price: Number(e.target.value) })
+                    }
+                  />
+                  <Input
+                    label="Professional container limit"
+                    type="number"
+                    min={0}
+                    value={billingDraft.trackcontainer_professional_container_limit}
+                    onChange={(e) =>
+                      patchBillingDraft({ trackcontainer_professional_container_limit: Number(e.target.value) })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Button size="sm" onClick={saveBillingConfig} disabled={busyBilling}>
+                  {busyBilling ? "Saving…" : "Save"}
+                </Button>
+              </div>
+              {billingSaved && (
+                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                  Saved.
+                </p>
+              )}
+              {billingError && (
+                <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                  {billingError}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
