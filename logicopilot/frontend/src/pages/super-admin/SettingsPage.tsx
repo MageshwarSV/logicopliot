@@ -46,6 +46,10 @@ export function SettingsPage() {
   const [busyWorkers, setBusyWorkers] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerSaved, setWorkerSaved] = useState(false);
+  const [erpWorkerInput, setErpWorkerInput] = useState("1");
+  const [busyErpWorkers, setBusyErpWorkers] = useState(false);
+  const [erpWorkerError, setErpWorkerError] = useState<string | null>(null);
+  const [erpWorkerSaved, setErpWorkerSaved] = useState(false);
   const [engineInput, setEngineInput] =
     useState<systemSettingsApi.SystemSettings["extraction_engine"]>("ocr_gpt4o_mini");
   const [busyEngine, setBusyEngine] = useState(false);
@@ -67,6 +71,7 @@ export function SettingsPage() {
       const s = await systemSettingsApi.getSystemSettings();
       setSettings(s);
       setWorkerInput(String(s.email_poll_workers));
+      setErpWorkerInput(String(s.erp_script_workers));
       setEngineInput(s.extraction_engine);
     } catch {
       setError("Could not load system settings.");
@@ -300,6 +305,28 @@ export function SettingsPage() {
     }
   }
 
+  async function saveErpWorkerCount() {
+    const count = Number(erpWorkerInput);
+    if (!Number.isInteger(count) || count < 1) {
+      setErpWorkerError("Enter a whole number of at least 1.");
+      return;
+    }
+    setBusyErpWorkers(true);
+    setErpWorkerError(null);
+    setErpWorkerSaved(false);
+    try {
+      const result = await systemSettingsApi.setErpScriptWorkers(count);
+      setSettings((prev) => (prev ? { ...prev, erp_script_workers: result.erp_script_workers } : prev));
+      setErpWorkerSaved(true);
+    } catch (err) {
+      setErpWorkerError(
+        axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not update the worker count." : "Could not update the worker count.",
+      );
+    } finally {
+      setBusyErpWorkers(false);
+    }
+  }
+
   async function saveExtractionEngine() {
     setBusyEngine(true);
     setEngineError(null);
@@ -413,6 +440,47 @@ export function SettingsPage() {
             {workerError && (
               <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
                 {workerError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {settings && (
+          <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">ERP script workers</h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              How many real ERP submissions (browser automation) run at once. Each one holds a
+              full browser open for a minute or more, so two jobs approved moments apart share
+              one queue rather than running simultaneously against the same ERP account. This
+              server can run at most{" "}
+              <span className="font-medium text-slate-700 dark:text-slate-300">
+                {settings.max_erp_script_workers}
+              </span>{" "}
+              at a time (one per CPU core) — anything above that is refused, not clamped.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="w-32">
+                <Input
+                  label="Workers"
+                  type="number"
+                  min={1}
+                  max={settings.max_erp_script_workers}
+                  value={erpWorkerInput}
+                  onChange={(e) => setErpWorkerInput(e.target.value)}
+                />
+              </div>
+              <Button size="sm" onClick={saveErpWorkerCount} disabled={busyErpWorkers}>
+                {busyErpWorkers ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {erpWorkerSaved && (
+              <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                Saved — the next ERP submission uses this worker count.
+              </p>
+            )}
+            {erpWorkerError && (
+              <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                {erpWorkerError}
               </p>
             )}
           </div>

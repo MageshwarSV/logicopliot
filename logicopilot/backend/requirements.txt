@@ -13,6 +13,13 @@ alembic>=1.13
 PyJWT>=2.8
 cryptography>=42
 passlib[bcrypt]>=1.7
+# security.py's CryptContext uses the "argon2" scheme for actual password hashing/verification
+# (bcrypt above is only passlib's own extra, pulled in for its legacy-hash support) - without
+# this, passlib has no backend to satisfy that scheme and raises the moment a password is
+# checked. Never listed here before; every existing venv had it anyway from being installed by
+# hand at some point, which is exactly why a FRESH `pip install -r requirements.txt` (a new
+# server, not an upgrade of an existing venv) was missing it entirely.
+argon2-cffi>=23.1
 typer>=0.12
 
 # Web automation — ERP recorder + entry playback

@@ -180,6 +180,27 @@ def set_email_poll_workers(db: Session, count: int) -> None:
     db.commit()
 
 
+def max_erp_script_workers() -> int:
+    """Same ceiling as max_email_poll_workers (one per CPU core) - conservative given each
+    worker holds a full Chromium instance open for the length of a real ERP run, well over a
+    minute, not a quick IO-bound task."""
+    return max(1, os.cpu_count() or 1)
+
+
+def get_erp_script_workers(db: Session) -> int:
+    return get_system_settings(db).erp_script_workers
+
+
+def set_erp_script_workers(db: Session, count: int) -> None:
+    cap = max_erp_script_workers()
+    if count < 1 or count > cap:
+        raise InvalidWorkerCount(
+            f"This server can run at most {cap} at once (one per CPU core); {count} was refused.")
+    row = get_system_settings(db)
+    row.erp_script_workers = count
+    db.commit()
+
+
 class InvalidOpenAIBalance(Exception):
     """A negative balance was rejected - never saved."""
 

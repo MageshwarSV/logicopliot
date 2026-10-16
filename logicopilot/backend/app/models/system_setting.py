@@ -47,6 +47,15 @@ class SystemSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # this machine cannot actually sustain.
     email_poll_workers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # How many real ERP submissions (browser automation) run at once across the whole app -
+    # see app/core/erp_queue.py. Defaults to 1: each worker holds a full Chromium instance
+    # open for the length of a real ERP run (well over a minute), and two of the same
+    # tenant's script logging into the same ERP account at once is exactly the kind of
+    # collision nobody wants discovered live. Capped the same way email_poll_workers is (see
+    # app/core/system_settings.max_erp_script_workers) - a number this machine cannot
+    # actually sustain is refused, never silently clamped.
+    erp_script_workers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
     # A JSON snapshot of the poller's own last cycle (see email_puller._record_cycle_status),
     # read by GET /email/poll-status. Persisted here rather than kept in a plain module-level
     # dict because the backend now runs as several uvicorn --workers processes: only the one

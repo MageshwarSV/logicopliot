@@ -2260,11 +2260,16 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
 
 
 def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
-    """The background-thread kickoff gk2_approve's own real-submission path uses - factored
-    out so the IRN-signing completion path (app/api/v1/public_irn.py's sign endpoint, once
-    every document header on a GK1-Approval-for-IRN job has its DSC-signed file + IRN number)
-    can trigger the exact same real ERP run rather than a second copy that could drift from
-    what GK2 pressing "Final Approve & Proceed" itself does."""
+    """The background kickoff gk2_approve's own real-submission path uses - factored out so
+    the IRN-signing completion path (app/api/v1/public_irn.py's sign endpoint, once every
+    document header on a GK1-Approval-for-IRN job has its DSC-signed file + IRN number) can
+    trigger the exact same real ERP run rather than a second copy that could drift from what
+    GK2 pressing "Final Approve & Proceed" itself does.
+
+    Runs through the shared, size-limited pool in app/core/erp_queue.py (see
+    system_settings.erp_script_workers) rather than a bare new thread per call - two jobs
+    approved moments apart no longer run two simultaneous ERP logins against the same
+    account; the second one simply waits its turn in the pool's own queue."""
     grp = db.get(TemplateGroup, job.group_id)
     is_excel_entry = grp is not None and (grp.entry_mode or "fields") == "excel"
     job.gk2_status = "preparing_erp"
@@ -2281,12 +2286,14 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     db.commit()
     db.refresh(job)
 
-    import threading
     import time
 
+    from app.core.erp_queue import submit_erp_run
+    from app.core.system_settings import get_erp_script_workers
     from app.db.session import SessionLocal
 
     job_id = job.id
+    workers = get_erp_script_workers(db)
 
     def _go() -> None:
         # Building the workbook genuinely takes well under a second - too fast for anyone to
@@ -2300,7 +2307,7 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
         finally:
             db2.close()
 
-    threading.Thread(target=_go, daemon=True, name=f"gk2-erp-{job_id}").start()
+    submit_erp_run(workers, _go)
 
 
 def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:

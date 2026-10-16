@@ -13,6 +13,11 @@ export interface SystemSettings {
   /** What THIS server can actually sustain (one thread per CPU core) - a hard ceiling,
    *  not a suggestion; the backend refuses anything above it. */
   max_email_poll_workers: number;
+  /** How many real ERP submissions (browser automation) run at once across the whole app -
+   *  see app/core/erp_queue.py. Defaults to 1: two jobs approved moments apart no longer run
+   *  two simultaneous ERP logins against the same account. */
+  erp_script_workers: number;
+  max_erp_script_workers: number;
   /** Manually entered (see setOpenAIBalance) - OpenAI has no API, not even the Admin key,
    *  that returns account credit balance or its expiry. null when never set. */
   openai_balance_usd: number | null;
@@ -115,6 +120,15 @@ export async function setOpenAIApiKey(apiKey: string): Promise<{ openai_api_key_
 export async function setEmailPollWorkers(count: number): Promise<{ email_poll_workers: number }> {
   const { data } = await apiClient.post<{ email_poll_workers: number }>(
     "/system-settings/workers",
+    { count },
+  );
+  return data;
+}
+
+/** Takes effect on the next ERP submission, no restart - the shared pool resizes itself. */
+export async function setErpScriptWorkers(count: number): Promise<{ erp_script_workers: number }> {
+  const { data } = await apiClient.post<{ erp_script_workers: number }>(
+    "/system-settings/erp-workers",
     { count },
   );
   return data;

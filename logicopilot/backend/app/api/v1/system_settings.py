@@ -33,7 +33,9 @@ from app.core.system_settings import (
     has_custom_openai_key,
     has_openai_admin_key,
     max_email_poll_workers,
+    max_erp_script_workers,
     set_email_poll_workers,
+    set_erp_script_workers,
     set_extraction_engine,
     set_openai_admin_key,
     set_openai_api_key,
@@ -97,6 +99,10 @@ def read_system_settings(
         # What THIS server can actually sustain - one thread per CPU core - so the UI can
         # show it as a hard ceiling rather than the admin guessing a safe number.
         "max_email_poll_workers": max_email_poll_workers(),
+        # How many real ERP submissions (browser automation) run at once - see
+        # app/core/erp_queue.py. Defaults to 1.
+        "erp_script_workers": row.erp_script_workers,
+        "max_erp_script_workers": max_erp_script_workers(),
         # Manually entered - see app/core/system_settings.set_openai_balance's docstring for
         # why this can never come from OpenAI's own API, not even the Admin key.
         "openai_balance_usd": row.openai_balance_usd,
@@ -600,6 +606,24 @@ def set_workers(
     except InvalidWorkerCount as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return {"email_poll_workers": get_system_settings(db).email_poll_workers}
+
+
+@router.post("/erp-workers")
+def set_erp_workers(
+    payload: WorkerCountIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """How many real ERP submissions (browser automation) run at once across the whole app -
+    see app/core/erp_queue.py. Capped at this server's own CPU count (see
+    max_erp_script_workers) - a number this machine cannot sustain is refused, never silently
+    clamped. Takes effect on the very next submission, no restart needed - the shared pool
+    resizes itself in place."""
+    try:
+        set_erp_script_workers(db, payload.count)
+    except InvalidWorkerCount as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return {"erp_script_workers": get_system_settings(db).erp_script_workers}
 
 
 @router.post("/extraction-engine")
