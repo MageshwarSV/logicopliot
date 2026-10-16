@@ -495,14 +495,14 @@ export function SettingsPage() {
                 </p>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <Input
-                    label="Monthly fee (₹)"
+                    label="Monthly fee (₹ + GST)"
                     type="number"
                     min={0}
                     value={billingDraft.cargora_monthly_fee}
                     onChange={(e) => patchBillingDraft({ cargora_monthly_fee: Number(e.target.value) })}
                   />
                   <Input
-                    label="Rate up to limit (₹/page)"
+                    label="Rate up to limit (₹/page + GST)"
                     type="number"
                     min={0}
                     step="0.01"
@@ -517,7 +517,7 @@ export function SettingsPage() {
                     onChange={(e) => patchBillingDraft({ cargora_tier1_page_limit: Number(e.target.value) })}
                   />
                   <Input
-                    label="Rate above limit (₹/page)"
+                    label="Rate above limit (₹/page + GST)"
                     type="number"
                     min={0}
                     step="0.01"
