@@ -27,6 +27,7 @@ def test_get_returns_the_standard_defaults_when_nothing_saved_yet(client, db_ses
     assert body["trackcontainer_starter_container_limit"] == 500
     assert body["trackcontainer_professional_price"] == 5999.0
     assert body["trackcontainer_professional_container_limit"] == 1500
+    assert body["gst_percent"] == 18.0
     # Nothing was actually created just by reading it.
     assert db_session.query(TenantBillingConfig).count() == 0
 
@@ -44,6 +45,7 @@ def test_put_creates_the_row_on_first_save(client, db_session):
     assert body["trackcontainer_plan"] == "starter"
     # Everything else keeps the model's own default, not left null.
     assert body["cargora_tier1_rate_per_page"] == 2.50
+    assert body["gst_percent"] == 18.0
     assert db_session.query(TenantBillingConfig).filter(
         TenantBillingConfig.tenant_id == tenant.id).count() == 1
 
@@ -76,6 +78,15 @@ def test_put_can_clear_trackcontainer_plan_back_to_none(client, db_session):
     resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"trackcontainer_plan": None})
     assert resp.status_code == 200, resp.text
     assert resp.json()["trackcontainer_plan"] is None
+
+
+def test_put_can_change_gst_percent(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+
+    resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"gst_percent": 12.0})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gst_percent"] == 12.0
 
 
 def test_billing_config_404s_for_an_unknown_tenant(client, db_session):

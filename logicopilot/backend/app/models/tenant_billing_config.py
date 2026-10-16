@@ -34,3 +34,7 @@ class TenantBillingConfig(Base, TimestampMixin):
     trackcontainer_professional_container_limit: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1500
     )
+
+    # Applied to every invoice this tenant is billed (platform fee + usage charges) - a plain
+    # percentage (18.0 means 18%), editable per tenant in case treatment ever differs.
+    gst_percent: Mapped[float] = mapped_column(Float, nullable=False, default=18.0)

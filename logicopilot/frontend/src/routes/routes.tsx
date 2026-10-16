@@ -26,6 +26,7 @@ import { SettingsPage } from "../pages/super-admin/SettingsPage";
 import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
+import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 
 export function AppRoutes() {
   return (
@@ -117,6 +118,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <SpendAnalyticsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/billing"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <BillingUsagePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/billing"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <BillingUsagePage />
           </ProtectedRoute>
         }
       />

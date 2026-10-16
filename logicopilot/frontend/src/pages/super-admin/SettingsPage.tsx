@@ -588,6 +588,25 @@ export function SettingsPage() {
               </div>
 
               <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Invoicing
+                </p>
+                <div className="mt-2 max-w-xs">
+                  <Input
+                    label="GST (%)"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={billingDraft.gst_percent}
+                    onChange={(e) => patchBillingDraft({ gst_percent: Number(e.target.value) })}
+                  />
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Applied to this tenant's own CARGORA bill (platform fee + usage charges).
+                  </p>
+                </div>
+              </div>
+
+              <div>
                 <Button size="sm" onClick={saveBillingConfig} disabled={busyBilling}>
                   {busyBilling ? "Saving…" : "Save"}
                 </Button>

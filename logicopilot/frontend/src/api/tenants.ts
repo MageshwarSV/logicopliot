@@ -46,6 +46,7 @@ export interface TenantBillingConfig {
   trackcontainer_starter_container_limit: number;
   trackcontainer_professional_price: number;
   trackcontainer_professional_container_limit: number;
+  gst_percent: number;
 }
 
 export async function getTenantBillingConfig(tenantId: string): Promise<TenantBillingConfig> {
@@ -59,6 +60,86 @@ export async function updateTenantBillingConfig(
   payload: Partial<TenantBillingConfig>,
 ): Promise<TenantBillingConfig> {
   const response = await apiClient.put<TenantBillingConfig>(`/tenants/${tenantId}/billing-config`, payload);
+  return response.data;
+}
+
+export interface ShipmentTypeUsage {
+  shipment_type: string;
+  jobs: number;
+  pages: number;
+}
+
+/** The Billing & Usage page's headline figure for one calendar month. The current month is
+ *  always live (is_finalized: false, no invoice fields set); any earlier month is a permanent,
+ *  already-raised invoice's own frozen numbers. */
+export interface BillingUsage {
+  month: string; // YYYY-MM
+  is_finalized: boolean;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  status: "unpaid" | "paid" | null;
+  total_jobs: number;
+  total_pages: number;
+  by_shipment_type: ShipmentTypeUsage[];
+  platform_fee: number;
+  tier1_rate: number;
+  tier1_pages: number;
+  tier1_amount: number;
+  tier2_rate: number;
+  tier2_pages: number;
+  tier2_amount: number;
+  usage_charges: number;
+  subtotal: number;
+  gst_percent: number;
+  gst_amount: number;
+  total_amount: number;
+}
+
+export interface Invoice {
+  id: string;
+  invoice_number: string;
+  period_start: string;
+  period_end: string;
+  platform_fee: number;
+  total_jobs: number;
+  total_pages: number;
+  tier1_rate: number;
+  tier1_pages: number;
+  tier1_amount: number;
+  tier2_rate: number;
+  tier2_pages: number;
+  tier2_amount: number;
+  usage_charges: number;
+  subtotal: number;
+  gst_percent: number;
+  gst_amount: number;
+  total_amount: number;
+  by_shipment_type: Record<string, { jobs: number; pages: number }>;
+  status: "unpaid" | "paid";
+  paid_at: string | null;
+  created_at: string;
+}
+
+/** Omit `month` for the current, live month; pass "YYYY-MM" for an earlier, finalized one. */
+export async function getBillingUsage(tenantId: string, month?: string): Promise<BillingUsage> {
+  const response = await apiClient.get<BillingUsage>(`/tenants/${tenantId}/billing/usage`, {
+    params: month ? { month } : undefined,
+  });
+  return response.data;
+}
+
+export async function listInvoices(tenantId: string): Promise<Invoice[]> {
+  const response = await apiClient.get<Invoice[]>(`/tenants/${tenantId}/billing/invoices`);
+  return response.data;
+}
+
+/** Super Admin only - marks an invoice paid once payment is actually received outside the
+ *  platform (there is no payment gateway integration yet). */
+export async function markInvoicePaid(tenantId: string, invoiceId: string, paid = true): Promise<Invoice> {
+  const response = await apiClient.post<Invoice>(
+    `/tenants/${tenantId}/billing/invoices/${invoiceId}/mark-paid`,
+    { paid },
+  );
   return response.data;
 }
 

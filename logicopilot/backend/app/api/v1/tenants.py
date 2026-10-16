@@ -1,17 +1,24 @@
 import secrets
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.billing import calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.modes import MODES
 from app.core.security import hash_password
+from app.models.invoice import Invoice
 from app.models.tenant import Tenant
 from app.models.tenant_billing_config import TenantBillingConfig
 from app.models.user import ADMIN, GK2, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
+    BillingUsageOut,
+    InvoiceOut,
+    MarkInvoicePaid,
+    ShipmentTypeUsageOut,
     TenantBillingConfigOut,
     TenantBillingConfigUpdate,
     TenantCreate,
@@ -174,7 +181,7 @@ def get_tenant_billing_config(
         cargora_monthly_fee=4999.0, cargora_tier1_rate_per_page=2.50, cargora_tier1_page_limit=25000,
         cargora_tier2_rate_per_page=2.00, trackcontainer_plan=None, trackcontainer_starter_price=2999.0,
         trackcontainer_starter_container_limit=500, trackcontainer_professional_price=5999.0,
-        trackcontainer_professional_container_limit=1500,
+        trackcontainer_professional_container_limit=1500, gst_percent=18.0,
     )
 
 
@@ -205,6 +212,129 @@ def update_tenant_billing_config(
     db.commit()
     db.refresh(config)
     return TenantBillingConfigOut.model_validate(config)
+
+
+def _require_billing_read_access(user: User, tenant_id: str) -> None:
+    if user.role not in (SUPER_ADMIN, TENANT_ADMIN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    if user.role == TENANT_ADMIN and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+
+@router.get("/{tenant_id}/billing/usage", response_model=BillingUsageOut)
+def get_billing_usage(
+    tenant_id: str,
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BillingUsageOut:
+    """The Billing & Usage page's headline figure for one calendar month (default: the
+    current one). The current, still-running month is always computed live from real job/
+    document rows and is never finalized into an Invoice; any earlier month is looked up from
+    its permanent, already-raised Invoice row (raised lazily by ensure_invoices_finalized,
+    called here on every access since there is no scheduler process in this codebase).
+    Super Admin may view any tenant; a Tenant Admin only their own."""
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    today = datetime.now(timezone.utc).date()
+    if month:
+        try:
+            period_start = date.fromisoformat(f"{month}-01")
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="month must be YYYY-MM")
+    else:
+        period_start = today.replace(day=1)
+
+    ensure_invoices_finalized(db, tenant_id)
+
+    if period_start < today.replace(day=1):
+        invoice = (
+            db.query(Invoice)
+            .filter(Invoice.tenant_id == tenant_id, Invoice.period_start == period_start.isoformat())
+            .first()
+        )
+        if invoice is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No usage recorded for this period"
+            )
+        return BillingUsageOut(
+            month=period_start.strftime("%Y-%m"), is_finalized=True,
+            invoice_id=invoice.id, invoice_number=invoice.invoice_number, status=invoice.status,
+            total_jobs=invoice.total_jobs, total_pages=invoice.total_pages,
+            by_shipment_type=[
+                ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
+                for k, v in sorted(invoice.by_shipment_type.items())
+            ],
+            platform_fee=invoice.platform_fee,
+            tier1_rate=invoice.tier1_rate, tier1_pages=invoice.tier1_pages, tier1_amount=invoice.tier1_amount,
+            tier2_rate=invoice.tier2_rate, tier2_pages=invoice.tier2_pages, tier2_amount=invoice.tier2_amount,
+            usage_charges=invoice.usage_charges, subtotal=invoice.subtotal,
+            gst_percent=invoice.gst_percent, gst_amount=invoice.gst_amount, total_amount=invoice.total_amount,
+        )
+
+    config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
+    usage = compute_usage(db, tenant_id, period_start)
+    bill = calculate_bill(config, usage.total_pages)
+    return BillingUsageOut(
+        month=period_start.strftime("%Y-%m"), is_finalized=False,
+        total_jobs=usage.total_jobs, total_pages=usage.total_pages,
+        by_shipment_type=[
+            ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
+            for k, v in sorted(usage.by_shipment_type.items())
+        ],
+        platform_fee=bill.platform_fee, tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages,
+        tier1_amount=bill.tier1_amount, tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages,
+        tier2_amount=bill.tier2_amount, usage_charges=bill.usage_charges, subtotal=bill.subtotal,
+        gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
+    )
+
+
+@router.get("/{tenant_id}/billing/invoices", response_model=list[InvoiceOut])
+def list_invoices(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[InvoiceOut]:
+    """Invoice history for one tenant, most recent first. Finalizes any past month that has
+    ended with no invoice row yet before listing, same as get_billing_usage."""
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    ensure_invoices_finalized(db, tenant_id)
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.tenant_id == tenant_id)
+        .order_by(Invoice.period_start.desc())
+        .all()
+    )
+    return [InvoiceOut.model_validate(inv) for inv in invoices]
+
+
+@router.post("/{tenant_id}/billing/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)
+def mark_invoice_paid(
+    tenant_id: str,
+    invoice_id: str,
+    payload: MarkInvoicePaid,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> InvoiceOut:
+    """There is no payment gateway integration yet - a tenant pays by bank transfer to the
+    company's own account, outside the platform, and a Super Admin marks the invoice paid by
+    hand once that payment is actually received. Super Admin only - a Tenant Admin cannot
+    mark their own invoice paid."""
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice.status = "paid" if payload.paid else "unpaid"
+    invoice.paid_at = datetime.now(timezone.utc).isoformat() if payload.paid else None
+    db.commit()
+    db.refresh(invoice)
+    return InvoiceOut.model_validate(invoice)
 
 
 @router.post("/{tenant_id}/irn-pending-key", response_model=TenantOut)

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -56,6 +58,7 @@ class TenantBillingConfigOut(BaseModel):
     trackcontainer_starter_container_limit: int
     trackcontainer_professional_price: float
     trackcontainer_professional_container_limit: int
+    gst_percent: float
 
 
 class TenantBillingConfigUpdate(BaseModel):
@@ -71,3 +74,69 @@ class TenantBillingConfigUpdate(BaseModel):
     trackcontainer_starter_container_limit: int | None = None
     trackcontainer_professional_price: float | None = None
     trackcontainer_professional_container_limit: int | None = None
+    gst_percent: float | None = None
+
+
+class ShipmentTypeUsageOut(BaseModel):
+    shipment_type: str
+    jobs: int
+    pages: int
+
+
+class BillingUsageOut(BaseModel):
+    """Usage + bill breakdown for one calendar month. is_finalized tells the frontend whether
+    this is the live, still-accumulating current month or a permanent, already-raised invoice's
+    own numbers (in which case invoice_id/invoice_number/status are also set)."""
+    month: str  # YYYY-MM
+    is_finalized: bool
+    invoice_id: str | None = None
+    invoice_number: str | None = None
+    status: str | None = None
+
+    total_jobs: int
+    total_pages: int
+    by_shipment_type: list[ShipmentTypeUsageOut]
+
+    platform_fee: float
+    tier1_rate: float
+    tier1_pages: int
+    tier1_amount: float
+    tier2_rate: float
+    tier2_pages: int
+    tier2_amount: float
+    usage_charges: float
+    subtotal: float
+    gst_percent: float
+    gst_amount: float
+    total_amount: float
+
+
+class InvoiceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    invoice_number: str
+    period_start: str
+    period_end: str
+    platform_fee: float
+    total_jobs: int
+    total_pages: int
+    tier1_rate: float
+    tier1_pages: int
+    tier1_amount: float
+    tier2_rate: float
+    tier2_pages: int
+    tier2_amount: float
+    usage_charges: float
+    subtotal: float
+    gst_percent: float
+    gst_amount: float
+    total_amount: float
+    by_shipment_type: dict[str, dict[str, int]]
+    status: str
+    paid_at: str | None
+    created_at: datetime
+
+
+class MarkInvoicePaid(BaseModel):
+    paid: bool = True

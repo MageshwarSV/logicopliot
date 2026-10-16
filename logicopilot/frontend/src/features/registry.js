@@ -35,4 +35,5 @@ export const superAdminFeatures = [
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
   // "New User" form.
   { path: "/super-admin/email-puller", navLabel: "Email Puller", order: 11 },
+  { path: "/super-admin/billing", navLabel: "Billing & Usage", order: 12 },
 ].sort((a, b) => a.order - b.order);

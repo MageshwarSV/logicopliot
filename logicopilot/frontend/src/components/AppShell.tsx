@@ -97,6 +97,7 @@ export function AppShell({
                   { to: "/tenant-admin/customers", label: "Shipment Type" },
                   { to: "/tenant-admin/masters", label: "Masters" },
                   { to: "/tenant-admin/users", label: "Users" },
+                  { to: "/tenant-admin/billing", label: "Billing & Usage" },
                 ].map((item) => (
                   <Link key={item.to} to={item.to} className={navClass(item.to)}>
                     {item.label}
