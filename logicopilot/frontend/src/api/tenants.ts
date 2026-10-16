@@ -27,7 +27,11 @@ export async function generateIrnPendingKey(tenantId: string): Promise<Tenant> {
  *  Admin can use it for any tenant. Empty array clears the restriction (unrestricted). */
 export async function updateTenant(
   tenantId: string,
-  payload: { allowed_modes?: string[]; role_write_enabled?: Record<string, boolean> },
+  payload: {
+    allowed_modes?: string[];
+    role_write_enabled?: Record<string, boolean>;
+    gk2_required_by_mode?: Record<string, boolean>;
+  },
 ): Promise<Tenant> {
   const response = await apiClient.patch<Tenant>(`/tenants/${tenantId}`, payload);
   return response.data;

@@ -55,6 +55,13 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #   "submitted"      -> AI - ERP Submitted (5s after preparing_erp, on a background
     #                       thread - a placeholder for now, not a real ERP run)
     gk2_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # True when this job's shipment type has GK2 review turned OFF for this tenant (see
+    # Tenant.gk2_required_by_mode) - GK1's own Final Submit for Approval went straight into the
+    # real ERP submission (the same path gk2_approve uses) instead of landing on gk2_status
+    # "pending" for a human GK2 to act on. Exists so the frontend can tell "a GK2 already
+    # reviewed this and it's now running/done" apart from "no GK2 ever touched this job" -
+    # gk2_status alone can't: it goes straight from None to "preparing_erp" either way.
+    gk2_skipped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # GK1's IRN Documents Upload stage (see app/models/supporting_document.py): set once an
     # operator explicitly presses Approval for IRN or Skip - the stage is optional, but one
     # of those two actions is what ticks it off, and unlike the old client-only "irnApproved"

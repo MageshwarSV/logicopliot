@@ -28,6 +28,10 @@ class TenantUpdate(BaseModel):
     # users in this tenant to read-only. A key not being present leaves that role's current
     # setting unchanged (a bare {} or omitting the field entirely is a no-op, not a reset).
     role_write_enabled: dict[str, bool] | None = None
+    # Set from the "Masters" page: {"Sea Import": bool, ...}, keyed by MODES. False for a mode
+    # means a job of that shipment type skips GK2 review entirely once GK1 approves it - same
+    # merge-not-replace contract as role_write_enabled.
+    gk2_required_by_mode: dict[str, bool] | None = None
 
 
 class TenantOut(BaseModel):
@@ -40,6 +44,7 @@ class TenantOut(BaseModel):
     is_active: bool
     allowed_modes: list[str] | None = None
     role_write_enabled: dict[str, bool] | None = None
+    gk2_required_by_mode: dict[str, bool] | None = None
     irn_pending_access_key: str | None = None
 
 

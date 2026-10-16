@@ -180,6 +180,10 @@ export interface JobDetail {
    *  "submitted" | "failed". Use this, not outer_status, to tell "GK2 has this job" apart
    *  from an ordinary GK1 entry that also happens to read "Failed". */
   gk2_status?: string | null;
+  /** True when this tenant has GK2 review turned off for this job's shipment type - GK1's own
+   *  Final Submit for Approval went straight into the real ERP submission instead of a human
+   *  GK2's queue. gk2_status alone can't tell this apart from "a GK2 actually reviewed this". */
+  gk2_skipped?: boolean;
   /** Operator (GK1) pressed "Approved and Proceed" on Data Validation, for the current
    *  extraction. */
   validation_approved?: boolean;

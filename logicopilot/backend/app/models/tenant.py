@@ -23,6 +23,14 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # means read-and-write, so every tenant that existed before this was added is unaffected.
     # "manager" never appears here: that role is always read-only, not a per-tenant choice.
     role_write_enabled: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Set on the Tenant Admin's "Masters" page: whether a job of a given shipment type (a
+    # MODES string, e.g. "Sea Import") must go through a GK2 user's review before the real ERP
+    # submission runs. Shape: {"Sea Import": bool, ...} - a missing key, or a null column,
+    # means GK2 IS required, so every tenant/mode combination that existed before this was
+    # added keeps behaving exactly as it always has. False for a mode: GK1's own Final Submit
+    # for Approval goes straight into the real ERP submission instead of landing in a GK2's
+    # "Pending for GK2" queue - see submit_for_gk2_approval/Job.gk2_skipped.
+    gk2_required_by_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The one key that gets this tenant's IRN Pending link working (see
     # app/api/v1/public_irn.py) - generated once from the Super Admin dashboard's "Generate
     # Link" button and never rotated automatically, so a link already handed out keeps

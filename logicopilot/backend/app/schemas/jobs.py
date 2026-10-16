@@ -234,6 +234,12 @@ class JobDetailOut(BaseModel):
     # run or from an ordinary GK1 entry that never went near GK2, and only this field tells
     # those apart (GK1's side must not show "waiting on GK2" for a job GK2 never saw).
     gk2_status: str | None = None
+    # True when this tenant has GK2 review turned off for this job's shipment type (see
+    # Tenant.gk2_required_by_mode) - GK1's own Final Submit for Approval went straight into
+    # the real ERP submission instead of a human GK2's queue. gk2_status alone can't tell this
+    # apart from "a GK2 actually reviewed this": it goes straight from None to "preparing_erp"
+    # either way.
+    gk2_skipped: bool = False
     # Operator (GK1) pressed "Approved and Proceed" on Data Validation, for the current
     # extraction.
     validation_approved: bool = False

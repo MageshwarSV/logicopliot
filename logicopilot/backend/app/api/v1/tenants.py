@@ -152,6 +152,18 @@ def update_tenant(
         merged.update(payload.role_write_enabled)
         tenant.role_write_enabled = merged
 
+    if payload.gk2_required_by_mode is not None:
+        bad_modes = [m for m in payload.gk2_required_by_mode if m not in MODES]
+        if bad_modes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Not a valid mode: {', '.join(bad_modes)}",
+            )
+        # Merge, not replace — editing one shipment type must not reset another's setting.
+        merged = dict(tenant.gk2_required_by_mode or {})
+        merged.update(payload.gk2_required_by_mode)
+        tenant.gk2_required_by_mode = merged
+
     db.commit()
     db.refresh(tenant)
     return TenantOut.model_validate(tenant)

@@ -54,6 +54,7 @@ from app.core import live_runs
 from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
+from app.models.tenant import Tenant
 from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.jobs import (
     AvailableGroup,
@@ -2063,6 +2064,22 @@ def approve_validation(
     return _build_detail(db, job)
 
 
+def _gk2_required_for_job(db: Session, job: Job) -> bool:
+    """Whether this job's shipment type still needs a human GK2 review before the real ERP
+    submission runs - see Tenant.gk2_required_by_mode. True (GK2 required) is the default for
+    a mode with no entry, a job whose template has no mode at all, or a tenant with nothing
+    configured here - every tenant/job that existed before this setting did keeps behaving
+    exactly as it always has."""
+    tenant = db.get(Tenant, job.tenant_id)
+    if tenant is None or not tenant.gk2_required_by_mode:
+        return True
+    group = db.get(TemplateGroup, job.group_id)
+    mode = group.mode if group is not None else None
+    if mode is None:
+        return True
+    return tenant.gk2_required_by_mode.get(mode, True)
+
+
 @router.post("/jobs/{job_id}/gk2/submit-for-approval", response_model=JobDetailOut)
 def submit_for_gk2_approval(
     job_id: str,
@@ -2071,15 +2088,25 @@ def submit_for_gk2_approval(
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
 ) -> JobDetailOut:
     """Operator (GK1) presses "Final Submit for Approval" on ERP Submission — hands the job
-    to a GK2 user instead of running the real ERP entry. See Job.gk2_status."""
+    to a GK2 user, UNLESS the Tenant Admin has turned GK2 review off for this job's shipment
+    type (Tenant.gk2_required_by_mode), in which case this runs the exact same pre-flight
+    checks and real-ERP-submission kickoff gk2_approve itself uses (see
+    _finalize_job_approval) - straight from GK1's own approval, skipping the GK2 queue
+    entirely. See Job.gk2_status and Job.gk2_skipped."""
     job = _load_job(db, job_id, scope, user)
     if job.status != "extracted" or not job.validation_approved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cross Docs Verification must be approved before this can go to GK2.",
         )
-    job.gk2_status = "pending"
-    db.commit()
+    if _gk2_required_for_job(db, job):
+        job.gk2_status = "pending"
+        db.commit()
+        db.refresh(job)
+        return _build_detail(db, job)
+
+    job.gk2_skipped = True
+    _finalize_job_approval(db, job)
     db.refresh(job)
     return _build_detail(db, job)
 
@@ -2192,6 +2219,16 @@ def gk2_approve(
             status_code=status.HTTP_409_CONFLICT,
             detail="Approve Cross Docs Verification (GK2's own review) before the final approval.",
         )
+    _finalize_job_approval(db, job)
+    return _build_detail(db, job)
+
+
+def _finalize_job_approval(db: Session, job: Job) -> None:
+    """The pre-flight checks and real-ERP-submission kickoff behind a job's final approval -
+    shared by gk2_approve (after its own GK2-specific guards above: gk2_status itself, and
+    gk2_validation_approved) and submit_for_gk2_approval's skip-GK2 path (a tenant that has
+    turned GK2 review off for this job's shipment type - see Tenant.gk2_required_by_mode) - a
+    skipped job is held to exactly the same bar a GK2-reviewed one is."""
     # The same pre-flight complete_job requires before it touches the real ERP - a GK2 run is
     # no less real now, so a required field the operator never answered, or a job parked on
     # the ruling's own hold question, must block it here exactly as it would block Submit Entry.
@@ -2217,10 +2254,9 @@ def gk2_approve(
         job.gk2_status = "irn_document_process"
         db.commit()
         db.refresh(job)
-        return _build_detail(db, job)
+        return
 
     _kick_off_real_erp_submission(db, job)
-    return _build_detail(db, job)
 
 
 def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
@@ -2858,6 +2894,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         operator_name=_operator_name(db, job),
         excel_entry=(group.entry_mode or "fields") == "excel",
         gk2_status=job.gk2_status,
+        gk2_skipped=job.gk2_skipped,
         validation_approved=job.validation_approved,
         gk2_validation_approved=job.gk2_validation_approved,
         irn_documents_done=job.irn_documents_done,

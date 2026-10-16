@@ -7,6 +7,7 @@ import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import * as userTypesApi from "../../api/userTypes";
 import { customTypeIdOf, type TypeSelection, type UserType } from "../../api/userTypes";
+import { MODES } from "../../types/onboarding";
 
 type CreatableRole = "operator" | "gk2" | "manager";
 
@@ -26,6 +27,9 @@ const USER_TYPES: { value: CreatableRole; label: string }[] = [
 export function MastersPage() {
   const { user } = useAuth();
   const [roleWriteEnabled, setRoleWriteEnabled] = useState<Record<string, boolean>>({});
+  const [gk2RequiredByMode, setGk2RequiredByMode] = useState<Record<string, boolean>>({});
+  const [allowedModes, setAllowedModes] = useState<string[]>([]);
+  const [savingMode, setSavingMode] = useState<string | null>(null);
   const [userTypes, setUserTypes] = useState<UserType[]>([]);
   const [selectedType, setSelectedType] = useState<TypeSelection>("operator");
   const [loading, setLoading] = useState(true);
@@ -46,6 +50,8 @@ export function MastersPage() {
         userTypesApi.listUserTypes(),
       ]);
       setRoleWriteEnabled(tenant?.role_write_enabled ?? {});
+      setGk2RequiredByMode(tenant?.gk2_required_by_mode ?? {});
+      setAllowedModes(tenant?.allowed_modes ?? []);
       setUserTypes(types);
     } catch {
       setError("Failed to load data. Try refreshing the page.");
@@ -88,6 +94,22 @@ export function MastersPage() {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not save this rule.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function setGk2Required(mode: string, required: boolean) {
+    if (!user?.tenant_id) return;
+    setSavingMode(mode);
+    setError(null);
+    try {
+      const tenant = await tenantsApi.updateTenant(user.tenant_id, {
+        gk2_required_by_mode: { [mode]: required },
+      });
+      setGk2RequiredByMode(tenant.gk2_required_by_mode ?? {});
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not save this rule.");
+    } finally {
+      setSavingMode(null);
     }
   }
 
@@ -259,6 +281,41 @@ export function MastersPage() {
               <Button size="sm" isLoading={creating} onClick={createType}>Create type</Button>
               <Button variant="ghost" size="sm" onClick={() => setShowNewType(false)}>Cancel</Button>
             </div>
+          </div>
+        )}
+      </Card>
+
+      <Card className="mt-6 max-w-lg p-5">
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Gate Keeper 2 review</p>
+        <p className="mt-1 mb-4 text-xs text-slate-400">
+          By default, a job needs Gate Keeper 2's own final approval before the real ERP entry
+          runs. Untick a shipment type here to skip that step for it — once Gate Keeper 1
+          submits, it goes straight into the ERP entry.
+        </p>
+        {!loading && (
+          <div className="flex flex-col gap-2">
+            {(allowedModes.length ? allowedModes : MODES).map((mode) => {
+              const required = gk2RequiredByMode[mode] ?? true;
+              return (
+                <label
+                  key={mode}
+                  className={`${checkboxRow} border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-300`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={required}
+                    disabled={savingMode === mode}
+                    onChange={(e) => setGk2Required(mode, e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 disabled:opacity-60"
+                  />
+                  <span>
+                    <span className="font-medium text-slate-700 dark:text-slate-300">{mode}</span>
+                    {" — "}
+                    {required ? "Gate Keeper 2 review required" : "Goes straight to ERP after Gate Keeper 1"}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         )}
       </Card>

@@ -871,13 +871,25 @@ export function JobRunPage() {
     }
   }
 
-  /** GK1 (operator) presses "Final Submit for Approval" — hands the job to GK2 instead of
-   *  running the real ERP entry (not wired up yet, see Job.gk2_status on the backend). */
+  /** GK1 (operator) presses "Final Submit for Approval" — normally hands the job to GK2's own
+   *  queue (gk2_status "pending"). When this tenant has turned GK2 review off for this job's
+   *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped);
+   *  poll it through to a final outcome exactly as GK2's own "Final Approve & Proceed" does,
+   *  since nobody else is going to press a button to move it along. */
   async function submitForGk2Approval() {
     setGk2Busy(true);
     setError(null);
     try {
-      setJob(await jobsApi.submitForGk2Approval(jobId));
+      let fresh = await jobsApi.submitForGk2Approval(jobId);
+      setJob(fresh);
+      if (fresh.gk2_skipped) {
+        for (let i = 0; i < 60; i++) {
+          if (fresh.gk2_status !== "preparing_erp" && fresh.gk2_status !== "entering_erp") break;
+          await new Promise((r) => setTimeout(r, 3000));
+          fresh = await jobsApi.getJob(jobId);
+          setJob(fresh);
+        }
+      }
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not submit this for GK2 approval.");
     } finally {
@@ -2132,6 +2144,8 @@ export function JobRunPage() {
             const gk2Started = job.gk2_status != null;
             const isGk2 = user?.role === "gk2";
             const gk2CanAct = job.gk2_status === "pending" || job.gk2_status === "failed";
+            const gk2Skipped = job.gk2_skipped === true;
+            const erpRunning = job.gk2_status === "preparing_erp" || job.gk2_status === "entering_erp";
             return (
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -2141,9 +2155,11 @@ export function JobRunPage() {
                   <p className="text-xs text-slate-500">
                     {isGk2
                       ? "Give this job its final approval, or send it back for GK1 to fix."
-                      : gk2Started
-                        ? "Waiting on GK2's final approval."
-                        : "Hand this job over to GK2 for a final approval and the real ERP entry."}
+                      : gk2Skipped
+                        ? "GK2 review isn't required for this shipment type — this goes straight to the real ERP entry."
+                        : gk2Started
+                          ? "Waiting on GK2's final approval."
+                          : "Hand this job over to GK2 for a final approval and the real ERP entry."}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -2183,7 +2199,11 @@ export function JobRunPage() {
                   )}
                   {!readOnly && !isGk2 && gk2Started && (
                     <span className="text-xs font-medium text-indigo-600 dark:text-indigo-400">
-                      ✓ Submitted for GK2 approval
+                      {gk2Skipped
+                        ? erpRunning
+                          ? "Running the ERP entry…"
+                          : "✓ Submitted — GK2 review not required for this shipment type"
+                        : "✓ Submitted for GK2 approval"}
                     </span>
                   )}
                 </div>
