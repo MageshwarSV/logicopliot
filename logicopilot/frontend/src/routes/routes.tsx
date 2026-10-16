@@ -204,7 +204,7 @@ export function AppRoutes() {
       <Route
         path="/jobs"
         element={
-          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager"]}>
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
             <JobsPage />
           </ProtectedRoute>
         }
@@ -212,7 +212,7 @@ export function AppRoutes() {
       <Route
         path="/jobs/:jobId"
         element={
-          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager"]}>
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
             <JobRunPage />
           </ProtectedRoute>
         }
@@ -220,7 +220,7 @@ export function AppRoutes() {
       <Route
         path="/jobs/:jobId/e-docket"
         element={
-          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager"]}>
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
             <EDocketPage />
           </ProtectedRoute>
         }
