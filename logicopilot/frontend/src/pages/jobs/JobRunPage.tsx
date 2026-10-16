@@ -2685,12 +2685,28 @@ export function JobRunPage() {
                           // of whichever forwarder is currently set as ERP Quotation Name
                           // (Erp Entry Name) - same narrowing ExtractionReview's own copy of
                           // this mechanism does for relocated fields (CustomsHouseCode).
-                          const filterFv = job.field_values.find(
-                            (x) => x.row_index == null && x.label_name === filterByLabel,
-                          );
-                          const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
-                            .trim()
-                            .toUpperCase();
+                          //
+                          // Erp Entry Name specifically reads the LIVE, not-yet-saved pick (see
+                          // liveErpEntryName above) rather than job.field_values' saved value -
+                          // otherwise picking a name narrowed nothing until that pick was itself
+                          // saved, so the operator had to save once just to see the branch list
+                          // narrow, then again to save the branch. Anything else this map might
+                          // ever filter by (today: nothing else in this card) falls back to the
+                          // saved value, same as before.
+                          const filterValue =
+                            filterByLabel === "Erp Entry Name"
+                              ? liveErpEntryName.toUpperCase()
+                              : (
+                                  job.field_values.find(
+                                    (x) => x.row_index == null && x.label_name === filterByLabel,
+                                  )?.corrected_value ??
+                                  job.field_values.find(
+                                    (x) => x.row_index == null && x.label_name === filterByLabel,
+                                  )?.extracted_value ??
+                                  ""
+                                )
+                                  .trim()
+                                  .toUpperCase();
                           const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
                           comboOptions = dedupe(
                             (
