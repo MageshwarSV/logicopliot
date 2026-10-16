@@ -225,6 +225,11 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // still correct the mode by picking the other code for the same city.
 const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
   CustomsHouseCode: "port_of_entry",
+  // Same shape as CustomsHouseCode: a forwarder's own branch list only ever matters once you
+  // know WHICH forwarder (ERP Quotation Name / Erp Entry Name) - AIT's own branches, not
+  // Kuehne+Nagel's. Reference table seeded from the Super Admin's own "Billing customers"
+  // sheet (Organization -> branch code, one row per branch).
+  branch_name: "Erp Entry Name",
 };
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
