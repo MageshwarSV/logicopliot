@@ -1,8 +1,10 @@
 """Billing & Usage: current-month live usage, past-month auto-finalized invoices, and the
 Super-Admin-only mark-as-paid action. See app/core/billing.py for the aggregation/finalization
 logic this exercises."""
+import calendar
 from datetime import datetime, timedelta, timezone
 
+from app.models.billable_page_event import BillablePageEvent
 from app.models.invoice import Invoice
 from app.models.job import Job, JobDocument
 from app.models.template_document import TemplateDocument
@@ -44,6 +46,18 @@ def _make_job_with_pages(db_session, tenant, group, template_doc, *, pages, crea
         file_path="/tmp/fake.pdf", page_count=pages,
     )
     db_session.add(doc)
+    # compute_usage sums pages from this permanent ledger, not JobDocument.page_count (which a
+    # delete can zero out or remove) - mirror app/core/billing.py's record_billable_pages here,
+    # dated at the SAME moment the job itself "happened" so existing period-based assertions
+    # keep meaning what they did before the ledger existed.
+    if pages:
+        event = BillablePageEvent(
+            tenant_id=tenant.id, job_id=job.id, job_reference=job.reference,
+            shipment_type=group.mode or "Unassigned", page_count=pages,
+        )
+        db_session.add(event)
+        db_session.commit()
+        event.created_at = created_at
     db_session.commit()
     return job
 
@@ -221,3 +235,101 @@ def test_tenant_admin_cannot_view_another_tenants_billing(client, db_session):
 
     resp = client.get(f"/api/v1/tenants/{tenant_b.id}/billing/usage")
     assert resp.status_code == 404
+
+
+def test_platform_fee_is_prorated_in_the_current_live_month(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+    group = _make_group(db_session, tenant)
+    tdoc = _make_template_document(db_session, tenant, group)
+    now = datetime.now(timezone.utc)
+    _make_job_with_pages(db_session, tenant, group, tdoc, pages=10, created_at=now)
+
+    month_days = calendar.monthrange(now.year, now.month)[1]
+    go_live_day = min(5, month_days)
+    billing_start = now.replace(day=go_live_day).strftime("%Y-%m-%d")
+    expected_billed_days = month_days - go_live_day + 1
+    _save_billing_config(
+        db_session, tenant, created_at=now - timedelta(days=60),
+        billing_start_date=billing_start, cargora_monthly_fee=4999.0,
+    )
+
+    resp = client.get(f"/api/v1/tenants/{tenant.id}/billing/usage")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["platform_fee_billed_days"] == expected_billed_days
+    assert body["platform_fee_month_days"] == month_days
+    assert body["platform_fee"] == round(4999.0 * expected_billed_days / month_days, 2)
+
+
+def test_platform_fee_bills_in_full_for_a_past_invoice_with_no_proration(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+    group = _make_group(db_session, tenant)
+    tdoc = _make_template_document(db_session, tenant, group)
+    now = datetime.now(timezone.utc)
+    last_month_day = now.replace(day=1) - timedelta(days=1)
+    _make_job_with_pages(db_session, tenant, group, tdoc, pages=10, created_at=last_month_day)
+    _save_billing_config(db_session, tenant, created_at=last_month_day.replace(day=1), cargora_monthly_fee=4999.0)
+
+    month_str = last_month_day.replace(day=1).strftime("%Y-%m")
+    resp = client.get(f"/api/v1/tenants/{tenant.id}/billing/usage", params={"month": month_str})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["platform_fee_billed_days"] == body["platform_fee_month_days"]
+    assert body["platform_fee"] == 4999.0
+
+
+def test_past_month_invoice_shows_prorated_platform_fee_for_the_go_live_month(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+    group = _make_group(db_session, tenant)
+    tdoc = _make_template_document(db_session, tenant, group)
+
+    now = datetime.now(timezone.utc)
+    last_month_start = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
+    last_month_days = calendar.monthrange(last_month_start.year, last_month_start.month)[1]
+    go_live_day = min(10, last_month_days)
+    billing_start = last_month_start.replace(day=go_live_day)
+    job_created_at = last_month_start.replace(day=min(go_live_day + 1, last_month_days))
+
+    _make_job_with_pages(db_session, tenant, group, tdoc, pages=50, created_at=job_created_at)
+    _save_billing_config(
+        db_session, tenant, created_at=billing_start - timedelta(days=5),
+        billing_start_date=billing_start.strftime("%Y-%m-%d"), cargora_monthly_fee=4999.0,
+    )
+
+    month_str = last_month_start.strftime("%Y-%m")
+    resp = client.get(f"/api/v1/tenants/{tenant.id}/billing/usage", params={"month": month_str})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    expected_billed_days = last_month_days - go_live_day + 1
+    assert body["platform_fee_billed_days"] == expected_billed_days
+    assert body["platform_fee_month_days"] == last_month_days
+    assert body["platform_fee"] == round(4999.0 * expected_billed_days / last_month_days, 2)
+
+    invoice = db_session.query(Invoice).filter(Invoice.tenant_id == tenant.id).first()
+    assert invoice.platform_fee_billed_days == expected_billed_days
+
+
+def test_no_invoice_finalized_for_a_month_before_go_live(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+    group = _make_group(db_session, tenant)
+    tdoc = _make_template_document(db_session, tenant, group)
+
+    now = datetime.now(timezone.utc)
+    two_months_ago_start = (now.replace(day=1) - timedelta(days=32)).replace(day=1)
+    last_month_start = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
+    _make_job_with_pages(db_session, tenant, group, tdoc, pages=10, created_at=two_months_ago_start)
+    _save_billing_config(
+        db_session, tenant, created_at=two_months_ago_start - timedelta(days=10),
+        billing_start_date=last_month_start.date().isoformat(),
+    )
+
+    client.get(f"/api/v1/tenants/{tenant.id}/billing/invoices")
+    periods = {
+        inv.period_start for inv in db_session.query(Invoice).filter(Invoice.tenant_id == tenant.id).all()
+    }
+    assert two_months_ago_start.date().isoformat() not in periods
+    assert last_month_start.date().isoformat() in periods

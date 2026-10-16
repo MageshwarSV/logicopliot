@@ -38,6 +38,7 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.billing import record_billable_pages
 from app.core.config import get_settings
 from sqlalchemy.exc import IntegrityError
 
@@ -1272,6 +1273,7 @@ def _pull_one_mailbox(
                             jd.page_count = _render_pages(dorig, ddir / "pages",
                                                           skip=item.get("drop_pages"))
                         jd.file_path = str(dorig)
+                        record_billable_pages(db, job, jd.page_count)
                         if meta["name"] not in filled:
                             filled.append(meta["name"])
                         named.append(f"{item['name']} -> {fname}")

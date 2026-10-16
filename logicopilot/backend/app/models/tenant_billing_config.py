@@ -38,3 +38,12 @@ class TenantBillingConfig(Base, TimestampMixin):
     # Applied to every invoice this tenant is billed (platform fee + usage charges) - a plain
     # percentage (18.0 means 18%), editable per tenant in case treatment ever differs.
     gst_percent: Mapped[float] = mapped_column(Float, nullable=False, default=18.0)
+
+    # Optional go-live date (YYYY-MM-DD). Null = no proration, billing is treated as always
+    # having been live (every tenant configured before this field existed keeps behaving
+    # exactly as before). Set once when onboarding completes partway through a month: the
+    # platform fee for THAT one calendar month is pro-rated to the days actually live (day 15
+    # of a 31-day month bills 17/31 of the fee) - see app/core/billing.py's
+    # _platform_fee_proration. Every month before it is never billed; every month after bills
+    # in full.
+    billing_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)

@@ -47,6 +47,9 @@ export interface TenantBillingConfig {
   trackcontainer_professional_price: number;
   trackcontainer_professional_container_limit: number;
   gst_percent: number;
+  /** YYYY-MM-DD go-live date, or null for no proration. The calendar month this falls in has
+   *  its platform fee pro-rated to the days actually live; every month after bills in full. */
+  billing_start_date: string | null;
 }
 
 export async function getTenantBillingConfig(tenantId: string): Promise<TenantBillingConfig> {
@@ -82,6 +85,10 @@ export interface BillingUsage {
   total_pages: number;
   by_shipment_type: ShipmentTypeUsage[];
   platform_fee: number;
+  /** platform_fee_billed_days < platform_fee_month_days means this month's fee was pro-rated
+   *  (a go-live date fell partway through it). Equal means a normal, full-month charge. */
+  platform_fee_billed_days: number;
+  platform_fee_month_days: number;
   tier1_rate: number;
   tier1_pages: number;
   tier1_amount: number;
@@ -101,6 +108,8 @@ export interface Invoice {
   period_start: string;
   period_end: string;
   platform_fee: number;
+  platform_fee_billed_days: number;
+  platform_fee_month_days: number;
   total_jobs: number;
   total_pages: number;
   tier1_rate: number;

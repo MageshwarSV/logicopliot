@@ -28,6 +28,7 @@ def test_get_returns_the_standard_defaults_when_nothing_saved_yet(client, db_ses
     assert body["trackcontainer_professional_price"] == 5999.0
     assert body["trackcontainer_professional_container_limit"] == 1500
     assert body["gst_percent"] == 18.0
+    assert body["billing_start_date"] is None
     # Nothing was actually created just by reading it.
     assert db_session.query(TenantBillingConfig).count() == 0
 
@@ -87,6 +88,27 @@ def test_put_can_change_gst_percent(client, db_session):
     resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"gst_percent": 12.0})
     assert resp.status_code == 200, resp.text
     assert resp.json()["gst_percent"] == 12.0
+
+
+def test_put_can_set_and_clear_billing_start_date(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+
+    resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"billing_start_date": "2026-10-15"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["billing_start_date"] == "2026-10-15"
+
+    resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"billing_start_date": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["billing_start_date"] is None
+
+
+def test_put_rejects_a_malformed_billing_start_date(client, db_session):
+    tenant = make_tenant(db_session)
+    _login_super_admin(client, db_session)
+
+    resp = client.put(f"/api/v1/tenants/{tenant.id}/billing-config", json={"billing_start_date": "15-10-2026"})
+    assert resp.status_code == 400
 
 
 def test_billing_config_404s_for_an_unknown_tenant(client, db_session):

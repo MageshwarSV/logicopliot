@@ -43,6 +43,11 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Everything below is a SNAPSHOT of that month's usage and that tenant's rates AT THE
     # MOMENT this invoice was raised - never recomputed afterward.
     platform_fee: Mapped[float] = mapped_column(Float, nullable=False)
+    # How many of the month's days this platform fee was actually charged for - equal to
+    # platform_fee_month_days except in the one calendar month a tenant's billing_start_date
+    # falls in, where the fee is pro-rated to the days actually live.
+    platform_fee_billed_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    platform_fee_month_days: Mapped[int] = mapped_column(Integer, nullable=False)
     total_jobs: Mapped[int] = mapped_column(Integer, nullable=False)
     total_pages: Mapped[int] = mapped_column(Integer, nullable=False)
     tier1_rate: Mapped[float] = mapped_column(Float, nullable=False)

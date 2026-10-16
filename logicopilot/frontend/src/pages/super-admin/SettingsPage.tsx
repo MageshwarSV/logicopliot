@@ -604,6 +604,19 @@ export function SettingsPage() {
                     Applied to this tenant's own CARGORA bill (platform fee + usage charges).
                   </p>
                 </div>
+                <div className="mt-4 max-w-xs">
+                  <Input
+                    label="Billing start date (go-live)"
+                    type="date"
+                    value={billingDraft.billing_start_date ?? ""}
+                    onChange={(e) => patchBillingDraft({ billing_start_date: e.target.value || null })}
+                  />
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Optional. If this tenant went live partway through a month, the platform
+                    fee for that one month is pro-rated to the days actually live — every month
+                    after bills in full. Leave blank for no proration.
+                  </p>
+                </div>
               </div>
 
               <div>

@@ -322,7 +322,14 @@ export function BillingUsagePage() {
               <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Bill Calculation</h2>
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">Platform fee</dt>
+                  <dt className="text-slate-500 dark:text-slate-400">
+                    Platform fee
+                    {usage.platform_fee_billed_days < usage.platform_fee_month_days && (
+                      <span className="ml-1.5 text-xs text-amber-600 dark:text-amber-400">
+                        (pro-rated: {usage.platform_fee_billed_days} of {usage.platform_fee_month_days} days)
+                      </span>
+                    )}
+                  </dt>
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.platform_fee)}</dd>
                 </div>
                 <div className="flex justify-between">

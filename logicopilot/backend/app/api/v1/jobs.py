@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.billing import record_billable_pages
 from app.core.config import get_settings
 # The function, not the module: `def job_history(...)` in this file shadows a module of
 # that name at module level, so `job_history.describe` resolved to the ROUTE and raised
@@ -4180,6 +4181,7 @@ def upload_job_document(
 
     jd.file_path = str(original)
     jd.page_count = page_count
+    record_billable_pages(db, job, page_count)
 
     # The operator has just said what this document is, by choosing its slot. That is
     # a correct, customer-specific label the classifier can be shown next time, and it
@@ -4877,6 +4879,7 @@ def smart_upload(
                     jd.page_count = _render_pages(dorig, ddir / "pages",
                                                   skip=item.get("drop_pages"))
                 jd.file_path = str(dorig)
+                record_billable_pages(db, job, jd.page_count)
                 matched_names.append(next(c["name"] for c in candidates if c["key"] == key))
             result_row = {"filename": item["name"], "matched": matched_names or None}
             if debug:
@@ -4994,6 +4997,7 @@ def assign_unclassified_page(
     shutil.copy(Path(row.image_path), dorig)
     jd.file_path = str(dorig)
     jd.page_count = _render_pages(dorig, ddir / "pages")
+    record_billable_pages(db, job, jd.page_count)
 
     try:
         document_samples.remember(

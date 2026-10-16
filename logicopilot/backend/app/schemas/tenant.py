@@ -59,6 +59,7 @@ class TenantBillingConfigOut(BaseModel):
     trackcontainer_professional_price: float
     trackcontainer_professional_container_limit: int
     gst_percent: float
+    billing_start_date: str | None
 
 
 class TenantBillingConfigUpdate(BaseModel):
@@ -75,6 +76,8 @@ class TenantBillingConfigUpdate(BaseModel):
     trackcontainer_professional_price: float | None = None
     trackcontainer_professional_container_limit: int | None = None
     gst_percent: float | None = None
+    # YYYY-MM-DD, or null to clear it back to "no proration". See the model's own docstring.
+    billing_start_date: str | None = None
 
 
 class ShipmentTypeUsageOut(BaseModel):
@@ -98,6 +101,8 @@ class BillingUsageOut(BaseModel):
     by_shipment_type: list[ShipmentTypeUsageOut]
 
     platform_fee: float
+    platform_fee_billed_days: int
+    platform_fee_month_days: int
     tier1_rate: float
     tier1_pages: int
     tier1_amount: float
@@ -119,6 +124,8 @@ class InvoiceOut(BaseModel):
     period_start: str
     period_end: str
     platform_fee: float
+    platform_fee_billed_days: int
+    platform_fee_month_days: int
     total_jobs: int
     total_pages: int
     tier1_rate: float

@@ -181,7 +181,7 @@ def get_tenant_billing_config(
         cargora_monthly_fee=4999.0, cargora_tier1_rate_per_page=2.50, cargora_tier1_page_limit=25000,
         cargora_tier2_rate_per_page=2.00, trackcontainer_plan=None, trackcontainer_starter_price=2999.0,
         trackcontainer_starter_container_limit=500, trackcontainer_professional_price=5999.0,
-        trackcontainer_professional_container_limit=1500, gst_percent=18.0,
+        trackcontainer_professional_container_limit=1500, gst_percent=18.0, billing_start_date=None,
     )
 
 
@@ -203,6 +203,13 @@ def update_tenant_billing_config(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"trackcontainer_plan must be one of {TRACKCONTAINER_PLANS}",
         )
+    if payload.billing_start_date is not None:
+        try:
+            date.fromisoformat(payload.billing_start_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="billing_start_date must be YYYY-MM-DD"
+            )
     config = db.get(TenantBillingConfig, tenant_id)
     if config is None:
         config = TenantBillingConfig(tenant_id=tenant_id)
@@ -269,6 +276,8 @@ def get_billing_usage(
                 for k, v in sorted(invoice.by_shipment_type.items())
             ],
             platform_fee=invoice.platform_fee,
+            platform_fee_billed_days=invoice.platform_fee_billed_days,
+            platform_fee_month_days=invoice.platform_fee_month_days,
             tier1_rate=invoice.tier1_rate, tier1_pages=invoice.tier1_pages, tier1_amount=invoice.tier1_amount,
             tier2_rate=invoice.tier2_rate, tier2_pages=invoice.tier2_pages, tier2_amount=invoice.tier2_amount,
             usage_charges=invoice.usage_charges, subtotal=invoice.subtotal,
@@ -277,7 +286,7 @@ def get_billing_usage(
 
     config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
     usage = compute_usage(db, tenant_id, period_start)
-    bill = calculate_bill(config, usage.total_pages)
+    bill = calculate_bill(config, usage.total_pages, period_start)
     return BillingUsageOut(
         month=period_start.strftime("%Y-%m"), is_finalized=False,
         total_jobs=usage.total_jobs, total_pages=usage.total_pages,
@@ -285,7 +294,10 @@ def get_billing_usage(
             ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
             for k, v in sorted(usage.by_shipment_type.items())
         ],
-        platform_fee=bill.platform_fee, tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages,
+        platform_fee=bill.platform_fee,
+        platform_fee_billed_days=bill.platform_fee_billed_days,
+        platform_fee_month_days=bill.platform_fee_month_days,
+        tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages,
         tier1_amount=bill.tier1_amount, tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages,
         tier2_amount=bill.tier2_amount, usage_charges=bill.usage_charges, subtotal=bill.subtotal,
         gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
