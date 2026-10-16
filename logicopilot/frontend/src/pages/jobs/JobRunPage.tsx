@@ -3694,6 +3694,7 @@ function ExtractedField({
   const [draft, setDraft] = useState(current || defaultValue || "");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [comboOpen, setComboOpen] = useState(false);
 
   // The job reloads after every save, so props change under us; re-sync unless the operator
   // is mid-edit on this very box.
@@ -3818,32 +3819,50 @@ function ExtractedField({
             <input
               value={draft}
               readOnly={readOnly}
-              list={comboOptions ? `combo-${fv.id}` : undefined}
               onChange={(e) => {
                 setDraft(e.target.value);
                 onDraftChange?.(e.target.value);
               }}
-              onFocus={() => onFocusField?.(fv)}
-              // Blur still saves, as a safety net for anyone who types and tabs away. The button
-              // below suppresses its own mousedown so it never takes focus from the input, so the
-              // two cannot both fire — without that, blur would save and reload, unmounting the
-              // button before its own click landed.
-              onBlur={commit}
+              onFocus={() => {
+                onFocusField?.(fv);
+                if (comboOptions) setComboOpen(true);
+              }}
+              // A short delay so a click on a suggestion (below) lands before this closes the
+              // list - same pattern as ReferenceSearchPicker's own picker. Blur still saves, as
+              // a safety net for anyone who types and tabs away.
+              onBlur={() => {
+                if (comboOptions) setTimeout(() => setComboOpen(false), 150);
+                commit();
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               placeholder="not found"
               className={boxClassName}
             />
-            {/* A native datalist: filters as you type, shows every known value, and still
-                takes anything typed that isn't in the list - the save path is what remembers
-                a genuinely new one for next time (see correct_field_value). */}
-            {comboOptions && (
-              <datalist id={`combo-${fv.id}`}>
+            {/* Every known value, always shown in full regardless of what's typed - a native
+                <datalist> narrows itself to whatever matches the typed text as you type, which
+                hid the very options an operator opens the list to compare. Typing still just
+                edits the free-text draft; picking one here sets it outright (save path still
+                remembers a genuinely new typed value for next time - see correct_field_value). */}
+            {comboOptions && comboOptions.length > 0 && comboOpen && (
+              <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
                 {comboOptions.map((opt) => (
-                  <option key={opt} value={opt} />
+                  <button
+                    key={opt}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setDraft(opt);
+                      onDraftChange?.(opt);
+                      setComboOpen(false);
+                    }}
+                    className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
+                  >
+                    {opt}
+                  </button>
                 ))}
-              </datalist>
+              </div>
             )}
           </>
         );
