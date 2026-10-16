@@ -1146,7 +1146,8 @@ export function JobRunPage() {
   useEffect(() => {
     const toFetch = jobFieldValues.filter(
       (fv) =>
-        COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
+        (COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) ||
+          fv.label_name in DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY) &&
         fv.custom_field_id &&
         !(fv.custom_field_id in comboReferenceOptions),
     );
@@ -2606,9 +2607,28 @@ export function JobRunPage() {
                             : fv.label_name === "MBL No" && advanceValue === "A"
                               ? "NO MBL"
                               : undefined;
-                        const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                          ? (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value)
-                          : undefined;
+                        const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
+                        let comboOptions: string[] | undefined;
+                        if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
+                          comboOptions = (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value);
+                        } else if (fv.custom_field_id && filterByLabel) {
+                          // e.g. branch_name ("ERP Quotation Branch") narrowed to the branches
+                          // of whichever forwarder is currently set as ERP Quotation Name
+                          // (Erp Entry Name) - same narrowing ExtractionReview's own copy of
+                          // this mechanism does for relocated fields (CustomsHouseCode).
+                          const filterFv = job.field_values.find(
+                            (x) => x.row_index == null && x.label_name === filterByLabel,
+                          );
+                          const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
+                            .trim()
+                            .toUpperCase();
+                          const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
+                          comboOptions = (
+                            filterValue
+                              ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
+                              : rows
+                          ).map((o) => o.value);
+                        }
                         return (
                           <div key={fv.id}>
                             <ExtractedField
