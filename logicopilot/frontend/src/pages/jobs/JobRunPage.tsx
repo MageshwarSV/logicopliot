@@ -3695,6 +3695,7 @@ function ExtractedField({
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const [comboOpen, setComboOpen] = useState(false);
+  const [comboQuery, setComboQuery] = useState("");
 
   // The job reloads after every save, so props change under us; re-sync unless the operator
   // is mid-edit on this very box.
@@ -3746,7 +3747,17 @@ function ExtractedField({
           <span className="shrink-0 text-[10px] text-rose-600">could not save</span>
         )}
       </div>
-      <div className="relative">
+      <div
+        className="relative"
+        // Closes the combo dropdown only once focus leaves this WHOLE box - the main input,
+        // the panel's own search box, and every suggestion button all live inside this div, so
+        // moving focus between them (e.g. clicking into the search box) never closes it early.
+        onBlur={(e) => {
+          if (comboOptions && !e.currentTarget.contains(e.relatedTarget as Node)) {
+            setComboOpen(false);
+          }
+        }}
+      >
       {(() => {
         const boxClassName = `w-full rounded-lg border px-3 py-2 text-sm transition-colors placeholder:italic placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none ${
           failed
@@ -3825,43 +3836,56 @@ function ExtractedField({
               }}
               onFocus={() => {
                 onFocusField?.(fv);
-                if (comboOptions) setComboOpen(true);
+                if (comboOptions) {
+                  setComboQuery("");
+                  setComboOpen(true);
+                }
               }}
-              // A short delay so a click on a suggestion (below) lands before this closes the
-              // list - same pattern as ReferenceSearchPicker's own picker. Blur still saves, as
-              // a safety net for anyone who types and tabs away.
-              onBlur={() => {
-                if (comboOptions) setTimeout(() => setComboOpen(false), 150);
-                commit();
-              }}
+              // Blur still saves, as a safety net for anyone who types and tabs away - closing
+              // the combo dropdown itself is handled by the wrapping div above, not here, so a
+              // click into the panel's own search box (below) doesn't count as leaving the box.
+              onBlur={commit}
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               placeholder="not found"
               className={boxClassName}
             />
-            {/* Every known value, always shown in full regardless of what's typed - a native
-                <datalist> narrows itself to whatever matches the typed text as you type, which
-                hid the very options an operator opens the list to compare. Typing still just
-                edits the free-text draft; picking one here sets it outright (save path still
-                remembers a genuinely new typed value for next time - see correct_field_value). */}
+            {/* Every known value, shown in full on open regardless of what's in the field above
+                - a native <datalist> narrows itself to whatever matches the TYPED text as you
+                type, which hid the very options an operator opens the list to compare against.
+                This panel's own search box (separate from the field itself) narrows the list
+                shown here instead; picking a suggestion sets the field outright (save path
+                still remembers a genuinely new typed value for next time - correct_field_value). */}
             {comboOptions && comboOptions.length > 0 && comboOpen && (
-              <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
-                {comboOptions.map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setDraft(opt);
-                      onDraftChange?.(opt);
-                      setComboOpen(false);
-                    }}
-                    className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
-                  >
-                    {opt}
-                  </button>
-                ))}
+              <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                <input
+                  type="text"
+                  autoFocus
+                  value={comboQuery}
+                  onChange={(e) => setComboQuery(e.target.value)}
+                  placeholder="Search…"
+                  className="w-full border-b border-slate-200 px-3 py-2 text-xs focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                />
+                <div className="max-h-56 overflow-y-auto">
+                  {comboOptions
+                    .filter((opt) => opt.toLowerCase().includes(comboQuery.trim().toLowerCase()))
+                    .map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setDraft(opt);
+                          onDraftChange?.(opt);
+                          setComboOpen(false);
+                        }}
+                        className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                </div>
               </div>
             )}
           </>
