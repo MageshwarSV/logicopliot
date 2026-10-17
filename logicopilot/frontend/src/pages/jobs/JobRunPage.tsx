@@ -4430,22 +4430,16 @@ function ExtractionReview({
     return winner;
   }, [job.field_values, job.documents]);
 
-  // Drop the cross-check copies that came back EMPTY.
-  //
-  // A field marked on four documents for cross-checking is often carried by only one or two
-  // of them: the packing list has no HBL number and no gross weight. Those showed here as
-  // empty boxes captioned "the entry uses Bill of lading's copy" — a warning about another
-  // document attached to a value this one never had. There is nothing to check against the
-  // page, so there is nothing to show. A copy that DID read something stays, note and all,
-  // because that is a real reading worth checking; and a field empty on EVERY document also
-  // stays, because "not found anywhere" is worth seeing.
-  const visibleFields = useMemo(() => {
-    return fields.filter((fv) => {
-      const from = usedFrom.get(fv.label_name);
-      const isCopy = !!from && from !== fv.document_name;
-      return !(isCopy && !(fv.value ?? "").trim());
-    });
-  }, [fields, usedFrom]);
+  // Every marked field shows its own box on every document it's marked on - even one that came
+  // back blank. This used to drop a cross-check copy that read nothing (the packing list has no
+  // HBL number or gross weight) on the reasoning that there was nothing on the page to check
+  // against it. But a blank box is not a dead end for the operator: ChatGPT returning nothing
+  // doesn't mean the value doesn't exist anywhere - a call to the customer can still get it, and
+  // with no box left to type it into, that answer had nowhere to go. The "Cross-check only"
+  // note (see renderField's own `note` prop below) still says which document's copy the entry
+  // actually uses, so a correction typed into a non-winning copy is never silently mistaken for
+  // the one the entry reads.
+  const visibleFields = fields;
 
   // Custom fields (no mark_id, so `fields` above never picks them up) relocated here from
   // Additional Details for display purposes only - see RELOCATED_FIELD_LABELS_BY_DOC_TYPE.
