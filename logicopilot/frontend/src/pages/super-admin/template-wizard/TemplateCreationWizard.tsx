@@ -1917,40 +1917,65 @@ export function TemplateCreationWizard() {
                                       {h.header || <span className="text-slate-400">(blank &mdash; a spacer column)</span>}
                                     </td>
                                     <td className="px-3 py-2">
-                                      <select
-                                        value={plan.map[h.column] ?? ""}
-                                        onChange={(e) => setSheetPlans((ps) => ps.map((p, j) =>
-                                          (j === i
-                                            ? { ...p, map: { ...p.map, [h.column]: e.target.value } }
-                                            : p)))}
-                                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
-                                      >
-                                        <option value="">
-                                          {constantOf(plan.raw?.[h.column])
-                                            ?? "\u2014 leave empty \u2014"}
-                                        </option>
-                                        <optgroup label="Filled in for you">
-                                          {GENERATED_COLUMNS.map((g) => (
-                                            <option key={g.value} value={g.value}>{g.label}</option>
-                                          ))}
-                                        </optgroup>
-                                        <optgroup label="From the documents">
-                                          {allMarks.map((m) => (
-                                            <option key={m.id} value={m.label_name}>
-                                              {m.label_name}{m.is_multi_value ? " (per line item)" : ""}
-                                            </option>
-                                          ))}
-                                        </optgroup>
-                                        {(group.custom_fields ?? []).length > 0 && (
-                                          <optgroup label="Custom fields">
-                                            {(group.custom_fields ?? []).map((c) => (
-                                              <option key={c.id} value={c.label_name}>
-                                                {c.label_name}{c.per_row ? " (per line item)" : ""}
+                                      <div className="flex items-center gap-1.5">
+                                        <select
+                                          value={plan.map[h.column] ?? ""}
+                                          onChange={(e) => setSheetPlans((ps) => ps.map((p, j) =>
+                                            (j === i
+                                              ? { ...p, map: { ...p.map, [h.column]: e.target.value } }
+                                              : p)))}
+                                          className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
+                                        >
+                                          <option value="">
+                                            {constantOf(plan.raw?.[h.column])
+                                              ?? "\u2014 leave empty \u2014"}
+                                          </option>
+                                          <optgroup label="Filled in for you">
+                                            {GENERATED_COLUMNS.map((g) => (
+                                              <option key={g.value} value={g.value}>{g.label}</option>
+                                            ))}
+                                          </optgroup>
+                                          <optgroup label="From the documents">
+                                            {allMarks.map((m) => (
+                                              <option key={m.id} value={m.label_name}>
+                                                {m.label_name}{m.is_multi_value ? " (per line item)" : ""}
                                               </option>
                                             ))}
                                           </optgroup>
+                                          {(group.custom_fields ?? []).length > 0 && (
+                                            <optgroup label="Custom fields">
+                                              {(group.custom_fields ?? []).map((c) => (
+                                                <option key={c.id} value={c.label_name}>
+                                                  {c.label_name}{c.per_row ? " (per line item)" : ""}
+                                                </option>
+                                              ))}
+                                            </optgroup>
+                                          )}
+                                        </select>
+                                        {/* The blank option above only clears the FIELD mapping - a
+                                            column that already carries a detected fixed value (its
+                                            own label shows "always KGS" etc., from constantOf) kept
+                                            that value even after picking "leave empty", because the
+                                            save step spreads the column's saved object (value and
+                                            all) before applying the field it reads from this select.
+                                            There was no way to actually clear it. This button is
+                                            that way: it drops the value/values key outright, so
+                                            "leave empty" genuinely means nothing is written there. */}
+                                        {constantOf(plan.raw?.[h.column]) && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setSheetPlans((ps) => ps.map((p, j) => {
+                                              if (j !== i) return p;
+                                              const { value: _v, values: _vs, ...rest } = p.raw?.[h.column] ?? {};
+                                              return { ...p, raw: { ...p.raw, [h.column]: rest } };
+                                            }))}
+                                            title="Clear the fixed value - leave this column truly empty"
+                                            className="shrink-0 rounded px-1.5 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+                                          >
+                                            \u2715
+                                          </button>
                                         )}
-                                      </select>
+                                      </div>
                                     </td>
                                   </tr>
                                 ))}
