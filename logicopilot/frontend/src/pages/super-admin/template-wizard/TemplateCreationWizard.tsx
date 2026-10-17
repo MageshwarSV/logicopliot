@@ -1960,7 +1960,7 @@ export function TemplateCreationWizard() {
                                             that already has a detected constant, leaves it
                                             untouched). Picking this one forces the cell genuinely
                                             blank: no field, no fixed value, nothing written. */}
-                                        <option value={CLEAR_FIXED_VALUE}>\u2014 Null / Empty \u2014</option>
+                                        <option value={CLEAR_FIXED_VALUE}>{"\u2014 Null / Empty \u2014"}</option>
                                         <optgroup label="Filled in for you">
                                           {GENERATED_COLUMNS.map((g) => (
                                             <option key={g.value} value={g.value}>{g.label}</option>
