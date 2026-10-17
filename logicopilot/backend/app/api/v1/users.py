@@ -232,6 +232,9 @@ def create_user(
         user_type_id=user_type.id if user_type else None,
         assigned_modes=sorted(set(payload.modes)) if effective_role in (GK2, OPERATOR) and payload.modes else None,
         assigned_operator_ids=operator_ids,
+        # The creator chose this password, not the account's own owner - forces the one-time
+        # "set a permanent password" popup on first login (see User.must_change_password).
+        must_change_password=True,
     )
     if detected_provider:
         user.mail_provider = detected_provider
@@ -326,6 +329,9 @@ def update_user(
         user.full_name = payload.full_name
     if payload.password is not None:
         user.hashed_password = hash_password(payload.password)
+        # Same reasoning as creation - this is the admin's own pick, not the account owner's,
+        # so it forces the one-time popup again even if it had already been cleared before.
+        user.must_change_password = True
     if payload.is_active is not None:
         user.is_active = payload.is_active
 

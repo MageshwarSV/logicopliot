@@ -98,6 +98,7 @@ export function AppShell({
                   { to: "/tenant-admin/masters", label: "Masters" },
                   { to: "/tenant-admin/users", label: "Users" },
                   { to: "/tenant-admin/billing", label: "Billing & Usage" },
+                  { to: "/account", label: "Settings" },
                 ].map((item) => (
                   <Link key={item.to} to={item.to} className={navClass(item.to)}>
                     {item.label}
@@ -116,6 +117,9 @@ export function AppShell({
                   className={navClass("/jobs")}
                 >
                   Jobs
+                </Link>
+                <Link to="/account" className={navClass("/account")}>
+                  Settings
                 </Link>
               </div>
             </div>
@@ -144,6 +148,9 @@ export function AppShell({
                   className={navClass("/jobs")}
                 >
                   Jobs
+                </Link>
+                <Link to="/account" className={navClass("/account")}>
+                  Settings
                 </Link>
               </div>
             </div>

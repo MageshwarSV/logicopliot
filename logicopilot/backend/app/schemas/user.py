@@ -19,6 +19,10 @@ class UserOut(BaseModel):
     tenant_id: str | None
     is_active: bool
     last_login_at: datetime | None
+    # True until this account sets its OWN password via the self-service change-password
+    # endpoint - see User.must_change_password. Drives the frontend's blocking "set a
+    # permanent password" modal.
+    must_change_password: bool = False
     mail_provider: str | None = None
     # The exact IMAP host verified (matters for Zoho's regional data centers) - informational.
     mail_host: str | None = None

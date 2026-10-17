@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "./useAuth";
 import type { Role } from "../types/auth";
+import { ChangePasswordModal } from "../components/ChangePasswordModal";
 
 interface ProtectedRouteProps {
   allowedRoles: Role[];
@@ -30,5 +31,16 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
     return <Navigate to="/not-authorized" replace />;
   }
 
-  return <>{children}</>;
+  // Blocks every role/route uniformly, regardless of which dashboard it lands on, rather than
+  // duplicating this check into each one - see User.must_change_password. The real page renders
+  // underneath (inert behind the modal's backdrop) so completing it reveals exactly the page the
+  // user was headed to, with no extra redirect.
+  return (
+    <>
+      {children}
+      {user.must_change_password && (
+        <ChangePasswordModal open forced onClose={() => {}} />
+      )}
+    </>
+  );
 }

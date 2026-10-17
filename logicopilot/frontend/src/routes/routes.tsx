@@ -27,6 +27,7 @@ import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
+import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 
 export function AppRoutes() {
   return (
@@ -222,6 +223,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
             <EDocketPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/account"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin", "operator", "gk2"]}>
+            <AccountSettingsPage />
           </ProtectedRoute>
         }
       />

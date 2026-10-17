@@ -72,6 +72,9 @@ def create_tenant(
                     role=TENANT_ADMIN,
                     tenant_id=tenant.id,
                     created_by_id=creator.id,
+                    # Super Admin chose this password, not the tenant admin themselves - same
+                    # forced first-login change as create_user's own path.
+                    must_change_password=True,
                 )
             )
         db.commit()

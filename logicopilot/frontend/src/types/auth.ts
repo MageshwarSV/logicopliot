@@ -22,6 +22,10 @@ export interface User {
   // "Supervisor") — role above still carries that type's underlying base role.
   user_type_id?: string | null;
   user_type_name?: string | null;
+  // True until this account sets its OWN password - set whenever an admin creates the account
+  // or resets its password. Drives the blocking "set a permanent password" modal in
+  // ProtectedRoute until the user changes it themselves.
+  must_change_password?: boolean;
 }
 
 export type MailProvider = "gmail" | "zoho";

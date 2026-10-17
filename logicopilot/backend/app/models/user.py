@@ -50,6 +50,14 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # True for a password someone ELSE chose for this account - set at creation (the creator
+    # types a "temporary password" into the create form) and again whenever an admin resets it
+    # via update_user's own password field. Forces ProtectedRoute's blocking modal on the
+    # frontend until the user sets one of their own via the self-service change-password
+    # endpoint, which is the only thing that ever clears it. False for every row that existed
+    # before this column did (see its migration's backfill) - this is about a password someone
+    # else just handed the user, not retroactively distrusting passwords already in use.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # An operator's own mailbox, polled for documents the same way the tenant's shared inbox
     # is - "gmail" or "zoho". All three are set together or not at all (validated by an IMAP
