@@ -1953,11 +1953,14 @@ export function TemplateCreationWizard() {
                                           {constantOf(plan.raw?.[h.column])
                                             ?? "\u2014 leave empty \u2014"}
                                         </option>
-                                        {constantOf(plan.raw?.[h.column]) && (
-                                          <option value={CLEAR_FIXED_VALUE}>
-                                            {"\u2715"} Clear fixed value ({constantOf(plan.raw?.[h.column])})
-                                          </option>
-                                        )}
+                                        {/* Always offered, regardless of whether this column
+                                            currently carries a fixed value - a separate, explicit
+                                            action distinct from the blank option above (which
+                                            only ever changes the FIELD mapping and, on a column
+                                            that already has a detected constant, leaves it
+                                            untouched). Picking this one forces the cell genuinely
+                                            blank: no field, no fixed value, nothing written. */}
+                                        <option value={CLEAR_FIXED_VALUE}>\u2014 Null / Empty \u2014</option>
                                         <optgroup label="Filled in for you">
                                           {GENERATED_COLUMNS.map((g) => (
                                             <option key={g.value} value={g.value}>{g.label}</option>
