@@ -4754,6 +4754,27 @@ def _safe_wait(page, ms: int) -> None:
         pass
 
 
+ELEMENT_ACTION_TYPES = ("click", "submit", "fill", "select", "autocomplete")
+
+
+def _last_action_done(
+    steps: list[dict], executed: set[int], success_checkpoint: int | None,
+) -> tuple[bool, list[int]]:
+    """Whether every element-bound step that actually COUNTS ran - the final piece of deciding
+    a run's success/failure. A step recorded AFTER the success screenshot was actually captured
+    (`success_checkpoint`, the screenshot step's own index, or None if none was ever reached) is
+    the Super Admin's own "look at this to double-check" procedure, not part of getting the
+    entry done - the job IS the real ERP entry, already submitted, by the time that picture
+    exists. Only element steps UP TO that checkpoint are counted; one failing afterward
+    (switching back to a list tab, a stray click) must never turn an already-successful run
+    into a reported failure. Returns (last_action_done, the counted-but-unfinished indices)."""
+    counted_steps = steps if success_checkpoint is None else steps[: success_checkpoint + 1]
+    element_idx = [k for k, s in enumerate(counted_steps) if s.get("action") in ELEMENT_ACTION_TYPES]
+    unfinished = [k for k in element_idx if k not in executed]
+    last_action_done = (not element_idx) or (element_idx[-1] in executed)
+    return last_action_done, unfinished
+
+
 def _safe_close(ctx, browser) -> None:
     """Same reasoning as _safe_wait - closing a context/browser the ERP's own site (or the
     pause above) already tore down must never be the thing that turns an otherwise-successful
@@ -5444,6 +5465,12 @@ def play_steps(
                             success_shot["png"] = got
                             success_shot["label"] = (step.get("description")
                                                      or step.get("value") or "Success screen")
+                            # Everything recorded AFTER this step is the Super Admin's own
+                            # procedure for double-checking/tidying up a job that is already
+                            # done, not part of getting it done - see the success/failure
+                            # decision below, which stops counting unfinished element steps
+                            # once this checkpoint is reached.
+                            success_shot["step_index"] = i
                             log.append(f"step {i + 1} screenshot: captured "
                                        f"{success_shot['label']!r} ({len(got)//1024} KB)")
                         else:
@@ -6116,13 +6143,13 @@ def play_steps(
             # FINAL ERP action (the last element-bound recorded step, e.g. Submit) could
             # not be completed even after AI takeover. Steps legitimately skipped earlier
             # (e.g. login already done) don't fail the run as long as the final action ran.
-            element_idx = [
-                k for k, s in enumerate(steps)
-                if s.get("action") in ("click", "submit", "fill", "select", "autocomplete")
-            ]
-            unfinished = [k for k in element_idx if k not in executed]
-            last_action_done = (not element_idx) or (element_idx[-1] in executed)
-            if aborted or not last_action_done:
+            success_checkpoint = success_shot.get("step_index")
+            last_action_done, unfinished = _last_action_done(steps, executed, success_checkpoint)
+            # Reaching the screenshot step at all means `aborted` was never true before it (the
+            # loop would have stopped before getting there otherwise) - so an abort that fires
+            # on one of the steps after the checkpoint is the same "already done, something
+            # afterward broke" case, not a real failure either.
+            if (aborted and success_checkpoint is None) or not last_action_done:
                 # A run somebody stopped is not the same as one that broke, and the summary
                 # must not accuse the ERP of failing when a person pressed the button.
                 if stopped:
