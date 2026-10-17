@@ -1113,6 +1113,34 @@ def _customer_name(
     return None
 
 
+def _hbl_no(db: Session, job: Job, rows: list | None = None) -> str | None:
+    """The House Bill of Lading number, read off this job's own documents - for the Jobs
+    list's own BL No column. Job-level only (row_index is None), first non-blank "HBL No"
+    mark wins - the same label is marked on several documents (BL, Invoice, Packing List) for
+    cross-checking, same as HBL No reads elsewhere in the app.
+
+    `rows` lets a caller enriching MANY jobs at once (see list_jobs) pass in this job's own
+    job-level field values, already fetched once for _customer_name - no second query. None
+    (the default) runs its own per-job query, for a caller handling just one job.
+    """
+    try:
+        if rows is None:
+            rows = (db.query(JobFieldValue)
+                    .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None))
+                    .all())
+    except Exception:  # noqa: BLE001 — never worth failing the list over
+        return None
+    for fv in rows:
+        val = (fv.value or "").strip()
+        if not val:
+            continue
+        key = re.sub(r"[^a-z ]+", " ", (fv.label_name or "").lower()).strip()
+        key = re.sub(r"\s+", " ", key)
+        if key == "hbl no":
+            return val
+    return None
+
+
 def _pulled_from_sender(db: Session, job: Job) -> str | None:
     """Which mailbox actually received this job's email, for the Assigned To column - NOT a
     substitute reading for Importer/Exporter (a person is not the consignee; putting one
@@ -1355,6 +1383,10 @@ def _job_out(
         db, job,
         rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
         hardcoded_ids=hardcoded_ids_by_group.get(job.group_id) if hardcoded_ids_by_group is not None else None,
+    )
+    out.hbl_no = _hbl_no(
+        db, job,
+        rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
     )
     out.mode = _shipment_mode(db, job)
     out.operator_name = _operator_name(db, job)

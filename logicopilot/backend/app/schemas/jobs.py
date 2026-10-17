@@ -32,6 +32,10 @@ class JobOut(BaseModel):
     # "Customer name" and was showing the TEMPLATE's name, which is a different thing: every
     # nokia(excel) job showed "nokia(excel)" whoever the consignee turned out to be.
     customer_name: str | None = None
+    # The House Bill of Lading number, read off this job's own documents - its own list column,
+    # between Job No and ETA. None when this job's template never marks an "HBL No" field, or
+    # the job has nothing read for it yet.
+    hbl_no: str | None = None
     # How the shipment travelled and which way — "Sea Import", "Air Export". Worked out from
     # the job's own values, so it is empty when the documents do not say rather than guessed
     # from the template's name.

@@ -517,6 +517,12 @@ export function JobsPage() {
       ),
     },
     {
+      header: "BL No",
+      render: (j) => (
+        <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
+      ),
+    },
+    {
       header: "ETA",
       render: (j) => (
         <input

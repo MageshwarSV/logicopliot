@@ -11,6 +11,10 @@ export interface Job {
   outer_status?: string | null;
   /** The consignee on this job's own documents - NOT the template's name. */
   customer_name?: string | null;
+  /** The House Bill of Lading number, read off this job's own documents - the Jobs list's own
+   *  BL No column, between Job No and ETA. Null when this job's template never marks an
+   *  "HBL No" field, or nothing has been read for it yet. */
+  hbl_no?: string | null;
   /** "Sea Import", "Air Export" — worked out from the job's own values. Empty when the
    *  documents do not say. */
   mode?: string | null;

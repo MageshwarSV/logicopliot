@@ -4384,12 +4384,16 @@ function ExtractionReview({
     try {
       await jobsApi.approveDocument(jobId, active.id, approving);
       await reload();
-      // Only advance on an actual approve, never on "Undo" — and only when there is
-      // somewhere to go. Staying put on the last document is the point, not a bug.
+      // Only advance on an actual approve, never on "Undo". Approving the LAST uploaded
+      // document (whichever one that is for THIS job - a 3-document job with no Freight
+      // Certificate stops at Packing List, a 4-document job stops at Freight Certificate)
+      // moves on to Additional Details, the next real step, instead of leaving the operator
+      // sitting on a document that is already done.
       if (approving) {
         const currentIndex = files.findIndex((f) => f.id === active.id);
         const next = files[currentIndex + 1];
         if (next) setActiveFileId(next.id);
+        else setActiveFileId(ADDITIONAL_DETAILS_ID);
       }
     } finally {
       setApprovingId(null);
