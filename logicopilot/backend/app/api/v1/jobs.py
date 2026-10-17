@@ -3124,7 +3124,10 @@ def search_custom_field_reference_values(
         "results": [
             {
                 "value": r.resolved_value,
-                "label": f"{r.match_value_2} — {r.match_value_1} ({r.resolved_value})",
+                # "Country City(CODE)" - e.g. "China Shanghai(CNSHA)", so the operator can type
+                # either the country or the city they see on the document and immediately
+                # recognise the right row by its full name next to its code.
+                "label": f"{r.match_value_1} {r.match_value_2}({r.resolved_value})",
             }
             for r in rows
         ]

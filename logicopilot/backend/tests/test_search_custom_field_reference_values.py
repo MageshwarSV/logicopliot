@@ -51,6 +51,18 @@ def test_matches_a_substring_of_the_place_name_case_insensitively(client, db_ses
     assert values == {"CNSHA", "CNPDG"}
 
 
+def test_result_label_is_country_city_code(client, db_session):
+    """'China Shanghai(CNSHA)' - lets the operator match a result against whatever they
+    recognise on the actual document, country or city, without hunting for the code alone."""
+    tenant, group, job, cf, operator = _setup(db_session)
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=shang")
+    assert resp.status_code == 200, resp.text
+    labels = {r["value"]: r["label"] for r in resp.json()["results"]}
+    assert labels["CNSHA"] == "CHINA SHANGHAI(CNSHA)"
+    assert labels["CNPDG"] == "CHINA PUDONG/SHANGHAI(CNPDG)"
+
+
 def test_matches_a_substring_of_the_country_too(client, db_session):
     tenant, group, job, cf, operator = _setup(db_session)
     login(client, operator.email)

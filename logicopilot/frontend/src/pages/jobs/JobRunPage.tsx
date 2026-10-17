@@ -3943,12 +3943,13 @@ function ExtractedField({
   );
 }
 
-/** The manual fallback for a reference-backed field too large to ever offer as a plain
- * dropdown (see SEARCHABLE_REFERENCE_FIELD_LABELS) - only ever rendered while that field is
- * blank (the caller's own job to decide). Typing searches the field's reference table
- * server-side (reference-search), debounced so every keystroke doesn't fire its own request;
- * picking a result commits it as this field's corrected value exactly like any other
- * correction. */
+/** A search-as-you-type picker for a reference-backed field too large to ever offer as a plain
+ * dropdown (see SEARCHABLE_REFERENCE_FIELD_LABELS) - always available, not just while the field
+ * is blank, so the operator can look one up or correct it at any time. Typing searches the
+ * field's reference table server-side (reference-search), debounced so every keystroke doesn't
+ * fire its own request, and each result shows as "Country City(CODE)" so the operator can match
+ * it against whatever they see on the document; picking a result commits it as this field's
+ * corrected value exactly like any other correction. */
 function ReferenceSearchPicker({
   jobId,
   customFieldId,
@@ -4007,7 +4008,7 @@ function ReferenceSearchPicker({
         onFocus={() => setOpen(true)}
         // A short delay so a click on a result (below) lands before the blur closes the list.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="Not found automatically — search by city or country…"
+        placeholder="Search by city or country to find or correct the code…"
         className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
       />
       {open && query.trim().length >= 2 && (
@@ -4857,10 +4858,11 @@ function ExtractionReview({
                       : dynamicRows;
                     options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
                   }
-                  const currentValue = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
+                  // Always offered, not just while blank - the operator can look up or correct
+                  // Shipment Port Code at any time, the same way every other reference-backed
+                  // field's own dropdown is always available regardless of its current value.
                   const showSearchFallback =
-                    SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) &&
-                    !currentValue && !!fv.custom_field_id;
+                    SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
                   const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
                     ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
                     : undefined;
