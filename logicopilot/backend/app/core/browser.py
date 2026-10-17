@@ -4739,6 +4739,35 @@ class _TimedLog(list):
         super().append(text)
 
 
+def _safe_wait(page, ms: int) -> None:
+    """The "let the operator watch the final screen before it closes" pause, after every
+    recorded step has already run. Several real ERPs (SOFTLINK among them) close or navigate
+    their own tab the instant a submission finishes - nothing is wrong, the entry already
+    went through, but a plain page.wait_for_timeout() on a page/browser the SITE ITSELF just
+    closed raises ("Target page, context or browser has been closed"). That used to escape
+    uncaught all the way to play_steps' own outer except, which reports a flat hard "error" -
+    discarding a run that had already reached the real finish line, screenshot and all,
+    moments earlier. This is purely a courtesy delay; nothing downstream depends on it."""
+    try:
+        page.wait_for_timeout(ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _safe_close(ctx, browser) -> None:
+    """Same reasoning as _safe_wait - closing a context/browser the ERP's own site (or the
+    pause above) already tore down must never be the thing that turns an otherwise-successful
+    run into a reported failure."""
+    try:
+        ctx.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        browser.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def play_steps(
     url: str,
     login: dict | None,
@@ -6017,9 +6046,8 @@ def play_steps(
                 # No job ever arrived. Nothing was entered, nothing failed: the browser was
                 # only ever holding a place. Never diagnose or report this as a failed entry.
                 if not get_settings().browser_headless:
-                    page.wait_for_timeout(500)
-                ctx.close()
-                browser.close()
+                    _safe_wait(page, 500)
+                _safe_close(ctx, browser)
                 return {"status": "parked_released", "final_url": page_url_safe(), "log": log,
                         "resumed": resumed, "checkpoint_saved": checkpoint_saved,
                         "reason": "The parked browser was released before a job arrived."}
@@ -6041,11 +6069,10 @@ def play_steps(
                     pass
 
             if not get_settings().browser_headless:
-                page.wait_for_timeout(3000)  # let the operator see the result before it closes
+                _safe_wait(page, 3000)  # let the operator see the result before it closes
             # Always close, on every outcome — a left-open Chromium keeps rendering the page
             # and pegged this server's CPU at 100% once already.
-            ctx.close()
-            browser.close()
+            _safe_close(ctx, browser)
 
             # A field wouldn't keep its value even after 3 tries → the ERP doesn't have this
             # value (invalid lookup). Report as a failure naming the field and value.
