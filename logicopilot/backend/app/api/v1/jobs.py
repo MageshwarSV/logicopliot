@@ -2902,6 +2902,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         excel_entry=(group.entry_mode or "fields") == "excel",
         gk2_status=job.gk2_status,
         gk2_skipped=job.gk2_skipped,
+        # Predictive, unlike gk2_skipped (only ever set AFTER GK1 has already submitted) - lets
+        # GK1's own screen say up front where Final Submit is actually headed, before they press
+        # it. See Tenant.gk2_required_by_mode / _gk2_required_for_job.
+        gk2_required=_gk2_required_for_job(db, job),
         validation_approved=job.validation_approved,
         gk2_validation_approved=job.gk2_validation_approved,
         irn_documents_done=job.irn_documents_done,

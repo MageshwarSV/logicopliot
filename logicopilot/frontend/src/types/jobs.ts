@@ -184,6 +184,10 @@ export interface JobDetail {
    *  Final Submit for Approval went straight into the real ERP submission instead of a human
    *  GK2's queue. gk2_status alone can't tell this apart from "a GK2 actually reviewed this". */
   gk2_skipped?: boolean;
+  /** Predictive, unlike gk2_skipped (only ever true AFTER GK1 has already submitted) - whether
+   *  THIS job's shipment type currently needs GK2, known before Final Submit is pressed, so the
+   *  button can say up front whether it's headed to GK2 or straight to the real ERP. */
+  gk2_required?: boolean;
   /** Operator (GK1) pressed "Approved and Proceed" on Data Validation, for the current
    *  extraction. */
   validation_approved?: boolean;

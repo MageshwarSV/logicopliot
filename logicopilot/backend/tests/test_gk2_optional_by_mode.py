@@ -180,6 +180,53 @@ def test_skipped_job_never_appears_in_a_gk2_pending_queue(client, db_session):
     assert job.id not in {j["id"] for j in resp.json()}
 
 
+# --------------------------------------------------------------- predictive gk2_required
+# (known BEFORE Final Submit is pressed - lets GK1's own screen say up front whether a job is
+# headed to GK2 or straight to the real ERP, unlike gk2_skipped which is only set afterward)
+
+
+def test_job_detail_reports_gk2_required_true_by_default(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant, mode="Sea Import")
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-predict1@example.com")
+    job = _make_job(db_session, tenant, group)
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gk2_required"] is True
+
+
+def test_job_detail_reports_gk2_required_false_when_turned_off_for_the_mode(client, db_session):
+    tenant = make_tenant(db_session)
+    tenant.gk2_required_by_mode = {"Sea Import": False}
+    db_session.commit()
+    group = _make_group(db_session, tenant, mode="Sea Import")
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-predict2@example.com")
+    job = _make_job(db_session, tenant, group)
+    login(client, op.email)
+
+    # Known ahead of time - before this job has been submitted at all.
+    assert job.gk2_status is None
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gk2_required"] is False
+
+
+def test_job_detail_reports_gk2_required_true_for_an_unaffected_mode(client, db_session):
+    tenant = make_tenant(db_session)
+    tenant.gk2_required_by_mode = {"Sea Import": False}
+    db_session.commit()
+    group = _make_group(db_session, tenant, mode="Air Import")
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-predict3@example.com")
+    job = _make_job(db_session, tenant, group)
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gk2_required"] is True
+
+
 def test_no_config_means_gk2_required_mirrors_old_behavior(client, db_session):
     """A tenant with nothing saved for gk2_required_by_mode (every tenant before this
     feature existed) behaves exactly as before - nothing to configure, nothing changes."""

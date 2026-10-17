@@ -240,6 +240,11 @@ class JobDetailOut(BaseModel):
     # apart from "a GK2 actually reviewed this": it goes straight from None to "preparing_erp"
     # either way.
     gk2_skipped: bool = False
+    # Predictive - whether THIS job's shipment type currently needs GK2 (see
+    # Tenant.gk2_required_by_mode), computed fresh on every read. Unlike gk2_skipped (only ever
+    # set once GK1 has already submitted), this is known before Final Submit is pressed, so
+    # GK1's own screen can say up front whether it's headed to GK2 or straight to the real ERP.
+    gk2_required: bool = True
     # Operator (GK1) pressed "Approved and Proceed" on Data Validation, for the current
     # extraction.
     validation_approved: bool = False

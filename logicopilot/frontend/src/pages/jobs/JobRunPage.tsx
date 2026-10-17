@@ -1665,7 +1665,9 @@ export function JobRunPage() {
                   {step.key === "submission"
                     ? user?.role === "gk2"
                       ? "Final Approve & Proceed"
-                      : "Final Submit for Approval"
+                      : job.gk2_status == null && job.gk2_required === false
+                        ? "Final Submit"
+                        : "Final Submit for Approval"
                     : displayLabelFor(step.key)}
                 </span>
               </button>
@@ -2213,16 +2215,24 @@ export function JobRunPage() {
             const gk2CanAct = job.gk2_status === "pending" || job.gk2_status === "failed";
             const gk2Skipped = job.gk2_skipped === true;
             const erpRunning = job.gk2_status === "preparing_erp" || job.gk2_status === "entering_erp";
+            // Predictive (job.gk2_required, known before Final Submit is pressed) rather than
+            // gk2_skipped (only ever set AFTER submission) - lets GK1 see up front whether this
+            // job is headed to GK2 or straight to the real ERP, not just after the fact.
+            const gk2NotNeeded = !gk2Started && job.gk2_required === false;
             return (
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h2 className="font-semibold text-slate-900 dark:text-slate-50">
-                    {isGk2 ? "Final Approve & Proceed" : "Final Submit for Approval"}
+                    {isGk2
+                      ? "Final Approve & Proceed"
+                      : gk2NotNeeded
+                        ? "Final Submit"
+                        : "Final Submit for Approval"}
                   </h2>
                   <p className="text-xs text-slate-500">
                     {isGk2
                       ? "Give this job its final approval, or send it back for GK1 to fix."
-                      : gk2Skipped
+                      : gk2NotNeeded || gk2Skipped
                         ? "GK2 review isn't required for this shipment type — this goes straight to the real ERP entry."
                         : gk2Started
                           ? "Waiting on GK2's final approval."
@@ -2261,7 +2271,7 @@ export function JobRunPage() {
                       isLoading={gk2Busy}
                       disabled={job.status !== "extracted" || !job.validation_approved}
                     >
-                      Final Submit for Approval
+                      {gk2NotNeeded ? "Final Submit" : "Final Submit for Approval"}
                     </Button>
                   )}
                   {!readOnly && !isGk2 && gk2Started && (
