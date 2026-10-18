@@ -44,7 +44,16 @@ interface StoredJobsFilters {
   shipmentType: string;
   dateFrom: string;
   dateTo: string;
+  category: "new" | "submitted" | "completed";
 }
+
+// The Jobs list's three left-side screens - see Job.category / _category_condition in
+// api/v1/jobs.py. Applies identically whether the tenant/mode requires GK2 review or not.
+const CATEGORY_TABS: { key: "new" | "submitted" | "completed"; label: string }[] = [
+  { key: "new", label: "New Jobs" },
+  { key: "submitted", label: "Submitted Jobs" },
+  { key: "completed", label: "Completed Jobs" },
+];
 
 function readStoredJobsFilters(): Partial<StoredJobsFilters> {
   try {
@@ -103,6 +112,11 @@ export function JobsPage() {
   // accepts. Always editable, even after a job already has someone assigned — reassigning
   // just overwrites the previous value, there is no lock to work around.
   const canAssign = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
+  // Who can press Submitted Jobs' own "Verified" button - same roles the backend's
+  // POST /jobs/{id}/verify accepts. Not operators or manager (read-only) - this is a
+  // back-office confirmation that the ERP portal actually shows the entry, not a working step.
+  const canVerify = user?.role === "gk2" || user?.role === "super_admin"
+    || user?.role === "admin" || user?.role === "tenant_admin";
   const [operators, setOperators] = useState<User[]>([]);
   const [savingAssignId, setSavingAssignId] = useState<string | null>(null);
   // Quick filter — date range + customer. Lives here, not on the dashboard, so it only ever
@@ -127,6 +141,13 @@ export function JobsPage() {
   const [shipmentType, setShipmentType] = useState<string>(() => storedFilters.shipmentType ?? QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
   const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
+  // The Jobs list's own left-side screen - server-filtered, not a client-side refinement like
+  // the six above, since it changes which ROWS exist to filter in the first place.
+  const [category, setCategory] = useState<"new" | "submitted" | "completed">(
+    () => storedFilters.category ?? "new",
+  );
+  const [counts, setCounts] = useState<jobsApi.JobCategoryCounts>({ new: 0, submitted: 0, completed: 0 });
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   // Keep the stored filters in sync with whatever is currently selected, so the NEXT time
   // this page mounts (coming back from Dashboard, a job, anywhere) it restores exactly this.
@@ -134,13 +155,21 @@ export function JobsPage() {
     try {
       window.sessionStorage.setItem(
         JOBS_FILTERS_STORAGE_KEY,
-        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo }),
+        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo, category }),
       );
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
     }
-  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
+  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo, category]);
+
+  async function loadCounts() {
+    try {
+      setCounts(await jobsApi.getJobCategoryCounts());
+    } catch {
+      // Best-effort - the badges just show stale numbers until the next successful refresh.
+    }
+  }
 
   async function loadFirstPage() {
     setLoading(true);
@@ -153,6 +182,7 @@ export function JobsPage() {
           offset: 0,
           group: group ?? undefined,
           bucket,
+          category,
         }),
         jobsApi.listAvailableGroups(),
       ]);
@@ -160,6 +190,7 @@ export function JobsPage() {
       setHasMore(jobList.length === INITIAL_BATCH_SIZE);
       setGroups(groupList);
       if (groupList[0]) setGroupId(groupList[0].id);
+      loadCounts();
     } catch {
       setError("Failed to load jobs. Is the backend running?");
     } finally {
@@ -181,6 +212,7 @@ export function JobsPage() {
         offset: jobsRef.current.length,
         group: group ?? undefined,
         bucket,
+        category,
       });
       setJobs((prev) => [...prev, ...more]);
       setHasMore(more.length === PAGE_SIZE);
@@ -193,7 +225,8 @@ export function JobsPage() {
   }
 
   // Re-fetches exactly the window already loaded, to catch status changes live (ERP outcomes,
-  // a fresh GK2 approval) WITHOUT resetting scroll position or re-triggering "load more".
+  // a fresh GK2 approval, a Verified press moving a job off this screen entirely) WITHOUT
+  // resetting scroll position or re-triggering "load more".
   async function refreshCurrentWindow() {
     const count = Math.max(jobsRef.current.length, PAGE_SIZE);
     try {
@@ -203,9 +236,11 @@ export function JobsPage() {
         offset: 0,
         group: group ?? undefined,
         bucket,
+        category,
       });
       setJobs(fresh);
       setHasMore(fresh.length === count);
+      loadCounts();
     } catch {
       // Leave the current view as-is — a missed refresh tick is not worth an error banner.
     }
@@ -225,7 +260,7 @@ export function JobsPage() {
   useEffect(() => {
     loadFirstPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantFilter, group, bucket]);
+  }, [tenantFilter, group, bucket, category]);
 
   useEffect(() => {
     // 15s, not 4s - this re-fetches every row currently loaded (which grows with how far an
@@ -236,7 +271,7 @@ export function JobsPage() {
     const t = window.setInterval(refreshCurrentWindow, 15000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantFilter, group, bucket]);
+  }, [tenantFilter, group, bucket, category]);
 
   // Auto-continue loading in the background: the fast 5-row first batch is what the operator
   // actually waits on, then every batch after that loads on its own, without needing a scroll
@@ -249,7 +284,7 @@ export function JobsPage() {
     // quick/dateFrom/dateTo: so a filter change re-captures loadMore's CURRENT pastDateWindow
     // guard immediately, rather than only once jobs.length/hasMore/etc happen to change too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs.length, hasMore, loading, loadingMore, tenantFilter, group, bucket, quick, dateFrom, dateTo]);
+  }, [jobs.length, hasMore, loading, loadingMore, tenantFilter, group, bucket, category, quick, dateFrom, dateTo]);
 
   async function checkEmail() {
     setCheckingMail(true);
@@ -317,6 +352,23 @@ export function JobsPage() {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not assign the operator.");
     } finally {
       setSavingAssignId(null);
+    }
+  }
+
+  // Submitted Jobs' own "Verified" button - a human confirming the AI/ERP automation
+  // actually went through. Moves the job on to Completed Jobs; refreshCurrentWindow (still
+  // filtered to category="submitted") naturally drops it from view the moment its category
+  // changes server-side.
+  async function handleVerify(job: Job) {
+    setVerifyingId(job.id);
+    setError(null);
+    try {
+      await jobsApi.verifyJob(job.id);
+      await refreshCurrentWindow();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not verify the job.");
+    } finally {
+      setVerifyingId(null);
     }
   }
 
@@ -602,6 +654,28 @@ export function JobsPage() {
       header: "Importer/Exporter",
       render: (j) => <span>{j.customer_name ?? "—"}</span>,
     },
+    // Submitted Jobs' own column - a human confirming the AI/ERP automation actually went
+    // through. Only shown on that screen; New Jobs and Completed Jobs have nothing to press
+    // here (a completed job is either already verified or came through the direct Submit
+    // Entry path, which needed no separate confirmation).
+    ...(category === "submitted" && canVerify
+      ? [{
+          header: "",
+          render: (j: Job) => (
+            <Button
+              size="sm"
+              variant="secondary"
+              isLoading={verifyingId === j.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleVerify(j);
+              }}
+            >
+              Verified
+            </Button>
+          ),
+        } as Column<Job>]
+      : []),
     {
       header: "",
       className: "text-right",
@@ -712,6 +786,43 @@ export function JobsPage() {
         </div>
       )}
 
+      <div className="flex items-start gap-4">
+        {/* The three Jobs-list screens - New Jobs / Submitted Jobs / Completed Jobs. A
+            server-side filter (see category in jobsApi.listJobs), not a refinement of what's
+            already loaded - switching screens reloads the list from scratch, same as changing
+            the Tenant filter does. */}
+        <div className="w-48 shrink-0">
+          <Card className="p-2">
+            <nav className="flex flex-col gap-1">
+              {CATEGORY_TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setCategory(t.key)}
+                  aria-current={category === t.key ? "page" : undefined}
+                  className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
+                    category === t.key
+                      ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  <span>{t.label}</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs tabular-nums ${
+                      category === t.key
+                        ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200"
+                        : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                    }`}
+                  >
+                    {counts[t.key]}
+                  </span>
+                </button>
+              ))}
+            </nav>
+          </Card>
+        </div>
+
+        <div className="min-w-0 flex-1">
       {filterLabel && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 dark:border-indigo-500/30 dark:bg-indigo-500/10">
           <span className="text-sm font-medium text-indigo-800 dark:text-indigo-200">{filterLabel}</span>
@@ -855,7 +966,15 @@ export function JobsPage() {
             columns={columns}
             rows={visibleJobs}
             keyFor={(j) => j.id}
-            emptyMessage={filterLabel ? "No jobs match this filter." : "No jobs yet — create one to process a transaction."}
+            emptyMessage={
+              filterLabel
+                ? "No jobs match this filter."
+                : category === "submitted"
+                  ? "Nothing waiting on verification — every AI-submitted job here has been confirmed."
+                  : category === "completed"
+                    ? "No completed jobs yet."
+                    : "No jobs yet — create one to process a transaction."
+            }
           />
         )}
       </Card>
@@ -863,6 +982,8 @@ export function JobsPage() {
           just shows that it's happening. */}
       <div className="flex justify-center py-4">
         {loadingMore && <span className="text-xs text-slate-400">Loading more…</span>}
+      </div>
+        </div>
       </div>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="New Job">

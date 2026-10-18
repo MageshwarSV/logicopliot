@@ -36,6 +36,11 @@ export interface Job {
   /** See JobDetail - surfaced on the list too so a job silently missing its extracted data
    *  doesn't only show up once someone happens to open it. */
   needs_reextraction?: boolean;
+  /** Which of the Jobs list's three left-side screens this job belongs on - "new" (Pre-Alert
+   *  through anything short of the ERP submission actually running), "submitted" (the AI/ERP
+   *  automation already went through; awaiting a human's confirmation), or "completed"
+   *  (confirmed, or submitted the direct Submit Entry way). */
+  category?: "new" | "submitted" | "completed";
 }
 
 /** One line of a job's history - what the Last updated popup lists. */
@@ -232,6 +237,13 @@ export interface JobDetail {
   erp_captured?: Record<string, CapturedItem | string> | null;
   /** Plain-words description of the screen the run stopped on, read by AI from a screenshot. */
   erp_diagnosis?: string | null; // the value that wasn't found in the ERP
+  /** See Job.category. */
+  category?: "new" | "submitted" | "completed";
+  /** A human confirmed the AI/ERP automation actually submitted this job - see verifyJob.
+   *  null = still awaiting that confirmation (only meaningful once category is "submitted";
+   *  a job completed via the direct Submit Entry path has no verifier to show here). */
+  erp_verified_at?: string | null;
+  erp_verified_by_name?: string | null;
 }
 
 /** One thing picked out of the ERP during entry, shown on the operator's completed screen. */

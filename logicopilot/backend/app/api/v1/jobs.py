@@ -60,6 +60,7 @@ from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
     FieldValueCorrect,
+    JobCategoryCounts,
     JobCreate,
     JobDetailOut,
     JobDocumentOut,
@@ -932,6 +933,29 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     return stage
 
 
+def _job_category(job: Job) -> str:
+    """Which of the three Jobs-list screens this job belongs on:
+
+      "new"       - everything from Pre-Alert up to before the ERP submission actually runs.
+      "submitted" - the AI/ERP automation already went through (gk2_status == "submitted"),
+                    and a human still needs to confirm it actually landed before this counts
+                    as done - see Job.erp_verified_at.
+      "completed" - confirmed (erp_verified_at set), or reached the direct Submit Entry path
+                    instead (job.status == "completed"), which needs no separate confirmation
+                    since an operator pressing it IS the human submitting it in real time.
+
+    Applies identically whether this tenant/mode requires GK2 or not - a GK2-skipped job
+    (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same
+    gk2_status == "submitted" outcome a GK2-reviewed one does, via the same
+    _finalize_job_approval -> _kick_off_real_erp_submission path.
+    """
+    if job.status == "completed" or job.erp_verified_at is not None:
+        return "completed"
+    if job.gk2_status == "submitted":
+        return "submitted"
+    return "new"
+
+
 def _start_extraction_background(job_id: str) -> None:
     """Run extraction off the request thread, so an upload or the Extract button returns at
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
@@ -1314,6 +1338,13 @@ def _operator_name(db: Session, job: Job) -> str | None:
     return u.full_name if u else None
 
 
+def _verified_by_name(db: Session, job: Job) -> str | None:
+    if not job.erp_verified_by_id:
+        return None
+    u = db.get(User, job.erp_verified_by_id)
+    return u.full_name if u else None
+
+
 def _compute_content_checksum(keyouted: dict) -> str | None:
     """A fingerprint of what the extracted documents actually SAY, not what file, filename or
     email they arrived in - a hash of every non-empty field value, keyed by its document
@@ -1392,6 +1423,7 @@ def _job_out(
     out.operator_name = _operator_name(db, job)
     out.pulled_from_sender = _pulled_from_sender(db, job)
     out.duplicate_of_reference = _duplicate_of_reference(db, job)
+    out.category = _job_category(job)
     return out
 
 
@@ -1585,25 +1617,10 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
     return query
 
 
-@router.get("/jobs", response_model=list[JobOut])
-def list_jobs(
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
-    # None (the default) returns everything, unchanged - existing callers (the dashboard's own
-    # box counts, which need the full set to total) are unaffected. The Jobs list page passes
-    # an explicit limit to page through a large list instead of loading it all in one go.
-    limit: int | None = None,
-    offset: int = 0,
-    # Pressing one of the dashboard's boxes navigates here with these two set, so the list
-    # shows exactly what the box counted - see _apply_dashboard_filter.
-    group: str | None = None,
-    bucket: str = "all",
-    # The IRN Pending list (frontend/src/pages/jobs/IrnPendingPage.tsx) passes this to show
-    # only jobs GK2 has parked in "IRN Document Process" - independent of group/bucket, which
-    # is why it is its own param rather than folded into _apply_dashboard_filter's presets.
-    gk2_status: str | None = None,
-) -> list[JobOut]:
+def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
+    """The same job rows `list_jobs` itself shows for this user - tenant scope plus the
+    role-based narrowing below - extracted so a count-only caller (category_counts) does not
+    have to duplicate it and risk drifting out of sync with what the list actually shows."""
     query = scoped_query(db, Job, scope)
     # Operators see shared jobs (no owner) plus the mail-routed jobs assigned to them —
     # never another operator's routed jobs. Admins see everything in scope.
@@ -1665,11 +1682,76 @@ def list_jobs(
         # work, unrestricted by template, mode, or gk2_status. Bounded only by scoped_query's
         # tenant filter above.
         pass
+    return query
+
+
+# The three Jobs-list screens' own SQL conditions - kept as one function so list_jobs'
+# `category` filter and category_counts' three separate counts can never disagree about what
+# "submitted" or "completed" means. Mirrors _job_category's in-Python logic exactly; that one
+# is for a single already-loaded Job object (list rows, _build_detail), this one is for
+# filtering the query itself before rows are even loaded.
+def _category_condition(category: str):
+    if category == "completed":
+        return (Job.status == "completed") | (Job.erp_verified_at.isnot(None))
+    if category == "submitted":
+        return (Job.gk2_status == "submitted") & (Job.status != "completed") & (Job.erp_verified_at.is_(None))
+    if category == "new":
+        return (
+            (Job.status != "completed")
+            & (Job.erp_verified_at.is_(None))
+            & ((Job.gk2_status.is_(None)) | (Job.gk2_status != "submitted"))
+        )
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="category must be one of: new, submitted, completed")
+
+
+@router.get("/jobs/category-counts", response_model=JobCategoryCounts)
+def job_category_counts(
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> JobCategoryCounts:
+    """Badge counts for the Jobs list's three left-side screens - New Jobs / Submitted Jobs /
+    Completed Jobs - under the exact same tenant/role visibility list_jobs itself applies."""
+    base = _jobs_visible_query(db, scope, user)
+    return JobCategoryCounts(
+        new=base.filter(_category_condition("new")).count(),
+        submitted=base.filter(_category_condition("submitted")).count(),
+        completed=base.filter(_category_condition("completed")).count(),
+    )
+
+
+@router.get("/jobs", response_model=list[JobOut])
+def list_jobs(
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+    # None (the default) returns everything, unchanged - existing callers (the dashboard's own
+    # box counts, which need the full set to total) are unaffected. The Jobs list page passes
+    # an explicit limit to page through a large list instead of loading it all in one go.
+    limit: int | None = None,
+    offset: int = 0,
+    # Pressing one of the dashboard's boxes navigates here with these two set, so the list
+    # shows exactly what the box counted - see _apply_dashboard_filter.
+    group: str | None = None,
+    bucket: str = "all",
+    # The IRN Pending list (frontend/src/pages/jobs/IrnPendingPage.tsx) passes this to show
+    # only jobs GK2 has parked in "IRN Document Process" - independent of group/bucket, which
+    # is why it is its own param rather than folded into _apply_dashboard_filter's presets.
+    gk2_status: str | None = None,
+    # The Jobs list's left-side screen: "new" | "submitted" | "completed" - see
+    # _category_condition/_job_category. None (the default) returns every category, unchanged
+    # for every existing caller (the dashboard, IRN Pending) that never sends this.
+    category: str | None = None,
+) -> list[JobOut]:
+    query = _jobs_visible_query(db, scope, user)
 
     if group is not None:
         query = _apply_dashboard_filter(query, group, bucket)
     if gk2_status is not None:
         query = query.filter(Job.gk2_status == gk2_status)
+    if category is not None:
+        query = query.filter(_category_condition(category))
 
     query = query.order_by(Job.created_at.desc())
     if limit is not None:
@@ -2289,6 +2371,36 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
         return
 
     _kick_off_real_erp_submission(db, job)
+
+
+@router.post("/jobs/{job_id}/verify", response_model=JobDetailOut)
+def verify_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(GK2, SUPER_ADMIN, ADMIN, TENANT_ADMIN)),
+) -> JobDetailOut:
+    """A human confirming the AI/ERP automation actually submitted this job - the Submitted
+    Jobs screen's "Verified" button. Moves it on to the Completed Jobs screen (see
+    _job_category); nothing before this ever does, so a gk2-submitted job would otherwise sit
+    on Submitted Jobs forever with no way out.
+
+    Only meaningful for a job the automation already submitted (gk2_status == "submitted") -
+    the direct Submit Entry path needs no equivalent action, since an operator pressing that
+    button already IS the human confirming it, in real time.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.gk2_status != "submitted":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job has not been submitted to the ERP yet, so there is nothing to verify.",
+        )
+    if job.erp_verified_at is None:
+        job.erp_verified_at = datetime.now(timezone.utc)
+        job.erp_verified_by_id = user.id
+        db.commit()
+        db.refresh(job)
+    return _build_detail(db, job)
 
 
 def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
@@ -2963,6 +3075,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         erp_failed_value=job.erp_failed_value,
         erp_log=job.erp_log,
         erp_captured=job.erp_captured,
+        category=_job_category(job),
+        erp_verified_at=job.erp_verified_at,
+        erp_verified_by_name=_verified_by_name(db, job),
     )
 
 

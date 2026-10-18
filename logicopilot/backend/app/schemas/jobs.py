@@ -68,6 +68,20 @@ class JobOut(BaseModel):
     # extracted data (a document was removed after the fact) doesn't only show up once
     # someone happens to open it.
     needs_reextraction: bool = False
+    # Which of the three Jobs-list screens this job belongs on - "new" (Pre-Alert through
+    # anything short of the ERP submission actually running), "submitted" (the AI/ERP
+    # automation already went through gk2_status "submitted"; awaiting a human's
+    # confirmation), or "completed" (confirmed, or submitted the direct Submit Entry way,
+    # which needs no separate confirmation). See _job_category in api/v1/jobs.py.
+    category: str = "new"
+
+
+class JobCategoryCounts(BaseModel):
+    """How many jobs sit in each of the three Jobs-list screens, under the same tenant/role
+    visibility list_jobs itself applies - the left-side nav's own badge counts."""
+    new: int = 0
+    submitted: int = 0
+    completed: int = 0
 
 
 class JobEventOut(BaseModel):
@@ -290,6 +304,14 @@ class JobDetailOut(BaseModel):
     erp_captured: dict | None = None
     # What the AI saw on the screen where the run stopped, in plain words for the operator.
     erp_diagnosis: str | None = None
+    # See JobOut.category.
+    category: str = "new"
+    # A human confirming the AI/ERP automation actually submitted this job - see
+    # Job.erp_verified_at. None = still awaiting that confirmation (only meaningful once
+    # category is "submitted"; a job that reached "completed" via the direct Submit Entry
+    # path instead has no verifier to show here).
+    erp_verified_at: datetime | None = None
+    erp_verified_by_name: str | None = None
 
 
 class FieldValueCorrect(BaseModel):

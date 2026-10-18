@@ -33,18 +33,36 @@ export interface ListJobsOptions {
   /** IrnPendingPage's own filter - jobs GK2 has parked in "IRN Document Process". See
    *  Job.gk2_status; independent of group/bucket. */
   gk2Status?: string;
+  /** The Jobs list's own left-side screen - "new" | "submitted" | "completed". See
+   *  Job.category / _category_condition in api/v1/jobs.py. Omitted (the default) returns
+   *  every category, same as before this existed. */
+  category?: string;
 }
 
 export async function listJobs(options: ListJobsOptions = {}): Promise<Job[]> {
-  const { tenantId, limit, offset, group, bucket, gk2Status } = options;
+  const { tenantId, limit, offset, group, bucket, gk2Status, category } = options;
   const { data } = await apiClient.get<Job[]>("/jobs", {
     params: {
       ...(tenantId ? { tenant_id: tenantId } : {}),
       ...(limit != null ? { limit, offset: offset ?? 0 } : {}),
       ...(group ? { group, bucket: bucket ?? "all" } : {}),
       ...(gk2Status ? { gk2_status: gk2Status } : {}),
+      ...(category ? { category } : {}),
     },
   });
+  return data;
+}
+
+/** Badge counts for the Jobs list's three left-side screens, under the caller's own
+ *  tenant/role visibility - see GET /jobs/category-counts. */
+export interface JobCategoryCounts {
+  new: number;
+  submitted: number;
+  completed: number;
+}
+
+export async function getJobCategoryCounts(): Promise<JobCategoryCounts> {
+  const { data } = await apiClient.get<JobCategoryCounts>("/jobs/category-counts");
   return data;
 }
 
@@ -590,6 +608,14 @@ export async function submitForGk2Approval(jobId: string): Promise<JobDetail> {
  *  JobRunPage.tsx for the polling that watches it land. */
 export async function gk2Approve(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/gk2/approve`);
+  return data;
+}
+
+/** A human confirming the AI/ERP automation actually submitted this job - the Submitted
+ *  Jobs screen's "Verified" button. Moves the job on to Completed Jobs (see Job.category);
+ *  refused (409) for a job that hasn't reached "AI - ERP Submitted" yet. */
+export async function verifyJob(jobId: string): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/verify`);
   return data;
 }
 

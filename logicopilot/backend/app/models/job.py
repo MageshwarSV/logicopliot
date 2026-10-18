@@ -1,4 +1,6 @@
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, JSON, String, Text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -120,6 +122,18 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     erp_final_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     erp_failed_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     erp_failed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # A human confirming the AI/ERP automation actually went through - closes a loop that
+    # otherwise never closes: gk2_status reaching "submitted" (whether GK2 reviewed it or
+    # this tenant has GK2 turned off for this shipment mode - see gk2_skipped) never moves
+    # on to anything else by itself. None = still awaiting that confirmation. The direct
+    # Submit Entry path (complete_job, job.status == "completed") needs no equivalent column
+    # - an operator pressing it IS the human submitting it in real time, nothing to confirm
+    # afterward.
+    erp_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    erp_verified_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Deleting a job deletes its history. The column's ondelete="CASCADE" only fires where the
     # database enforces foreign keys, which SQLite does not by default - so a deleted job left
