@@ -1,11 +1,18 @@
-﻿"""_pull_inbox used to read every connected mailbox ONE AFTER ANOTHER in a single loop - a
-real bottleneck once more than a couple of operators connect their own mailbox, since reading
-one is minutes of work (OCR every page, then AI calls per document). A mailbox near the end of
-the list could go unchecked through an entire poll cycle. These tests exercise the fix: each
-mailbox now runs in its own thread, up to the live, database-backed worker count (Super
-Admin's Settings page, see app.core.system_settings) at once, each with its own DB session -
-`_pull_one_mailbox` itself is mocked out, since it is what every OTHER email_puller test
-already exercises; this file is only about the orchestration around it."""
+﻿"""_pull_inbox reads every connected mailbox through two phases now, not one thread per
+mailbox doing everything end to end:
+
+  1. harvest every mailbox concurrently (cheap - an IMAP search and a PEEK fetch, not OCR),
+     one thread per mailbox, via _mailbox_setup + _harvest_mailbox.
+  2. process every harvested message - OCR plus the AI calls, the expensive part - through
+     ONE SHARED pool, via _process_one_message. A worker that finishes a quiet mailbox's one
+     message does not sit idle while a busier mailbox still has a backlog; it picks up the
+     next task off the SAME queue regardless of which mailbox it came from.
+
+`_mailbox_setup`, `_harvest_mailbox` and `_process_one_message` are mocked out in most of
+these tests, since the per-message pipeline itself is what every OTHER email_puller test
+already exercises (via `_pull_one_mailbox`, which is just a sequential composition of these
+same three pieces) - this file is only about the orchestration around them, and specifically
+about proving idle capacity actually flows to a busier mailbox instead of sitting unused."""
 
 import threading
 import time
@@ -22,7 +29,14 @@ def _sources(n: int) -> list[dict]:
     ]
 
 
-def _patched(sources, side_effect=None, return_value=None, workers=None):
+def _ctx(unidentifiable=None):
+    return {"single_group": None, "candidates": [], "by_id": {},
+            "unidentifiable": unidentifiable or []}
+
+
+def _patched(sources, setup_side_effect=None, harvest_side_effect=None,
+            harvest_return=None, process_side_effect=None, process_return=None,
+            workers=None):
     """Common patching for these tests: no real DB, no real mailbox discovery, a controlled
     worker count, and SessionLocal replaced so no real database is touched."""
     settings = MagicMock()
@@ -33,11 +47,23 @@ def _patched(sources, side_effect=None, return_value=None, workers=None):
         patch("app.db.session.SessionLocal", return_value=MagicMock()),
         patch("app.core.system_settings.get_email_poll_workers",
              return_value=workers if workers is not None else 4),
+        patch("app.core.system_settings.get_extraction_engine", return_value="ocr_gpt4o_mini"),
+        patch("app.core.custom_page_filter.get_active_custom_filter_texts", return_value=[]),
     ]
-    if side_effect is not None:
-        patches.append(patch("app.core.email_puller._pull_one_mailbox", side_effect=side_effect))
+    if setup_side_effect is not None:
+        patches.append(patch("app.core.email_puller._mailbox_setup", side_effect=setup_side_effect))
     else:
-        patches.append(patch("app.core.email_puller._pull_one_mailbox", return_value=return_value))
+        patches.append(patch("app.core.email_puller._mailbox_setup", return_value=(_ctx(), None)))
+    if harvest_side_effect is not None:
+        patches.append(patch("app.core.email_puller._harvest_mailbox", side_effect=harvest_side_effect))
+    else:
+        patches.append(patch("app.core.email_puller._harvest_mailbox",
+                             return_value=harvest_return if harvest_return is not None
+                             else {"ok": True, "messages": []}))
+    if process_side_effect is not None:
+        patches.append(patch("app.core.email_puller._process_one_message", side_effect=process_side_effect))
+    elif process_return is not None:
+        patches.append(patch("app.core.email_puller._process_one_message", return_value=process_return))
     return patches
 
 
@@ -54,12 +80,12 @@ def _exit_all(patches):
 def test_pull_inbox_reports_how_many_mailboxes_were_attempted_and_how_many_succeeded():
     sources = _sources(5)
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
-        if kw.get("mail_email") in ("op1@example.com", "op3@example.com"):
+    def harvest(mail_email, mail_app_password, mail_host, max_messages, reexamine):
+        if mail_email in ("op1@example.com", "op3@example.com"):
             return {"ok": False, "error": "bad credentials"}
-        return {"ok": True, "processed": []}
+        return {"ok": True, "messages": []}
 
-    patches = _patched(sources, side_effect=side_effect)
+    patches = _patched(sources, harvest_side_effect=harvest)
     _enter_all(patches)
     try:
         result = _pull_inbox(db=MagicMock())
@@ -71,51 +97,60 @@ def test_pull_inbox_reports_how_many_mailboxes_were_attempted_and_how_many_succe
     assert len(result["mailbox_errors"]) == 2
 
 
-def test_every_connected_mailbox_is_pulled_not_just_the_first_few():
+def test_every_connected_mailbox_is_harvested_not_just_the_first_few():
     sources = _sources(7)
-    patches = _patched(sources, return_value={"ok": True, "processed": [{"job_id": "j"}]})
+    patches = _patched(sources, harvest_return={"ok": True, "messages": []})
     mocks = _enter_all(patches)
     try:
-        result = _pull_inbox(db=MagicMock())
+        _pull_inbox(db=MagicMock())
     finally:
         _exit_all(patches)
-    pull_mock = mocks[-1]
-    assert pull_mock.call_count == 7
-    assert len(result["processed"]) == 7
+    # _mailbox_setup and _harvest_mailbox are the last two patches started (see _patched).
+    setup_mock, harvest_mock = mocks[-2], mocks[-1]
+    assert setup_mock.call_count == 7
+    assert harvest_mock.call_count == 7
 
 
 def test_results_from_every_mailbox_are_merged_including_errors_and_notes():
     sources = _sources(3)
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
-        email = kw.get("mail_email")
-        if email == "op0@example.com":
-            return {"ok": True, "processed": [{"job_id": "job-a"}]}
-        if email == "op1@example.com":
+    def harvest(mail_email, mail_app_password, mail_host, max_messages, reexamine):
+        if mail_email == "op0@example.com":
+            return {"ok": True, "messages": [{"uid": b"1", "raw": b"raw-a"}]}
+        if mail_email == "op1@example.com":
             return {"ok": False, "error": "bad credentials"}
-        return {"ok": True, "processed": [], "note": "nothing new"}
+        return {"ok": True, "messages": []}
 
-    patches = _patched(sources, side_effect=side_effect)
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
+        return {"from": "a@example.com", "subject": "x", "matched": "Customer A",
+                "job_id": "job-a"}
+
+    patches = _patched(sources, harvest_side_effect=harvest, process_side_effect=process)
     _enter_all(patches)
     try:
         result = _pull_inbox(db=MagicMock())
     finally:
         _exit_all(patches)
 
-    assert result["processed"] == [{"job_id": "job-a"}]
+    assert result["processed"] == [{"from": "a@example.com", "subject": "x",
+                                    "matched": "Customer A", "job_id": "job-a"}]
     assert result["mailbox_errors"] == ["op1@example.com: bad credentials"]
 
 
-def test_one_mailbox_raising_an_exception_does_not_stop_the_others():
+def test_one_mailbox_raising_during_harvest_does_not_stop_the_others():
     sources = _sources(3)
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
-        email = kw.get("mail_email")
-        if email == "op1@example.com":
+    def harvest(mail_email, mail_app_password, mail_host, max_messages, reexamine):
+        if mail_email == "op1@example.com":
             raise RuntimeError("IMAP connection reset")
-        return {"ok": True, "processed": [{"job_id": email}]}
+        return {"ok": True, "messages": [{"uid": b"1", "raw": b"raw"}]}
 
-    patches = _patched(sources, side_effect=side_effect)
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
+        return {"from": mail_email, "subject": "x", "matched": "C", "job_id": mail_email}
+
+    patches = _patched(sources, harvest_side_effect=harvest, process_side_effect=process)
     _enter_all(patches)
     try:
         result = _pull_inbox(db=MagicMock())
@@ -127,18 +162,50 @@ def test_one_mailbox_raising_an_exception_does_not_stop_the_others():
     assert any("IMAP connection reset" in e for e in result["mailbox_errors"])
 
 
-def test_mailboxes_are_actually_read_concurrently_not_one_after_another():
-    # Ten mailboxes, each one "takes" 100ms. Run one after another that is >= 1 second;
-    # run four at a time it is roughly 300ms (10 mailboxes / 4 workers, rounded up = 3
-    # batches). A generous ceiling well under the sequential time proves this is not a
-    # relabelled version of the old loop.
+def test_one_message_crashing_during_processing_does_not_stop_sibling_messages():
+    # A bug mid-pipeline for ONE message must not take down any other message - including
+    # ones from the very same mailbox, now that they can run on different workers.
+    sources = _sources(1)
+    messages = [{"uid": f"{i}".encode(), "raw": f"raw-{i}".encode()} for i in range(4)]
+
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
+        if uid == b"2":
+            raise RuntimeError("boom")
+        return {"from": "x", "subject": "x", "matched": "C", "job_id": uid.decode()}
+
+    patches = _patched(sources, harvest_return={"ok": True, "messages": messages},
+                       process_side_effect=process)
+    _enter_all(patches)
+    try:
+        result = _pull_inbox(db=MagicMock())
+    finally:
+        _exit_all(patches)
+
+    job_ids = {p["job_id"] for p in result["processed"] if p.get("job_id")}
+    assert job_ids == {"0", "1", "3"}
+    # The crash comes back as its own entry in `processed` (an "error" flag and a reason
+    # naming the exception) rather than as a mailbox-level failure - a single message
+    # blowing up is not "the mailbox couldn't be read", so it must not be charged against
+    # mailboxes_ok, and it must not be silently dropped either.
+    errored = [p for p in result["processed"] if p.get("error")]
+    assert len(errored) == 1
+    assert "boom" in errored[0]["reason"]
+    assert result["mailboxes_ok"] == 1
+    assert "mailbox_errors" not in result
+
+
+def test_mailboxes_are_harvested_concurrently_not_one_after_another():
+    # Ten mailboxes, each one "takes" 100ms to harvest. Sequential would be >= 1 second;
+    # four at a time is roughly 300ms (10 / 4 workers, rounded up = 3 batches). A generous
+    # ceiling well under the sequential time proves this is not a relabelled sequential loop.
     sources = _sources(10)
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
+    def harvest(mail_email, mail_app_password, mail_host, max_messages, reexamine):
         time.sleep(0.1)
-        return {"ok": True, "processed": []}
+        return {"ok": True, "messages": []}
 
-    patches = _patched(sources, side_effect=side_effect, workers=4)
+    patches = _patched(sources, harvest_side_effect=harvest, workers=4)
     _enter_all(patches)
     try:
         start = time.monotonic()
@@ -150,13 +217,58 @@ def test_mailboxes_are_actually_read_concurrently_not_one_after_another():
     assert elapsed < 0.8, f"took {elapsed:.2f}s - looks sequential, not pooled"
 
 
-def test_worker_count_never_exceeds_the_configured_limit():
-    sources = _sources(9)
+def test_an_idle_mailboxs_worker_helps_a_busier_mailboxs_backlog():
+    # THE fix this redesign exists for. Mailbox A has 1 message; mailbox B has 5. Each
+    # message "takes" 150ms to process. With the OLD one-thread-per-mailbox design (2
+    # mailboxes -> at most 2 workers regardless of how many are configured), A's thread
+    # finishes after one message and sits idle while B's thread serially works through its
+    # five: total wall-clock ~= 5 * 150ms = 750ms. With a SHARED pool across all 6 harvested
+    # messages and workers=2, the worker that finishes A's one message immediately helps
+    # with B's backlog: total wall-clock ~= ceil(6 / 2) * 150ms = 450ms. A ceiling comfortably
+    # between the two (and well under the old-design bound) proves work actually moved across
+    # the mailbox boundary rather than staying pinned to whichever mailbox harvested it.
+    sources = _sources(2)
+    harvests = {
+        "op0@example.com": {"ok": True, "messages": [{"uid": b"a0", "raw": b"a0"}]},
+        "op1@example.com": {"ok": True, "messages": [
+            {"uid": f"b{i}".encode(), "raw": f"b{i}".encode()} for i in range(5)
+        ]},
+    }
+
+    def harvest(mail_email, mail_app_password, mail_host, max_messages, reexamine):
+        return harvests[mail_email]
+
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
+        time.sleep(0.15)
+        return {"from": mail_email, "subject": "x", "matched": "C", "job_id": uid.decode()}
+
+    patches = _patched(sources, harvest_side_effect=harvest, process_side_effect=process,
+                       workers=2)
+    _enter_all(patches)
+    try:
+        start = time.monotonic()
+        result = _pull_inbox(db=MagicMock())
+        elapsed = time.monotonic() - start
+    finally:
+        _exit_all(patches)
+
+    assert len(result["processed"]) == 6
+    assert elapsed < 0.7, (
+        f"took {elapsed:.2f}s - a quiet mailbox's worker was never put to work on the "
+        "busy mailbox's backlog (old one-thread-per-mailbox behaviour would take ~0.75s)"
+    )
+
+
+def test_worker_count_never_exceeds_the_configured_limit_during_processing():
+    sources = _sources(1)
+    messages = [{"uid": f"{i}".encode(), "raw": f"{i}".encode()} for i in range(9)]
     in_flight = 0
     max_seen = 0
     lock = threading.Lock()
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
         nonlocal in_flight, max_seen
         with lock:
             in_flight += 1
@@ -164,45 +276,59 @@ def test_worker_count_never_exceeds_the_configured_limit():
         time.sleep(0.05)
         with lock:
             in_flight -= 1
-        return {"ok": True, "processed": []}
+        return {"from": "x", "subject": "x", "matched": "C"}
 
-    patches = _patched(sources, side_effect=side_effect, workers=3)
+    patches = _patched(sources, harvest_return={"ok": True, "messages": messages},
+                       process_side_effect=process, workers=3)
     _enter_all(patches)
     try:
         _pull_inbox(db=MagicMock())
     finally:
         _exit_all(patches)
 
-    assert max_seen <= 3, f"saw {max_seen} concurrent pulls, limit was 3"
-    assert max_seen > 1, "never actually ran more than one at a time - not parallel at all"
+    assert max_seen <= 3, f"saw {max_seen} concurrent message workers, limit was 3"
+    assert max_seen > 1, "never actually ran more than one message at a time - not parallel at all"
 
 
-def test_worker_count_is_capped_by_the_number_of_mailboxes_not_wasted_on_idle_threads():
-    # Two mailboxes with a pool sized for eight must not error or hang - just use two.
+def test_processing_worker_count_is_capped_by_total_messages_not_mailbox_count():
+    # Two mailboxes, one message each, a pool sized for eight must not error or hang - just
+    # use two processing workers, not eight idle ones.
     sources = _sources(2)
-    patches = _patched(sources, return_value={"ok": True, "processed": []}, workers=8)
+    messages = [{"uid": b"only", "raw": b"only"}]
+    patches = _patched(sources, harvest_return={"ok": True, "messages": messages},
+                       process_return={"from": "x", "subject": "x", "matched": "C"},
+                       workers=8)
     _enter_all(patches)
     try:
         result = _pull_inbox(db=MagicMock())
     finally:
         _exit_all(patches)
     assert result["ok"] is True
+    assert len(result["processed"]) == 2
 
 
-def test_each_mailbox_gets_its_own_db_session_not_the_callers():
-    sources = _sources(3)
+def test_each_message_gets_its_own_db_session_not_the_callers_or_each_others():
+    sources = _sources(1)
+    messages = [{"uid": f"{i}".encode(), "raw": f"{i}".encode()} for i in range(3)]
     seen_sessions = []
+    lock = threading.Lock()
 
-    def side_effect(db, tenant_id, max_messages, reexamine, **kw):
-        seen_sessions.append(db)
-        return {"ok": True, "processed": []}
+    def process(db, uid, raw, ctx, mail_email, mail_app_password, mail_host,
+               extraction_engine, vision_engine_model, custom_filter_texts, reexamine):
+        with lock:
+            seen_sessions.append(db)
+        return {"from": "x", "subject": "x", "matched": "C"}
 
     patches = [
         patch("app.core.email_puller.get_settings", return_value=MagicMock(gmail_user="")),
         patch("app.core.email_puller._connected_mailboxes", return_value=sources),
         patch("app.db.session.SessionLocal", side_effect=lambda: MagicMock()),
         patch("app.core.system_settings.get_email_poll_workers", return_value=4),
-        patch("app.core.email_puller._pull_one_mailbox", side_effect=side_effect),
+        patch("app.core.system_settings.get_extraction_engine", return_value="ocr_gpt4o_mini"),
+        patch("app.core.custom_page_filter.get_active_custom_filter_texts", return_value=[]),
+        patch("app.core.email_puller._mailbox_setup", return_value=(_ctx(), None)),
+        patch("app.core.email_puller._harvest_mailbox", return_value={"ok": True, "messages": messages}),
+        patch("app.core.email_puller._process_one_message", side_effect=process),
     ]
     _enter_all(patches)
     try:
@@ -213,7 +339,7 @@ def test_each_mailbox_gets_its_own_db_session_not_the_callers():
 
     assert len(seen_sessions) == 3
     assert callers_db not in seen_sessions
-    # Each worker's session is distinct - never the same object reused across threads.
+    # Each message's session is distinct - never the same object reused across workers.
     assert len({id(s) for s in seen_sessions}) == 3
 
 

@@ -728,7 +728,33 @@ def _pull_inbox(
     """Poll every mailbox this call is allowed to read, and merge the results: the tenant's
     shared inbox, plus every Connected Mailbox assigned to a tenant (see
     _connected_mailboxes) - each carrying its OWN tenant/template assignment now, independent
-    of any operator. Held under _pull_lock by its caller."""
+    of any operator. Held under _pull_lock by its caller.
+
+    Two phases, not one thread per mailbox for its whole backlog:
+
+      1. HARVEST every mailbox, one thread per mailbox. Cheap - an IMAP search and a PEEK
+         fetch, not OCR - so there is no reason to share this step.
+      2. PROCESS every harvested message - OCR plus the AI calls, minutes of work each -
+         through ONE SHARED pool, not one thread pinned to each mailbox. A worker that
+         finishes a quiet mailbox's one message does not then sit idle while a busier
+         mailbox still has nineteen more waiting; it picks up the next one off the SAME
+         queue, whichever mailbox it came from. That is the actual fix: before this, a
+         mailbox with one message and a mailbox with twenty each got exactly one dedicated
+         worker regardless, so the quiet one's worker was wasted the moment it finished.
+
+    _claim() is still the only thing standing between two workers and the same message - see
+    its own docstring. This does not add a second lock: the task list handed to the shared
+    pool in phase 2 already contains each harvested message exactly once, so there is nothing
+    for a lock to arbitrate WITHIN one call to this function. _claim() remains the backstop
+    for everything outside that one list - a manual "Pull email now" running at the same
+    time as the scheduler, or reexamine re-walking mail this very cycle is also mid-way
+    through - and if a collision ever does happen there, _claim() hands it to exactly one of
+    them and the other moves on, which is already proven by its own tests.
+    """
+    from app.core.custom_page_filter import get_active_custom_filter_texts
+    from app.core.system_settings import get_email_poll_workers, get_extraction_engine
+    from app.db.session import SessionLocal
+
     settings = get_settings()
     sources: list[dict] = []
     if settings.gmail_user and _app_password():
@@ -739,51 +765,104 @@ def _pull_inbox(
     if not sources:
         return {"ok": True, "processed": [], "note": "No mailbox is configured yet."}
 
-    # Read every mailbox AT ONCE rather than one after another. Reading a message is minutes
-    # of work — OCR every page, then AI calls per document — so a sequential loop meant one
-    # busy mailbox held up every OTHER connected mailbox behind it: the tenth one on the list
-    # could sit unchecked through an entire poll cycle, then the next, then the one after.
-    # Each thread gets its OWN session — a SQLAlchemy session is not safe to share across
-    # threads, and one mailbox's slow OCR/AI calls must never block another's DB writes.
-    def _pull_with_own_session(src: dict) -> dict:
-        from app.db.session import SessionLocal
-
+    # ---- phase 1: harvest every mailbox concurrently, one thread per mailbox. Each thread
+    # gets its OWN session - a SQLAlchemy session is not safe to share across threads - used
+    # only for the per-mailbox setup (_mailbox_setup) and the per-mailbox settings this used
+    # to read once at the top of _pull_one_mailbox; harvesting itself touches no DB.
+    def _setup_and_harvest(src: dict) -> dict:
         worker_db = SessionLocal()
         try:
-            return _pull_one_mailbox(
-                worker_db, src["tenant_id"], max_messages, reexamine,
-                mail_email=src["email"], mail_app_password=src["password"], mail_host=src["host"],
-                forced_group_id=src["group_id"],
-            )
+            ctx, early = _mailbox_setup(worker_db, src["tenant_id"], src["group_id"])
+            if early is not None:
+                return {"early": early}
+            return {
+                "ctx": ctx,
+                "extraction_engine": get_extraction_engine(worker_db),
+                "vision_engine_model": get_settings().vision_engine_model,
+                "custom_filter_texts": get_active_custom_filter_texts(worker_db),
+                "harvest": _harvest_mailbox(src["email"], src["password"], src["host"],
+                                           max_messages, reexamine),
+            }
         finally:
             worker_db.close()
 
-    all_processed: list[dict] = []
     mailbox_errors: list[str] = []
     combined_note: str | None = None
-    from app.core.system_settings import get_email_poll_workers
+    tasks: list[dict] = []
 
-    workers = max(1, min(get_email_poll_workers(db), len(sources)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="email-pull") as pool:
-        # ThreadPoolExecutor IS the worker queue: `workers` threads run concurrently, and the
-        # moment one finishes its mailbox, it picks the next one waiting off the pool's own
-        # internal queue - nothing more to build for that part.
-        futures = {pool.submit(_pull_with_own_session, src): src for src in sources}
+    harvest_workers = max(1, min(get_email_poll_workers(db), len(sources)))
+    with ThreadPoolExecutor(max_workers=harvest_workers, thread_name_prefix="email-harvest") as pool:
+        futures = {pool.submit(_setup_and_harvest, src): src for src in sources}
         for future in as_completed(futures):
             src = futures[future]
             label = src["email"] or "shared inbox"
             try:
                 result = future.result()
             except Exception as exc:  # noqa: BLE001
-                logger.exception("mailbox pull crashed for %s", label)
+                logger.exception("mailbox harvest crashed for %s", label)
                 mailbox_errors.append(f"{label}: {exc}")
                 continue
-            if not result.get("ok"):
-                mailbox_errors.append(f"{label}: {result.get('error')}")
+            if "early" in result:
+                early = result["early"]
+                if not early.get("ok", True):
+                    mailbox_errors.append(f"{label}: {early.get('error')}")
+                elif early.get("note"):
+                    combined_note = early["note"]
                 continue
-            all_processed.extend(result.get("processed") or [])
-            if result.get("note"):
-                combined_note = result["note"]
+            harvest = result["harvest"]
+            if not harvest.get("ok"):
+                mailbox_errors.append(f"{label}: {harvest.get('error')}")
+                continue
+            ctx = result["ctx"]
+            if ctx["unidentifiable"]:
+                combined_note = ("These customers have nothing on their documents that "
+                                 "identifies them, so mail can never be routed to them: "
+                                 + ", ".join(ctx["unidentifiable"]))
+            for message in harvest["messages"]:
+                tasks.append({
+                    "src": src, "ctx": ctx, "uid": message["uid"], "raw": message["raw"],
+                    "extraction_engine": result["extraction_engine"],
+                    "vision_engine_model": result["vision_engine_model"],
+                    "custom_filter_texts": result["custom_filter_texts"],
+                })
+
+    # ---- phase 2: process every harvested message through ONE shared pool, sized by how
+    # much work there actually is across every mailbox combined - not by how many mailboxes
+    # it came from. A crash while processing one message is that message's own problem, not
+    # the mailbox's - caught inside _process_with_own_session so it cannot take any sibling
+    # message down with it, including ones from the very same mailbox now running on a
+    # different worker.
+    all_processed: list[dict] = []
+    if tasks:
+        def _process_with_own_session(task: dict) -> dict | None:
+            worker_db = SessionLocal()
+            try:
+                return _process_one_message(
+                    worker_db, task["uid"], task["raw"], task["ctx"],
+                    task["src"]["email"], task["src"]["password"], task["src"]["host"],
+                    task["extraction_engine"], task["vision_engine_model"],
+                    task["custom_filter_texts"], reexamine,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("processing a harvested email crashed")
+                label = task["src"]["email"] or "shared inbox"
+                return {"from": None, "subject": None, "matched": None, "error": True,
+                        "reason": f"internal error while processing a message from {label}: {exc}"}
+            finally:
+                worker_db.close()
+
+        process_workers = max(1, min(get_email_poll_workers(db), len(tasks)))
+        with ThreadPoolExecutor(max_workers=process_workers, thread_name_prefix="email-pull") as pool:
+            futures = [pool.submit(_process_with_own_session, task) for task in tasks]
+            for future in as_completed(futures):
+                try:
+                    entry = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("a message-processing task itself crashed")
+                    mailbox_errors.append(f"message processing: {exc}")
+                    continue
+                if entry is not None:
+                    all_processed.append(entry)
 
     out: dict = {
         "ok": True, "processed": all_processed,
@@ -797,30 +876,19 @@ def _pull_inbox(
     return out
 
 
-def _pull_one_mailbox(
-    db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    reexamine: bool = False,
-    mail_email: str | None = None, mail_app_password: str | None = None,
-    mail_host: str | None = None, forced_group_id: str | None = None,
-) -> dict:
-    """Everything pull_inbox used to do end to end, now for exactly ONE mailbox."""
-    from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
-    from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, identify_customer
-    from app.core.docai import ocr_page_image
-    from app.core.page_filter import extract_pdf_pages, kept_page_to_original
-    from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
-    from app.core.system_settings import get_extraction_engine
+def _mailbox_setup(
+    db: Session, tenant_id: str | None, forced_group_id: str | None,
+) -> tuple[dict | None, dict | None]:
+    """Everything about pulling THIS mailbox that does not depend on any one message: which
+    customers (groups) it may route into, and - for a shared mailbox serving several
+    customers - how to recognise each one from their documents. Computed once per mailbox,
+    reused for every message harvested from it (see _harvest_mailbox / _process_one_message),
+    so a shared pool processing many of its messages concurrently never repeats this work.
 
-    # Read ONCE, up front, before any tentative Job/JobDocument is ever flushed below. The
-    # first-ever read of a system setting lazily creates (and commits) its row if none
-    # exists yet (see get_system_settings) - doing that lazily INSIDE the per-message loop,
-    # after a tentative Job was already flushed but not committed, would incidentally commit
-    # that half-built job along with it, defeating the rollback this function relies on when
-    # the classification call itself fails (see test_classify_document_outage_rolls_back_*).
-    extraction_engine = get_extraction_engine(db)
-    vision_engine_model = get_settings().vision_engine_model
-    custom_filter_texts = get_active_custom_filter_texts(db)
-
+    Returns (ctx, early_result) - exactly one is not None. early_result is a "nothing to do
+    here" result (no customers configured at all, or none has anything identifying) in the
+    exact shape _pull_one_mailbox used to return directly for these cases.
+    """
     # A mailbox explicitly assigned to exactly ONE template (forced_group_id, set on the
     # Email Puller screen) has nowhere else its mail could possibly belong - unlike a shared
     # inbox serving several different customers at once (a forwarding agent mailing for six
@@ -831,7 +899,7 @@ def _pull_one_mailbox(
     single_group = db.get(TemplateGroup, forced_group_id) if forced_group_id else None
     groups: list[TemplateGroup] = [single_group] if single_group else _candidate_groups(db, tenant_id)
     if not groups:
-        return {"ok": True, "processed": [], "note": "No customers are configured yet."}
+        return None, {"ok": True, "processed": [], "note": "No customers are configured yet."}
 
     ident: dict[str, dict] = {}
     candidates: list[dict] = []
@@ -847,7 +915,7 @@ def _pull_one_mailbox(
             for g in groups if ident.get(g.id)
         ]
         if not candidates:
-            return {
+            return None, {
                 "ok": True, "processed": [],
                 "note": ("No customer has anything on their documents that identifies them "
                          "(a consignee name, IE code or GST number configured as a standing "
@@ -855,14 +923,29 @@ def _pull_one_mailbox(
                 "unidentifiable": unidentifiable,
             }
 
-    by_id = {g.id: g for g in groups}
+    ctx = {
+        "single_group": single_group, "candidates": candidates,
+        "by_id": {g.id: g for g in groups}, "unidentifiable": unidentifiable,
+    }
+    return ctx, None
 
+
+def _harvest_mailbox(
+    mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
+    max_messages: int, reexamine: bool,
+) -> dict:
+    """Connect to ONE mailbox just long enough to list and fetch its candidate messages, then
+    disconnect. Returns the raw material, not a verdict - deciding whose documents these are
+    (OCR, AI classification, building the job) is the expensive part, minutes per message, and
+    is deliberately NOT done here - see _process_one_message, run later by whichever worker in
+    a shared pool picks this message up next, not necessarily the thread that harvested it.
+    That split is what lets an idle worker (its own mailbox already empty) help a busier
+    mailbox's backlog instead of sitting out the rest of the poll cycle.
+    """
     try:
         conn = _connect(mail_email, mail_app_password, mail_host)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-    processed: list[dict] = []
+        return {"ok": False, "error": str(exc), "messages": []}
     try:
         conn.select("INBOX")
         # A routine poll only looks at today's mail - midnight to midnight. SINCE/BEFORE are
@@ -897,509 +980,599 @@ def _pull_one_mailbox(
             )
         uids = data[0].split() if data and data[0] else []
         uids = uids[-max_messages:]
-
+        messages: list[dict] = []
         for uid in uids:
             # PEEK, so looking does not mark it read. Only a message that becomes a job does.
             typ, raw = conn.fetch(uid, "(BODY.PEEK[])")
             if typ != "OK" or not raw or not raw[0]:
                 continue
-            msg = email.message_from_bytes(raw[0][1])
-            sender = parseaddr(msg.get("From"))[1].lower()
-            subject = _decode(msg.get("Subject")) or "(no subject)"
-            mid = _message_id(msg)
-
-            # Claim it BEFORE reading it, not after. See _claim().
-            claimed, why_not = _claim(db, mid, sender, subject, steal=reexamine)
-            if not claimed:
-                processed.append({
-                    "from": sender, "subject": subject, "matched": None,
-                    "reason": why_not, "skipped_by_log": True,
-                })
-                continue
-
-            # ---- attachments, including whatever is inside a .zip
-            import io
-            import zipfile
-
-            files: list[tuple[str, bytes]] = []
-            for name, blob in _extract_attachments(msg):
-                if name.lower().endswith(".zip"):
-                    try:
-                        with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                            for n in z.namelist():
-                                if not n.endswith("/") and \
-                                        Path(n).suffix.lower() in CLASSIFY_EXTS:
-                                    files.append((Path(n).name, z.read(n)))
-                    except zipfile.BadZipFile:
-                        continue
-                elif Path(name).suffix.lower() in CLASSIFY_EXTS:
-                    files.append((name, blob))
-
-            if not files:
-                _record(db, mid, sender, subject, "no_documents",
-                        "nothing readable was attached")
-                processed.append({"from": sender, "subject": subject, "matched": None,
-                                  "reason": "no document attachments"})
-                continue
-
-            # ---- read every page, and hold the text only as long as it is needed
-            import shutil
-
-            safe_mid = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:60] or "msg"
-            tmp = Path(get_settings().uploads_dir) / "_email" / safe_mid
-            doc_texts: list[tuple[str, str]] = []
-            prepared: list[dict] = []
-            group = None
-            filled: list[str] = []
-            named: list[str] = []
-            who: dict = {}
-            tie_note = ""
-            job = None
-            try:
-                import fitz  # PyMuPDF
-
-                for idx, (name, blob) in enumerate(files):
-                    ext = Path(name).suffix.lower() or ".pdf"
-                    fdir = tmp / str(idx)
-                    (fdir / "pages").mkdir(parents=True, exist_ok=True)
-                    orig = fdir / f"f{ext}"
-                    orig.write_bytes(blob)
-                    text, first_png, pages = "", None, 0
-                    try:
-                        with fitz.open(orig) as doc:
-                            for i, page in enumerate(doc, start=1):
-                                if i > 6:
-                                    break
-                                png = fdir / "pages" / f"page_{i}.png"
-                                page.get_pixmap(dpi=150).save(png)
-                                if i == 1:
-                                    first_png = png
-                                pages = i
-                        raw_pages = []
-                        for i in range(1, pages + 1):
-                            try:
-                                got = ocr_page_image(
-                                    fdir / "pages" / f"page_{i}.png").get("text", "")
-                            except Exception:  # noqa: BLE001
-                                logger.warning("OCR unavailable for %s p%s", name, i)
-                                got = ""
-                            raw_pages.append(got)
-                        # Drop the carrier's terms and conditions BEFORE classifying, not just
-                        # before extracting. A 2-page sea waybill is 42,551 characters of which
-                        # ~39,000 are terms that define "Freight", "Package", "Packing List"
-                        # and "invoice" - so the bill of lading matched every slot on the
-                        # template and filled all four. The data page on its own is
-                        # unambiguous.
-                        kept, dropped = filter_pages_with_custom(raw_pages, custom_filter_texts, name)
-                        if dropped:
-                            logger.info("email classify: %s - ignoring page(s) %s, carrier "
-                                        "terms and conditions", name, dropped)
-                        text = "\n\n".join(
-                            f"=== PAGE {n} ===\n{t}"
-                            for n, t in enumerate(kept, start=1) if t.strip())
-                        # Every kept page's own image, keyed by its KEPT-page number - used
-                        # only by the vision engine's per-page classifier
-                        # (classify_pages_from_images), mirroring smart_upload's own
-                        # page_images. Same reasoning: a wrong page in a combined email
-                        # attachment deserves the same fix as a manual upload.
-                        kept_to_orig = kept_page_to_original(pages, list(dropped))
-                        page_images = [
-                            (i, fdir / "pages" / f"page_{kept_to_orig[i - 1] if i - 1 < len(kept_to_orig) else i}.png")
-                            for i in range(1, len(kept) + 1)
-                        ]
-                    except Exception:  # noqa: BLE001
-                        logger.warning("could not open attachment %s", name)
-                        continue
-                    prepared.append({"name": name, "ext": ext, "blob": blob,
-                                     "text": text, "image": first_png,
-                                     "drop_pages": list(dropped), "page_count": pages,
-                                     "page_images": page_images, "kept_pages": kept})
-                    doc_texts.append((name, text))
-
-                if not prepared:
-                    _record(db, mid, sender, subject, "unreadable",
-                            "the attachments could not be opened")
-                    processed.append({"from": sender, "subject": subject, "matched": None,
-                                      "reason": "attachments could not be read"})
-                    continue
-
-                # ---- WHOSE documents are these? Decided from the pages, not the sender -
-                # unless this mailbox only ever answers that question one way.
-                if single_group is not None:
-                    who = {"keys": [single_group.id],
-                           "reason": "the only template connected to this mailbox",
-                           "evidence": ""}
-                else:
-                    who = identify_customer(subject, _body_text(msg), doc_texts, candidates)
-                keys = who.get("keys") or []
-
-                if not keys:
-                    # Nothing recognised. Throw the extracted text and the files away - keeping
-                    # a stranger's documents on disk serves nobody - and write down why, so the
-                    # next poll does not pay for the same OCR and the same model call again.
-                    reason = who.get("reason") or "the documents name no customer we know"
-                    _record(db, mid, sender, subject, "no_customer", reason,
-                            evidence=who.get("evidence") or "")
-                    _save_pending_email(db, mid, sender, subject, reason,
-                                       who.get("evidence") or "", prepared)
-                    processed.append({
-                        "from": sender, "subject": subject, "matched": None,
-                        "reason": "the documents do not identify any customer",
-                        "why": who.get("reason"), "evidence": who.get("evidence"),
-                        "left_unread": True,
-                    })
-                    continue
-
-                chosen_id = keys[0]
-                if len(keys) > 1:
-                    # Two customers whose paperwork looks the same. Prefer the Excel-entry one:
-                    # a deliberate rule rather than a coin toss, and it is written on the row so
-                    # a wrong call can be found afterwards.
-                    excel = [k for k in keys if (by_id[k].entry_mode or "fields") == "excel"]
-                    if len(excel) == 1:
-                        chosen_id = excel[0]
-                        tie_note = (f"{len(keys)} customers fit; chose the Excel-entry one "
-                                    f"({by_id[chosen_id].name})")
-                    else:
-                        names = ", ".join(by_id[k].name for k in keys)
-                        amb_reason = (f"fits more than one customer and none is the only "
-                                     f"Excel-entry one: {names}")
-                        _record(db, mid, sender, subject, "ambiguous", amb_reason,
-                                evidence=who.get("evidence") or "")
-                        _save_pending_email(db, mid, sender, subject, amb_reason,
-                                           who.get("evidence") or "", prepared)
-                        processed.append({
-                            "from": sender, "subject": subject, "matched": None,
-                            "reason": f"fits more than one customer ({names}) - needs a person",
-                            "candidates": [by_id[k].name for k in keys],
-                            "left_unread": True,
-                        })
-                        continue
-
-                group = by_id[chosen_id]
-
-                # Safety net: this can only happen if a tenant's allowed modes were narrowed
-                # AFTER this template was built (template creation itself already refuses to
-                # tag a template with a mode the tenant isn't licensed for) - but a job filed
-                # under a mode nobody signed off on is worse than one held for a person to
-                # look at, so treat it exactly like not recognising the customer at all.
-                tenant = db.get(Tenant, group.tenant_id)
-                if group.mode and tenant is not None and tenant.allowed_modes \
-                        and group.mode not in tenant.allowed_modes:
-                    mode_reason = (f"identified {group.name}, but its mode ({group.mode}) "
-                                  f"is not one {tenant.name} is licensed for")
-                    _record(db, mid, sender, subject, "no_customer", mode_reason,
-                            evidence=who.get("evidence") or "")
-                    _save_pending_email(db, mid, sender, subject, mode_reason,
-                                       who.get("evidence") or "", prepared)
-                    processed.append({
-                        "from": sender, "subject": subject, "matched": None,
-                        "reason": mode_reason, "left_unread": True,
-                    })
-                    continue
-
-                # ---- the job
-                # Assignment is a deliberate action from the Jobs list' own dropdown, never a
-                # side effect of WHICH MAILBOX a job happened to arrive in - a forwarding agent
-                # mails for six importers from one shared address, and none of them is "the"
-                # operator for all six. The one exception: the SENDER is themselves a real,
-                # already-registered operator account (their own email, not a shared inbox) -
-                # there the job already has a genuine, unambiguous owner the moment it lands,
-                # and leaving it Unassigned just made someone hunt for what they already sent.
-                job = Job(
-                    tenant_id=group.tenant_id,
-                    group_id=group.id,
-                    reference=generate_job_no(),
-                    status="draft",
-                    created_by_id=None,
-                    assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
-                )
-                db.add(job)
-                db.flush()
-                slots: dict[str, JobDocument] = {}
-                slot_meta: dict[str, dict] = {}
-                for tdoc in group.documents:
-                    jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
-                                     template_document_id=tdoc.id, page_count=0)
-                    db.add(jd)
-                    slots[tdoc.id] = jd
-                    slot_meta[tdoc.id] = {
-                        "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
-                        "fields": [m.label_name for m in tdoc.marks],
-                        # the customer's own sample for this slot - the strongest reference
-                        "reference": _slot_reference(tdoc.id),
-                    }
-                db.flush()
-                cand_slots = list(slot_meta.values())
-
-                # Stage every kept page as a provisional "unresolved" row BEFORE classification
-                # runs - the exact same UnmatchedUploadPage mechanism Smart Upload already uses
-                # (see that model's own docstring), just never wired into this pipeline until
-                # now. A page the classifier cannot confidently place, or loses a same-slot
-                # arbitration to another file's page (see the comment just below - "the real
-                # packing list and freight certificate were silently dropped" was never fixed,
-                # only made less frequent), must surface to an operator as Unclassified rather
-                # than vanish with no trace. Pruned back down to just the pages that stay
-                # genuinely unresolved once classification has actually run, below.
-                import uuid
-
-                unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
-                unmatched_dir.mkdir(parents=True, exist_ok=True)
-                pages_by_file: list[list] = []
-                for item in prepared:
-                    rows: list = []
-                    page_image_by_num = dict(item.get("page_images") or [])
-                    for i, page_text in enumerate(item.get("kept_pages") or [], start=1):
-                        if not page_text.strip():
-                            rows.append(None)
-                            continue
-                        src_png = page_image_by_num.get(i)
-                        dest = unmatched_dir / f"{uuid.uuid4()}.png"
-                        if src_png is not None and src_png.exists():
-                            shutil.copy(src_png, dest)
-                        row = UnmatchedUploadPage(
-                            tenant_id=job.tenant_id, job_id=job.id,
-                            original_filename=item["name"][:255], page_number=i,
-                            image_path=str(dest), ocr_text=page_text,
-                        )
-                        db.add(row)
-                        rows.append(row)
-                    pages_by_file.append(rows)
-                # A flush only, not a commit: if classification itself raises
-                # AIServiceUnavailable below, the WHOLE job - including these staged rows -
-                # must roll back together, exactly as before this existed, so the email is
-                # retried completely fresh next cycle rather than leaving an orphaned job
-                # with no classification ever having run against it.
-                db.flush()
-
-                # assign_documents, not classify_file per file: a slot goes to ONE file, and
-                # the most specific claimant wins it. Classifying each file alone let a single
-                # invoice fill both the Invoice and the Packing List slot, and a bill of lading
-                # fill both the BL and the Freight slot - the real packing list and freight
-                # certificate were silently dropped.
-                claims_per_file = assign_documents_detailed(
-                    prepared, cand_slots, engine=extraction_engine,
-                    vision_model=vision_engine_model,
-                    # Classify every page from its own image instead of page 1 alone, same
-                    # fix as Smart Upload - a combined/multi-page attachment can mis-route a
-                    # page just as easily arriving by mail as uploaded by hand.
-                    per_page_vision=True,
-                )
-                for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
-                    # The AI second-opinion pathway (_ai_verify_second_type, source
-                    # "ai_second") is the weakest signal assign_documents_detailed produces -
-                    # a narrow, loosely-worded "does this ALSO contain Y" call with no regex
-                    # anchor, consulted only because nothing more reliable recognised the
-                    # wording. Found live: it accepted an ordinary invoice's own routine
-                    # freight cost line as "this is ALSO a Freight Certificate", and separately
-                    # accepted a plain single-page House BL as "this is ALSO a Packing List" -
-                    # two different document pairs, same underlying weak-signal cause. Rather
-                    # than keep hand-tuning prompts pair by pair, a weak claim never silently
-                    # fills a real slot at all - it is dropped, and (unless the SAME page also
-                    # has a real claim from a stronger source) the page stays staged as
-                    # Unclassified for a person to resolve by hand.
-                    strong_claims = [c for c in claims if c.get("source") != "ai_second"]
-                    weak_claims = [c for c in claims if c.get("source") == "ai_second"]
-                    for c in weak_claims:
-                        logger.info(
-                            "email classify: %s - dropped a weak AI second-opinion claim on "
-                            "%s (page(s) %s) - left for an operator to confirm instead of "
-                            "silently duplicating into that slot",
-                            item["name"], slot_meta.get(c["key"], {}).get("name", c["key"]),
-                            c["pages"])
-                    keys = [c["key"] for c in strong_claims]
-                    # Every page a STRONG claim actually covers is now a real JobDocument - its
-                    # staging row has done its job (and would otherwise show the operator a
-                    # page that already lives somewhere real). A page only a weak claim covered
-                    # is deliberately NOT pruned - see above. Mirrors Smart Upload's own prune
-                    # step, extended with the same strong/weak distinction.
-                    claimed_pages = {p for c in strong_claims for p in c["pages"]}
-                    for i, row in enumerate(unmatched_rows, start=1):
-                        if row is not None and i in claimed_pages:
-                            db.delete(row)
-                    # Say what the analyser decided, per file. Without this a document that
-                    # goes unrouted leaves no trace at all: the job simply has an empty slot
-                    # and nothing to explain why. The character count matters too - a file the
-                    # OCR could not read gives the analyser nothing to work with, and that is
-                    # a different problem from a file it read and rejected.
-                    logger.info(
-                        "email classify: %s (%s chars of text) -> %s",
-                        item["name"], len(item["text"] or ""),
-                        ", ".join(slot_meta[k]["name"] for k in keys if k in slot_meta)
-                        or "NO SLOT MATCHED")
-                    # A combined attachment (one PDF carrying both the Invoice and the Packing
-                    # List) must give each slot only ITS pages, not the whole thing.
-                    split = len(strong_claims) > 1 and item["ext"] == ".pdf"
-                    kept_original = (
-                        kept_page_to_original(item["page_count"], item["drop_pages"])
-                        if split else []
-                    )
-                    for claim in strong_claims:
-                        key = claim["key"]
-                        jd = slots.get(key)
-                        if jd is None:
-                            continue
-                        if jd.file_path:
-                            # The slot already holds a file, and this mail carries another one
-                            # for it — three invoices for one shipment is ordinary. Add a row
-                            # rather than writing over the last, which lost the earlier
-                            # attachments without a word. slots[key] always points at the
-                            # newest row, so file_index keeps counting up.
-                            jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
-                                             template_document_id=key, page_count=0,
-                                             file_index=jd.file_index + 1)
-                            db.add(jd)
-                            db.flush()
-                            slots[key] = jd
-                        jd.original_name = (item["name"] or "")[:255] or None
-                        meta = slot_meta[key]
-                        fname = _document_name(meta["doc_type"], meta["name"],
-                                               item["text"], item["ext"])
-                        ddir = _job_doc_dir(jd.id)
-                        ddir.mkdir(parents=True, exist_ok=True)
-                        dorig = ddir / fname
-                        if split:
-                            orig_pages = sorted({
-                                kept_original[p - 1] for p in claim["pages"]
-                                if 1 <= p <= len(kept_original)
-                            }) or kept_original
-                            dorig.write_bytes(extract_pdf_pages(item["blob"], orig_pages))
-                            jd.page_count = _render_pages(dorig, ddir / "pages")
-                        else:
-                            dorig.write_bytes(item["blob"])
-                            # The carrier's terms page is not part of the document anyone
-                            # works with, so it is not rendered into the job either. The
-                            # original file still holds it.
-                            jd.page_count = _render_pages(dorig, ddir / "pages",
-                                                          skip=item.get("drop_pages"))
-                        jd.file_path = str(dorig)
-                        record_billable_pages(db, job, jd.page_count)
-                        if meta["name"] not in filled:
-                            filled.append(meta["name"])
-                        named.append(f"{item['name']} -> {fname}")
-                db.commit()
-                # The pipeline's own working copy of this email is deleted in the finally
-                # block below the moment this job is done processing - this is the only chance
-                # to keep the as-arrived original for GK1's IRN Documents Upload "Prealert"
-                # view.
-                from app.core.job_email import save_original_email
-
-                save_original_email(
-                    job.id, msg, files, sender, subject,
-                    received_by=mail_email or get_settings().gmail_user,
-                )
-            except AIServiceUnavailable as exc:
-                # The AI service itself failed (quota, rate limit, connection, 5xx) - this
-                # message was never actually looked at, so it must not be recorded as "no
-                # customer" or "no document matched". Undo the claim entirely: the very next
-                # poll - an ordinary one, not only reexamine - tries it again from scratch,
-                # once the service has recovered. Nothing was ever marked read (attachments
-                # are read via BODY.PEEK[]), so there is no flag to undo either.
-                db.rollback()
-                logger.warning(
-                    "email pull for %s deferred - AI service unavailable (%s); this message "
-                    "will be retried automatically on a later cycle", mid[:60], exc)
-                _unclaim(db, mid)
-                processed.append({
-                    "from": sender, "subject": subject, "matched": None,
-                    "reason": "the AI service is temporarily unavailable - retrying "
-                              "automatically on a later poll",
-                    "deferred": True,
-                })
-                continue
-            finally:
-                # The temporary pages and OCR output go, whatever happened. Anything the job
-                # needs has already been copied into the job's own folder.
-                shutil.rmtree(tmp, ignore_errors=True)
-
-            if group is None or job is None:
-                continue
-
-            if not filled:
-                unclassified_count = (
-                    db.query(UnmatchedUploadPage)
-                    .filter(UnmatchedUploadPage.job_id == job.id)
-                    .count()
-                )
-                if not unclassified_count:
-                    # The customer was recognised, not one attachment belongs in any of their
-                    # slots, AND nothing survived as genuinely Unclassified either (every page
-                    # was blank/unreadable) - there is truly nothing to show an operator.
-                    # Keeping the job would put an empty shell in the queue, and marking the
-                    # mail read would make it unpullable - so the job goes and the mail stays.
-                    # Usually it means the template is missing a document type, and once that
-                    # is added the same mail can be pulled again.
-                    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
-                        db.delete(jd)
-                    db.delete(job)
-                    db.commit()
-                    _record(db, mid, sender, subject, "unrouted",
-                            f"identified {group.name}, but none of the {len(files)} attachment(s) "
-                            f"fits any of their document slots",
-                            group_id=group.id, evidence=who.get("evidence") or "")
-                    processed.append({
-                        "from": sender, "subject": subject, "matched": group.name,
-                        "reason": (f"identified {group.name}, but nothing attached fits their "
-                                   "document slots — no job created"),
-                        "left_unread": True,
-                    })
-                    continue
-                # Nothing auto-filled a slot, but at least one page survived as genuinely
-                # Unclassified - a real page the classifier could not confidently place, or
-                # one that lost a same-slot arbitration to another file's page (the exact
-                # "real packing list and freight certificate were silently dropped" case the
-                # comment above assign_documents_detailed's own call describes). Keep the job
-                # so an operator can resolve it by hand via the same Unclassified-pages tray
-                # Smart Upload already has, instead of losing it with no trace.
-                logger.info(
-                    "email classify: %s - nothing auto-filled, but %s page(s) kept as "
-                    "Unclassified for an operator to resolve", mid[:60], unclassified_count)
-
-            try:
-                run_extraction(db, job)
-            except Exception:  # noqa: BLE001
-                logger.exception("auto-extract failed for email job %s", job.id)
-            # Left UNREAD on purpose, even on success - that is how the inbox itself shows
-            # "this one was turned into a job" to a person glancing at it. Processed mail is
-            # never re-picked-up by mistake anyway, regardless of this flag: _claim() already
-            # recorded it in EmailSeen the moment this run started, and the next poll's
-            # _claim() sees that record and skips it outright - the mailbox's own read/unread
-            # flag plays no part in that decision.
-            try:
-                conn.store(uid, "-FLAGS", "\\Seen")
-            except Exception:  # noqa: BLE001
-                pass
-            _close_any_pending_email_for(db, mid, group.id, job.id)
-            _record(db, mid, sender, subject, "matched",
-                    tie_note or (who.get("reason") or ""), group_id=group.id, job_id=job.id,
-                    evidence=who.get("evidence") or "")
-            processed.append({
-                "from": sender,
-                "subject": subject,
-                "matched": group.name,
-                "matched_by": "the documents' own data",
-                "why": who.get("reason"),
-                "evidence": who.get("evidence"),
-                "tie_break": tie_note or None,
-                "job_id": job.id,
-                "filled_slots": filled,
-                "renamed": named,
-                "attachments": len(files),
-                # Every new job starts Unassigned now (see the Job() construction above) -
-                # this used to report the auto-assigned operator, which no longer exists.
-                "assigned_operator_id": None,
-            })
-        out = {"ok": True, "processed": processed}
-        if unidentifiable:
-            out["note"] = ("These customers have nothing on their documents that identifies "
-                           "them, so mail can never be routed to them: "
-                           + ", ".join(unidentifiable))
-        return out
+            messages.append({"uid": uid, "raw": raw[0][1]})
+        return {"ok": True, "messages": messages}
     except Exception as exc:  # noqa: BLE001
-        logger.exception("email pull failed")
-        return {"ok": False, "error": str(exc), "processed": processed}
+        logger.exception("could not harvest mailbox")
+        return {"ok": False, "error": str(exc), "messages": []}
     finally:
         try:
             conn.logout()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _process_one_message(
+    db: Session, uid: bytes, raw: bytes, ctx: dict,
+    mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
+    extraction_engine: str, vision_engine_model: str, custom_filter_texts: list,
+    reexamine: bool,
+) -> dict | None:
+    """Everything _pull_one_mailbox's own loop used to do for ONE message, given its
+    already-harvested raw bytes (see _harvest_mailbox) instead of a live, mailbox-owned IMAP
+    connection - any worker in a shared pool may run this for any mailbox's message, not only
+    the thread that harvested it (see _pull_inbox). Returns None for the one case the original
+    loop used to `continue` past without reporting anything at all; every other outcome is a
+    dict exactly as before.
+
+    Correctness against two workers somehow being handed the same message is still entirely
+    _claim()'s job - see its own docstring. Nothing here adds a second locking mechanism: a
+    caller's task list already hands each harvested message to exactly one call of this
+    function, and _claim() is the backstop for everything outside that one list (a manual
+    "Pull email now" running alongside the scheduler, or reexamine re-walking mail the
+    scheduler is also mid-way through).
+    """
+    from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
+    from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, identify_customer
+    from app.core.custom_page_filter import filter_pages_with_custom
+    from app.core.docai import ocr_page_image
+    from app.core.page_filter import extract_pdf_pages, kept_page_to_original
+
+    single_group = ctx["single_group"]
+    candidates = ctx["candidates"]
+    by_id = ctx["by_id"]
+
+    msg = email.message_from_bytes(raw)
+    sender = parseaddr(msg.get("From"))[1].lower()
+    subject = _decode(msg.get("Subject")) or "(no subject)"
+    mid = _message_id(msg)
+
+    # Claim it BEFORE reading it, not after. See _claim().
+    claimed, why_not = _claim(db, mid, sender, subject, steal=reexamine)
+    if not claimed:
+        return {"from": sender, "subject": subject, "matched": None,
+                "reason": why_not, "skipped_by_log": True}
+
+    # ---- attachments, including whatever is inside a .zip
+    import io
+    import zipfile
+
+    files: list[tuple[str, bytes]] = []
+    for name, blob in _extract_attachments(msg):
+        if name.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                    for n in z.namelist():
+                        if not n.endswith("/") and \
+                                Path(n).suffix.lower() in CLASSIFY_EXTS:
+                            files.append((Path(n).name, z.read(n)))
+            except zipfile.BadZipFile:
+                continue
+        elif Path(name).suffix.lower() in CLASSIFY_EXTS:
+            files.append((name, blob))
+
+    if not files:
+        _record(db, mid, sender, subject, "no_documents",
+                "nothing readable was attached")
+        return {"from": sender, "subject": subject, "matched": None,
+                "reason": "no document attachments"}
+
+    # ---- read every page, and hold the text only as long as it is needed
+    import shutil
+
+    safe_mid = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:60] or "msg"
+    tmp = Path(get_settings().uploads_dir) / "_email" / safe_mid
+    doc_texts: list[tuple[str, str]] = []
+    prepared: list[dict] = []
+    group = None
+    filled: list[str] = []
+    named: list[str] = []
+    who: dict = {}
+    tie_note = ""
+    job = None
+    try:
+        import fitz  # PyMuPDF
+
+        for idx, (name, blob) in enumerate(files):
+            ext = Path(name).suffix.lower() or ".pdf"
+            fdir = tmp / str(idx)
+            (fdir / "pages").mkdir(parents=True, exist_ok=True)
+            orig = fdir / f"f{ext}"
+            orig.write_bytes(blob)
+            text, first_png, pages = "", None, 0
+            try:
+                with fitz.open(orig) as doc:
+                    for i, page in enumerate(doc, start=1):
+                        if i > 6:
+                            break
+                        png = fdir / "pages" / f"page_{i}.png"
+                        page.get_pixmap(dpi=150).save(png)
+                        if i == 1:
+                            first_png = png
+                        pages = i
+                raw_pages = []
+                for i in range(1, pages + 1):
+                    try:
+                        got = ocr_page_image(
+                            fdir / "pages" / f"page_{i}.png").get("text", "")
+                    except Exception:  # noqa: BLE001
+                        logger.warning("OCR unavailable for %s p%s", name, i)
+                        got = ""
+                    raw_pages.append(got)
+                # Drop the carrier's terms and conditions BEFORE classifying, not just
+                # before extracting. A 2-page sea waybill is 42,551 characters of which
+                # ~39,000 are terms that define "Freight", "Package", "Packing List"
+                # and "invoice" - so the bill of lading matched every slot on the
+                # template and filled all four. The data page on its own is
+                # unambiguous.
+                kept, dropped = filter_pages_with_custom(raw_pages, custom_filter_texts, name)
+                if dropped:
+                    logger.info("email classify: %s - ignoring page(s) %s, carrier "
+                                "terms and conditions", name, dropped)
+                text = "\n\n".join(
+                    f"=== PAGE {n} ===\n{t}"
+                    for n, t in enumerate(kept, start=1) if t.strip())
+                # Every kept page's own image, keyed by its KEPT-page number - used
+                # only by the vision engine's per-page classifier
+                # (classify_pages_from_images), mirroring smart_upload's own
+                # page_images. Same reasoning: a wrong page in a combined email
+                # attachment deserves the same fix as a manual upload.
+                kept_to_orig = kept_page_to_original(pages, list(dropped))
+                page_images = [
+                    (i, fdir / "pages" / f"page_{kept_to_orig[i - 1] if i - 1 < len(kept_to_orig) else i}.png")
+                    for i in range(1, len(kept) + 1)
+                ]
+            except Exception:  # noqa: BLE001
+                logger.warning("could not open attachment %s", name)
+                continue
+            prepared.append({"name": name, "ext": ext, "blob": blob,
+                             "text": text, "image": first_png,
+                             "drop_pages": list(dropped), "page_count": pages,
+                             "page_images": page_images, "kept_pages": kept})
+            doc_texts.append((name, text))
+
+        if not prepared:
+            _record(db, mid, sender, subject, "unreadable",
+                    "the attachments could not be opened")
+            return {"from": sender, "subject": subject, "matched": None,
+                    "reason": "attachments could not be read"}
+
+        # ---- WHOSE documents are these? Decided from the pages, not the sender -
+        # unless this mailbox only ever answers that question one way.
+        if single_group is not None:
+            who = {"keys": [single_group.id],
+                   "reason": "the only template connected to this mailbox",
+                   "evidence": ""}
+        else:
+            who = identify_customer(subject, _body_text(msg), doc_texts, candidates)
+        keys = who.get("keys") or []
+
+        if not keys:
+            # Nothing recognised. Throw the extracted text and the files away - keeping
+            # a stranger's documents on disk serves nobody - and write down why, so the
+            # next poll does not pay for the same OCR and the same model call again.
+            reason = who.get("reason") or "the documents name no customer we know"
+            _record(db, mid, sender, subject, "no_customer", reason,
+                    evidence=who.get("evidence") or "")
+            _save_pending_email(db, mid, sender, subject, reason,
+                               who.get("evidence") or "", prepared)
+            return {
+                "from": sender, "subject": subject, "matched": None,
+                "reason": "the documents do not identify any customer",
+                "why": who.get("reason"), "evidence": who.get("evidence"),
+                "left_unread": True,
+            }
+
+        chosen_id = keys[0]
+        if len(keys) > 1:
+            # Two customers whose paperwork looks the same. Prefer the Excel-entry one:
+            # a deliberate rule rather than a coin toss, and it is written on the row so
+            # a wrong call can be found afterwards.
+            excel = [k for k in keys if (by_id[k].entry_mode or "fields") == "excel"]
+            if len(excel) == 1:
+                chosen_id = excel[0]
+                tie_note = (f"{len(keys)} customers fit; chose the Excel-entry one "
+                            f"({by_id[chosen_id].name})")
+            else:
+                names = ", ".join(by_id[k].name for k in keys)
+                amb_reason = (f"fits more than one customer and none is the only "
+                             f"Excel-entry one: {names}")
+                _record(db, mid, sender, subject, "ambiguous", amb_reason,
+                        evidence=who.get("evidence") or "")
+                _save_pending_email(db, mid, sender, subject, amb_reason,
+                                   who.get("evidence") or "", prepared)
+                return {
+                    "from": sender, "subject": subject, "matched": None,
+                    "reason": f"fits more than one customer ({names}) - needs a person",
+                    "candidates": [by_id[k].name for k in keys],
+                    "left_unread": True,
+                }
+
+        group = by_id[chosen_id]
+
+        # Safety net: this can only happen if a tenant's allowed modes were narrowed
+        # AFTER this template was built (template creation itself already refuses to
+        # tag a template with a mode the tenant isn't licensed for) - but a job filed
+        # under a mode nobody signed off on is worse than one held for a person to
+        # look at, so treat it exactly like not recognising the customer at all.
+        tenant = db.get(Tenant, group.tenant_id)
+        if group.mode and tenant is not None and tenant.allowed_modes \
+                and group.mode not in tenant.allowed_modes:
+            mode_reason = (f"identified {group.name}, but its mode ({group.mode}) "
+                          f"is not one {tenant.name} is licensed for")
+            _record(db, mid, sender, subject, "no_customer", mode_reason,
+                    evidence=who.get("evidence") or "")
+            _save_pending_email(db, mid, sender, subject, mode_reason,
+                               who.get("evidence") or "", prepared)
+            return {
+                "from": sender, "subject": subject, "matched": None,
+                "reason": mode_reason, "left_unread": True,
+            }
+
+        # ---- the job
+        # Assignment is a deliberate action from the Jobs list' own dropdown, never a
+        # side effect of WHICH MAILBOX a job happened to arrive in - a forwarding agent
+        # mails for six importers from one shared address, and none of them is "the"
+        # operator for all six. The one exception: the SENDER is themselves a real,
+        # already-registered operator account (their own email, not a shared inbox) -
+        # there the job already has a genuine, unambiguous owner the moment it lands,
+        # and leaving it Unassigned just made someone hunt for what they already sent.
+        job = Job(
+            tenant_id=group.tenant_id,
+            group_id=group.id,
+            reference=generate_job_no(),
+            status="draft",
+            created_by_id=None,
+            assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+        )
+        db.add(job)
+        db.flush()
+        slots: dict[str, JobDocument] = {}
+        slot_meta: dict[str, dict] = {}
+        for tdoc in group.documents:
+            jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                             template_document_id=tdoc.id, page_count=0)
+            db.add(jd)
+            slots[tdoc.id] = jd
+            slot_meta[tdoc.id] = {
+                "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
+                "fields": [m.label_name for m in tdoc.marks],
+                # the customer's own sample for this slot - the strongest reference
+                "reference": _slot_reference(tdoc.id),
+            }
+        db.flush()
+        cand_slots = list(slot_meta.values())
+
+        # Stage every kept page as a provisional "unresolved" row BEFORE classification
+        # runs - the exact same UnmatchedUploadPage mechanism Smart Upload already uses
+        # (see that model's own docstring), just never wired into this pipeline until
+        # now. A page the classifier cannot confidently place, or loses a same-slot
+        # arbitration to another file's page (see the comment just below - "the real
+        # packing list and freight certificate were silently dropped" was never fixed,
+        # only made less frequent), must surface to an operator as Unclassified rather
+        # than vanish with no trace. Pruned back down to just the pages that stay
+        # genuinely unresolved once classification has actually run, below.
+        import uuid
+
+        unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
+        unmatched_dir.mkdir(parents=True, exist_ok=True)
+        pages_by_file: list[list] = []
+        for item in prepared:
+            rows: list = []
+            page_image_by_num = dict(item.get("page_images") or [])
+            for i, page_text in enumerate(item.get("kept_pages") or [], start=1):
+                if not page_text.strip():
+                    rows.append(None)
+                    continue
+                src_png = page_image_by_num.get(i)
+                dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                if src_png is not None and src_png.exists():
+                    shutil.copy(src_png, dest)
+                row = UnmatchedUploadPage(
+                    tenant_id=job.tenant_id, job_id=job.id,
+                    original_filename=item["name"][:255], page_number=i,
+                    image_path=str(dest), ocr_text=page_text,
+                )
+                db.add(row)
+                rows.append(row)
+            pages_by_file.append(rows)
+        # A flush only, not a commit: if classification itself raises
+        # AIServiceUnavailable below, the WHOLE job - including these staged rows -
+        # must roll back together, exactly as before this existed, so the email is
+        # retried completely fresh next cycle rather than leaving an orphaned job
+        # with no classification ever having run against it.
+        db.flush()
+
+        # assign_documents, not classify_file per file: a slot goes to ONE file, and
+        # the most specific claimant wins it. Classifying each file alone let a single
+        # invoice fill both the Invoice and the Packing List slot, and a bill of lading
+        # fill both the BL and the Freight slot - the real packing list and freight
+        # certificate were silently dropped.
+        claims_per_file = assign_documents_detailed(
+            prepared, cand_slots, engine=extraction_engine,
+            vision_model=vision_engine_model,
+            # Classify every page from its own image instead of page 1 alone, same
+            # fix as Smart Upload - a combined/multi-page attachment can mis-route a
+            # page just as easily arriving by mail as uploaded by hand.
+            per_page_vision=True,
+        )
+        for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
+            # The AI second-opinion pathway (_ai_verify_second_type, source
+            # "ai_second") is the weakest signal assign_documents_detailed produces -
+            # a narrow, loosely-worded "does this ALSO contain Y" call with no regex
+            # anchor, consulted only because nothing more reliable recognised the
+            # wording. Found live: it accepted an ordinary invoice's own routine
+            # freight cost line as "this is ALSO a Freight Certificate", and separately
+            # accepted a plain single-page House BL as "this is ALSO a Packing List" -
+            # two different document pairs, same underlying weak-signal cause. Rather
+            # than keep hand-tuning prompts pair by pair, a weak claim never silently
+            # fills a real slot at all - it is dropped, and (unless the SAME page also
+            # has a real claim from a stronger source) the page stays staged as
+            # Unclassified for a person to resolve by hand.
+            strong_claims = [c for c in claims if c.get("source") != "ai_second"]
+            weak_claims = [c for c in claims if c.get("source") == "ai_second"]
+            for c in weak_claims:
+                logger.info(
+                    "email classify: %s - dropped a weak AI second-opinion claim on "
+                    "%s (page(s) %s) - left for an operator to confirm instead of "
+                    "silently duplicating into that slot",
+                    item["name"], slot_meta.get(c["key"], {}).get("name", c["key"]),
+                    c["pages"])
+            keys = [c["key"] for c in strong_claims]
+            # Every page a STRONG claim actually covers is now a real JobDocument - its
+            # staging row has done its job (and would otherwise show the operator a
+            # page that already lives somewhere real). A page only a weak claim covered
+            # is deliberately NOT pruned - see above. Mirrors Smart Upload's own prune
+            # step, extended with the same strong/weak distinction.
+            claimed_pages = {p for c in strong_claims for p in c["pages"]}
+            for i, row in enumerate(unmatched_rows, start=1):
+                if row is not None and i in claimed_pages:
+                    db.delete(row)
+            # Say what the analyser decided, per file. Without this a document that
+            # goes unrouted leaves no trace at all: the job simply has an empty slot
+            # and nothing to explain why. The character count matters too - a file the
+            # OCR could not read gives the analyser nothing to work with, and that is
+            # a different problem from a file it read and rejected.
+            logger.info(
+                "email classify: %s (%s chars of text) -> %s",
+                item["name"], len(item["text"] or ""),
+                ", ".join(slot_meta[k]["name"] for k in keys if k in slot_meta)
+                or "NO SLOT MATCHED")
+            # A combined attachment (one PDF carrying both the Invoice and the Packing
+            # List) must give each slot only ITS pages, not the whole thing.
+            split = len(strong_claims) > 1 and item["ext"] == ".pdf"
+            kept_original = (
+                kept_page_to_original(item["page_count"], item["drop_pages"])
+                if split else []
+            )
+            for claim in strong_claims:
+                key = claim["key"]
+                jd = slots.get(key)
+                if jd is None:
+                    continue
+                if jd.file_path:
+                    # The slot already holds a file, and this mail carries another one
+                    # for it — three invoices for one shipment is ordinary. Add a row
+                    # rather than writing over the last, which lost the earlier
+                    # attachments without a word. slots[key] always points at the
+                    # newest row, so file_index keeps counting up.
+                    jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                                     template_document_id=key, page_count=0,
+                                     file_index=jd.file_index + 1)
+                    db.add(jd)
+                    db.flush()
+                    slots[key] = jd
+                jd.original_name = (item["name"] or "")[:255] or None
+                meta = slot_meta[key]
+                fname = _document_name(meta["doc_type"], meta["name"],
+                                       item["text"], item["ext"])
+                ddir = _job_doc_dir(jd.id)
+                ddir.mkdir(parents=True, exist_ok=True)
+                dorig = ddir / fname
+                if split:
+                    orig_pages = sorted({
+                        kept_original[p - 1] for p in claim["pages"]
+                        if 1 <= p <= len(kept_original)
+                    }) or kept_original
+                    dorig.write_bytes(extract_pdf_pages(item["blob"], orig_pages))
+                    jd.page_count = _render_pages(dorig, ddir / "pages")
+                else:
+                    dorig.write_bytes(item["blob"])
+                    # The carrier's terms page is not part of the document anyone
+                    # works with, so it is not rendered into the job either. The
+                    # original file still holds it.
+                    jd.page_count = _render_pages(dorig, ddir / "pages",
+                                                  skip=item.get("drop_pages"))
+                jd.file_path = str(dorig)
+                record_billable_pages(db, job, jd.page_count)
+                if meta["name"] not in filled:
+                    filled.append(meta["name"])
+                named.append(f"{item['name']} -> {fname}")
+        db.commit()
+        # The pipeline's own working copy of this email is deleted in the finally
+        # block below the moment this job is done processing - this is the only chance
+        # to keep the as-arrived original for GK1's IRN Documents Upload "Prealert"
+        # view.
+        from app.core.job_email import save_original_email
+
+        save_original_email(
+            job.id, msg, files, sender, subject,
+            received_by=mail_email or get_settings().gmail_user,
+        )
+    except AIServiceUnavailable as exc:
+        # The AI service itself failed (quota, rate limit, connection, 5xx) - this
+        # message was never actually looked at, so it must not be recorded as "no
+        # customer" or "no document matched". Undo the claim entirely: the very next
+        # poll - an ordinary one, not only reexamine - tries it again from scratch,
+        # once the service has recovered. Nothing was ever marked read (attachments
+        # are read via BODY.PEEK[]), so there is no flag to undo either.
+        db.rollback()
+        logger.warning(
+            "email pull for %s deferred - AI service unavailable (%s); this message "
+            "will be retried automatically on a later cycle", mid[:60], exc)
+        _unclaim(db, mid)
+        return {
+            "from": sender, "subject": subject, "matched": None,
+            "reason": "the AI service is temporarily unavailable - retrying "
+                      "automatically on a later poll",
+            "deferred": True,
+        }
+    finally:
+        # The temporary pages and OCR output go, whatever happened. Anything the job
+        # needs has already been copied into the job's own folder.
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if group is None or job is None:
+        return None
+
+    if not filled:
+        unclassified_count = (
+            db.query(UnmatchedUploadPage)
+            .filter(UnmatchedUploadPage.job_id == job.id)
+            .count()
+        )
+        if not unclassified_count:
+            # The customer was recognised, not one attachment belongs in any of their
+            # slots, AND nothing survived as genuinely Unclassified either (every page
+            # was blank/unreadable) - there is truly nothing to show an operator.
+            # Keeping the job would put an empty shell in the queue, and marking the
+            # mail read would make it unpullable - so the job goes and the mail stays.
+            # Usually it means the template is missing a document type, and once that
+            # is added the same mail can be pulled again.
+            for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+                db.delete(jd)
+            db.delete(job)
+            db.commit()
+            _record(db, mid, sender, subject, "unrouted",
+                    f"identified {group.name}, but none of the {len(files)} attachment(s) "
+                    f"fits any of their document slots",
+                    group_id=group.id, evidence=who.get("evidence") or "")
+            return {
+                "from": sender, "subject": subject, "matched": group.name,
+                "reason": (f"identified {group.name}, but nothing attached fits their "
+                           "document slots — no job created"),
+                "left_unread": True,
+            }
+        # Nothing auto-filled a slot, but at least one page survived as genuinely
+        # Unclassified - a real page the classifier could not confidently place, or
+        # one that lost a same-slot arbitration to another file's page (the exact
+        # "real packing list and freight certificate were silently dropped" case the
+        # comment above assign_documents_detailed's own call describes). Keep the job
+        # so an operator can resolve it by hand via the same Unclassified-pages tray
+        # Smart Upload already has, instead of losing it with no trace.
+        logger.info(
+            "email classify: %s - nothing auto-filled, but %s page(s) kept as "
+            "Unclassified for an operator to resolve", mid[:60], unclassified_count)
+
+    try:
+        run_extraction(db, job)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto-extract failed for email job %s", job.id)
+    # Left UNREAD on purpose, even on success - that is how the inbox itself shows "this
+    # one was turned into a job" to a person glancing at it. Processed mail is never
+    # re-picked-up by mistake anyway, regardless of this flag: _claim() already recorded
+    # it in EmailSeen the moment this run started, and the next poll's _claim() sees that
+    # record and skips it outright - the mailbox's own read/unread flag plays no part in
+    # that decision.
+    #
+    # A fresh, short-lived connection of its own for just this one STORE call, rather than
+    # reusing the connection _harvest_mailbox used - that one may already be closed (it
+    # always is, in this design: harvesting disconnects as soon as it has the raw bytes)
+    # or, in principle, be busy on a different thread's next message entirely. One extra
+    # IMAP login costs a fraction of a second against a message that just took minutes of
+    # OCR and AI calls to process.
+    try:
+        flag_conn = _connect(mail_email, mail_app_password, mail_host)
+        try:
+            flag_conn.select("INBOX")
+            flag_conn.store(uid, "-FLAGS", "\\Seen")
+        finally:
+            try:
+                flag_conn.logout()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    _close_any_pending_email_for(db, mid, group.id, job.id)
+    _record(db, mid, sender, subject, "matched",
+            tie_note or (who.get("reason") or ""), group_id=group.id, job_id=job.id,
+            evidence=who.get("evidence") or "")
+    return {
+        "from": sender,
+        "subject": subject,
+        "matched": group.name,
+        "matched_by": "the documents' own data",
+        "why": who.get("reason"),
+        "evidence": who.get("evidence"),
+        "tie_break": tie_note or None,
+        "job_id": job.id,
+        "filled_slots": filled,
+        "renamed": named,
+        "attachments": len(files),
+        # Every new job starts Unassigned now (see the Job() construction above) -
+        # this used to report the auto-assigned operator, which no longer exists.
+        "assigned_operator_id": None,
+    }
+
+
+def _pull_one_mailbox(
+    db: Session, tenant_id: str | None = None, max_messages: int = 30,
+    reexamine: bool = False,
+    mail_email: str | None = None, mail_app_password: str | None = None,
+    mail_host: str | None = None, forced_group_id: str | None = None,
+) -> dict:
+    """Everything pull_inbox used to do end to end, for exactly ONE mailbox, run
+    sequentially on the caller's own thread.
+
+    Internally just a composition of _mailbox_setup -> _harvest_mailbox ->
+    _process_one_message (once per harvested message) - the same three pieces _pull_inbox's
+    own shared-pool version is built from, so there is exactly one copy of the actual
+    per-message pipeline, not two that could silently drift apart.
+    """
+    from app.core.custom_page_filter import get_active_custom_filter_texts
+    from app.core.system_settings import get_extraction_engine
+
+    # Read ONCE, up front, before any tentative Job/JobDocument is ever flushed inside
+    # _process_one_message. The first-ever read of a system setting lazily creates (and
+    # commits) its row if none exists yet (see get_system_settings) - doing that lazily
+    # INSIDE per-message processing, after a tentative Job was already flushed but not
+    # committed, would incidentally commit that half-built job along with it, defeating the
+    # rollback _process_one_message relies on when the classification call itself fails (see
+    # test_classify_document_outage_rolls_back_*).
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
+    custom_filter_texts = get_active_custom_filter_texts(db)
+
+    ctx, early = _mailbox_setup(db, tenant_id, forced_group_id)
+    if early is not None:
+        return early
+
+    harvest = _harvest_mailbox(mail_email, mail_app_password, mail_host, max_messages, reexamine)
+    if not harvest.get("ok"):
+        return {"ok": False, "error": harvest.get("error")}
+
+    processed: list[dict] = []
+    try:
+        for message in harvest["messages"]:
+            entry = _process_one_message(
+                db, message["uid"], message["raw"], ctx,
+                mail_email, mail_app_password, mail_host,
+                extraction_engine, vision_engine_model, custom_filter_texts, reexamine,
+            )
+            if entry is not None:
+                processed.append(entry)
+        out = {"ok": True, "processed": processed}
+        if ctx["unidentifiable"]:
+            out["note"] = ("These customers have nothing on their documents that identifies "
+                           "them, so mail can never be routed to them: "
+                           + ", ".join(ctx["unidentifiable"]))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("email pull failed")
+        return {"ok": False, "error": str(exc), "processed": processed}
