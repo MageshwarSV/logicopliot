@@ -123,13 +123,25 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     erp_failed_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     erp_failed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Set ONCE, the first time the AI/ERP automation (_kick_off_real_erp_submission, either
+    # via a real GK2 review or a GK2-skipped tenant/mode - see gk2_skipped) successfully
+    # submits this job, and NEVER cleared again - unlike gk2_status, which persist_run_outcome
+    # deliberately resets to None on any LATER run through the regular entry screen (an Entry
+    # Browser rerun, complete_job), so the stale value does not keep showing an old "Failed" or
+    # "AI - ERP Submitted" badge after a fresh attempt (see persist_run_outcome's own comment,
+    # and the sync-status endpoint built to patch exactly this drift by hand). That reset is
+    # correct for the BADGE, but the Jobs list's Submitted/Completed split needs to remember
+    # "this job went through the AI path at least once" even after gk2_status moves on - this
+    # column is that durable memory, independent of whatever gk2_status/job.status happen to
+    # read right now.
+    ai_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # A human confirming the AI/ERP automation actually went through - closes a loop that
-    # otherwise never closes: gk2_status reaching "submitted" (whether GK2 reviewed it or
-    # this tenant has GK2 turned off for this shipment mode - see gk2_skipped) never moves
-    # on to anything else by itself. None = still awaiting that confirmation. The direct
-    # Submit Entry path (complete_job, job.status == "completed") needs no equivalent column
-    # - an operator pressing it IS the human submitting it in real time, nothing to confirm
-    # afterward.
+    # otherwise never closes: ai_submitted_at being set never moves on to anything else by
+    # itself. None = still awaiting that confirmation. The direct Submit Entry path
+    # (complete_job, job.status == "completed", ai_submitted_at never set) needs no equivalent
+    # column - an operator pressing it IS the human submitting it in real time, nothing to
+    # confirm afterward.
     erp_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     erp_verified_by_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

@@ -1,8 +1,17 @@
 """The Jobs list's three left-side screens - New Jobs / Submitted Jobs / Completed Jobs - and
 the "Verified" action that moves a job from Submitted to Completed. Applies identically
 whether a tenant/mode requires GK2 review or has it turned off (see Tenant.gk2_required_by_mode
-/ test_gk2_optional_by_mode.py): both paths reach the same gk2_status == "submitted" outcome
-through _finalize_job_approval."""
+/ test_gk2_optional_by_mode.py): both paths reach the same successful outcome through
+_finalize_job_approval, and Job.ai_submitted_at is set identically either way.
+
+Job.ai_submitted_at, not gk2_status, is the real signal for "this job went through the AI/ERP
+automation" - a job found live in production proved why: persist_run_outcome deliberately
+resets gk2_status to None on a LATER retry through the regular entry screen (an Entry Browser
+rerun, complete_job), so a stale "Failed"/"AI - ERP Submitted" badge does not linger after a
+fresh attempt. That reset is correct for the badge, but it silently un-submitted jobs on the
+Jobs list - gk2_status=="submitted" jobs that had since been retried fell straight into
+Completed Jobs with nobody ever having pressed Verified. ai_submitted_at is set once, at the
+moment the AI path first succeeds, and never cleared again, so it survives that reset."""
 
 from datetime import datetime, timezone
 
@@ -31,61 +40,80 @@ def _make_job(db_session, tenant, group, **kwargs):
     return job
 
 
+NOW = datetime.now(timezone.utc)
+
+
 # --------------------------------------------------------------- _job_category (pure logic)
 
 
 def test_an_ordinary_job_is_new():
-    job = Job(status="extracted", gk2_status=None, erp_verified_at=None)
+    job = Job(status="extracted", gk2_status=None, ai_submitted_at=None, erp_verified_at=None)
     assert _job_category(job) == "new"
 
 
 def test_pending_gk2_approval_is_still_new():
-    job = Job(status="extracted", gk2_status="pending", erp_verified_at=None)
+    job = Job(status="extracted", gk2_status="pending", ai_submitted_at=None)
     assert _job_category(job) == "new"
 
 
 def test_preparing_or_entering_erp_is_still_new():
-    assert _job_category(Job(status="extracted", gk2_status="preparing_erp")) == "new"
-    assert _job_category(Job(status="extracted", gk2_status="entering_erp")) == "new"
+    assert _job_category(Job(status="extracted", gk2_status="preparing_erp", ai_submitted_at=None)) == "new"
+    assert _job_category(Job(status="extracted", gk2_status="entering_erp", ai_submitted_at=None)) == "new"
 
 
 def test_a_failed_erp_run_is_still_new_not_lost():
     # Retryable by GK2 pressing Final Approve & Proceed again - must stay visible in New
-    # Jobs, not vanish into neither bucket.
-    job = Job(status="extracted", gk2_status="failed")
+    # Jobs, not vanish into neither bucket. ai_submitted_at is never set on a run that has
+    # only ever failed so far.
+    job = Job(status="extracted", gk2_status="failed", ai_submitted_at=None)
     assert _job_category(job) == "new"
 
 
 def test_ai_erp_submitted_and_unverified_is_submitted():
-    # persist_run_outcome (the shared outcome-writer behind BOTH Submit Entry and GK2's own
-    # real ERP run) sets job.status = "completed" on ANY successful run, including a GK2/AI
-    # one - _run_gk2_submission then layers gk2_status = "submitted" on top of that SAME
-    # "completed" status. This is the realistic shape a genuinely GK2-submitted job has;
-    # status="extracted" here would miss the exact bug this regression guards against
-    # (checking job.status before gk2_status put every submitted job straight on Completed).
-    job = Job(status="completed", gk2_status="submitted", erp_verified_at=None)
+    # The realistic shape: persist_run_outcome sets job.status = "completed" on this SAME
+    # successful run, ai_submitted_at is set by _kick_off_real_erp_submission's success
+    # branch, and gk2_status also happens to read "submitted" right now - all three true at
+    # once immediately after a fresh, un-retried success.
+    job = Job(status="completed", gk2_status="submitted", ai_submitted_at=NOW, erp_verified_at=None)
     assert _job_category(job) == "submitted"
 
 
 def test_ai_erp_submitted_and_verified_is_completed():
-    job = Job(status="completed", gk2_status="submitted",
+    job = Job(status="completed", gk2_status="submitted", ai_submitted_at=NOW,
              erp_verified_at=datetime.now(timezone.utc))
     assert _job_category(job) == "completed"
 
 
 def test_direct_submit_entry_path_is_completed_with_no_verification_needed():
-    # complete_job's own path - job.status goes straight to "completed", gk2_status never
-    # set at all. An operator pressing Submit Entry already IS the human confirming it.
-    job = Job(status="completed", gk2_status=None, erp_verified_at=None)
+    # complete_job's own path - job.status goes straight to "completed", ai_submitted_at
+    # never set at all. An operator pressing Submit Entry already IS the human confirming it.
+    job = Job(status="completed", gk2_status=None, ai_submitted_at=None, erp_verified_at=None)
     assert _job_category(job) == "completed"
 
 
 def test_the_old_placeholder_non_excel_path_is_also_submitted_not_completed():
     # The non-Excel-entry placeholder outcome never calls persist_run_outcome at all, so
-    # job.status stays whatever it was before (typically "extracted") - gk2_status alone must
-    # still be enough to land this on Submitted Jobs.
-    job = Job(status="extracted", gk2_status="submitted", erp_verified_at=None)
+    # job.status stays whatever it was before (typically "extracted") - ai_submitted_at alone
+    # must still be enough to land this on Submitted Jobs.
+    job = Job(status="extracted", gk2_status="submitted", ai_submitted_at=NOW, erp_verified_at=None)
     assert _job_category(job) == "submitted"
+
+
+def test_a_later_retry_through_the_regular_entry_screen_does_not_un_submit_the_job():
+    # THE bug found live in production. persist_run_outcome resets gk2_status to None on a
+    # later retry through the regular entry screen (an Entry Browser rerun, complete_job) -
+    # on purpose, so a stale badge doesn't linger - and that retry can itself fail afterward
+    # too. A job that genuinely went through the AI path once must stay on Submitted Jobs
+    # (awaiting Verified) through all of that churn, never sliding back to New or jumping
+    # straight to Completed just because gk2_status/job.status moved on without it.
+    job = Job(status="failed", gk2_status=None, ai_submitted_at=NOW, erp_verified_at=None)
+    assert _job_category(job) == "submitted"
+
+    job.status = "completed"  # the retry then succeeds on its own, via the regular screen
+    assert _job_category(job) == "submitted"  # still not Completed - nobody pressed Verified
+
+    job.erp_verified_at = datetime.now(timezone.utc)
+    assert _job_category(job) == "completed"
 
 
 # --------------------------------------------------------------- GET /jobs?category=...
@@ -96,10 +124,8 @@ def test_category_new_excludes_submitted_and_completed(client, db_session):
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op1@example.com")
     new_job = _make_job(db_session, tenant, group, reference="JOB-NEW")
-    # status="completed" here too - persist_run_outcome sets it on every successful run,
-    # including a GK2/AI one, before gk2_status = "submitted" lands on top of it.
     submitted_job = _make_job(db_session, tenant, group, reference="JOB-SUB",
-                              status="completed", gk2_status="submitted")
+                              status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     completed_job = _make_job(db_session, tenant, group, reference="JOB-DONE", status="completed")
     login(client, op.email)
 
@@ -116,9 +142,9 @@ def test_category_submitted_is_only_unverified_ai_erp_submissions(client, db_ses
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op2@example.com")
     unverified = _make_job(db_session, tenant, group, reference="JOB-UNVER",
-                           status="completed", gk2_status="submitted")
+                           status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     verified = _make_job(db_session, tenant, group, reference="JOB-VER",
-                         status="completed", gk2_status="submitted",
+                         status="completed", gk2_status="submitted", ai_submitted_at=NOW,
                          erp_verified_at=datetime.now(timezone.utc))
     pending = _make_job(db_session, tenant, group, reference="JOB-PEND", gk2_status="pending")
     login(client, op.email)
@@ -131,12 +157,31 @@ def test_category_submitted_is_only_unverified_ai_erp_submissions(client, db_ses
     assert pending.id not in ids
 
 
+def test_category_submitted_survives_a_gk2_status_reset_from_a_later_retry(client, db_session):
+    # The exact production bug, at the HTTP layer: ai_submitted_at set once, but gk2_status
+    # has since been reset to None (and status bounced to "failed" and back) by a later
+    # retry through the regular entry screen - must still show on Submitted Jobs.
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op2b@example.com")
+    drifted = _make_job(db_session, tenant, group, reference="JOB-DRIFTED",
+                        status="completed", gk2_status=None, gk2_skipped=True, ai_submitted_at=NOW)
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "submitted"})
+    assert resp.status_code == 200, resp.text
+    assert drifted.id in {j["id"] for j in resp.json()}
+
+    resp = client.get("/api/v1/jobs", params={"category": "completed"})
+    assert drifted.id not in {j["id"] for j in resp.json()}
+
+
 def test_category_completed_includes_both_verified_and_direct_submit_entry(client, db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op3@example.com")
     verified = _make_job(db_session, tenant, group, reference="JOB-VER2",
-                         status="completed", gk2_status="submitted",
+                         status="completed", gk2_status="submitted", ai_submitted_at=NOW,
                          erp_verified_at=datetime.now(timezone.utc))
     direct = _make_job(db_session, tenant, group, reference="JOB-DIRECT", status="completed")
     new_job = _make_job(db_session, tenant, group, reference="JOB-NEW2")
@@ -157,7 +202,7 @@ def test_category_param_omitted_returns_every_category_unchanged(client, db_sess
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op4@example.com")
     a = _make_job(db_session, tenant, group, reference="JOB-A")
     b = _make_job(db_session, tenant, group, reference="JOB-B",
-                 status="completed", gk2_status="submitted")
+                 status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     c = _make_job(db_session, tenant, group, reference="JOB-C", status="completed")
     login(client, op.email)
 
@@ -176,14 +221,15 @@ def test_invalid_category_is_rejected(client, db_session):
 
 def test_gk1_only_skipped_job_reaches_submitted_category_the_same_as_a_gk2_reviewed_one(client, db_session):
     # The user's explicit requirement: this three-way split applies "in GK1 or GK2 both" -
-    # a tenant with GK2 turned off for this mode still reaches gk2_status == "submitted" via
-    # _finalize_job_approval's skip path, and must land on the same Submitted Jobs screen.
+    # a tenant with GK2 turned off for this mode still sets ai_submitted_at via the exact same
+    # _finalize_job_approval -> _kick_off_real_erp_submission path, and must land on the same
+    # Submitted Jobs screen.
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op6@example.com")
     skipped_and_submitted = _make_job(
         db_session, tenant, group, reference="JOB-SKIPPED",
-        status="completed", gk2_status="submitted", gk2_skipped=True,
+        status="completed", gk2_status="submitted", gk2_skipped=True, ai_submitted_at=NOW,
     )
     login(client, op.email)
 
@@ -201,7 +247,8 @@ def test_category_counts_matches_the_filtered_lists(client, db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op7@example.com")
     _make_job(db_session, tenant, group, reference="JOB-N1")
     _make_job(db_session, tenant, group, reference="JOB-N2")
-    _make_job(db_session, tenant, group, reference="JOB-S1", status="completed", gk2_status="submitted")
+    _make_job(db_session, tenant, group, reference="JOB-S1",
+             status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     _make_job(db_session, tenant, group, reference="JOB-C1", status="completed")
     login(client, op.email)
 
@@ -221,7 +268,7 @@ def test_verify_moves_a_submitted_job_to_completed(client, db_session):
     gk2.assigned_modes = ["Sea Import"]
     db_session.add(gk2)
     db_session.commit()
-    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     login(client, gk2.email)
 
     resp = client.post(f"/api/v1/jobs/{job.id}/verify")
@@ -234,6 +281,22 @@ def test_verify_moves_a_submitted_job_to_completed(client, db_session):
     db_session.refresh(job)
     assert job.erp_verified_at is not None
     assert job.erp_verified_by_id == gk2.id
+
+
+def test_verify_still_works_after_a_gk2_status_reset_from_a_later_retry(client, db_session):
+    # The exact production bug, on the verify endpoint itself: a job whose gk2_status has
+    # since been reset to None must still be verifiable, since the Jobs list already shows
+    # it as Submitted based on ai_submitted_at.
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    admin = make_user(db_session, role="super_admin", email="cat-admin3@example.com")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status=None,
+                    gk2_skipped=True, ai_submitted_at=NOW)
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/verify")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["category"] == "completed"
 
 
 def test_verify_refuses_a_job_that_was_never_submitted(client, db_session):
@@ -251,7 +314,7 @@ def test_verify_is_idempotent_not_an_error_on_a_second_press(client, db_session)
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     admin = make_user(db_session, role="super_admin", email="cat-admin2@example.com")
-    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     login(client, admin.email)
 
     first = client.post(f"/api/v1/jobs/{job.id}/verify")
@@ -263,12 +326,25 @@ def test_verify_is_idempotent_not_an_error_on_a_second_press(client, db_session)
     assert second.json()["erp_verified_at"] == first_ts  # unchanged, not re-stamped
 
 
-def test_verify_is_refused_to_a_plain_operator(client, db_session):
+def test_verify_is_allowed_for_an_operator(client, db_session):
+    # Gate Keeper 1 can press Verified too - for a GK2-skipped tenant they are often the only
+    # one who ever sees this job at all.
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op8@example.com")
-    job = _make_job(db_session, tenant, group, gk2_status="submitted")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted", ai_submitted_at=NOW)
     login(client, op.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/verify")
+    assert resp.status_code == 200, resp.text
+
+
+def test_verify_is_refused_to_a_read_only_manager(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    manager = make_user(db_session, role="manager", tenant=tenant, email="cat-mgr1@example.com")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted", ai_submitted_at=NOW)
+    login(client, manager.email)
 
     resp = client.post(f"/api/v1/jobs/{job.id}/verify")
     assert resp.status_code == 403

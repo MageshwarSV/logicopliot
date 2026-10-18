@@ -937,26 +937,31 @@ def _job_category(job: Job) -> str:
     """Which of the three Jobs-list screens this job belongs on:
 
       "new"       - everything from Pre-Alert up to before the ERP submission actually runs.
-      "submitted" - the AI/ERP automation already went through (gk2_status == "submitted"),
-                    and a human still needs to confirm it actually landed before this counts
-                    as done - see Job.erp_verified_at.
+      "submitted" - the AI/ERP automation went through at least once (Job.ai_submitted_at
+                    set), and a human still needs to confirm it actually landed before this
+                    counts as done - see Job.erp_verified_at.
       "completed" - confirmed (erp_verified_at set), or reached the direct Submit Entry path
-                    instead (job.status == "completed"), which needs no separate confirmation
-                    since an operator pressing it IS the human submitting it in real time.
+                    instead (job.status == "completed", ai_submitted_at never set), which
+                    needs no separate confirmation since an operator pressing it IS the human
+                    submitting it in real time.
 
     Applies identically whether this tenant/mode requires GK2 or not - a GK2-skipped job
-    (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same
-    gk2_status == "submitted" outcome a GK2-reviewed one does, via the same
-    _finalize_job_approval -> _kick_off_real_erp_submission path.
+    (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same successful
+    outcome a GK2-reviewed one does, via the same _finalize_job_approval ->
+    _kick_off_real_erp_submission path, and ai_submitted_at is set identically either way.
 
-    gk2_status is checked BEFORE job.status, same precedence _outer_status itself uses and
-    for the same reason: persist_run_outcome (the shared outcome-writer behind both Submit
-    Entry and GK2's own real ERP run) sets job.status = "completed" on ANY successful run,
-    including a GK2/AI one - _run_gk2_submission then layers gk2_status = "submitted" on top
-    of that SAME "completed" status. Checking job.status first would put every GK2-submitted
-    job straight on Completed Jobs with nobody ever having pressed Verified.
+    ai_submitted_at, not gk2_status, is the signal - and checked BEFORE job.status, same
+    precedence _outer_status itself uses gk2_status with, for a related reason: gk2_status is
+    DELIBERATELY reset to None by persist_run_outcome on any LATER run through the regular
+    entry screen (an Entry Browser rerun, complete_job), so a stale badge does not linger
+    after a fresh attempt - see that function's own comment, and the sync-status endpoint
+    built to patch this exact drift by hand. That reset is correct for the badge, but relying
+    on the CURRENT gk2_status here would un-submit a job the moment someone re-ran it any
+    other way, silently moving it back to New Jobs or straight to Completed with nobody ever
+    having pressed Verified - confirmed live in production. ai_submitted_at is set once and
+    never cleared, so it survives that reset.
     """
-    if job.gk2_status == "submitted":
+    if job.ai_submitted_at is not None:
         return "completed" if job.erp_verified_at is not None else "submitted"
     if job.status == "completed":
         return "completed"
@@ -1694,27 +1699,20 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 
 # The three Jobs-list screens' own SQL conditions - kept as one function so list_jobs'
 # `category` filter and category_counts' three separate counts can never disagree about what
-# "submitted" or "completed" means. Mirrors _job_category's in-Python logic exactly, gk2_status
-# checked before job.status and for the same reason (see that function's own docstring):
-# persist_run_outcome sets job.status = "completed" on ANY successful ERP run, including a
-# GK2/AI one, before gk2_status = "submitted" is layered on top of that same "completed"
-# status - a submitted-but-unverified job genuinely has BOTH values set at once. This one is
-# for filtering the query itself before rows are even loaded; _job_category is for a single
+# "submitted" or "completed" means. Mirrors _job_category's in-Python logic exactly -
+# ai_submitted_at (not gk2_status, which a later retry through the regular entry screen
+# deliberately resets - see that function's own docstring) checked before job.status. This one
+# is for filtering the query itself before rows are even loaded; _job_category is for a single
 # already-loaded Job object (list rows, _build_detail).
 def _category_condition(category: str):
-    # True for every job gk2_status has NOT marked "submitted" - None, "pending",
-    # "preparing_erp", "entering_erp", "failed", "irn_document_process". Written this way,
-    # not `!= "submitted"`, because SQL's three-valued logic makes a plain inequality against
-    # NULL evaluate to NULL (excluded), not TRUE - the vast majority of jobs, which gk2 has
-    # never touched at all, would otherwise silently vanish from every bucket.
-    not_ai_submitted = (Job.gk2_status.is_(None)) | (Job.gk2_status != "submitted")
+    not_ai_submitted = Job.ai_submitted_at.is_(None)
     if category == "completed":
         return (
-            ((Job.gk2_status == "submitted") & (Job.erp_verified_at.isnot(None)))
+            (Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.isnot(None))
             | (not_ai_submitted & (Job.status == "completed"))
         )
     if category == "submitted":
-        return (Job.gk2_status == "submitted") & (Job.erp_verified_at.is_(None))
+        return Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.is_(None)
     if category == "new":
         return not_ai_submitted & (Job.status != "completed")
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -2302,6 +2300,12 @@ def sync_gk2_status(
             detail="gk2_status already says \"submitted\", so there is nothing to fix here.",
         )
     job.gk2_status = "submitted"
+    # This job really did go through the AI path - the badge just drifted (that's this whole
+    # endpoint's reason to exist). Set the durable marker too, if a stale earlier reset had
+    # already cleared it, so the Jobs list's own Submitted/Completed split agrees with the
+    # fix this endpoint just made rather than drifting right back on the next retry.
+    if job.ai_submitted_at is None:
+        job.ai_submitted_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -2394,19 +2398,22 @@ def verify_job(
     job_id: str,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(GK2, SUPER_ADMIN, ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN, ADMIN, TENANT_ADMIN)),
 ) -> JobDetailOut:
     """A human confirming the AI/ERP automation actually submitted this job - the Submitted
     Jobs screen's "Verified" button. Moves it on to the Completed Jobs screen (see
-    _job_category); nothing before this ever does, so a gk2-submitted job would otherwise sit
+    _job_category); nothing before this ever does, so an AI-submitted job would otherwise sit
     on Submitted Jobs forever with no way out.
 
-    Only meaningful for a job the automation already submitted (gk2_status == "submitted") -
-    the direct Submit Entry path needs no equivalent action, since an operator pressing that
-    button already IS the human confirming it, in real time.
+    Only meaningful for a job the automation already submitted (ai_submitted_at set) - the
+    direct Submit Entry path needs no equivalent action, since an operator pressing that
+    button already IS the human confirming it, in real time. Checks ai_submitted_at, not the
+    current gk2_status - a later retry through the regular entry screen deliberately resets
+    gk2_status to None (see _job_category's own docstring), and this job must stay
+    verifiable even then.
     """
     job = _load_job(db, job_id, scope, user)
-    if job.gk2_status != "submitted":
+    if job.ai_submitted_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job has not been submitted to the ERP yet, so there is nothing to verify.",
@@ -2501,6 +2508,8 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     job.status = "extracted"
     if not is_excel_entry:
         job.gk2_status = "submitted"
+        if job.ai_submitted_at is None:
+            job.ai_submitted_at = datetime.now(timezone.utc)
         db.commit()
         return
 
@@ -2619,6 +2628,8 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
         logger.warning("job %s: GK2 approval failed - %s", job_id, job.erp_reason)
     else:
         job.gk2_status = "submitted"
+        if job.ai_submitted_at is None:
+            job.ai_submitted_at = datetime.now(timezone.utc)
         db.commit()
         logger.info("job %s: GK2 approved - ERP entry %s", job_id, job.status)
 

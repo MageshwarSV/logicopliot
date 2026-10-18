@@ -124,9 +124,10 @@ export function JobsPage() {
   // just overwrites the previous value, there is no lock to work around.
   const canAssign = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
   // Who can press Submitted Jobs' own "Verified" button - same roles the backend's
-  // POST /jobs/{id}/verify accepts. Not operators or manager (read-only) - this is a
-  // back-office confirmation that the ERP portal actually shows the entry, not a working step.
-  const canVerify = user?.role === "gk2" || user?.role === "super_admin"
+  // POST /jobs/{id}/verify accepts. Not manager (read-only) - everyone else who actually
+  // works a job (including the operator/Gate Keeper 1, for a GK2-skipped tenant where they
+  // are the only one who ever sees it) can confirm the ERP portal shows the entry went in.
+  const canVerify = user?.role === "operator" || user?.role === "gk2" || user?.role === "super_admin"
     || user?.role === "admin" || user?.role === "tenant_admin";
   const [operators, setOperators] = useState<User[]>([]);
   const [savingAssignId, setSavingAssignId] = useState<string | null>(null);
