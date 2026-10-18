@@ -2545,6 +2545,31 @@ export function ErpScriptRecorderPage() {
                 >
                   🔓
                 </button>
+                {/* Success screenshot only: whether the picture this step keeps is shown to
+                    GK1/GK2/Super Admin at all (Captured Items on the completed job screen) or
+                    kept purely internal - reuses capture_usage, the same field a "Pick data"
+                    step's own "Where used" setting already writes, just toggled here as a
+                    single eye instead of a three-way dropdown since a screenshot only ever
+                    needs shown/hidden, never "internal only to feed a later step" the way a
+                    picked value can. */}
+                {s.action === "screenshot" && (
+                  <button
+                    type="button"
+                    title={(s.capture_usage ?? "both") === "internal"
+                      ? "Hidden — Gatekeeper 1, Gatekeeper 2 and Super Admin never see this screenshot. Press to show it."
+                      : "Shown to Gatekeeper 1, Gatekeeper 2 and Super Admin on the completed job screen. Press to hide it."}
+                    onClick={() =>
+                      setSteps((arr) => arr.map((st, j) => (
+                        j === i
+                          ? { ...st, capture_usage: (st.capture_usage ?? "both") === "internal" ? "both" : "internal" }
+                          : st
+                      )))
+                    }
+                    className={`rounded px-1 text-xs ${(s.capture_usage ?? "both") === "internal" ? "text-slate-300 hover:bg-slate-100 hover:text-sky-600 dark:hover:bg-slate-800" : "text-sky-600"}`}
+                  >
+                    {(s.capture_usage ?? "both") === "internal" ? "🙈" : "👁️"}
+                  </button>
+                )}
                 <button
                   type="button"
                   title={s.is_checkpoint ? "Clear the checkpoint" : "Set the checkpoint here — everything above is login/setup"}

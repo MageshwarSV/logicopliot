@@ -5465,6 +5465,11 @@ def play_steps(
                             success_shot["png"] = got
                             success_shot["label"] = (step.get("description")
                                                      or step.get("value") or "Success screen")
+                            # The Super Admin's own eye toggle on this step (recorder UI,
+                            # reusing capture_usage - "internal" = never shown to Gatekeeper
+                            # 1/2 or Super Admin, "both" (the default) = shown on the
+                            # completed job's Captured Items, same as today).
+                            success_shot["usage"] = step.get("capture_usage") or "both"
                             # Everything recorded AFTER this step is the Super Admin's own
                             # procedure for double-checking/tidying up a job that is already
                             # done, not part of getting it done - see the success/failure
@@ -6053,7 +6058,11 @@ def play_steps(
                         "kind": "image",
                         "description": "What the ERP was showing when the entry finished.",
                         "file": png.name,
-                        "usage": "both",
+                        # The recorded success-screenshot step's own eye toggle (see where
+                        # success_shot["usage"] is set, above) - "both" (shown) when there
+                        # was no such step to configure at all, e.g. this is the end-of-run
+                        # fallback screenshot taken because the script never recorded one.
+                        "usage": success_shot.get("usage") or "both",
                     }
                 except Exception:  # noqa: BLE001 — a picture must never fail a run
                     logger.exception("could not save the success screenshot")

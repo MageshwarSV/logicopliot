@@ -27,7 +27,10 @@ export interface ErpStep {
   capture_kind?: "value" | "text" | "document" | null;
   capture_description?: string | null;
   /** Where the picked value is needed. "internal" = reusable as [[label]] in a later step but
-   *  hidden from the operator; "output" = shown to the operator only; "both" = default. */
+   *  hidden from the operator; "output" = shown to the operator only; "both" = default.
+   *  A "screenshot" step (the success screenshot) reuses this same field as a plain eye
+   *  toggle - "both" (shown, the default) or "internal" (hidden) - "output" has no extra
+   *  meaning there since a screenshot is never reused as a [[label]] value. */
   capture_usage?: "internal" | "output" | "both" | null;
   /** Where inside the element to click, as a fraction of its width and height. Recorded from
    *  where the Super Admin actually pressed. Absent = the centre, which is right for a button
