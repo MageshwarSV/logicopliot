@@ -97,6 +97,19 @@ def test_admin_toggle_endpoints_require_super_admin(client, db_session):
     assert resp.status_code == 403
 
 
+def test_system_settings_reports_whether_the_scheduler_can_even_start(client, db_session):
+    """email_pull_paused alone used to read as "running" on a server where the background
+    poller was never started at all (EMAIL_POLL_MINUTES<=0, a deploy-time env var) - this is
+    the separate field the UI needs to tell those two apart."""
+    from app.core.config import get_settings
+
+    admin = make_user(db_session, role="super_admin", email="sa-pause-min@example.com")
+    login(client, admin.email)
+    resp = client.get("/api/v1/system-settings")
+    assert resp.status_code == 200
+    assert resp.json()["email_poll_minutes"] == get_settings().email_poll_minutes
+
+
 def test_toggling_email_pull_pause_on_via_api(client, db_session):
     admin = make_user(db_session, role="super_admin", email="sa-pause1@example.com")
     login(client, admin.email)

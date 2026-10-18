@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.currency import CurrencyRateError, fetch_usd_to_inr_rate
 from app.core.deps import get_db, require_role
 from app.core.openai_admin import (
@@ -88,6 +89,12 @@ def read_system_settings(
     row = get_system_settings(db)
     return {
         "email_pull_paused": row.email_pull_paused,
+        # Whether the automatic scheduler can even start on THIS server at all - a separate
+        # question from email_pull_paused above. EMAIL_POLL_MINUTES<=0 (an env var, set once
+        # at deploy time, not from this screen) means the background loop never starts in the
+        # first place, no matter what email_pull_paused says - "not paused" used to read as
+        # "running" even on a server where the clock was never turned on to begin with.
+        "email_poll_minutes": get_settings().email_poll_minutes,
         "extraction_paused": row.extraction_paused,
         # Never the real key, not even masked - a yes/no only. Changing it is write-only,
         # same rule as an operator's own mailbox app password.

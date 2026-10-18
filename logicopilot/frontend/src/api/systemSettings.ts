@@ -2,6 +2,10 @@ import { apiClient } from "./client";
 
 export interface SystemSettings {
   email_pull_paused: boolean;
+  /** Whether the automatic scheduler can even start on THIS server - set once at deploy time
+   *  (EMAIL_POLL_MINUTES), not from this screen. <= 0 means the background loop never starts
+   *  at all, no matter what email_pull_paused says - a separate question from "paused". */
+  email_poll_minutes: number;
   extraction_paused: boolean;
   /** Never any part of the key itself, not even masked - a partial value is still
    *  something "anyone can take". Changing it is a write-only action. */

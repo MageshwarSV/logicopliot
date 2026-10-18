@@ -370,9 +370,11 @@ export function SettingsPage() {
               <div>
                 <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Email work</p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {settings.email_pull_paused
-                    ? "Paused — no mailbox is being checked."
-                    : "Running — mailboxes are checked on schedule."}
+                  {settings.email_poll_minutes <= 0
+                    ? "Not running on this server — automatic polling was never turned on here (a deploy-time setting, not this toggle). The button below has no effect until that's fixed."
+                    : settings.email_pull_paused
+                      ? "Paused — no mailbox is being checked."
+                      : "Running — mailboxes are checked on schedule."}
                   {" "}Connect or manage mailboxes on the{" "}
                   <Link to="/super-admin/email-puller" className="underline">Email Puller</Link> page.
                 </p>
