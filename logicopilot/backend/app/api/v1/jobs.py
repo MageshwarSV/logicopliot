@@ -948,11 +948,18 @@ def _job_category(job: Job) -> str:
     (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same
     gk2_status == "submitted" outcome a GK2-reviewed one does, via the same
     _finalize_job_approval -> _kick_off_real_erp_submission path.
+
+    gk2_status is checked BEFORE job.status, same precedence _outer_status itself uses and
+    for the same reason: persist_run_outcome (the shared outcome-writer behind both Submit
+    Entry and GK2's own real ERP run) sets job.status = "completed" on ANY successful run,
+    including a GK2/AI one - _run_gk2_submission then layers gk2_status = "submitted" on top
+    of that SAME "completed" status. Checking job.status first would put every GK2-submitted
+    job straight on Completed Jobs with nobody ever having pressed Verified.
     """
-    if job.status == "completed" or job.erp_verified_at is not None:
-        return "completed"
     if job.gk2_status == "submitted":
-        return "submitted"
+        return "completed" if job.erp_verified_at is not None else "submitted"
+    if job.status == "completed":
+        return "completed"
     return "new"
 
 
@@ -1687,20 +1694,29 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 
 # The three Jobs-list screens' own SQL conditions - kept as one function so list_jobs'
 # `category` filter and category_counts' three separate counts can never disagree about what
-# "submitted" or "completed" means. Mirrors _job_category's in-Python logic exactly; that one
-# is for a single already-loaded Job object (list rows, _build_detail), this one is for
-# filtering the query itself before rows are even loaded.
+# "submitted" or "completed" means. Mirrors _job_category's in-Python logic exactly, gk2_status
+# checked before job.status and for the same reason (see that function's own docstring):
+# persist_run_outcome sets job.status = "completed" on ANY successful ERP run, including a
+# GK2/AI one, before gk2_status = "submitted" is layered on top of that same "completed"
+# status - a submitted-but-unverified job genuinely has BOTH values set at once. This one is
+# for filtering the query itself before rows are even loaded; _job_category is for a single
+# already-loaded Job object (list rows, _build_detail).
 def _category_condition(category: str):
+    # True for every job gk2_status has NOT marked "submitted" - None, "pending",
+    # "preparing_erp", "entering_erp", "failed", "irn_document_process". Written this way,
+    # not `!= "submitted"`, because SQL's three-valued logic makes a plain inequality against
+    # NULL evaluate to NULL (excluded), not TRUE - the vast majority of jobs, which gk2 has
+    # never touched at all, would otherwise silently vanish from every bucket.
+    not_ai_submitted = (Job.gk2_status.is_(None)) | (Job.gk2_status != "submitted")
     if category == "completed":
-        return (Job.status == "completed") | (Job.erp_verified_at.isnot(None))
-    if category == "submitted":
-        return (Job.gk2_status == "submitted") & (Job.status != "completed") & (Job.erp_verified_at.is_(None))
-    if category == "new":
         return (
-            (Job.status != "completed")
-            & (Job.erp_verified_at.is_(None))
-            & ((Job.gk2_status.is_(None)) | (Job.gk2_status != "submitted"))
+            ((Job.gk2_status == "submitted") & (Job.erp_verified_at.isnot(None)))
+            | (not_ai_submitted & (Job.status == "completed"))
         )
+    if category == "submitted":
+        return (Job.gk2_status == "submitted") & (Job.erp_verified_at.is_(None))
+    if category == "new":
+        return not_ai_submitted & (Job.status != "completed")
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                         detail="category must be one of: new, submitted, completed")
 

@@ -57,12 +57,18 @@ def test_a_failed_erp_run_is_still_new_not_lost():
 
 
 def test_ai_erp_submitted_and_unverified_is_submitted():
-    job = Job(status="extracted", gk2_status="submitted", erp_verified_at=None)
+    # persist_run_outcome (the shared outcome-writer behind BOTH Submit Entry and GK2's own
+    # real ERP run) sets job.status = "completed" on ANY successful run, including a GK2/AI
+    # one - _run_gk2_submission then layers gk2_status = "submitted" on top of that SAME
+    # "completed" status. This is the realistic shape a genuinely GK2-submitted job has;
+    # status="extracted" here would miss the exact bug this regression guards against
+    # (checking job.status before gk2_status put every submitted job straight on Completed).
+    job = Job(status="completed", gk2_status="submitted", erp_verified_at=None)
     assert _job_category(job) == "submitted"
 
 
 def test_ai_erp_submitted_and_verified_is_completed():
-    job = Job(status="extracted", gk2_status="submitted",
+    job = Job(status="completed", gk2_status="submitted",
              erp_verified_at=datetime.now(timezone.utc))
     assert _job_category(job) == "completed"
 
@@ -74,6 +80,14 @@ def test_direct_submit_entry_path_is_completed_with_no_verification_needed():
     assert _job_category(job) == "completed"
 
 
+def test_the_old_placeholder_non_excel_path_is_also_submitted_not_completed():
+    # The non-Excel-entry placeholder outcome never calls persist_run_outcome at all, so
+    # job.status stays whatever it was before (typically "extracted") - gk2_status alone must
+    # still be enough to land this on Submitted Jobs.
+    job = Job(status="extracted", gk2_status="submitted", erp_verified_at=None)
+    assert _job_category(job) == "submitted"
+
+
 # --------------------------------------------------------------- GET /jobs?category=...
 
 
@@ -82,7 +96,10 @@ def test_category_new_excludes_submitted_and_completed(client, db_session):
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op1@example.com")
     new_job = _make_job(db_session, tenant, group, reference="JOB-NEW")
-    submitted_job = _make_job(db_session, tenant, group, reference="JOB-SUB", gk2_status="submitted")
+    # status="completed" here too - persist_run_outcome sets it on every successful run,
+    # including a GK2/AI one, before gk2_status = "submitted" lands on top of it.
+    submitted_job = _make_job(db_session, tenant, group, reference="JOB-SUB",
+                              status="completed", gk2_status="submitted")
     completed_job = _make_job(db_session, tenant, group, reference="JOB-DONE", status="completed")
     login(client, op.email)
 
@@ -98,8 +115,10 @@ def test_category_submitted_is_only_unverified_ai_erp_submissions(client, db_ses
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op2@example.com")
-    unverified = _make_job(db_session, tenant, group, reference="JOB-UNVER", gk2_status="submitted")
-    verified = _make_job(db_session, tenant, group, reference="JOB-VER", gk2_status="submitted",
+    unverified = _make_job(db_session, tenant, group, reference="JOB-UNVER",
+                           status="completed", gk2_status="submitted")
+    verified = _make_job(db_session, tenant, group, reference="JOB-VER",
+                         status="completed", gk2_status="submitted",
                          erp_verified_at=datetime.now(timezone.utc))
     pending = _make_job(db_session, tenant, group, reference="JOB-PEND", gk2_status="pending")
     login(client, op.email)
@@ -116,7 +135,8 @@ def test_category_completed_includes_both_verified_and_direct_submit_entry(clien
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op3@example.com")
-    verified = _make_job(db_session, tenant, group, reference="JOB-VER2", gk2_status="submitted",
+    verified = _make_job(db_session, tenant, group, reference="JOB-VER2",
+                         status="completed", gk2_status="submitted",
                          erp_verified_at=datetime.now(timezone.utc))
     direct = _make_job(db_session, tenant, group, reference="JOB-DIRECT", status="completed")
     new_job = _make_job(db_session, tenant, group, reference="JOB-NEW2")
@@ -136,7 +156,8 @@ def test_category_param_omitted_returns_every_category_unchanged(client, db_sess
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op4@example.com")
     a = _make_job(db_session, tenant, group, reference="JOB-A")
-    b = _make_job(db_session, tenant, group, reference="JOB-B", gk2_status="submitted")
+    b = _make_job(db_session, tenant, group, reference="JOB-B",
+                 status="completed", gk2_status="submitted")
     c = _make_job(db_session, tenant, group, reference="JOB-C", status="completed")
     login(client, op.email)
 
@@ -161,7 +182,8 @@ def test_gk1_only_skipped_job_reaches_submitted_category_the_same_as_a_gk2_revie
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op6@example.com")
     skipped_and_submitted = _make_job(
-        db_session, tenant, group, reference="JOB-SKIPPED", gk2_status="submitted", gk2_skipped=True,
+        db_session, tenant, group, reference="JOB-SKIPPED",
+        status="completed", gk2_status="submitted", gk2_skipped=True,
     )
     login(client, op.email)
 
@@ -179,7 +201,7 @@ def test_category_counts_matches_the_filtered_lists(client, db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op7@example.com")
     _make_job(db_session, tenant, group, reference="JOB-N1")
     _make_job(db_session, tenant, group, reference="JOB-N2")
-    _make_job(db_session, tenant, group, reference="JOB-S1", gk2_status="submitted")
+    _make_job(db_session, tenant, group, reference="JOB-S1", status="completed", gk2_status="submitted")
     _make_job(db_session, tenant, group, reference="JOB-C1", status="completed")
     login(client, op.email)
 
@@ -199,7 +221,7 @@ def test_verify_moves_a_submitted_job_to_completed(client, db_session):
     gk2.assigned_modes = ["Sea Import"]
     db_session.add(gk2)
     db_session.commit()
-    job = _make_job(db_session, tenant, group, gk2_status="submitted")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted")
     login(client, gk2.email)
 
     resp = client.post(f"/api/v1/jobs/{job.id}/verify")
@@ -229,7 +251,7 @@ def test_verify_is_idempotent_not_an_error_on_a_second_press(client, db_session)
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     admin = make_user(db_session, role="super_admin", email="cat-admin2@example.com")
-    job = _make_job(db_session, tenant, group, gk2_status="submitted")
+    job = _make_job(db_session, tenant, group, status="completed", gk2_status="submitted")
     login(client, admin.email)
 
     first = client.post(f"/api/v1/jobs/{job.id}/verify")
