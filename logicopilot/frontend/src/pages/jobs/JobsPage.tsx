@@ -44,16 +44,19 @@ interface StoredJobsFilters {
   shipmentType: string;
   dateFrom: string;
   dateTo: string;
-  category: "new" | "submitted" | "completed";
 }
 
-// The Jobs list's three left-side screens - see Job.category / _category_condition in
-// api/v1/jobs.py. Applies identically whether the tenant/mode requires GK2 review or not.
-const CATEGORY_TABS: { key: "new" | "submitted" | "completed"; label: string }[] = [
-  { key: "new", label: "New Jobs" },
-  { key: "submitted", label: "Submitted Jobs" },
-  { key: "completed", label: "Completed Jobs" },
-];
+// The Jobs list's three screens - which one is active lives in the URL (?category=...), set
+// by the real left-nav links (AppShell.tsx's jobCategoryLinks) - not in component state, the
+// same way group/bucket (a dashboard box click) already work. Omitted entirely (a plain visit
+// to /jobs, or a dashboard box click that sets group/bucket but not category) means "every
+// category", unchanged from before this feature existed - only clicking one of the three nav
+// links actually narrows it. See Job.category / _category_condition in api/v1/jobs.py.
+const CATEGORY_TITLES: Record<string, string> = {
+  new: "New Jobs",
+  submitted: "Submitted Jobs",
+  completed: "Completed Jobs",
+};
 
 function readStoredJobsFilters(): Partial<StoredJobsFilters> {
   try {
@@ -73,6 +76,14 @@ export function JobsPage() {
   // what that box counted, server-side (see group/bucket in app/api/v1/jobs.py).
   const group = searchParams.get("group");
   const bucket = searchParams.get("bucket") ?? "all";
+  // The Jobs list's own screen - set by one of the three real nav links (see AppShell.tsx).
+  // undefined (not "new") when absent, so a plain /jobs visit or a dashboard box click still
+  // shows everything, exactly as before this feature existed - see CATEGORY_TITLES above.
+  const categoryParam = searchParams.get("category");
+  const category: "new" | "submitted" | "completed" | undefined =
+    categoryParam === "new" || categoryParam === "submitted" || categoryParam === "completed"
+      ? categoryParam
+      : undefined;
   // Only these two roles ever see jobs outside their own tenant — the tenant filter and
   // column are pointless (and the /tenants call would just 403) for anyone else.
   const crossTenant = user?.role === "admin" || user?.role === "super_admin";
@@ -141,12 +152,6 @@ export function JobsPage() {
   const [shipmentType, setShipmentType] = useState<string>(() => storedFilters.shipmentType ?? QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
   const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
-  // The Jobs list's own left-side screen - server-filtered, not a client-side refinement like
-  // the six above, since it changes which ROWS exist to filter in the first place.
-  const [category, setCategory] = useState<"new" | "submitted" | "completed">(
-    () => storedFilters.category ?? "new",
-  );
-  const [counts, setCounts] = useState<jobsApi.JobCategoryCounts>({ new: 0, submitted: 0, completed: 0 });
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   // Keep the stored filters in sync with whatever is currently selected, so the NEXT time
@@ -155,21 +160,13 @@ export function JobsPage() {
     try {
       window.sessionStorage.setItem(
         JOBS_FILTERS_STORAGE_KEY,
-        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo, category }),
+        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo }),
       );
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
     }
-  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo, category]);
-
-  async function loadCounts() {
-    try {
-      setCounts(await jobsApi.getJobCategoryCounts());
-    } catch {
-      // Best-effort - the badges just show stale numbers until the next successful refresh.
-    }
-  }
+  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
 
   async function loadFirstPage() {
     setLoading(true);
@@ -190,7 +187,6 @@ export function JobsPage() {
       setHasMore(jobList.length === INITIAL_BATCH_SIZE);
       setGroups(groupList);
       if (groupList[0]) setGroupId(groupList[0].id);
-      loadCounts();
     } catch {
       setError("Failed to load jobs. Is the backend running?");
     } finally {
@@ -240,7 +236,6 @@ export function JobsPage() {
       });
       setJobs(fresh);
       setHasMore(fresh.length === count);
-      loadCounts();
     } catch {
       // Leave the current view as-is — a missed refresh tick is not worth an error banner.
     }
@@ -740,7 +735,7 @@ export function JobsPage() {
 
   return (
     <AppShell
-      title="Jobs"
+      title={category ? CATEGORY_TITLES[category] : "Jobs"}
       subtitle="Upload a transaction's documents, extract, and cross-verify."
       actions={
         <div className="flex gap-2">
@@ -786,49 +781,12 @@ export function JobsPage() {
         </div>
       )}
 
-      <div className="flex items-start gap-4">
-        {/* The three Jobs-list screens - New Jobs / Submitted Jobs / Completed Jobs. A
-            server-side filter (see category in jobsApi.listJobs), not a refinement of what's
-            already loaded - switching screens reloads the list from scratch, same as changing
-            the Tenant filter does. */}
-        <div className="w-48 shrink-0">
-          <Card className="p-2">
-            <nav className="flex flex-col gap-1">
-              {CATEGORY_TABS.map((t) => (
-                <button
-                  key={t.key}
-                  type="button"
-                  onClick={() => setCategory(t.key)}
-                  aria-current={category === t.key ? "page" : undefined}
-                  className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
-                    category === t.key
-                      ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
-                      : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <span>{t.label}</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs tabular-nums ${
-                      category === t.key
-                        ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200"
-                        : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                    }`}
-                  >
-                    {counts[t.key]}
-                  </span>
-                </button>
-              ))}
-            </nav>
-          </Card>
-        </div>
-
-        <div className="min-w-0 flex-1">
       {filterLabel && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 dark:border-indigo-500/30 dark:bg-indigo-500/10">
           <span className="text-sm font-medium text-indigo-800 dark:text-indigo-200">{filterLabel}</span>
           <button
             type="button"
-            onClick={() => setSearchParams({})}
+            onClick={() => setSearchParams(category ? { category } : {})}
             className="text-xs font-medium text-indigo-700 hover:underline dark:text-indigo-300"
           >
             Clear filter
@@ -982,8 +940,6 @@ export function JobsPage() {
           just shows that it's happening. */}
       <div className="flex justify-center py-4">
         {loadingMore && <span className="text-xs text-slate-400">Loading more…</span>}
-      </div>
-        </div>
       </div>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="New Job">

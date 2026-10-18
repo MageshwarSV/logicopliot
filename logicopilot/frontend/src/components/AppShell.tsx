@@ -41,6 +41,32 @@ export function AppShell({
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
   // at all, because it actively tells you the wrong thing.
   const navClass = (path: string) => (location.pathname === path ? NAV_ACTIVE : NAV_INACTIVE);
+
+  // The Jobs list's three screens - New Jobs (Pre-Alert through anything short of the ERP
+  // submission actually running), Submitted Jobs (the AI/ERP automation already went
+  // through; each row there gets a Verified button), Completed Jobs (confirmed, or
+  // completed the direct Submit Entry way). Every role that sees a plain Jobs link gets
+  // these three instead - see Job.category in api/v1/jobs.py; applies identically whether
+  // the tenant/mode requires GK2 review or not.
+  const JOB_CATEGORIES: { key: "new" | "submitted" | "completed"; label: string }[] = [
+    { key: "new", label: "New Jobs" },
+    { key: "submitted", label: "Submitted Jobs" },
+    { key: "completed", label: "Completed Jobs" },
+  ];
+  const activeJobCategory = location.pathname === "/jobs"
+    ? new URLSearchParams(location.search).get("category")
+    : null;
+  function jobCategoryLinks() {
+    return JOB_CATEGORIES.map(({ key, label }) => (
+      <Link
+        key={key}
+        to={`/jobs?category=${key}`}
+        className={activeJobCategory === key ? NAV_ACTIVE : NAV_INACTIVE}
+      >
+        {label}
+      </Link>
+    ));
+  }
   const dashboardPath =
     user?.role === "super_admin"
       ? "/super-admin"
@@ -112,12 +138,7 @@ export function AppShell({
             <div className="mt-8">
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
-                <Link
-                  to="/jobs"
-                  className={navClass("/jobs")}
-                >
-                  Jobs
-                </Link>
+                {jobCategoryLinks()}
                 <Link to="/account" className={navClass("/account")}>
                   Settings
                 </Link>
@@ -129,12 +150,7 @@ export function AppShell({
             <div className="mt-8">
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
-                <Link
-                  to="/jobs"
-                  className={navClass("/jobs")}
-                >
-                  Jobs — every tenant
-                </Link>
+                {jobCategoryLinks()}
               </div>
             </div>
           )}
@@ -143,12 +159,7 @@ export function AppShell({
             <div className="mt-8">
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
-                <Link
-                  to="/jobs"
-                  className={navClass("/jobs")}
-                >
-                  Jobs
-                </Link>
+                {jobCategoryLinks()}
                 <Link to="/account" className={navClass("/account")}>
                   Settings
                 </Link>
@@ -160,12 +171,7 @@ export function AppShell({
             <div className="mt-8">
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
-                <Link
-                  to="/jobs"
-                  className={navClass("/jobs")}
-                >
-                  Jobs — read only
-                </Link>
+                {jobCategoryLinks()}
               </div>
             </div>
           )}
