@@ -920,8 +920,14 @@ export function JobsPage() {
         {!loading && (
           <DataTable
             // Its own browser tab, the same as the Open button did — middle-click and
-            // ctrl-click are lost this way, which is the price of losing the button.
-            onRowClick={(j) => window.open(`/jobs/${j.id}`, "_blank", "noopener")}
+            // ctrl-click are lost this way, which is the price of losing the button. Carries
+            // the screen this row was opened FROM so the job page's own "back"/"all jobs"
+            // links can return here instead of the plain, uncategorized /jobs list (see
+            // JobRunPage.tsx's backToJobsPath) - omitted when no category is active (a plain
+            // /jobs visit, or a dashboard-box filtered view), same as before this existed.
+            onRowClick={(j) => window.open(
+              `/jobs/${j.id}${category ? `?from=${category}` : ""}`, "_blank", "noopener",
+            )}
             columns={columns}
             rows={visibleJobs}
             keyFor={(j) => j.id}

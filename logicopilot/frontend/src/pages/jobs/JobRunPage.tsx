@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { AppShell } from "../../components/AppShell";
 import { Button } from "../../components/ui/Button";
@@ -415,6 +415,17 @@ function tabFromStage(job: JobDetail, isGk2: boolean): TabKey {
 export function JobRunPage() {
   const { jobId = "" } = useParams();
   const navigate = useNavigate();
+  // Opened in its own tab (window.open, not client-side routing - see JobsPage.tsx's
+  // onRowClick), so there is no real browser history to go "back" to: this tab's own history
+  // has only ever had this one URL in it. JobsPage carries the screen it was opened FROM as
+  // ?from=new|submitted|completed when it opens this tab, so the "back to Jobs" links here
+  // can return to that SAME screen instead of landing on the plain, uncategorized /jobs list
+  // (which still exists but is no longer any real nav link's own destination, so it read as
+  // an "old" page to land on by surprise). Missing/unrecognised -> plain /jobs, same as
+  // before this existed - a job opened any other way (a dashboard box, a direct link).
+  const [searchParams] = useSearchParams();
+  const fromCategory = searchParams.get("from");
+  const backToJobsPath = fromCategory ? `/jobs?category=${fromCategory}` : "/jobs";
   const { user } = useAuth();
   const readOnly = user?.role === "tenant_admin" || user?.role === "super_admin" || user?.role === "manager";
   // Correcting a value is separated from the rest of readOnly. An admin watching a job should
@@ -1793,7 +1804,7 @@ export function JobRunPage() {
             )}
           </div>
           <Link
-            to="/jobs"
+            to={backToJobsPath}
             className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             Back to dashboard
@@ -1802,7 +1813,7 @@ export function JobRunPage() {
       }
     >
       <div className="mb-4 flex items-center justify-between">
-        <Link to="/jobs" className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
+        <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
         {job.status === "failed" && (
           <Button
             size="sm"
@@ -2534,7 +2545,7 @@ export function JobRunPage() {
                     {job.erp_failed_value ? <> — value <span className="font-mono">{job.erp_failed_value}</span></> : null}
                   </p>
                 )}
-                <Link to="/jobs" className="text-sm text-indigo-600 hover:underline">← Back to all jobs</Link>
+                <Link to={backToJobsPath} className="text-sm text-indigo-600 hover:underline">← Back to all jobs</Link>
               </Card>
             );
           })()}
