@@ -489,8 +489,14 @@ export function JobsPage() {
       const label = assignedToLabel(j);
       if (label) s.add(label);
     }
+    // The logged-in operator's own name is always offered, even with zero jobs currently
+    // loaded for them in this exact view - otherwise the login redirect's own "Assigned To:
+    // me" default (see ROLE_HOME in LoginPage.tsx) selects a value with no matching <option>,
+    // which a native <select> just renders as the first item ("All assignees") instead -
+    // visually wrong even though the underlying filter itself was still applied correctly.
+    if (user?.full_name) s.add(user.full_name);
     return [...s].sort();
-  }, [jobs]);
+  }, [jobs, user?.full_name]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
