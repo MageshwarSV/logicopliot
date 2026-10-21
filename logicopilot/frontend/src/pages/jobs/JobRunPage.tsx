@@ -3879,6 +3879,12 @@ function ExtractedField({
           }`}
         >
           {labelOverride ?? fv.label_name}
+          {/* ask_operator_required defaults true on the backend - undefined means mandatory,
+             only an explicit false means optional (same convention approveActive's own
+             mandatory checks use). */}
+          {fv.ask_operator_required !== false && (
+            <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
+          )}
         </p>
         {corrected && (
           <span className="shrink-0 rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
