@@ -278,9 +278,8 @@ export function CombinedDescriptionConfigModal({
                     <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
                       <tr>
                         <th className="px-3 py-2 text-left">Order</th>
-                        <th className="px-3 py-2 text-left">Source Field</th>
-                        <th className="px-3 py-2 text-left">Separator (before)</th>
-                        <th className="px-3 py-2 text-left">Example Value</th>
+                        <th className="w-56 px-3 py-2 text-left">Source Field</th>
+                        <th className="w-48 px-3 py-2 text-left">Separator (before)</th>
                         <th className="px-3 py-2 text-left">Preview Piece</th>
                         <th className="px-3 py-2 text-left">Actions</th>
                       </tr>
@@ -302,49 +301,47 @@ export function CombinedDescriptionConfigModal({
                               </div>
                             </td>
                             <td className="px-3 py-2">
-                              <select
-                                value={row.kind === "fixed" ? "__fixed__" : row.fieldLabel}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  if (v === "__fixed__") updateRow(i, { kind: "fixed", fieldLabel: "" });
-                                  else updateRow(i, { kind: "field", fieldLabel: v, fixedText: "" });
-                                }}
-                                className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                              >
-                                <option value="__fixed__">Fixed Text</option>
-                                {row.kind === "field" && row.fieldLabel && !availableLabels.includes(row.fieldLabel) && (
-                                  <option value={row.fieldLabel}>{row.fieldLabel}</option>
+                              <div className="flex flex-col gap-1.5">
+                                <select
+                                  value={row.kind === "fixed" ? "__fixed__" : row.fieldLabel}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "__fixed__") updateRow(i, { kind: "fixed", fieldLabel: "" });
+                                    else updateRow(i, { kind: "field", fieldLabel: v, fixedText: "" });
+                                  }}
+                                  className="w-full min-w-[9rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                >
+                                  <option value="__fixed__">Fixed Text</option>
+                                  {row.kind === "field" && row.fieldLabel && !availableLabels.includes(row.fieldLabel) && (
+                                    <option value={row.fieldLabel}>{row.fieldLabel}</option>
+                                  )}
+                                  {availableLabels
+                                    .filter((l) => l === row.fieldLabel || unusedLabels.includes(l))
+                                    .map((l) => (
+                                      <option key={l} value={l}>{l}</option>
+                                    ))}
+                                </select>
+                                {row.kind === "fixed" && (
+                                  <input
+                                    type="text"
+                                    value={row.fixedText}
+                                    onChange={(e) => updateRow(i, { fixedText: e.target.value })}
+                                    placeholder="Type the fixed text, e.g. ("
+                                    className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                  />
                                 )}
-                                {availableLabels
-                                  .filter((l) => l === row.fieldLabel || unusedLabels.includes(l))
-                                  .map((l) => (
-                                    <option key={l} value={l}>{l}</option>
-                                  ))}
-                              </select>
+                              </div>
                             </td>
                             <td className="px-3 py-2">
                               <select
                                 value={row.separator}
                                 onChange={(e) => updateRow(i, { separator: e.target.value })}
-                                className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                className="w-full min-w-[8rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
                               >
                                 {SEPARATOR_OPTIONS.map((opt) => (
                                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                                 ))}
                               </select>
-                            </td>
-                            <td className="px-3 py-2">
-                              {row.kind === "fixed" ? (
-                                <input
-                                  type="text"
-                                  value={row.fixedText}
-                                  onChange={(e) => updateRow(i, { fixedText: e.target.value })}
-                                  placeholder="e.g. ("
-                                  className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                                />
-                              ) : (
-                                <span className="text-slate-500 dark:text-slate-400">{value || "—"}</span>
-                              )}
                             </td>
                             <td className="px-3 py-2">
                               <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
