@@ -381,47 +381,6 @@ export function CombinedDescriptionConfigModal({
               </div>
             </div>
 
-            {sampleRows.length > 0 && (
-              <div>
-                <p className="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200">
-                  Preview by Part Code (Sample data)
-                </p>
-                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                  How the combined description looks for real, already-seen products of this
-                  consignee.
-                </p>
-                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
-                      <tr>
-                        {rows.filter((r) => r.kind === "field").map((r) => (
-                          <th key={r.fieldLabel} className="px-3 py-2 text-left">{r.fieldLabel}</th>
-                        ))}
-                        <th className="px-3 py-2 text-left">Generated Combined Description</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {sampleRows.map((sample, i) => (
-                        <tr key={i}>
-                          {rows.filter((r) => r.kind === "field").map((r) => (
-                            <td key={r.fieldLabel} className="px-3 py-2">{sample[r.fieldLabel] ?? ""}</td>
-                          ))}
-                          <td className="px-3 py-2 font-medium">{joinRows(rows, sample)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 text-xs text-indigo-700 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-300">
-              <ul className="list-inside list-disc space-y-0.5">
-                <li>This configuration is saved at the consignee level.</li>
-                <li>The latest change replaces whatever this consignee had before.</li>
-                <li>If a field is empty for a line, its value (and its own separator) is skipped.</li>
-              </ul>
-            </div>
           </>
         )}
 
