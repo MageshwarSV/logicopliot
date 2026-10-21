@@ -9,7 +9,7 @@ import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -4451,6 +4451,12 @@ def upload_job_document(
 
     jd = _slot_for_new_file(db, job, template_document_id)
     jd.original_name = (file.filename or "")[:255] or None
+    # A deliberate fresh upload always gets validated again by run_extraction, even when it
+    # reuses a slot a prior document was just bounced out of (see JobDocument.extraction_attempted) -
+    # this is a different file the operator chose to put here, not the Unclassified Pages
+    # drag-and-drop recovery flow for the SAME one (assign_unclassified_page, which leaves
+    # this flag untouched on purpose).
+    jd.extraction_attempted = False
 
     ddir = _job_doc_dir(jd.id)
     try:
@@ -5734,6 +5740,54 @@ def run_extraction(db: Session, job: Job) -> None:
                 )
                 db.add(fv)
             written.append(fv)
+
+        # Cargo Change Request List item 2 ("Document Validation"): on a document's very first
+        # pass through extraction (JobDocument.extraction_attempted - set True below
+        # unconditionally, and never reset by the bounce itself, so a slot reused via
+        # assign_unclassified_page after being bounced is recognised as "already seen" even
+        # though its file_path/page_count were cleared), a blank ask_operator_required field
+        # means this document should never have been accepted into its slot as-is - bounce it
+        # back out exactly like a smart-upload page the classifier itself couldn't place (same
+        # UnmatchedUploadPage table, same "Unclassified pages" drag-to-assign UI the operator
+        # already knows). The slot is left EMPTY, not filled with an incomplete read, so
+        # nothing downstream (pairing, the line-item table, ERP submission) ever sees this
+        # document as done. Only the FIRST pass bounces, though - confirmed with the user: a
+        # slot reassigned after being bounced is let through even if still blank, so the
+        # operator always has a way to accept the document and fill the field in by hand
+        # rather than being stuck in an unbreakable loop.
+        if not jd.extraction_attempted:
+            missing_required = [
+                m.label_name for m in single_marks
+                if m.ask_operator_required and m.label_name not in per_file.get(jd.id, {})
+            ]
+            jd.extraction_attempted = True
+            if missing_required:
+                pages = (jd.extracted_json or {}).get("pages", [])
+                pages_dir = _job_doc_dir(jd.id) / "pages"
+                for p in range(1, jd.page_count + 1):
+                    img = pages_dir / f"page_{p}.png"
+                    if not img.exists():
+                        continue
+                    db.add(UnmatchedUploadPage(
+                        tenant_id=job.tenant_id, job_id=job.id,
+                        original_filename=(jd.original_name or tdoc.name)[:255],
+                        page_number=p, image_path=str(img),
+                        ocr_text=pages[p - 1] if p - 1 < len(pages) else "",
+                    ))
+                db.flush()  # the just-written rows must be persisted before they can be deleted
+                for w in [w for w in written if w.job_document_id == jd.id]:
+                    db.delete(w)
+                written = [w for w in written if w.job_document_id != jd.id]
+                jd.file_path = None
+                jd.page_count = 0
+                jd.original_name = None
+                db.flush()
+                logger.info(
+                    "job %s: document %s missing required field(s) %s on first pass - "
+                    "bounced to Unclassified Pages instead of being accepted",
+                    job.reference, tdoc.name, missing_required,
+                )
+                continue
 
         # One JobFieldValue per table row, tagged with row_index so the columns line up:
         # row 3's description, quantity and price all carry row_index 3.
@@ -7131,12 +7185,18 @@ class CompositeFieldUpdate(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see _composite_piece_value's own docstring.
     source_labels: list[str | dict[str, str]]
+    # Confirms overwriting this consignee's ALREADY-remembered order with a different one -
+    # see set_composite_field_order's own docstring. False (the default - an ordinary first
+    # call) never overwrites a differing existing default; the caller must re-submit with this
+    # set True once the operator has explicitly said so.
+    confirm_overwrite_default: bool = False
 
 
 @router.put("/jobs/{job_id}/composite-fields", response_model=list[JobFieldValueOut])
 def set_composite_field_order(
     job_id: str,
     payload: CompositeFieldUpdate,
+    response: Response,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2)),
@@ -7153,7 +7213,20 @@ def set_composite_field_order(
     fallback only when a consignee has none of their own yet - see
     _effective_composite_pieces. THIS job is always recomputed with exactly what was just
     chosen here (fixed values included), regardless of which pieces get remembered for next
-    time. Deliberately narrow otherwise: this never touches kind, prompts, hardcoded_value, or
+    time.
+
+    A consignee that ALREADY has a remembered order different from what's being applied now is
+    never silently overwritten (confirmed with the user - a quiet overwrite here would mean
+    every later job for that consignee starts getting a DIFFERENT auto-filled description with
+    nobody having agreed to that change). Instead, the response carries an
+    X-Composite-Default-Conflict: true header and the existing default is left untouched; the
+    caller re-submits with confirm_overwrite_default=True once the operator has explicitly said
+    to update it ("just this job" needs no second call - the recompute below already applied
+    the new order to THIS job regardless of what happens to the remembered default). A
+    first-time consignee, or one whose remembered order already matches, is saved immediately -
+    exactly as before - since there is nothing to ask about in either case.
+
+    Deliberately narrow otherwise: this never touches kind, prompts, hardcoded_value, or
     any other admin-only config - only composite_source_labels (and per_row/kind/label_name on
     first creation) - so an operator can reorder pieces here but not rewrite the field into
     something else entirely.
@@ -7210,8 +7283,15 @@ def set_composite_field_order(
                 source_labels=field_only,
             )
             db.add(default_row)
-        else:
+        elif default_row.source_labels == field_only:
+            pass  # already matches - nothing to confirm, nothing to write
+        elif payload.confirm_overwrite_default:
             default_row.source_labels = field_only
+        else:
+            # Leave the existing remembered order untouched and tell the caller to ask first -
+            # see this endpoint's own docstring. THIS job's recompute below still goes ahead
+            # with the newly chosen order regardless.
+            response.headers["X-Composite-Default-Conflict"] = "true"
 
     db.commit()
     db.refresh(cf)

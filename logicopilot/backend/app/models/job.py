@@ -203,6 +203,16 @@ class JobDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # separate sign-offs, so GK2 opening a job GK1 already approved must see everything as
     # unapproved from THEIR side and press through it themselves, not inherit GK1's ticks.
     gk2_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Has THIS slot-instance already been through one run_extraction pass. Set True the first
+    # time it is extracted (bounced or not - see run_extraction's own ask_operator_required
+    # check) and deliberately left True across a bounce (file_path/page_count cleared, this
+    # flag is not), so a document reassigned back onto the same slot via
+    # assign_unclassified_page is let through even if still missing a required field, rather
+    # than bouncing forever with no way for the operator to accept it. A genuinely NEW file
+    # (upload_job_document explicitly resets this to False even when reusing a just-emptied
+    # slot, since that is a deliberate fresh attempt, not the drag-and-drop "accept the one I
+    # already saw" recovery flow) is always validated again from scratch.
+    extraction_attempted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     job: Mapped["Job"] = relationship(back_populates="documents")
 

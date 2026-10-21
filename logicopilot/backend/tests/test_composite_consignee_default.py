@@ -193,6 +193,59 @@ def test_fixed_value_pieces_are_never_remembered_per_consignee(client, db_sessio
     assert default_row.source_labels == ["Customer Part code", "product_description"]
 
 
+def test_changing_an_existing_consignee_default_asks_before_overwriting_it(client, db_session):
+    # Cargo Product Change Request List item 3: changing an already-remembered order for a
+    # consignee must never silently overwrite it - the caller is told to ask first.
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job_a, jd_a = _make_job(db_session, tenant, group, tdoc, "JOB-CONS6A", consignee="ACME CORP")
+    _add_rows(db_session, tenant, job_a, jd_a, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons6@example.com")
+    login(client, op.email)
+
+    resp = client.put(f"/api/v1/jobs/{job_a.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["Customer Part code", "product_description"],
+    })
+    assert resp.status_code == 200, resp.text
+    assert "x-composite-default-conflict" not in resp.headers  # first time - nothing to ask about
+
+    job_b, jd_b = _make_job(db_session, tenant, group, tdoc, "JOB-CONS6B", consignee="ACME CORP")
+    _add_rows(db_session, tenant, job_b, jd_b, [{"Customer Part code": "MC2", "product_description": "WIDGET 2"}])
+
+    # A DIFFERENT order for the SAME consignee, no confirmation given yet.
+    resp = client.put(f"/api/v1/jobs/{job_b.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["product_description", "Customer Part code"],
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers.get("x-composite-default-conflict") == "true"
+    # THIS job still gets the newly chosen order applied regardless.
+    assert resp.json()[0]["value"] == "WIDGET 2 MC2"
+
+    cf = db_session.query(CustomField).filter(CustomField.group_id == group.id, CustomField.kind == "composite").one()
+    default_row = (
+        db_session.query(CompositeFieldConsigneeDefault)
+        .filter(CompositeFieldConsigneeDefault.custom_field_id == cf.id,
+                CompositeFieldConsigneeDefault.consignee_key == "ACME CORP")
+        .one()
+    )
+    # The remembered default is UNCHANGED - still the order job A set.
+    assert default_row.source_labels == ["Customer Part code", "product_description"]
+
+    # The operator says yes, save it as the new default.
+    resp = client.put(f"/api/v1/jobs/{job_b.id}/composite-fields", json={
+        "label_name": "Combined Description",
+        "source_labels": ["product_description", "Customer Part code"],
+        "confirm_overwrite_default": True,
+    })
+    assert resp.status_code == 200, resp.text
+    assert "x-composite-default-conflict" not in resp.headers
+    db_session.refresh(default_row)
+    assert default_row.source_labels == ["product_description", "Customer Part code"]
+
+
 def test_a_job_with_no_consignee_value_skips_remembering_anything(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)

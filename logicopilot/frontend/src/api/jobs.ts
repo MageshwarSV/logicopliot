@@ -517,16 +517,24 @@ export async function getCompositeFieldsForJob(jobId: string): Promise<Composite
 /** Sets the piece order for the template's composite field and recomputes it on THIS job
  *  immediately. Still a template-wide setting under the hood - every job of this template
  *  reads the same combination from now on, not just this one. Caller reloads the job afterward
- *  to pick up the new value(s) - the response here isn't shaped like the job's own field_values. */
+ *  to pick up the new value(s) - the response here isn't shaped like the job's own field_values.
+ *
+ *  defaultConflict: true means this job's consignee already has a DIFFERENT remembered order
+ *  on file and it was left untouched - the new order still applied to THIS job regardless. The
+ *  caller should ask the operator whether to overwrite the remembered default, then re-call
+ *  with confirmOverwriteDefault=true if they say yes; "just this job" needs no second call. */
 export async function setCompositeFieldOrder(
   jobId: string,
   labelName: string,
   sourceLabels: CompositePiece[],
-): Promise<void> {
-  await apiClient.put(`/jobs/${jobId}/composite-fields`, {
+  confirmOverwriteDefault = false,
+): Promise<{ defaultConflict: boolean }> {
+  const resp = await apiClient.put(`/jobs/${jobId}/composite-fields`, {
     label_name: labelName,
     source_labels: sourceLabels,
+    confirm_overwrite_default: confirmOverwriteDefault,
   });
+  return { defaultConflict: resp.headers["x-composite-default-conflict"] === "true" };
 }
 
 /** Sets (or clears, with null) a job's GK1-set target date — drives the ETA boxes on the

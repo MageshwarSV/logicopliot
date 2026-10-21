@@ -260,7 +260,9 @@ const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
 };
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
-const MULTILINE_FIELD_LABELS = new Set(["Supplier Address", "Shipper Address", "Consignee Address"]);
+const MULTILINE_FIELD_LABELS = new Set([
+  "Supplier Address", "Shipper Address", "Consignee Address", "Combined Description",
+]);
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
@@ -4769,6 +4771,12 @@ function ExtractionReview({
   const [compositeChosen, setCompositeChosen] = useState<jobsApi.CompositePiece[]>([]);
   const [compositeLabel, setCompositeLabel] = useState("Combined Description");
   const [compositeFixedInput, setCompositeFixedInput] = useState("");
+  // Set only when the backend reports this consignee already has a DIFFERENT remembered
+  // order on file (see setCompositeFieldOrder's own docstring) - shows a second, small
+  // confirm dialog asking whether to overwrite it. The new order is already applied to THIS
+  // job either way; this only decides what happens to the remembered default.
+  const [compositeDefaultConfirm, setCompositeDefaultConfirm] = useState(false);
+  const [compositeConfirmSaving, setCompositeConfirmSaving] = useState(false);
 
   async function openComposite() {
     setCompositeOpen(true);
@@ -4798,9 +4806,12 @@ function ExtractionReview({
     setCompositeSaving(true);
     setCompositeError(null);
     try {
-      await jobsApi.setCompositeFieldOrder(jobId, compositeLabel.trim() || "Combined Description", compositeChosen);
+      const { defaultConflict } = await jobsApi.setCompositeFieldOrder(
+        jobId, compositeLabel.trim() || "Combined Description", compositeChosen,
+      );
       await reload();
       setCompositeOpen(false);
+      if (defaultConflict) setCompositeDefaultConfirm(true);
     } catch (err) {
       setCompositeError(
         axios.isAxiosError(err)
@@ -4809,6 +4820,25 @@ function ExtractionReview({
       );
     } finally {
       setCompositeSaving(false);
+    }
+  }
+
+  async function confirmCompositeDefaultOverwrite(save: boolean) {
+    if (!save) {
+      setCompositeDefaultConfirm(false);
+      return;
+    }
+    setCompositeConfirmSaving(true);
+    try {
+      await jobsApi.setCompositeFieldOrder(
+        jobId, compositeLabel.trim() || "Combined Description", compositeChosen, true,
+      );
+      setCompositeDefaultConfirm(false);
+    } catch {
+      // The job itself already has the new order either way - only the remembered default
+      // failed to update. Leave the dialog open so the operator can retry.
+    } finally {
+      setCompositeConfirmSaving(false);
     }
   }
 
@@ -5130,6 +5160,7 @@ function ExtractionReview({
                                 tone="reference"
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                                 options={FIELD_SELECT_OPTIONS[fv.label_name]}
+                                multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
                               />
                             ))}
                           </div>
@@ -5308,6 +5339,36 @@ function ExtractionReview({
             <Button variant="secondary" onClick={() => setCompositeOpen(false)}>Cancel</Button>
             <Button onClick={applyComposite} isLoading={compositeSaving} disabled={compositeLoading}>
               Apply
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={compositeDefaultConfirm}
+        onClose={() => setCompositeDefaultConfirm(false)}
+        title="Save as this consignee's default?"
+        maxWidth="max-w-md"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-slate-600">
+            This consignee already has a different Combined Description order saved. This
+            job now uses the new order either way — save it as the default for this
+            consignee&apos;s future jobs too, or keep the old default and only use the new
+            order here?
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => confirmCompositeDefaultOverwrite(false)}
+              disabled={compositeConfirmSaving}
+            >
+              Just this job
+            </Button>
+            <Button
+              onClick={() => confirmCompositeDefaultOverwrite(true)}
+              isLoading={compositeConfirmSaving}
+            >
+              Save as default
             </Button>
           </div>
         </div>

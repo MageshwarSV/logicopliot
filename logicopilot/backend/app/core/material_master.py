@@ -25,6 +25,7 @@ The code is cleaned to DIGITS ONLY, first 8 - an export may carry "8517 79 90" o
 and the ERP wants 85177990.
 """
 
+import difflib
 import logging
 from pathlib import Path
 
@@ -467,13 +468,45 @@ def material_from(code: str, description: str) -> str:
     return ""
 
 
+# How similar a document's description has to be to a master row's own description before it
+# counts as the same product - confirmed with the user at "almost 80%". Deliberately only ever
+# applied to the DESCRIPTION candidate (see _fuzzy_description_match) - a part code stays exact
+# always, because two similar-but-different codes genuinely are two different parts.
+_DESC_FUZZY_THRESHOLD = 0.80
+
+
+def _fuzzy_description_match(desc_key: str, master: dict[str, str]) -> str:
+    """One more try for a description that matched nothing exactly - found live: the document's
+    own wording is a shorter or differently-worded version of what the customer's own master
+    lists for the identical product (a 2-word invoice description against the master's 3-word
+    one, say). Unlike a part code, a product's description is not a strict identity, so this is
+    worth loosening - but only here, and only this far.
+
+    Restricted to master keys that LOOK like a description (contain a space - a bare part code
+    never does), so a code entry is never fuzzy-matched against free text. Every master key at
+    or above the threshold is collected first: if they all point at the SAME code, that is the
+    answer despite the wording difference; if they disagree, this really is ambiguous (two
+    different real products that happen to read similarly) and "" is returned - ask the
+    operator - rather than silently pick one, the same ambiguity rule the exact variant-stem
+    match above already follows.
+    """
+    if not desc_key:
+        return ""
+    codes = {
+        code for key, code in master.items()
+        if " " in key and difflib.SequenceMatcher(None, desc_key, key).ratio() >= _DESC_FUZZY_THRESHOLD
+    }
+    return codes.pop() if len(codes) == 1 else ""
+
+
 def lookup_cth(material: str, master: dict[str, str], description: str = "") -> str:
     """The CTH for this line, or "".
 
     Tries the part number first and the description second - the part number is the more
     precise thing to match on, and a description is only worth using when there is no code.
-    Matching is exact once both sides are normalised; nothing fuzzy, because a part that is
-    merely similar is a different part with a different classification.
+    Matching is exact (then a fuzzy description-only fallback - see _fuzzy_description_match)
+    - nothing fuzzy on the part code itself, because a part that is merely similar is a
+    different part with a different classification.
     """
     if not master:
         return ""
@@ -504,4 +537,9 @@ def lookup_cth(material: str, master: dict[str, str], description: str = "") -> 
         found = {v for k, v in master.items() if v and (_stem(k) or k) == stem}
         if len(found) == 1:
             return found.pop()
+    desc_key = _norm(description)
+    if desc_key:
+        fuzzy = _fuzzy_description_match(desc_key, master)
+        if fuzzy:
+            return fuzzy
     return ""
