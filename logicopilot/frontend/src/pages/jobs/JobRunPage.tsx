@@ -3879,10 +3879,11 @@ function ExtractedField({
           }`}
         >
           {labelOverride ?? fv.label_name}
-          {/* ask_operator_required defaults true on the backend - undefined means mandatory,
-             only an explicit false means optional (same convention approveActive's own
-             mandatory checks use). */}
-          {fv.ask_operator_required !== false && (
+          {/* fv.mandatory - the mark/custom field's own ask_operator_required column, NOT
+             ask_operator_required above (that one is zeroed for any field that isn't also an
+             ask_operator item - see its own docstring in types/jobs.ts). Undefined means
+             mandatory, only an explicit false means optional. */}
+          {fv.mandatory !== false && (
             <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
           )}
         </p>
@@ -4554,8 +4555,12 @@ function ExtractionReview({
         ? job.field_values.filter((fv) => fv.row_index == null && relocatedLabels.has(fv.label_name))
         : [];
       const pool = [...markFields, ...relocated];
+      // fv.mandatory, not ask_operator_required - a document-read mark is never an
+      // "ask_operator" item, which silently zeroed ask_operator_required for every one of
+      // them regardless of its own real mandatory setting (found live: every Bill of Lading
+      // mark has ask_operator=false). mandatory reads the raw column directly instead.
       const missing = pool.filter(
-        (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
+        (fv) => fv.mandatory !== false && !(fv.value ?? "").trim(),
       );
       // Format, not blank/missing - Shipment Country Code's own save path already rejects an
       // invalid value (ExtractedField's onBeforeSave), but a value saved before that existed,
@@ -4599,7 +4604,7 @@ function ExtractionReview({
           (fv) => fv.row_index != null && fv.standalone_multi_value && fv.self_filled === true,
         );
         const missingContainer = [...standaloneRows, ...selfFilled].filter(
-          (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
+          (fv) => fv.mandatory !== false && !(fv.value ?? "").trim(),
         );
         if (missingContainer.length) {
           blockApproval(

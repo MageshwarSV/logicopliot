@@ -2937,6 +2937,17 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             _CF.ask_operator_required.is_(True),
         ).all()
     }
+    # The mark/custom field's OWN ask_operator_required column, independent of ask_operator -
+    # see JobFieldValueOut.mandatory's own docstring for why this has to be a separate set
+    # from required_ids above, not the same query with the ask_operator filter dropped later.
+    raw_required_ids = {
+        m.id for m in db.query(FieldMark)
+        .join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
+        .filter(TemplateDocument.group_id == group.id, FieldMark.ask_operator_required.is_(True)).all()
+    } | {
+        c.id for c in db.query(_CF).filter(
+            _CF.group_id == group.id, _CF.ask_operator_required.is_(True)).all()
+    }
     # Where each mark sits on its own page, straight off FieldMark - lets the frontend
     # highlight/scroll to the exact spot on the document preview when a field is focused.
     mark_pos: dict[str, tuple[int, float, float, float, float]] = {
@@ -2992,6 +3003,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 is_custom=bool(fv.custom_field_id),
                 ask_operator=(fv.mark_id in ask_ids) or (fv.custom_field_id in ask_ids),
                 ask_operator_required=(fv.mark_id in required_ids) or (fv.custom_field_id in required_ids),
+                mandatory=(fv.mark_id in raw_required_ids) or (fv.custom_field_id in raw_required_ids),
                 ask_operator_hint=hints.get(fv.mark_id) or hints.get(fv.custom_field_id),
                 self_filled=fv.custom_field_id in self_fill_ids,
                 job_document_id=fv.job_document_id,
@@ -6814,6 +6826,10 @@ def correct_field_value(
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None
     mark = db.get(FieldMark, fv.mark_id) if fv.mark_id else None
+    owner_for_mandatory = mark
+    if fv.custom_field_id:
+        from app.models.custom_field import CustomField as _CF2
+        owner_for_mandatory = db.get(_CF2, fv.custom_field_id)
     return JobFieldValueOut(
         id=fv.id,
         mark_id=fv.mark_id,
@@ -6824,6 +6840,7 @@ def correct_field_value(
         corrected_value=fv.corrected_value,
         value=fv.value,
         is_custom=bool(fv.custom_field_id),
+        mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
         mark_y=mark.y if mark else None,
@@ -7026,6 +7043,7 @@ def _recompute_per_row_custom_field(
             corrected_value=row.corrected_value, value=row.value, is_custom=True,
             origin="computed", set_index=row.set_index, row_index=row.row_index,
             hidden_from_capture=cf.hidden_from_capture,
+            mandatory=bool(cf.ask_operator_required),
         ))
     return results
 
@@ -7164,6 +7182,7 @@ def recompute_custom_field(
         label_name=existing.label_name, extracted_value=existing.extracted_value,
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
         origin="computed", hidden_from_capture=cf.hidden_from_capture,
+        mandatory=bool(cf.ask_operator_required),
     )]
 
 
@@ -7568,6 +7587,7 @@ def recompute_mark(
             value=existing.value, is_custom=False, job_document_id=existing.job_document_id,
             found_page=existing.found_page, found_x=existing.found_x, found_y=existing.found_y,
             found_width=existing.found_width, found_height=existing.found_height,
+            mandatory=bool(mark.ask_operator_required),
         ))
     return results
 

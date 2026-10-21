@@ -146,9 +146,21 @@ class JobFieldValueOut(BaseModel):
     is_custom: bool = False
     # Mirrors FieldMark.ask_operator so the operator page knows what to prompt for.
     ask_operator: bool = False
-    # Guidance for the operator, e.g. "T for Transaction, D for Deferred".
+    # ask_operator AND ask_operator_required together - "of the asked fields, which ones
+    # actually block Submit Entry" (see _unanswered_operator_fields/required_ids in jobs.py).
+    # Ignored entirely when ask_operator is False, same as the model's own column - this is
+    # NOT a general "is this field mandatory" flag; see `mandatory` below for that.
     ask_operator_required: bool = True  # False = optional, never blocks Submit Entry
     ask_operator_hint: str | None = None
+    # The mark/custom field's OWN ask_operator_required column, read directly - independent of
+    # ask_operator. Submit for Approval's own per-document check (and the mandatory-field *)
+    # use THIS, not ask_operator_required above: a plain document-read mark is never an
+    # "ask_operator" item (nothing to confirm by typing - it's read straight off the page), but
+    # can still be mandatory in the sense that pressing Submit for Approval on its own document
+    # must refuse to go through blank. Found live: every Bill of Lading mark has
+    # ask_operator=False, which silently zeroed ask_operator_required above for all of them -
+    # a document-level mandatory check built against that field never fired.
+    mandatory: bool = True
     # This field answers itself — a lookup from the customer's own reference sheet. The submit
     # gate accepts its value without a typed confirmation, and the screen must apply the SAME
     # rule or the button and the server disagree about whether the job can go. Everything else

@@ -99,8 +99,18 @@ export interface JobFieldValue {
   self_filled?: boolean;
   /** Super Admin ticked this field as needing operator confirmation before ERP entry. */
   ask_operator?: boolean;
-  /** false = optional: asked for, but never blocks Submit Entry. */
+  /** false = optional: asked for, but never blocks Submit Entry. ask_operator AND
+   *  ask_operator_required together - ignored entirely when ask_operator is false, same as
+   *  the backend model's own column. NOT a general "is this mandatory" flag - see
+   *  `mandatory` below for that. */
   ask_operator_required?: boolean;
+  /** The mark/custom field's OWN ask_operator_required column, independent of ask_operator -
+   *  undefined/true means mandatory, only an explicit false means optional. A plain
+   *  document-read mark is never an "ask_operator" item (nothing to confirm by typing), but
+   *  can still be mandatory in the sense that Submit for Approval on its own document must
+   *  refuse to go through blank - this is what that check (and the mandatory *) use, not
+   *  ask_operator_required above. */
+  mandatory?: boolean;
   /** What the Super Admin told the operator to enter. */
   ask_operator_hint?: string | null;
   /** Which uploaded FILE this value was read from, and the invoice-set that file was
