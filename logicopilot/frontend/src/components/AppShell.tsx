@@ -50,8 +50,8 @@ export function AppShell({
   // the tenant/mode requires GK2 review or not.
   const JOB_CATEGORIES: { key: "new" | "submitted" | "completed"; label: string }[] = [
     { key: "new", label: "New Jobs" },
-    { key: "submitted", label: "Submitted Jobs" },
-    { key: "completed", label: "Completed Jobs" },
+    { key: "submitted", label: "ERP Submitted Jobs" },
+    { key: "completed", label: "ERP Verified Jobs" },
   ];
   const activeJobCategory = location.pathname === "/jobs"
     ? new URLSearchParams(location.search).get("category")

@@ -1,9 +1,11 @@
-"""CompositeFieldConsigneeDefault - a composite field's piece ORDER remembered per consignee
-(consignee_full_name), so a new job for the SAME consignee pre-fills with, and computes
-using, that consignee's own remembered order rather than the template's generic fallback.
+"""Combined Description Configuration - a composite field's full FORMAT (field order, fixed
+text, and each piece's own separator) saved directly against a consignee
+(CompositeFieldConsigneeDefault), independent of any one job, so a new job for the SAME
+consignee pre-fills with, and computes using, that consignee's own saved format rather than
+the template's generic fallback.
 
-Deliberately never stores a fixed-value piece - see the model's own docstring - only the
-field-reference pieces of whatever was last applied for that consignee."""
+The latest save always replaces what a consignee already had - no confirmation step (a
+deliberate admin action through this screen, not an incidental edit made while working a job)."""
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
@@ -58,20 +60,21 @@ def _add_rows(db_session, tenant, job, jd, rows):
     db_session.commit()
 
 
-def test_applying_an_order_remembers_it_for_that_consignee_only(client, db_session):
+def test_saving_a_format_remembers_it_for_that_consignee_only(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS1", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job, jd, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
     op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons1@example.com")
     login(client, op.email)
 
-    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
         "label_name": "Combined Description",
-        "source_labels": ["Customer Part code", "product_description"],
+        "pieces": ["Customer Part code", "product_description"],
+        "separators": ["", " "],
     })
     assert resp.status_code == 200, resp.text
+    assert resp.json()["field_values"] is None  # no job_id given
 
     cf = db_session.query(CustomField).filter(CustomField.group_id == group.id, CustomField.kind == "composite").one()
     default_row = (
@@ -81,77 +84,69 @@ def test_applying_an_order_remembers_it_for_that_consignee_only(client, db_sessi
         .one()
     )
     assert default_row.source_labels == ["Customer Part code", "product_description"]
+    assert default_row.separators == ["", " "]
 
 
-def test_a_new_job_for_the_same_consignee_pre_fills_and_computes_with_their_remembered_order(client, db_session):
+def test_a_new_job_for_the_same_consignee_computes_with_their_saved_format(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job_a, jd_a = _make_job(db_session, tenant, group, tdoc, "JOB-CONS2A", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job_a, jd_a, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
     op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons2@example.com")
     login(client, op.email)
 
-    # Job A applies "description first, then part code" - the REVERSE of the usual order.
-    resp = client.put(f"/api/v1/jobs/{job_a.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["product_description", "Customer Part code"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["product_description", {"fixed": "-"}, "Customer Part code"],
+        "separators": ["", " ", " "],
     })
     assert resp.status_code == 200, resp.text
-    assert resp.json()[0]["value"] == "WIDGET 1 MC1"
 
-    # Job B, same consignee, has NEVER had the field applied to it directly - a fresh
-    # extraction should still compute it in that consignee's remembered order.
-    job_b, jd_b = _make_job(db_session, tenant, group, tdoc, "JOB-CONS2B", consignee="ACME CORP",
-                            status="extracting")
+    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS2", consignee="ACME CORP",
+                        status="extracting")
     text_rows = [{"Customer Part code": "MC2", "product_description": "WIDGET 2"}]
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "x", "text": "x", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \
          patch("app.api.v1.jobs.extract_document_rows", return_value=text_rows):
-        run_extraction(db_session, job_b)
+        run_extraction(db_session, job)
 
     combined = (
         db_session.query(JobFieldValue)
-        .filter(JobFieldValue.job_id == job_b.id, JobFieldValue.label_name == "Combined Description")
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.label_name == "Combined Description")
         .one()
     )
-    assert combined.extracted_value == "WIDGET 2 MC2"
-
-    # The GET endpoint's pre-fill agrees with what was actually used.
-    resp = client.get(f"/api/v1/jobs/{job_b.id}/composite-fields")
-    assert resp.json()["existing"]["composite_source_labels"] == ["product_description", "Customer Part code"]
+    assert combined.extracted_value == "WIDGET 2 - MC2"
 
 
 def test_a_different_consignee_is_unaffected_and_falls_back_to_the_generic_default(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job_a, jd_a = _make_job(db_session, tenant, group, tdoc, "JOB-CONS3A", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job_a, jd_a, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
     op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons3@example.com")
     login(client, op.email)
 
-    resp = client.put(f"/api/v1/jobs/{job_a.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["product_description", "Customer Part code"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["product_description", "Customer Part code"],
+        "separators": ["", " "],
     })
     assert resp.status_code == 200, resp.text
 
-    # A DIFFERENT consignee, first time seeing this field at all - applies its own order,
-    # independent of ACME's.
-    job_b, jd_b = _make_job(db_session, tenant, group, tdoc, "JOB-CONS3B", consignee="OTHER BUYER LTD")
-    _add_rows(db_session, tenant, job_b, jd_b, [{"Customer Part code": "MC9", "product_description": "GADGET"}])
-
-    resp = client.get(f"/api/v1/jobs/{job_b.id}/composite-fields")
+    # A DIFFERENT consignee, never configured - falls back to the generic default (set by
+    # ACME's own save above) rather than an empty form.
+    resp = client.get(
+        f"/api/v1/template-groups/{group.id}/composite-field-config",
+        params={"consignee": "OTHER BUYER LTD"},
+    )
     assert resp.status_code == 200, resp.text
-    # Falls back to the generic field default (set by job A's Apply) since OTHER BUYER LTD
-    # has no remembered order of their own yet.
-    assert resp.json()["existing"]["composite_source_labels"] == ["product_description", "Customer Part code"]
+    body = resp.json()
+    assert body["pieces"] == ["product_description", "Customer Part code"]
+    assert body["separators"] == ["", " "]
 
-    resp = client.put(f"/api/v1/jobs/{job_b.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["Customer Part code", "product_description"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "OTHER BUYER LTD",
+        "pieces": ["Customer Part code", "product_description"],
+        "separators": [" ", " "],
     })
     assert resp.status_code == 200, resp.text
 
@@ -162,25 +157,26 @@ def test_a_different_consignee_is_unaffected_and_falls_back_to_the_generic_defau
                 CompositeFieldConsigneeDefault.consignee_key == "ACME CORP")
         .one()
     )
+    # ACME's own saved format is still exactly what it was - the other consignee's save never
+    # touched it.
     assert acme_default.source_labels == ["product_description", "Customer Part code"]
 
 
-def test_fixed_value_pieces_are_never_remembered_per_consignee(client, db_session):
+def test_fixed_value_pieces_are_remembered_per_consignee(client, db_session):
+    # Unlike the old (pre-Configuration-screen) design, a format's own fixed text (a bracket, a
+    # dash) IS part of what gets saved and reused now - see the model's own docstring.
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS4", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job, jd, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
     op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons4@example.com")
     login(client, op.email)
 
-    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["Customer Part code", {"fixed": "-"}, "product_description"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["Customer Part code", {"fixed": "("}, "product_description", {"fixed": ")"}],
+        "separators": ["", "", " ", ""],
     })
     assert resp.status_code == 200, resp.text
-    # THIS job's own value still gets the fixed piece.
-    assert resp.json()[0]["value"] == "MC1 - WIDGET 1"
 
     cf = db_session.query(CustomField).filter(CustomField.group_id == group.id, CustomField.kind == "composite").one()
     default_row = (
@@ -189,40 +185,33 @@ def test_fixed_value_pieces_are_never_remembered_per_consignee(client, db_sessio
                 CompositeFieldConsigneeDefault.consignee_key == "ACME CORP")
         .one()
     )
-    # But the remembered order drops the fixed piece entirely.
-    assert default_row.source_labels == ["Customer Part code", "product_description"]
+    assert default_row.source_labels == [
+        "Customer Part code", {"fixed": "("}, "product_description", {"fixed": ")"},
+    ]
 
 
-def test_changing_an_existing_consignee_default_asks_before_overwriting_it(client, db_session):
-    # Cargo Product Change Request List item 3: changing an already-remembered order for a
-    # consignee must never silently overwrite it - the caller is told to ask first.
+def test_saving_always_overwrites_with_no_confirmation_step(client, db_session):
+    # Confirmed with the user: this screen is a deliberate admin action, unlike the job
+    # screen's old inline modal - the latest save always replaces the previous one outright.
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job_a, jd_a = _make_job(db_session, tenant, group, tdoc, "JOB-CONS6A", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job_a, jd_a, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
     op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons6@example.com")
     login(client, op.email)
 
-    resp = client.put(f"/api/v1/jobs/{job_a.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["Customer Part code", "product_description"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["Customer Part code", "product_description"],
+        "separators": ["", " "],
     })
     assert resp.status_code == 200, resp.text
-    assert "x-composite-default-conflict" not in resp.headers  # first time - nothing to ask about
 
-    job_b, jd_b = _make_job(db_session, tenant, group, tdoc, "JOB-CONS6B", consignee="ACME CORP")
-    _add_rows(db_session, tenant, job_b, jd_b, [{"Customer Part code": "MC2", "product_description": "WIDGET 2"}])
-
-    # A DIFFERENT order for the SAME consignee, no confirmation given yet.
-    resp = client.put(f"/api/v1/jobs/{job_b.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["product_description", "Customer Part code"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["product_description", "Customer Part code"],
+        "separators": ["", ", "],
     })
     assert resp.status_code == 200, resp.text
-    assert resp.headers.get("x-composite-default-conflict") == "true"
-    # THIS job still gets the newly chosen order applied regardless.
-    assert resp.json()[0]["value"] == "WIDGET 2 MC2"
 
     cf = db_session.query(CustomField).filter(CustomField.group_id == group.id, CustomField.kind == "composite").one()
     default_row = (
@@ -231,33 +220,80 @@ def test_changing_an_existing_consignee_default_asks_before_overwriting_it(clien
                 CompositeFieldConsigneeDefault.consignee_key == "ACME CORP")
         .one()
     )
-    # The remembered default is UNCHANGED - still the order job A set.
-    assert default_row.source_labels == ["Customer Part code", "product_description"]
-
-    # The operator says yes, save it as the new default.
-    resp = client.put(f"/api/v1/jobs/{job_b.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["product_description", "Customer Part code"],
-        "confirm_overwrite_default": True,
-    })
-    assert resp.status_code == 200, resp.text
-    assert "x-composite-default-conflict" not in resp.headers
-    db_session.refresh(default_row)
     assert default_row.source_labels == ["product_description", "Customer Part code"]
+    assert default_row.separators == ["", ", "]
 
 
-def test_a_job_with_no_consignee_value_skips_remembering_anything(client, db_session):
+def test_saving_with_a_job_id_recomputes_and_returns_that_jobs_field_values(client, db_session):
     tenant = make_tenant(db_session)
     group, tdoc = _make_template(db_session, tenant)
-    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS5", consignee=None)
+    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS7", consignee="ACME CORP")
     _add_rows(db_session, tenant, job, jd, [{"Customer Part code": "MC1", "product_description": "WIDGET 1"}])
 
-    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons5@example.com")
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons7@example.com")
     login(client, op.email)
 
-    resp = client.put(f"/api/v1/jobs/{job.id}/composite-fields", json={
-        "label_name": "Combined Description",
-        "source_labels": ["Customer Part code", "product_description"],
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "ACME CORP",
+        "pieces": ["Customer Part code", "product_description"],
+        "separators": ["", " - "],
+        "job_id": job.id,
     })
     assert resp.status_code == 200, resp.text
-    assert db_session.query(CompositeFieldConsigneeDefault).count() == 0
+    values = resp.json()["field_values"]
+    assert values is not None
+    assert values[0]["value"] == "MC1 - WIDGET 1"
+
+
+def test_blank_consignee_is_rejected(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons8@example.com")
+    login(client, op.email)
+
+    resp = client.put(f"/api/v1/template-groups/{group.id}/composite-field-config", json={
+        "consignee": "   ",
+        "pieces": ["Customer Part code"],
+    })
+    assert resp.status_code == 400
+
+
+def test_get_config_returns_real_sample_rows_for_the_live_preview(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS10", consignee="ACME CORP")
+    _add_rows(db_session, tenant, job, jd, [
+        {"Customer Part code": "MC1", "product_description": "WIDGET 1"},
+        {"Customer Part code": "MC2", "product_description": "WIDGET 2"},
+    ])
+    # A DIFFERENT consignee's own product lines must never leak into ACME's sample rows.
+    other_job, other_jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS10B", consignee="OTHER BUYER LTD")
+    _add_rows(db_session, tenant, other_job, other_jd, [{"Customer Part code": "ZZ9", "product_description": "GADGET"}])
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons10@example.com")
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/template-groups/{group.id}/composite-field-config",
+                      params={"consignee": "ACME CORP"})
+    assert resp.status_code == 200, resp.text
+    samples = resp.json()["sample_rows"]
+    assert len(samples) == 2
+    part_codes = {s.get("Customer Part code") for s in samples}
+    assert part_codes == {"MC1", "MC2"}
+    assert not any(s.get("Customer Part code") == "ZZ9" for s in samples)
+
+
+def test_known_consignees_lists_every_distinct_consignee_seen_on_this_template(client, db_session):
+    tenant = make_tenant(db_session)
+    group, tdoc = _make_template(db_session, tenant)
+    _make_job(db_session, tenant, group, tdoc, "JOB-CONS9A", consignee="ACME CORP")
+    _make_job(db_session, tenant, group, tdoc, "JOB-CONS9B", consignee="OTHER BUYER LTD")
+    _make_job(db_session, tenant, group, tdoc, "JOB-CONS9C", consignee="ACME CORP")  # duplicate
+    _make_job(db_session, tenant, group, tdoc, "JOB-CONS9D", consignee=None)
+
+    op = make_user(db_session, role=OPERATOR, tenant=tenant, email="op-cons9@example.com")
+    login(client, op.email)
+
+    resp = client.get(f"/api/v1/template-groups/{group.id}/known-consignees")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == ["ACME CORP", "OTHER BUYER LTD"]

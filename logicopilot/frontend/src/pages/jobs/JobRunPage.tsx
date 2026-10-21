@@ -10,6 +10,7 @@ import { Alert } from "../../components/ui/Alert";
 import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
+import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
 import { useAuth } from "../../auth/useAuth";
 import type { JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
 
@@ -4757,90 +4758,17 @@ function ExtractionReview({
     await reload();
   };
 
-  // "Combine fields" - picking an ordered set of this template's own per-line fields (Part
-  // No, Description, ...) and joining them into one "Combined Description"-style field for
-  // every product on this job. Reachable from the job screen itself rather than only the
-  // Super Admin wizard - see set_composite_field_order's own docstring: it is still a
-  // TEMPLATE-WIDE setting (the same field every job of this template reads), Apply here just
-  // recomputes it onto THIS job immediately so the change is visible right away.
+  // Combined Description Configuration - picking an ordered set of this template's own
+  // per-line fields (Part No, Description, ...), each with its own separator, and joining them
+  // into one "Combined Description"-style field for every product of a CONSIGNEE (not just
+  // this job) - see CombinedDescriptionConfigModal. Replaced the job screen's older inline
+  // "Combine fields" modal entirely (confirmed with the user) - saving there recomputes this
+  // job immediately too, via the jobId passed below, so the change is visible right away.
   const [compositeOpen, setCompositeOpen] = useState(false);
-  const [compositeLoading, setCompositeLoading] = useState(false);
-  const [compositeSaving, setCompositeSaving] = useState(false);
-  const [compositeError, setCompositeError] = useState<string | null>(null);
-  const [compositeAvailable, setCompositeAvailable] = useState<string[]>([]);
-  const [compositeChosen, setCompositeChosen] = useState<jobsApi.CompositePiece[]>([]);
-  const [compositeLabel, setCompositeLabel] = useState("Combined Description");
-  const [compositeFixedInput, setCompositeFixedInput] = useState("");
-  // Set only when the backend reports this consignee already has a DIFFERENT remembered
-  // order on file (see setCompositeFieldOrder's own docstring) - shows a second, small
-  // confirm dialog asking whether to overwrite it. The new order is already applied to THIS
-  // job either way; this only decides what happens to the remembered default.
-  const [compositeDefaultConfirm, setCompositeDefaultConfirm] = useState(false);
-  const [compositeConfirmSaving, setCompositeConfirmSaving] = useState(false);
-
-  async function openComposite() {
-    setCompositeOpen(true);
-    setCompositeLoading(true);
-    setCompositeError(null);
-    try {
-      const { available_labels, existing } = await jobsApi.getCompositeFieldsForJob(jobId);
-      setCompositeAvailable(available_labels);
-      setCompositeChosen(existing?.composite_source_labels ?? []);
-      setCompositeLabel(existing?.label_name ?? "Combined Description");
-    } catch (err) {
-      setCompositeError(
-        axios.isAxiosError(err)
-          ? (err.response?.data?.detail as string | undefined) ?? "Could not load the available fields."
-          : "Could not load the available fields.",
-      );
-    } finally {
-      setCompositeLoading(false);
-    }
-  }
-
-  async function applyComposite() {
-    if (compositeChosen.length === 0) {
-      setCompositeError("Choose at least one piece to combine.");
-      return;
-    }
-    setCompositeSaving(true);
-    setCompositeError(null);
-    try {
-      const { defaultConflict } = await jobsApi.setCompositeFieldOrder(
-        jobId, compositeLabel.trim() || "Combined Description", compositeChosen,
-      );
-      await reload();
-      setCompositeOpen(false);
-      if (defaultConflict) setCompositeDefaultConfirm(true);
-    } catch (err) {
-      setCompositeError(
-        axios.isAxiosError(err)
-          ? (err.response?.data?.detail as string | undefined) ?? "Could not apply the combination."
-          : "Could not apply the combination.",
-      );
-    } finally {
-      setCompositeSaving(false);
-    }
-  }
-
-  async function confirmCompositeDefaultOverwrite(save: boolean) {
-    if (!save) {
-      setCompositeDefaultConfirm(false);
-      return;
-    }
-    setCompositeConfirmSaving(true);
-    try {
-      await jobsApi.setCompositeFieldOrder(
-        jobId, compositeLabel.trim() || "Combined Description", compositeChosen, true,
-      );
-      setCompositeDefaultConfirm(false);
-    } catch {
-      // The job itself already has the new order either way - only the remembered default
-      // failed to update. Leave the dialog open so the operator can retry.
-    } finally {
-      setCompositeConfirmSaving(false);
-    }
-  }
+  const jobConsigneeFv = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === "consignee_full_name",
+  );
+  const jobConsignee = (jobConsigneeFv?.corrected_value ?? jobConsigneeFv?.extracted_value ?? "").trim();
 
   if (!files.length) {
     return (
@@ -5065,7 +4993,7 @@ function ExtractionReview({
                     {!readOnly && !docIsStandalone && (
                       <button
                         type="button"
-                        onClick={openComposite}
+                        onClick={() => setCompositeOpen(true)}
                         className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
                       >
                         🧩 Combine fields
@@ -5214,165 +5142,14 @@ function ExtractionReview({
         </div>
       )}
 
-      <Modal open={compositeOpen} onClose={() => setCompositeOpen(false)} title="Combine fields" maxWidth="max-w-lg">
-        <div className="space-y-3">
-          <p className="text-xs text-slate-500">
-            Pick an ordered set of this template's own per-line fields — each product's value
-            is these pieces' own values, in this order, joined with a single space (a line with
-            nothing for one piece just skips it). This is a template-wide setting: applying it
-            here recomputes it on THIS job right away, and every other job of this template
-            reads the same combination going forward.
-          </p>
-          {compositeLoading ? (
-            <p className="text-sm text-slate-400">Loading…</p>
-          ) : (
-            <>
-              <Input
-                label="Field label"
-                value={compositeLabel}
-                onChange={(e) => setCompositeLabel(e.target.value)}
-                placeholder="Combined Description"
-              />
-              {compositeChosen.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400 dark:border-slate-700">
-                  No pieces chosen yet.
-                </p>
-              ) : (
-                <div className="flex flex-col gap-1.5">
-                  {compositeChosen.map((piece, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm dark:border-teal-500/20 dark:bg-teal-500/10"
-                    >
-                      <span className="w-5 text-center text-xs font-semibold text-teal-700 dark:text-teal-300">{i + 1}</span>
-                      {typeof piece === "string" ? (
-                        <span className="flex-1 text-teal-900 dark:text-teal-200">{piece}</span>
-                      ) : (
-                        <span className="flex-1 text-teal-900 dark:text-teal-200">
-                          <span className="rounded bg-teal-200/60 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 dark:bg-teal-500/20 dark:text-teal-200">
-                            Fixed
-                          </span>{" "}
-                          "{piece.fixed}"
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        disabled={i === 0}
-                        onClick={() =>
-                          setCompositeChosen((arr) => {
-                            const next = [...arr];
-                            [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                            return next;
-                          })
-                        }
-                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
-                        title="Move earlier"
-                      >
-                        ▲
-                      </button>
-                      <button
-                        type="button"
-                        disabled={i === compositeChosen.length - 1}
-                        onClick={() =>
-                          setCompositeChosen((arr) => {
-                            const next = [...arr];
-                            [next[i], next[i + 1]] = [next[i + 1], next[i]];
-                            return next;
-                          })
-                        }
-                        className="rounded px-1.5 py-0.5 text-teal-700 hover:bg-teal-100 disabled:opacity-30 disabled:hover:bg-transparent dark:text-teal-300 dark:hover:bg-teal-500/20"
-                        title="Move later"
-                      >
-                        ▼
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCompositeChosen((arr) => arr.filter((_, idx) => idx !== i))}
-                        className="rounded px-1.5 py-0.5 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
-                        title="Remove"
-                      >
-                        −
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <select
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) setCompositeChosen((arr) => [...arr, e.target.value]);
-                }}
-                className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-              >
-                <option value="">+ Add a piece…</option>
-                {compositeAvailable
-                  .filter((l) => !compositeChosen.includes(l))
-                  .map((l) => (
-                    <option key={l} value={l}>{l}</option>
-                  ))}
-              </select>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={compositeFixedInput}
-                  onChange={(e) => setCompositeFixedInput(e.target.value)}
-                  placeholder="Fixed value, e.g. a dash -"
-                  className="flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    const text = compositeFixedInput.trim();
-                    if (!text) return;
-                    setCompositeChosen((arr) => [...arr, { fixed: text }]);
-                    setCompositeFixedInput("");
-                  }}
-                >
-                  + Add fixed value
-                </Button>
-              </div>
-            </>
-          )}
-          {compositeError && <Alert>{compositeError}</Alert>}
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => setCompositeOpen(false)}>Cancel</Button>
-            <Button onClick={applyComposite} isLoading={compositeSaving} disabled={compositeLoading}>
-              Apply
-            </Button>
-          </div>
-        </div>
-      </Modal>
-      <Modal
-        open={compositeDefaultConfirm}
-        onClose={() => setCompositeDefaultConfirm(false)}
-        title="Save as this consignee's default?"
-        maxWidth="max-w-md"
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-slate-600">
-            This consignee already has a different Combined Description order saved. This
-            job now uses the new order either way — save it as the default for this
-            consignee&apos;s future jobs too, or keep the old default and only use the new
-            order here?
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => confirmCompositeDefaultOverwrite(false)}
-              disabled={compositeConfirmSaving}
-            >
-              Just this job
-            </Button>
-            <Button
-              onClick={() => confirmCompositeDefaultOverwrite(true)}
-              isLoading={compositeConfirmSaving}
-            >
-              Save as default
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      <CombinedDescriptionConfigModal
+        open={compositeOpen}
+        onClose={() => setCompositeOpen(false)}
+        groupId={job.group_id}
+        defaultConsignee={jobConsignee}
+        jobId={jobId}
+        onSaved={() => { void reload(); }}
+      />
       {insurancePopup && (
         <InsuranceCertificatePopup
           jobId={jobId}

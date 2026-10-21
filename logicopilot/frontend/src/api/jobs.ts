@@ -495,46 +495,70 @@ export async function searchCustomFieldReferenceValues(
 export type CompositePiece = string | { fixed: string };
 
 export interface CompositeFieldConfig {
-  id: string;
   label_name: string;
-  composite_source_labels: CompositePiece[];
-}
-
-export interface CompositeFieldsForJob {
+  pieces: CompositePiece[];
+  /** Aligned 1:1 with pieces - the separator text inserted before that piece. "" = none. */
+  separators: string[];
   available_labels: string[];
-  existing: CompositeFieldConfig | null;
+  /** A handful of real product lines already seen for this consignee - every per-row field
+   *  label this template has, for the Combined Description Configuration screen's own live
+   *  preview and "Preview by Part Code" sample table. */
+  sample_rows: Record<string, string>[];
 }
 
-/** What "Combine fields" on the job screen's Product Detail card has to offer - every
- *  already-existing per-line field on this job's template, plus the current combination (if
- *  one is already set up). Same underlying mechanism as the Super Admin wizard's "🧩 Combine
- *  fields" custom tag kind - this is a narrower, job-screen-reachable door onto it. */
-export async function getCompositeFieldsForJob(jobId: string): Promise<CompositeFieldsForJob> {
-  const { data } = await apiClient.get<CompositeFieldsForJob>(`/jobs/${jobId}/composite-fields`);
+/** Every consignee the Combined Description Configuration screen's own picker can offer -
+ *  every distinct consignee name a real job of this template has ever had. */
+export async function getKnownConsignees(groupId: string): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>(`/template-groups/${groupId}/known-consignees`);
   return data;
 }
 
-/** Sets the piece order for the template's composite field and recomputes it on THIS job
- *  immediately. Still a template-wide setting under the hood - every job of this template
- *  reads the same combination from now on, not just this one. Caller reloads the job afterward
- *  to pick up the new value(s) - the response here isn't shaped like the job's own field_values.
- *
- *  defaultConflict: true means this job's consignee already has a DIFFERENT remembered order
- *  on file and it was left untouched - the new order still applied to THIS job regardless. The
- *  caller should ask the operator whether to overwrite the remembered default, then re-call
- *  with confirmOverwriteDefault=true if they say yes; "just this job" needs no second call. */
-export async function setCompositeFieldOrder(
-  jobId: string,
-  labelName: string,
-  sourceLabels: CompositePiece[],
-  confirmOverwriteDefault = false,
-): Promise<{ defaultConflict: boolean }> {
-  const resp = await apiClient.put(`/jobs/${jobId}/composite-fields`, {
-    label_name: labelName,
-    source_labels: sourceLabels,
-    confirm_overwrite_default: confirmOverwriteDefault,
-  });
-  return { defaultConflict: resp.headers["x-composite-default-conflict"] === "true" };
+/** The Combined Description Configuration screen's own data for one consignee - their
+ *  already-saved format if they have one, else the template's generic fallback. */
+export async function getCompositeFieldConfig(
+  groupId: string,
+  consignee: string,
+  labelName = "Combined Description",
+): Promise<CompositeFieldConfig> {
+  const { data } = await apiClient.get<CompositeFieldConfig>(
+    `/template-groups/${groupId}/composite-field-config`,
+    { params: { consignee, label_name: labelName } },
+  );
+  return data;
+}
+
+export interface CompositeFieldConfigSaveResult {
+  /** Set only when jobId was passed - that job's own recomputed field values, so the change
+   *  is visible right away without a second request. */
+  field_values: JobFieldValue[] | null;
+}
+
+/** Saves a Combined Description format directly against a consignee - independent of any one
+ *  job. The latest save always replaces what this consignee already had, no confirmation step
+ *  (a deliberate admin action, not an incidental edit made while working a job). Pass jobId
+ *  when saved from inside an open job, to recompute and return that job's own field values
+ *  immediately. */
+export async function saveCompositeFieldConfig(
+  groupId: string,
+  payload: {
+    consignee: string;
+    labelName?: string;
+    pieces: CompositePiece[];
+    separators: string[];
+    jobId?: string;
+  },
+): Promise<CompositeFieldConfigSaveResult> {
+  const { data } = await apiClient.put<CompositeFieldConfigSaveResult>(
+    `/template-groups/${groupId}/composite-field-config`,
+    {
+      consignee: payload.consignee,
+      label_name: payload.labelName ?? "Combined Description",
+      pieces: payload.pieces,
+      separators: payload.separators,
+      job_id: payload.jobId ?? null,
+    },
+  );
+  return data;
 }
 
 /** Sets (or clears, with null) a job's GK1-set target date — drives the ETA boxes on the

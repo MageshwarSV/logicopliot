@@ -9,7 +9,7 @@ import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -5411,6 +5411,28 @@ def _composite_piece_value(piece, piece_values: dict[str, dict], key) -> str:
     return ""
 
 
+def _join_composite_pieces(pieces: list[str], separators: list[str] | None) -> str:
+    """Joins a composite field's already-resolved per-piece values (see _composite_piece_value)
+    for one line, inserting each piece's OWN configured separator immediately before it -
+    never before the first piece this line actually HAS something for.
+
+    separators is None (a field/consignee default saved before this existed) for a single
+    space before every piece, unchanged from before per-piece separators existed. A blank
+    piece - this line has nothing for it - is skipped entirely, along with its own separator,
+    so two real pieces either side of one blank one still join with exactly ONE separator
+    between them, never two stray ones.
+    """
+    out = ""
+    for i, value in enumerate(pieces):
+        if not value:
+            continue
+        if out:
+            sep = separators[i] if separators and i < len(separators) else " "
+            out += sep
+        out += value
+    return out
+
+
 # The one job-level field this job's own consignee is read off of, for
 # CompositeFieldConsigneeDefault's lookup key - see that model's own docstring for why this is
 # an exact-text match rather than the fuzzy_match CustomField already has elsewhere.
@@ -5433,15 +5455,16 @@ def _job_consignee_key(db: Session, job: Job) -> str:
     return (fv.corrected_value or fv.extracted_value or "").strip()
 
 
-def _effective_composite_pieces(db: Session, job: Job, cf: "CustomField") -> list:
-    """Which pieces a composite field ACTUALLY computes with for this one job.
+def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tuple[list, list | None]:
+    """Which pieces (and separators) a composite field ACTUALLY computes with for this one job.
 
-    A consignee that has already had this field applied once (anywhere - any job, any
-    operator) reuses that same field ORDER on every later job of theirs automatically, rather
-    than each new job starting from the template's generic fallback - see
-    CompositeFieldConsigneeDefault. No consignee match (a first-time consignee, or a job with
-    no consignee value at all) falls back to the field's own composite_source_labels exactly
-    as before this existed.
+    A consignee that has already had this field configured once (anywhere - any job, the
+    Combined Description Configuration screen) reuses that exact format on every later job of
+    theirs automatically, rather than each new job starting from the template's generic
+    fallback - see CompositeFieldConsigneeDefault. No consignee match (a first-time consignee,
+    or a job with no consignee value at all) falls back to the field's own
+    composite_source_labels/composite_separators exactly as before per-consignee formats
+    existed.
     """
     from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
 
@@ -5454,8 +5477,8 @@ def _effective_composite_pieces(db: Session, job: Job, cf: "CustomField") -> lis
             .first()
         )
         if override is not None:
-            return list(override.source_labels or [])
-    return getattr(cf, "composite_source_labels", None) or []
+            return list(override.source_labels or []), override.separators
+    return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
 
 
 def run_extraction(db: Session, job: Job) -> None:
@@ -6368,17 +6391,16 @@ def run_extraction(db: Session, job: Job) -> None:
                 # reference sheet. Each piece is either another field's label_name (a mark
                 # like item_material_code/product_description, or another custom field
                 # already computed earlier this same run - see the sort above) or a fixed
-                # literal value typed straight in - see _composite_piece_value. Blank pieces
-                # are skipped entirely rather than leaving a stray double space where a line
-                # has nothing for one piece. The actual pieces used come from this job's own
-                # consignee if that consignee has used this field before - see
-                # _effective_composite_pieces.
-                pieces_cfg = _effective_composite_pieces(db, job, cf)
+                # literal value typed straight in - see _composite_piece_value, joined with
+                # each piece's own separator - see _join_composite_pieces. The actual
+                # pieces/separators used come from this job's own consignee if that consignee
+                # has a configured format - see _effective_composite_config.
+                pieces_cfg, separators_cfg = _effective_composite_config(db, job, cf)
                 field_labels = [p for p in pieces_cfg if isinstance(p, str)]
                 piece_values = {label: _line_values(label) for label in field_labels}
                 for key in line_keys:
                     pieces = [_composite_piece_value(p, piece_values, key) for p in pieces_cfg]
-                    looked_up[key] = " ".join(p for p in pieces if p)
+                    looked_up[key] = _join_composite_pieces(pieces, separators_cfg)
             for key in field_keys:
                 value = looked_up.get(key) or cf.hardcoded_value or ""
                 # Idempotent on purpose: the top-of-function delete means this is normally a
@@ -6803,17 +6825,19 @@ def correct_field_value(
 
 def _recompute_per_row_custom_field(
     db: Session, job: Job, cf: "CustomField", composite_pieces_override: list | None = None,
+    composite_separators_override: list | None = None,
 ) -> list[JobFieldValueOut]:
-    """The per-row half of recompute_custom_field's own logic, pulled out so a second,
-    narrower entry point (an operator picking a composite field's piece order from the job
-    screen - see composite_fields_for_job/set_composite_field_order below) can reuse it
-    without duplicating it, rather than only ever being reachable from that endpoint.
+    """The per-row half of recompute_custom_field's own logic, pulled out so a second, narrower
+    entry point (saving a Combined Description Configuration while a job is open - see
+    save_composite_field_config below) can reuse it without duplicating it, rather than only
+    ever being reachable from that endpoint.
 
-    composite_pieces_override (kind="composite" only): compute THIS job with exactly these
-    pieces instead of resolving them from the consignee/generic default - set_composite_field_order
-    uses this so pressing Apply immediately reflects what was just chosen (fixed-value pieces
-    included) even though only the field-reference pieces of it get remembered for the
-    consignee going forward - see _effective_composite_pieces.
+    composite_pieces_override/composite_separators_override (kind="composite" only): compute
+    THIS job with exactly this format instead of resolving it from the consignee/generic
+    default - save_composite_field_config uses this so saving a consignee's format while a job
+    is open immediately reflects what was just configured, for this one job, ahead of the
+    consignee default itself being read back in (which happens identically the next time
+    _effective_composite_config runs anyway, since that's exactly what was just saved).
     """
     # Anchored on product_description, not every row-indexed field on the job - see the
     # identical reasoning in run_extraction's own line_keys above.
@@ -6935,15 +6959,15 @@ def _recompute_per_row_custom_field(
         answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
-        pieces_cfg = (
-            composite_pieces_override if composite_pieces_override is not None
-            else _effective_composite_pieces(db, job, cf)
-        )
+        if composite_pieces_override is not None:
+            pieces_cfg, separators_cfg = composite_pieces_override, composite_separators_override
+        else:
+            pieces_cfg, separators_cfg = _effective_composite_config(db, job, cf)
         field_labels = [p for p in pieces_cfg if isinstance(p, str)]
         piece_values = {label: _row_values(label) for label in field_labels}
         for key in line_keys:
             pieces = [_composite_piece_value(p, piece_values, key) for p in pieces_cfg]
-            computed[key] = " ".join(p for p in pieces if p)
+            computed[key] = _join_composite_pieces(pieces, separators_cfg)
 
     rows: list[JobFieldValue] = []
     for set_index, row_index in field_keys:
@@ -7127,42 +7151,21 @@ def recompute_custom_field(
     )]
 
 
-class CompositeFieldOut(BaseModel):
-    id: str
-    label_name: str
-    # Each piece is either another field's label_name (a string) or a fixed literal value
-    # typed straight in ({"fixed": "<text>"}) - see _composite_piece_value's own docstring.
-    composite_source_labels: list[str | dict[str, str]]
-
-
-class CompositeFieldsOut(BaseModel):
-    # Every already-existing per-line field (mark or custom field) this job's template could
-    # combine into one - a Super Admin-free view of just enough of the template to build the
-    # picker, never its prompts/hardcoded values/reference sheet setup.
-    available_labels: list[str]
-    existing: CompositeFieldOut | None = None
-
-
-@router.get("/jobs/{job_id}/composite-fields", response_model=CompositeFieldsOut)
-def composite_fields_for_job(
-    job_id: str,
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
-) -> CompositeFieldsOut:
-    """What this job's own "Combine fields" button (Product Detail, job screen) has to offer -
-    see set_composite_field_order below for what pressing Apply there actually does."""
+def _available_composite_labels(db: Session, group_id: str, exclude_label: str | None = None) -> list[str]:
+    """Every already-existing per-line field (mark or custom field) a template's composite
+    field could combine into one - a Super Admin-free view of just enough of the template to
+    build the Combined Description Configuration screen's own picker, never its prompts/
+    hardcoded values/reference sheet setup."""
     from app.models.custom_field import CustomField
     from app.models.field_mark import FieldMark
     from app.models.template_document import TemplateDocument
 
-    job = _load_job(db, job_id, scope, user)
     mark_labels = [
         m.label_name for m in db.query(FieldMark)
         .join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
-        .filter(TemplateDocument.group_id == job.group_id, FieldMark.is_multi_value.is_(True)).all()
+        .filter(TemplateDocument.group_id == group_id, FieldMark.is_multi_value.is_(True)).all()
     ]
-    cf_rows = db.query(CustomField).filter(CustomField.group_id == job.group_id).all()
+    cf_rows = db.query(CustomField).filter(CustomField.group_id == group_id).all()
     # Only a per-row custom field that ACTUALLY shows on the Product Detail card - the same
     # rule the frontend's own lookedUpByRow uses (self_filled, i.e. kind="lookup"/"composite",
     # or paired with one). A plain ask_operator per-row field with no pairing (a duty
@@ -7172,96 +7175,214 @@ def composite_fields_for_job(
         c.label_name for c in cf_rows
         if c.per_row and (c.kind in ("lookup", "composite") or c.paired_custom_field_id)
     ]
-    composite_rows = [c for c in cf_rows if c.kind == "composite" and c.per_row]
-    existing_cf = (
-        next((c for c in composite_rows if c.label_name == "Combined Description"), None)
-        or (composite_rows[0] if composite_rows else None)
-    )
     available = sorted(set(mark_labels) | set(field_labels))
-    if existing_cf is not None:
+    if exclude_label:
         # A composite field can't usefully combine ITSELF - offering its own label as a
-        # choosable piece would let an operator build a circular reference.
-        available = [l for l in available if l != existing_cf.label_name]
-    existing = None
-    if existing_cf is not None:
-        # Pre-fill with THIS job's own consignee's remembered order when they have one,
-        # rather than always showing the template's generic fallback - see
-        # _effective_composite_pieces (the same resolution the actual computation uses).
-        existing = CompositeFieldOut(
-            id=existing_cf.id, label_name=existing_cf.label_name,
-            composite_source_labels=_effective_composite_pieces(db, job, existing_cf),
+        # choosable piece would let someone build a circular reference.
+        available = [l for l in available if l != exclude_label]
+    return available
+
+
+def _known_consignees(db: Session, group_id: str) -> list[str]:
+    """Every distinct consignee name seen on a real job of this template - the Combined
+    Description Configuration screen's own picker, so a consignee can be configured in advance
+    of (or independently from) any specific job."""
+    rows = (
+        db.query(JobFieldValue.corrected_value, JobFieldValue.extracted_value)
+        .join(Job, Job.id == JobFieldValue.job_id)
+        .filter(Job.group_id == group_id, JobFieldValue.row_index.is_(None),
+                JobFieldValue.label_name == _CONSIGNEE_LABEL)
+        .all()
+    )
+    names = {(corrected or extracted or "").strip() for corrected, extracted in rows}
+    names.discard("")
+    return sorted(names)
+
+
+def _composite_sample_rows(
+    db: Session, group_id: str, consignee_key: str, field_labels: list[str], limit: int = 5,
+) -> list[dict[str, str]]:
+    """A handful of REAL product lines already seen for this consignee - every per-row field
+    this template has, not just whichever ones are currently chosen as pieces, so the Combined
+    Description Configuration screen's own live preview keeps working as the admin tries
+    different fields without a round trip per edit. Most recent jobs first."""
+    from sqlalchemy import func
+
+    job_ids = [
+        jid for (jid,) in (
+            db.query(Job.id)
+            .join(JobFieldValue, JobFieldValue.job_id == Job.id)
+            .filter(Job.group_id == group_id, JobFieldValue.row_index.is_(None),
+                    JobFieldValue.label_name == _CONSIGNEE_LABEL,
+                    func.coalesce(JobFieldValue.corrected_value, JobFieldValue.extracted_value) == consignee_key)
+            .order_by(Job.created_at.desc())
+            .limit(20)
+            .all()
         )
-    return CompositeFieldsOut(available_labels=available, existing=existing)
+    ]
+    if not job_ids:
+        return []
+    rows_by_key: dict[tuple, dict[str, str]] = {}
+    for fv in (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id.in_(job_ids), JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name.in_(field_labels))
+        .all()
+    ):
+        val = (fv.corrected_value or fv.extracted_value or "").strip()
+        if not val:
+            continue
+        rows_by_key.setdefault((fv.job_id, fv.set_index or 0, fv.row_index), {})[fv.label_name] = val
+    # Most recently extracted rows first - job_ids is already newest-job-first, and dict
+    # insertion order follows the query's own row order within that.
+    out = [v for v in rows_by_key.values() if v][:limit]
+    return out
 
 
-class CompositeFieldUpdate(BaseModel):
-    label_name: str = "Combined Description"
+class CompositeFieldConfigOut(BaseModel):
+    label_name: str
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see _composite_piece_value's own docstring.
-    source_labels: list[str | dict[str, str]]
-    # Confirms overwriting this consignee's ALREADY-remembered order with a different one -
-    # see set_composite_field_order's own docstring. False (the default - an ordinary first
-    # call) never overwrites a differing existing default; the caller must re-submit with this
-    # set True once the operator has explicitly said so.
-    confirm_overwrite_default: bool = False
+    pieces: list[str | dict[str, str]]
+    # Aligned 1:1 with pieces - the separator text inserted before that piece. "" means none.
+    separators: list[str]
+    available_labels: list[str]
+    sample_rows: list[dict[str, str]]
 
 
-@router.put("/jobs/{job_id}/composite-fields", response_model=list[JobFieldValueOut])
-def set_composite_field_order(
-    job_id: str,
-    payload: CompositeFieldUpdate,
-    response: Response,
+@router.get("/template-groups/{group_id}/composite-field-config", response_model=CompositeFieldConfigOut)
+def get_composite_field_config(
+    group_id: str,
+    consignee: str,
+    label_name: str = "Combined Description",
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> CompositeFieldConfigOut:
+    """The Combined Description Configuration screen's own data for one consignee - their
+    already-saved format if they have one (CompositeFieldConsigneeDefault), else the template's
+    generic fallback, plus real sample product lines to preview against."""
+    from app.models.custom_field import CustomField
+    from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
+
+    group = db.get(TemplateGroup, group_id)
+    if group is None or group.tenant_id != scope.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    consignee_key = (consignee or "").strip()
+    if not consignee_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pick a consignee.")
+
+    composite_rows = (
+        db.query(CustomField)
+        .filter(CustomField.group_id == group_id, CustomField.kind == "composite",
+                CustomField.per_row.is_(True))
+        .all()
+    )
+    cf = next((c for c in composite_rows if c.label_name == label_name), None)
+
+    pieces: list = []
+    separators: list[str] = []
+    if cf is not None:
+        override = (
+            db.query(CompositeFieldConsigneeDefault)
+            .filter(CompositeFieldConsigneeDefault.custom_field_id == cf.id,
+                    CompositeFieldConsigneeDefault.consignee_key == consignee_key)
+            .first()
+        )
+        if override is not None:
+            pieces = list(override.source_labels or [])
+            separators = list(override.separators or [])
+        else:
+            pieces = list(getattr(cf, "composite_source_labels", None) or [])
+            separators = list(getattr(cf, "composite_separators", None) or [])
+    separators = (separators + [""] * len(pieces))[:len(pieces)]
+
+    field_labels = [p for p in pieces if isinstance(p, str)]
+    available = _available_composite_labels(db, group_id, exclude_label=cf.label_name if cf else None)
+    sample_rows = _composite_sample_rows(
+        db, group_id, consignee_key, field_labels or available,
+    )
+    return CompositeFieldConfigOut(
+        label_name=label_name, pieces=pieces, separators=separators,
+        available_labels=available, sample_rows=sample_rows,
+    )
+
+
+@router.get("/template-groups/{group_id}/known-consignees", response_model=list[str])
+def list_known_consignees(
+    group_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[str]:
+    """Every consignee the Combined Description Configuration screen's own picker can offer -
+    every distinct consignee name a real job of this template has ever had."""
+    group = db.get(TemplateGroup, group_id)
+    if group is None or group.tenant_id != scope.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    return _known_consignees(db, group_id)
+
+
+class CompositeFieldConfigUpdate(BaseModel):
+    consignee: str
+    label_name: str = "Combined Description"
+    pieces: list[str | dict[str, str]]
+    separators: list[str] = []
+    # Set when saved from inside an open job (rather than a standalone configuration screen) -
+    # that job is recomputed immediately with exactly what was just saved, and its updated
+    # field values are returned, so the change is visible right away without a second request.
+    job_id: str | None = None
+
+
+class CompositeFieldConfigSaveResult(BaseModel):
+    field_values: list[JobFieldValueOut] | None = None
+
+
+@router.put("/template-groups/{group_id}/composite-field-config", response_model=CompositeFieldConfigSaveResult)
+def save_composite_field_config(
+    group_id: str,
+    payload: CompositeFieldConfigUpdate,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2)),
-) -> list[JobFieldValueOut]:
-    """Let anyone reviewing a job set the piece order for the template's composite field, from
-    the job screen itself rather than the Super Admin wizard.
+) -> CompositeFieldConfigSaveResult:
+    """Saves a Combined Description format directly against a consignee - the Combined
+    Description Configuration screen's own Save & Apply, independent of any one job. The
+    latest save always replaces what this consignee already had: a deliberate admin action,
+    not an incidental edit made while working a job, so no confirmation step applies here (see
+    CompositeFieldConsigneeDefault's own docstring).
 
-    composite_source_labels on the CustomField itself stays the template-wide GENERIC
-    fallback - unchanged behaviour, still updated on every Apply. On top of that, if this
-    job has a consignee (consignee_full_name), the field-reference pieces (never a fixed
-    value - see CompositeFieldConsigneeDefault's own docstring) are also remembered for THAT
-    consignee specifically: any later job for the SAME consignee resolves (both for display
-    and for computing its real value) to their own remembered order first, the generic
-    fallback only when a consignee has none of their own yet - see
-    _effective_composite_pieces. THIS job is always recomputed with exactly what was just
-    chosen here (fixed values included), regardless of which pieces get remembered for next
-    time.
+    composite_source_labels/composite_separators on the CustomField itself stay the
+    template-wide GENERIC fallback for a consignee who has never been configured - updated on
+    every save here too, same as before this screen existed.
 
-    A consignee that ALREADY has a remembered order different from what's being applied now is
-    never silently overwritten (confirmed with the user - a quiet overwrite here would mean
-    every later job for that consignee starts getting a DIFFERENT auto-filled description with
-    nobody having agreed to that change). Instead, the response carries an
-    X-Composite-Default-Conflict: true header and the existing default is left untouched; the
-    caller re-submits with confirm_overwrite_default=True once the operator has explicitly said
-    to update it ("just this job" needs no second call - the recompute below already applied
-    the new order to THIS job regardless of what happens to the remembered default). A
-    first-time consignee, or one whose remembered order already matches, is saved immediately -
-    exactly as before - since there is nothing to ask about in either case.
-
-    Deliberately narrow otherwise: this never touches kind, prompts, hardcoded_value, or
-    any other admin-only config - only composite_source_labels (and per_row/kind/label_name on
-    first creation) - so an operator can reorder pieces here but not rewrite the field into
-    something else entirely.
+    Deliberately narrow otherwise: this never touches kind, prompts, hardcoded_value, or any
+    other admin-only config - only composite_source_labels/composite_separators (and
+    per_row/kind/label_name on first creation).
     """
     from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
     from app.models.custom_field import CustomField
 
-    job = _load_job(db, job_id, scope, user)
+    group = db.get(TemplateGroup, group_id)
+    if group is None or group.tenant_id != scope.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    consignee_key = payload.consignee.strip()
+    if not consignee_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pick a consignee.")
     label = payload.label_name.strip()
     if not label:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the field a label.")
-    if not payload.source_labels:
+    if not payload.pieces:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose at least one piece to combine.")
-    for piece in payload.source_labels:
+    for piece in payload.pieces:
         if isinstance(piece, dict) and not (piece.get("fixed") or "").strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="A fixed-value piece cannot be empty.")
+    separators = (list(payload.separators) + [""] * len(payload.pieces))[:len(payload.pieces)]
 
     composite_rows = (
         db.query(CustomField)
-        .filter(CustomField.group_id == job.group_id, CustomField.kind == "composite",
+        .filter(CustomField.group_id == group_id, CustomField.kind == "composite",
                 CustomField.per_row.is_(True))
         .all()
     )
@@ -7270,46 +7391,44 @@ def set_composite_field_order(
     )
     if cf is None:
         cf = CustomField(
-            tenant_id=job.tenant_id, group_id=job.group_id,
+            tenant_id=group.tenant_id, group_id=group_id,
             label_name=label, kind="composite", per_row=True,
         )
         db.add(cf)
-    if any(isinstance(p, str) and p == cf.label_name for p in payload.source_labels):
+    if any(isinstance(p, str) and p == cf.label_name for p in payload.pieces):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="A field cannot combine itself.")
-    cf.composite_source_labels = payload.source_labels
+    cf.composite_source_labels = payload.pieces
+    cf.composite_separators = separators
     db.flush()  # cf.id must exist (a brand-new field) before it can be a foreign key below.
 
-    consignee_key = _job_consignee_key(db, job)
-    if consignee_key:
-        # Only the field-reference pieces are remembered per consignee - never a fixed value,
-        # which is not assumed to be the same text on this consignee's NEXT job.
-        field_only = [p for p in payload.source_labels if isinstance(p, str)]
-        default_row = (
-            db.query(CompositeFieldConsigneeDefault)
-            .filter(CompositeFieldConsigneeDefault.custom_field_id == cf.id,
-                    CompositeFieldConsigneeDefault.consignee_key == consignee_key)
-            .first()
+    default_row = (
+        db.query(CompositeFieldConsigneeDefault)
+        .filter(CompositeFieldConsigneeDefault.custom_field_id == cf.id,
+                CompositeFieldConsigneeDefault.consignee_key == consignee_key)
+        .first()
+    )
+    if default_row is None:
+        default_row = CompositeFieldConsigneeDefault(
+            tenant_id=group.tenant_id, custom_field_id=cf.id, consignee_key=consignee_key,
+            source_labels=payload.pieces, separators=separators,
         )
-        if default_row is None:
-            default_row = CompositeFieldConsigneeDefault(
-                tenant_id=job.tenant_id, custom_field_id=cf.id, consignee_key=consignee_key,
-                source_labels=field_only,
-            )
-            db.add(default_row)
-        elif default_row.source_labels == field_only:
-            pass  # already matches - nothing to confirm, nothing to write
-        elif payload.confirm_overwrite_default:
-            default_row.source_labels = field_only
-        else:
-            # Leave the existing remembered order untouched and tell the caller to ask first -
-            # see this endpoint's own docstring. THIS job's recompute below still goes ahead
-            # with the newly chosen order regardless.
-            response.headers["X-Composite-Default-Conflict"] = "true"
+        db.add(default_row)
+    else:
+        default_row.source_labels = payload.pieces
+        default_row.separators = separators
 
     db.commit()
     db.refresh(cf)
-    return _recompute_per_row_custom_field(db, job, cf, composite_pieces_override=payload.source_labels)
+
+    if not payload.job_id:
+        return CompositeFieldConfigSaveResult(field_values=None)
+    job = _load_job(db, payload.job_id, scope, user)
+    values = _recompute_per_row_custom_field(
+        db, job, cf, composite_pieces_override=payload.pieces,
+        composite_separators_override=separators,
+    )
+    return CompositeFieldConfigSaveResult(field_values=values)
 
 
 @router.post("/jobs/{job_id}/marks/{mark_id}/recompute", response_model=list[JobFieldValueOut])

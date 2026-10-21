@@ -54,8 +54,8 @@ interface StoredJobsFilters {
 // links actually narrows it. See Job.category / _category_condition in api/v1/jobs.py.
 const CATEGORY_TITLES: Record<string, string> = {
   new: "New Jobs",
-  submitted: "Submitted Jobs",
-  completed: "Completed Jobs",
+  submitted: "ERP Submitted Jobs",
+  completed: "ERP Verified Jobs",
 };
 
 function readStoredJobsFilters(): Partial<StoredJobsFilters> {
@@ -141,12 +141,32 @@ export function JobsPage() {
   // included). Stacking a client-side "today" filter on top of an "Overall" bucket click
   // would have hidden almost everything the box just promised to show.
   const storedFilters = readStoredJobsFilters();
-  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(
-    () => (group ? "all" : storedFilters.quick ?? "today"),
-  );
+  // Set by the operator's own login redirect (see ROLE_HOME in LoginPage.tsx) - takes priority
+  // over whatever was previously stored, the same way `group` already does, so every fresh
+  // sign-in lands on the same default view regardless of what was left over from last time.
+  const quickParam = searchParams.get("quick");
+  const assignedToParam = searchParams.get("assignedTo");
+  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => {
+    if (group) return "all";
+    if (quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all") {
+      return quickParam;
+    }
+    return storedFilters.quick ?? "today";
+  });
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
-  const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
+  const [assignedTo, setAssignedTo] = useState<string>(
+    () => (assignedToParam === "me" ? QUICK_ALL : assignedToParam ?? storedFilters.assignedTo ?? QUICK_ALL),
+  );
+  // assignedTo=me names the CURRENT operator, whose own display name isn't known at the exact
+  // moment the login redirect fires (see ROLE_HOME) - resolved here once the user profile has
+  // loaded, same login-redirect mechanism as quick= above.
+  useEffect(() => {
+    if (assignedToParam === "me" && user?.full_name) {
+      setAssignedTo(user.full_name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignedToParam, user?.full_name]);
   // Type of shipment (mode) - "All" plus whatever modes actually have jobs among those
   // loaded. Reacts to the tenant filter for free: picking a tenant already narrows `jobs`
   // server-side, so this list naturally shows only that tenant's own created/assigned modes.
@@ -662,13 +682,14 @@ export function JobsPage() {
             <Button
               size="sm"
               variant="secondary"
+              className="whitespace-nowrap"
               isLoading={verifyingId === j.id}
               onClick={(e) => {
                 e.stopPropagation();
                 handleVerify(j);
               }}
             >
-              Verified
+              Mark as Verified in ERP
             </Button>
           ),
         } as Column<Job>]

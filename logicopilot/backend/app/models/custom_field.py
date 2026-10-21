@@ -141,13 +141,20 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # own export column) rather than silently falling out of sync with it.
     sync_field_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
-    # kind="composite" only: an ORDERED list of pieces, joined with a single space for each
-    # line, skipping any piece that is blank for that line. No AI prompt and no reference sheet
-    # - purely a join over data already extracted/computed elsewhere (plus, optionally, fixed
+    # kind="composite" only: an ORDERED list of pieces, each one joined to whatever came before
+    # it using ITS OWN separator (composite_separators below) - a blank piece for a given line
+    # is skipped entirely, along with its own separator. No AI prompt and no reference sheet -
+    # purely a join over data already extracted/computed elsewhere (plus, optionally, fixed
     # literal text). Each piece is either a plain label_name string (another mark or custom
     # field, whatever this line already has a value for) or {"fixed": "<text>"} - a literal
     # piece typed straight in, the SAME on every line - see app.api.v1.jobs._composite_piece_value.
     # Order matters (this is a list, unlike sync_field_ids above, which is an unordered set) -
     # it is exactly the sequence the pieces are concatenated in.
     composite_source_labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Parallel to composite_source_labels, same length, same order - separators[i] is the text
+    # inserted immediately BEFORE piece i, whenever there is already real content to separate it
+    # from (never a leading separator on the very first real piece a line actually has). None
+    # (a field saved before this existed) falls back to a single space before every piece - see
+    # _join_composite_pieces's own docstring.
+    composite_separators: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
