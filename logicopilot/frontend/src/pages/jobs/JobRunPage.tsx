@@ -64,8 +64,8 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "CustomsHouseCode", "Shipment Country", "Shipment City", "Shipment Port Code", "Package Unit",
   ],
   Invoice: [
-    "Currency_type", "Product Value", "Consignee", "Shipper Address", "Consignee Address",
-    "ERP Importer Address / Branch Code",
+    "Currency_type", "Product Value", "Consignee", "Shipper Address",
+    "ERP Consignee Name", "ERP Importer Address / Branch Code",
   ],
   Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage"],
 };
@@ -86,6 +86,10 @@ const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
   // Removed by request - no longer mapped into the Excel export either (see excel_config.
   // GENERAL!F, repointed to send nothing). Display only - the field/extraction is unchanged.
   "ad_code",
+  // Removed by request - Consignee Fields Update (the ERP's own consignee name/branch are the
+  // ones that matter for the ERP entry; the document-read address was dropped entirely rather
+  // than relocated anywhere). Display only - the field/extraction is unchanged.
+  "Consignee Address",
 ]);
 // A document tab's own field hidden outright (not relocated anywhere) - "mode_of_transport"
 // ("Transport Mode") is redundant with "TransportModeCode" ("Transport Mode Code") already
@@ -126,7 +130,8 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     total_quantity: "Total Quantity",
     unit: "Quantity Unit",
     shipper: "Shipper Name",
-    Consignee: "Consignee Name",
+    Consignee: "Document Consignee Name",
+    "ERP Importer Address / Branch Code": "ERP Consignee Branch",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
@@ -262,7 +267,7 @@ const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
 const MULTILINE_FIELD_LABELS = new Set([
-  "Supplier Address", "Shipper Address", "Consignee Address", "Combined Description",
+  "Supplier Address", "Shipper Address", "Combined Description",
 ]);
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
@@ -320,8 +325,8 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     {
       heading: "Party Details",
       labels: [
-        "shipper", "Shipper Address", "Consignee", "Consignee Address",
-        "ERP Importer Address / Branch Code",
+        "shipper", "Shipper Address", "Consignee",
+        "ERP Consignee Name", "ERP Importer Address / Branch Code",
       ],
     },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
