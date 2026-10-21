@@ -2972,6 +2972,30 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         for c in cf_rows
     }
     cf_hidden = {c.id: c.hidden_from_capture for c in cf_rows}
+    # A hardcoded, job-level custom field added to the template AFTER this job already existed
+    # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
+    # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
+    # showed up at all on any job extracted before it existed, mandatory or not. Its value is a
+    # pure constant (cf.hardcoded_value), never a document reading, so backfilling it here needs
+    # no OCR/LLM run and risks nothing (there is no existing value to overwrite).
+    existing_job_level_cf_ids = {
+        fv.custom_field_id for fv in fvs if fv.custom_field_id and fv.row_index is None
+    }
+    backfilled = False
+    for cf in cf_rows:
+        if cf.kind == "hardcoded" and not cf.per_row and cf.id not in existing_job_level_cf_ids:
+            new_fv = JobFieldValue(
+                tenant_id=job.tenant_id,
+                job_id=job.id,
+                custom_field_id=cf.id,
+                label_name=cf.label_name,
+                extracted_value=cf.hardcoded_value or "",
+            )
+            db.add(new_fv)
+            fvs.append(new_fv)
+            backfilled = True
+    if backfilled:
+        db.commit()
     field_values = []
     for fv in fvs:
         mp = mark_pos.get(fv.mark_id)
