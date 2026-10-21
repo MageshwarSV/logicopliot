@@ -63,6 +63,39 @@ def test_result_label_is_country_city_code(client, db_session):
     assert labels["CNPDG"] == "CHINA PUDONG/SHANGHAI(CNPDG)"
 
 
+def test_result_label_is_plain_resolved_value_when_there_is_only_one_key(client, db_session):
+    """A field with no second key at all (e.g. ERP Consignee Name - one slot, match_value_1 IS
+    the normalized organization name) has nothing useful to add in parentheses: match_value_1
+    and resolved_value are the same name, just differently cased, so showing both read as a
+    redundant "ACME CORP (Acme Corp)". Found live: this also made the dropdown unreadable for
+    long organization names, since the redundant half pushed the real name further toward
+    truncation. Plain resolved_value alone for this shape - it carries the original casing."""
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
+    db_session.add(group)
+    db_session.commit()
+    db_session.refresh(group)
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-REFSEARCH2", status="extracted")
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="ERP Consignee Name",
+                     kind="hardcoded", is_target_value=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+    db_session.add(CustomFieldReferenceValue(
+        custom_field_id=cf.id, match_value_1="ACME CORP", resolved_value="Acme Corp"))
+    db_session.commit()
+
+    operator = make_user(db_session, role="operator", tenant=tenant, email="op-refsearch2@example.com")
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=acme")
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    assert results == [{"value": "Acme Corp", "label": "Acme Corp"}]
+
+
 def test_matches_a_substring_of_the_country_too(client, db_session):
     tenant, group, job, cf, operator = _setup(db_session)
     login(client, operator.email)

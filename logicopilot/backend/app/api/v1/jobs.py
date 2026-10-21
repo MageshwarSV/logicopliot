@@ -3396,8 +3396,18 @@ def search_custom_field_reference_values(
                 "value": r.resolved_value,
                 # "Country City(CODE)" - e.g. "China Shanghai(CNSHA)", so the operator can type
                 # either the country or the city they see on the document and immediately
-                # recognise the right row by its full name next to its code.
-                "label": f"{r.match_value_1} {r.match_value_2}({r.resolved_value})",
+                # recognise the right row by its full name next to its code. A field with no
+                # second key at all (e.g. ERP Consignee Name - one slot, match_value_1 IS the
+                # organization, ALL CAPS - see normalize_key) has nothing useful to add in
+                # parentheses - match_value_1 and resolved_value are the same name, just
+                # normalized differently, so showing both read as a redundant "ACME CORP (Acme
+                # Corp)". Plain resolved_value alone for that shape instead - it carries the
+                # original casing, match_value_1 does not.
+                "label": (
+                    f"{r.match_value_1} {r.match_value_2}({r.resolved_value})"
+                    if r.match_value_2
+                    else r.resolved_value
+                ),
             }
             for r in rows
         ]
