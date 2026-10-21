@@ -144,26 +144,39 @@ export function JobsPage() {
   // Set by the operator's own login redirect (see ROLE_HOME in LoginPage.tsx) - takes priority
   // over whatever was previously stored, the same way `group` already does, so every fresh
   // sign-in lands on the same default view regardless of what was left over from last time.
+  //
+  // Applied via an EFFECT, not a one-time useState initializer - found live: right after the
+  // redirect from login, this page can mount a render or two before useSearchParams settles on
+  // the final URL, so an initializer (which only ever runs once, at that very first render)
+  // permanently missed quick=/assignedTo= and silently fell back to "today"/All assignees -
+  // indistinguishable from the feature doing nothing, and only ever fixed by a full reload
+  // (which has no such race, the URL is already final before this page mounts at all). An
+  // effect re-applies these every time quickParam/assignedToParam actually change, so it keeps
+  // working regardless of exactly when react-router's own state catches up.
   const quickParam = searchParams.get("quick");
   const assignedToParam = searchParams.get("assignedTo");
-  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => {
-    if (group) return "all";
-    if (quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all") {
-      return quickParam;
-    }
-    return storedFilters.quick ?? "today";
-  });
+  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => storedFilters.quick ?? "today");
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
-  const [assignedTo, setAssignedTo] = useState<string>(
-    () => (assignedToParam === "me" ? QUICK_ALL : assignedToParam ?? storedFilters.assignedTo ?? QUICK_ALL),
-  );
-  // assignedTo=me names the CURRENT operator, whose own display name isn't known at the exact
-  // moment the login redirect fires (see ROLE_HOME) - resolved here once the user profile has
-  // loaded, same login-redirect mechanism as quick= above.
+  const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   useEffect(() => {
-    if (assignedToParam === "me" && user?.full_name) {
-      setAssignedTo(user.full_name);
+    if (group) {
+      setQuick("all");
+      return;
+    }
+    if (quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all") {
+      setQuick(quickParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group, quickParam]);
+  useEffect(() => {
+    if (assignedToParam === "me") {
+      // Names the CURRENT operator, whose own display name isn't known until the user
+      // profile itself has loaded - this effect simply re-runs once it has (same mechanism,
+      // one more dependency).
+      if (user?.full_name) setAssignedTo(user.full_name);
+    } else if (assignedToParam) {
+      setAssignedTo(assignedToParam);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assignedToParam, user?.full_name]);
@@ -489,14 +502,8 @@ export function JobsPage() {
       const label = assignedToLabel(j);
       if (label) s.add(label);
     }
-    // The logged-in operator's own name is always offered, even with zero jobs currently
-    // loaded for them in this exact view - otherwise the login redirect's own "Assigned To:
-    // me" default (see ROLE_HOME in LoginPage.tsx) selects a value with no matching <option>,
-    // which a native <select> just renders as the first item ("All assignees") instead -
-    // visually wrong even though the underlying filter itself was still applied correctly.
-    if (user?.full_name) s.add(user.full_name);
     return [...s].sort();
-  }, [jobs, user?.full_name]);
+  }, [jobs]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
