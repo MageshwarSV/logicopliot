@@ -492,18 +492,19 @@ export function JobsPage() {
     return [...s].sort();
   }, [jobs]);
 
-  // Same rule as statuses above: exactly the string the Assigned To column itself shows
-  // (operator name, else who it was pulled from, else nothing) - never a raw operator id,
-  // which the operator picking from this list would have no way to recognise or match.
+  // Matches the Assigned To column's own display rule (operator name, else who it was pulled
+  // from, else nothing) when filtering - never a raw operator id, which the operator picking
+  // from the dropdown below would have no way to recognise or match.
   const assignedToLabel = (j: Job) => j.operator_name ?? j.pulled_from_sender ?? "";
-  const assignees = useMemo(() => {
-    const s = new Set<string>();
-    for (const j of jobs) {
-      const label = assignedToLabel(j);
-      if (label) s.add(label);
-    }
-    return [...s].sort();
-  }, [jobs]);
+  // The dropdown's own options: every real user of this tenant (operators already fetches
+  // this - see the effect above), not derived from whichever jobs happen to be loaded right
+  // now. Confirmed with the user: show every user even with zero jobs assigned, and never
+  // restrict this list based on existing job assignments - a brand new user must show up
+  // here the moment they're created, without needing a job of theirs to exist first.
+  const assignees = useMemo(
+    () => [...new Set(operators.map((o) => o.full_name).filter(Boolean))].sort(),
+    [operators],
+  );
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
