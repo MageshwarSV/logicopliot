@@ -6738,6 +6738,22 @@ def correct_field_value(
     # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
     # behaving differently purely because of what came along with it.
     fv.corrected_value = (payload.corrected_value or "").strip()
+    # A mandatory mark cleared back to blank on a document already marked Approved must not
+    # leave that badge standing - found live: an operator cleared Vessel Name (and others) on
+    # an already-approved Bill of Lading, and it stayed "✓ Approved" with a mandatory field now
+    # missing, since nothing here had ever touched approval state at all - only a fresh
+    # extraction (_begin_extraction) ever reset it. Un-approving sends the operator back
+    # through Submit for Approval, which the frontend's own check then correctly refuses and
+    # highlights. Scoped to marks (job_document_id is always set for one) - a job-level custom
+    # field with no document of its own going blank is already caught live by the stage gate's
+    # own manualPending check, not a one-time approval flag.
+    if fv.mark_id and fv.job_document_id and not fv.corrected_value:
+        mark = db.get(FieldMark, fv.mark_id)
+        if mark is not None and mark.ask_operator_required:
+            owner_jd = db.get(JobDocument, fv.job_document_id)
+            if owner_jd is not None and (owner_jd.approved or owner_jd.gk2_approved):
+                owner_jd.approved = False
+                owner_jd.gk2_approved = False
     # A kind="lookup" field the master had nothing for, now filled in by hand: remember it, so
     # the same material/description on a later line - this job or any other - is filled in
     # automatically instead of asked for again. Never for a value the master DID already find:

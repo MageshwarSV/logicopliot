@@ -2,6 +2,7 @@
 operator dashboard's Job Pending / ETA / Pending Approval boxes."""
 from datetime import datetime, timedelta, timezone
 
+from app.api.v1.jobs import IST
 from app.models.job import Job
 from app.models.template_group import TemplateGroup
 from tests.conftest import login, make_tenant, make_user
@@ -121,7 +122,11 @@ def test_group_eta_filters_by_eta_date_not_created_at(client, db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     admin = make_user(db_session, role="super_admin", email="sa-filter3@example.com")
-    today = datetime.now(timezone.utc).date()
+    # The "today" bucket is reckoned in IST (see IST/_bucket_bounds in jobs.py), not the
+    # server's own UTC clock - this must agree with it, or the two disagree right around the
+    # UTC/IST boundary (any run between 00:00-05:30 UTC), exactly the bug that reckoning was
+    # built to fix for the real dashboard boxes.
+    today = datetime.now(IST).date()
     with_eta = _make_job(db_session, tenant, group, "JOB-ETA", created_days_ago=60,
                          eta_date=today.isoformat())
     _make_job(db_session, tenant, group, "JOB-NOETA", created_days_ago=0)
