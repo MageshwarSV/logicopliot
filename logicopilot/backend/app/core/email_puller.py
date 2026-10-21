@@ -45,6 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.email_seen import EmailSeen
 from app.models.job import Job, JobDocument, UnmatchedUploadPage
 from app.models.pending_email import PendingEmail
+from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
 from app.models.user import OPERATOR, User
@@ -1235,7 +1236,23 @@ def _process_one_message(
         db.flush()
         slots: dict[str, JobDocument] = {}
         slot_meta: dict[str, dict] = {}
-        for tdoc in group.documents:
+        # NOT group.documents: `group` came out of ctx (see _mailbox_setup), built on a
+        # DIFFERENT, already-closed session - _pull_inbox's shared pool hands this message to
+        # a worker with its own fresh session (see _process_with_own_session), so the harvest
+        # session that `group` was loaded in is long gone by the time processing actually
+        # runs. Scalar columns already read at load time (group.id, .name, .tenant_id, .mode)
+        # stay readable on a detached object, but a RELATIONSHIP like .documents tries to run
+        # a fresh query through that dead session and raises DetachedInstanceError - found
+        # live: every message routed to a single-template mailbox crashed here, the claim was
+        # never released, and the same email silently never became a job. Querying through
+        # `db` (this call's own live session) instead of the relationship sidesteps the whole
+        # problem. Same ordering group.documents itself used (order_by order_index).
+        for tdoc in (
+            db.query(TemplateDocument)
+            .filter(TemplateDocument.group_id == group.id)
+            .order_by(TemplateDocument.order_index)
+            .all()
+        ):
             jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
                              template_document_id=tdoc.id, page_count=0)
             db.add(jd)
