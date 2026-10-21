@@ -75,8 +75,21 @@ const GROUP_THEME: Record<Group, {
   },
 };
 
+// Every customer and operator is in India - reckoned in IST explicitly, not the browser's own
+// local timezone (which usually IS IST for these users, but isn't guaranteed - a misconfigured
+// OS clock, a VPN, opening the dashboard from abroad) and not the server's UTC clock either
+// (see IST in app/api/v1/jobs.py's own identical comment) - both sides have to agree on the
+// same timezone or a box's count and what pressing it actually shows disagree. A fixed offset,
+// not a zoneinfo lookup, since India itself has had no DST since 1945.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 function startOfDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // Shift the instant so ITS OWN UTC getters read as its IST wall-clock date, then build that
+  // same calendar day's midnight back out in real UTC terms - this is a genuine instant,
+  // directly comparable to any other Date, regardless of what timezone the runtime is in.
+  const shifted = new Date(d.getTime() + IST_OFFSET_MS);
+  const istMidnightAsUtc = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  return new Date(istMidnightAsUtc - IST_OFFSET_MS);
 }
 
 // Once GK1 hands a job to GK2 (any of these outer_status words), it is no longer "pending" in
@@ -113,21 +126,23 @@ function inBucket(dateStr: string | null | undefined, bucket: Bucket): boolean {
   if (Number.isNaN(d.getTime())) return false;
   const now = new Date();
   const today = startOfDay(now);
+  const DAY_MS = 24 * 60 * 60 * 1000;
   if (bucket === "today") {
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrow = new Date(today.getTime() + DAY_MS);
     return d >= today && d < tomorrow;
   }
   if (bucket === "week") {
-    const dow = (today.getDay() + 6) % 7; // Monday = 0 ... Sunday = 6
-    const monday = new Date(today);
-    monday.setDate(monday.getDate() - dow);
-    const nextMonday = new Date(monday);
-    nextMonday.setDate(monday.getDate() + 7);
+    // today is already IST midnight as a real instant - shifting it the same way once more
+    // reads its own IST day-of-week, Monday = 0 ... Sunday = 6.
+    const dow = (new Date(today.getTime() + IST_OFFSET_MS).getUTCDay() + 6) % 7;
+    const monday = new Date(today.getTime() - dow * DAY_MS);
+    const nextMonday = new Date(monday.getTime() + 7 * DAY_MS);
     return d >= monday && d < nextMonday;
   }
-  // month
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  // month - compared on each side's own IST calendar year/month, not the runtime's local one.
+  const dIST = new Date(d.getTime() + IST_OFFSET_MS);
+  const nowIST = new Date(now.getTime() + IST_OFFSET_MS);
+  return dIST.getUTCFullYear() === nowIST.getUTCFullYear() && dIST.getUTCMonth() === nowIST.getUTCMonth();
 }
 
 function dateFieldFor(group: Group, j: Job): string | null | undefined {

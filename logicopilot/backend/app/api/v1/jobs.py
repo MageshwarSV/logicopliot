@@ -1567,15 +1567,25 @@ def delete_job(
         shutil.rmtree(d, ignore_errors=True)
 
 
+# Every customer and operator is in India - fixed offset, not a zoneinfo lookup, since India
+# itself has had no DST since 1945. A job's own created_at stays stored in UTC regardless
+# (TimestampMixin); this is only ever used to work out which CALENDAR DAY (in the timezone the
+# people reading this dashboard actually live in) a moment in UTC falls on.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
 # Server-side mirror of JobsOverview.tsx's own bucket math on the dashboard - both have to
 # agree on what "this week"/"this month" mean, or a box's count and what pressing it actually
-# shows would disagree. Monday-start week, calendar month, reckoned from the server's own
-# clock (jobs have no timezone of their own either).
-def _bucket_bounds(bucket: str) -> tuple[datetime, datetime] | None:
+# shows would disagree. Monday-start week, calendar month, reckoned in IST (see IST above) -
+# NOT the server's own UTC clock, which used to silently disagree with the dashboard for any
+# job created between midnight and 5:30 AM IST: the box (browser-local "today") already
+# counted it, the list (server UTC "today") still called it yesterday, and a count that
+# wouldn't open was reported live every such morning.
+def _bucket_bounds(bucket: str, now: datetime | None = None) -> tuple[datetime, datetime] | None:
     if bucket == "all" or bucket not in ("today", "week", "month"):
         return None
-    now = datetime.now(timezone.utc)
-    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    now = (now or datetime.now(IST)).astimezone(IST)
+    today_start = datetime(now.year, now.month, now.day, tzinfo=IST)
     if bucket == "today":
         return today_start, today_start + timedelta(days=1)
     if bucket == "week":
@@ -1624,7 +1634,11 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
     else:
         return query
     if bounds:
-        start, end = bounds
+        # Converted to UTC explicitly before use as a query bound - Job.created_at is itself
+        # always stored in UTC (TimestampMixin), and comparing by true instant rather than
+        # relying on every DB driver to handle a non-UTC-offset literal correctly is one less
+        # thing to get subtly wrong.
+        start, end = (b.astimezone(timezone.utc) for b in bounds)
         query = query.filter(date_col >= start, date_col < end)
     return query
 
