@@ -38,6 +38,7 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core import email_progress
 from app.core.billing import record_billable_pages
 from app.core.config import get_settings
 from sqlalchemy.exc import IntegrityError
@@ -999,6 +1000,25 @@ def _harvest_mailbox(
             pass
 
 
+def _discard_pre_created_job(db: Session, job: Job | None) -> None:
+    """Undoes the early job + empty-slots creation a single-template mailbox gets (see
+    _process_one_message's own docstring) when the message turns out not to produce a real
+    job after all - OCR found nothing readable, the tenant's licensed modes no longer allow
+    this template, or the AI service itself was unavailable mid-run. A job that briefly
+    existed and then vanished is a little confusing to have glimpsed, but far less so than a
+    duplicate from a later retry, or a permanently empty shell nobody ever asked for. A
+    shared mailbox never has anything to discard here - job is None until classification
+    actually identifies the customer, for exactly that path.
+    """
+    if job is None:
+        return
+    email_progress.clear(job.id)
+    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+        db.delete(jd)
+    db.delete(job)
+    db.commit()
+
+
 def _process_one_message(
     db: Session, uid: bytes, raw: bytes, ctx: dict,
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
@@ -1077,8 +1097,71 @@ def _process_one_message(
     who: dict = {}
     tie_note = ""
     job = None
+    slots: dict[str, JobDocument] = {}
+    slot_meta: dict[str, dict] = {}
+    pull_started_at = time.time()
     try:
         import fitz  # PyMuPDF
+
+        # A mailbox dedicated to exactly one template already knows its tenant and group
+        # before a single byte of OCR has run - create the job and its empty document slots
+        # immediately, so it shows up on the operator's own Jobs list right away instead of
+        # only once OCR and classification finish, which for a several-attachment email is
+        # minutes away. A shared mailbox cannot do this - which customer this belongs to is
+        # the very thing OCR + classification below are about to work out.
+        if single_group is not None:
+            group = single_group
+            job = Job(
+                tenant_id=group.tenant_id, group_id=group.id, reference=generate_job_no(),
+                status="draft", created_by_id=None,
+                assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+            )
+            db.add(job)
+            db.flush()
+            for tdoc in (
+                db.query(TemplateDocument)
+                .filter(TemplateDocument.group_id == group.id)
+                .order_by(TemplateDocument.order_index)
+                .all()
+            ):
+                jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                                 template_document_id=tdoc.id, page_count=0)
+                db.add(jd)
+                slots[tdoc.id] = jd
+                slot_meta[tdoc.id] = {
+                    "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
+                    "fields": [m.label_name for m in tdoc.marks],
+                    "reference": _slot_reference(tdoc.id),
+                }
+            # A real commit, not just a flush - a flush is only visible inside THIS
+            # transaction; the operator's own browser is polling through a completely
+            # different connection, and a job it can never actually see yet is no better
+            # than the delay this whole feature exists to remove.
+            db.commit()
+
+        # Page count across every attachment, BEFORE any OCR runs - so the progress bar
+        # can show "N of M" from its very first frame instead of only once the first page
+        # happens to finish. Written to a throwaway scratch file and opened by PATH, the
+        # exact same way the real OCR loop below opens each attachment (fitz.open(stream=...)
+        # is a different call shape this codebase has never relied on elsewhere) - same
+        # 6-page-per-file cap that loop applies too.
+        total_pages = 0
+        if job is not None:
+            count_dir = tmp / "_count"
+            for cidx, (cname, cblob) in enumerate(files):
+                cext = Path(cname).suffix.lower() or ".pdf"
+                cpath = count_dir / f"{cidx}{cext}"
+                try:
+                    cpath.parent.mkdir(parents=True, exist_ok=True)
+                    cpath.write_bytes(cblob)
+                    with fitz.open(cpath) as cdoc:
+                        total_pages += min(len(cdoc), 6)
+                except Exception:  # noqa: BLE001
+                    pass
+            shutil.rmtree(count_dir, ignore_errors=True)
+            if total_pages:
+                email_progress.publish(job.id, 0, total_pages, pull_started_at)
+        pages_done = 0
 
         for idx, (name, blob) in enumerate(files):
             ext = Path(name).suffix.lower() or ".pdf"
@@ -1106,6 +1189,9 @@ def _process_one_message(
                         logger.warning("OCR unavailable for %s p%s", name, i)
                         got = ""
                     raw_pages.append(got)
+                    pages_done += 1
+                    if job is not None and total_pages:
+                        email_progress.publish(job.id, pages_done, total_pages, pull_started_at)
                 # Drop the carrier's terms and conditions BEFORE classifying, not just
                 # before extracting. A 2-page sea waybill is 42,551 characters of which
                 # ~39,000 are terms that define "Freight", "Package", "Packing List"
@@ -1141,6 +1227,7 @@ def _process_one_message(
         if not prepared:
             _record(db, mid, sender, subject, "unreadable",
                     "the attachments could not be opened")
+            _discard_pre_created_job(db, job)
             return {"from": sender, "subject": subject, "matched": None,
                     "reason": "attachments could not be read"}
 
@@ -1211,59 +1298,74 @@ def _process_one_message(
                     evidence=who.get("evidence") or "")
             _save_pending_email(db, mid, sender, subject, mode_reason,
                                who.get("evidence") or "", prepared)
+            _discard_pre_created_job(db, job)
             return {
                 "from": sender, "subject": subject, "matched": None,
                 "reason": mode_reason, "left_unread": True,
             }
 
         # ---- the job
-        # Assignment is a deliberate action from the Jobs list' own dropdown, never a
-        # side effect of WHICH MAILBOX a job happened to arrive in - a forwarding agent
-        # mails for six importers from one shared address, and none of them is "the"
-        # operator for all six. The one exception: the SENDER is themselves a real,
-        # already-registered operator account (their own email, not a shared inbox) -
-        # there the job already has a genuine, unambiguous owner the moment it lands,
-        # and leaving it Unassigned just made someone hunt for what they already sent.
-        job = Job(
-            tenant_id=group.tenant_id,
-            group_id=group.id,
-            reference=generate_job_no(),
-            status="draft",
-            created_by_id=None,
-            assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
-        )
-        db.add(job)
-        db.flush()
-        slots: dict[str, JobDocument] = {}
-        slot_meta: dict[str, dict] = {}
-        # NOT group.documents: `group` came out of ctx (see _mailbox_setup), built on a
-        # DIFFERENT, already-closed session - _pull_inbox's shared pool hands this message to
-        # a worker with its own fresh session (see _process_with_own_session), so the harvest
-        # session that `group` was loaded in is long gone by the time processing actually
-        # runs. Scalar columns already read at load time (group.id, .name, .tenant_id, .mode)
-        # stay readable on a detached object, but a RELATIONSHIP like .documents tries to run
-        # a fresh query through that dead session and raises DetachedInstanceError - found
-        # live: every message routed to a single-template mailbox crashed here, the claim was
-        # never released, and the same email silently never became a job. Querying through
-        # `db` (this call's own live session) instead of the relationship sidesteps the whole
-        # problem. Same ordering group.documents itself used (order_by order_index).
-        for tdoc in (
-            db.query(TemplateDocument)
-            .filter(TemplateDocument.group_id == group.id)
-            .order_by(TemplateDocument.order_index)
-            .all()
-        ):
-            jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
-                             template_document_id=tdoc.id, page_count=0)
-            db.add(jd)
-            slots[tdoc.id] = jd
-            slot_meta[tdoc.id] = {
-                "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
-                "fields": [m.label_name for m in tdoc.marks],
-                # the customer's own sample for this slot - the strongest reference
-                "reference": _slot_reference(tdoc.id),
-            }
-        db.flush()
+        # A single-template mailbox already created this (and its empty slots) immediately
+        # after OCR started, long before classification got here - see this function's own
+        # docstring. A shared mailbox could not: which customer this is for is exactly what
+        # the block above just worked out, so only now does a job - and its own tenant,
+        # which only exists once `group` is known - become possible at all.
+        if job is None:
+            # Assignment is a deliberate action from the Jobs list' own dropdown, never a
+            # side effect of WHICH MAILBOX a job happened to arrive in - a forwarding agent
+            # mails for six importers from one shared address, and none of them is "the"
+            # operator for all six. The one exception: the SENDER is themselves a real,
+            # already-registered operator account (their own email, not a shared inbox) -
+            # there the job already has a genuine, unambiguous owner the moment it lands,
+            # and leaving it Unassigned just made someone hunt for what they already sent.
+            job = Job(
+                tenant_id=group.tenant_id,
+                group_id=group.id,
+                reference=generate_job_no(),
+                status="draft",
+                created_by_id=None,
+                assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+            )
+            db.add(job)
+            db.flush()
+            # NOT group.documents: `group` came out of ctx (see _mailbox_setup), built on a
+            # DIFFERENT, already-closed session - _pull_inbox's shared pool hands this
+            # message to a worker with its own fresh session (see
+            # _process_with_own_session), so the harvest session `group` was loaded in is
+            # long gone by the time processing actually runs. Scalar columns already read
+            # at load time (group.id, .name, .tenant_id, .mode) stay readable on a
+            # detached object, but a RELATIONSHIP like .documents tries to run a fresh
+            # query through that dead session and raises DetachedInstanceError - found
+            # live: every message routed to a single-template mailbox crashed here, the
+            # claim was never released, and the same email silently never became a job.
+            # Querying through `db` (this call's own live session) instead of the
+            # relationship sidesteps the whole problem. Same ordering group.documents
+            # itself used (order_by order_index).
+            for tdoc in (
+                db.query(TemplateDocument)
+                .filter(TemplateDocument.group_id == group.id)
+                .order_by(TemplateDocument.order_index)
+                .all()
+            ):
+                jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                                 template_document_id=tdoc.id, page_count=0)
+                db.add(jd)
+                slots[tdoc.id] = jd
+                slot_meta[tdoc.id] = {
+                    "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
+                    "fields": [m.label_name for m in tdoc.marks],
+                    # the customer's own sample for this slot - the strongest reference
+                    "reference": _slot_reference(tdoc.id),
+                }
+            db.flush()
+        # OCR/document-capture is done either way at this point - clear the page progress
+        # bar and move the badge on to Document Classifying for the (potentially slow)
+        # per-attachment slot assignment just below, so the operator still sees SOMETHING
+        # happening rather than the job appearing to freeze between "every page read" and
+        # "documents actually sorted into slots".
+        email_progress.clear(job.id)
+        job.stage_override = "Document Classifying"
+        db.commit()
         cand_slots = list(slot_meta.values())
 
         # Stage every kept page as a provisional "unresolved" row BEFORE classification
@@ -1300,10 +1402,12 @@ def _process_one_message(
                 rows.append(row)
             pages_by_file.append(rows)
         # A flush only, not a commit: if classification itself raises
-        # AIServiceUnavailable below, the WHOLE job - including these staged rows -
-        # must roll back together, exactly as before this existed, so the email is
-        # retried completely fresh next cycle rather than leaving an orphaned job
-        # with no classification ever having run against it.
+        # AIServiceUnavailable below, these staged rows roll back with it. The job and its
+        # empty slots are NOT part of that rollback anymore - they were already committed
+        # above (so the operator's own browser could see Document Capture/Document
+        # Classifying while this was still running) - the except block below explicitly
+        # discards them instead (_discard_pre_created_job), so the net effect is the same:
+        # nothing survives a deferred message, and the next poll starts completely fresh.
         db.flush()
 
         # assign_documents, not classify_file per file: a slot goes to ONE file, and
@@ -1411,6 +1515,11 @@ def _process_one_message(
                 if meta["name"] not in filled:
                     filled.append(meta["name"])
                 named.append(f"{item['name']} -> {fname}")
+        # Classification is done - clear the override so the job's own computed stage
+        # (Document Capture once a slot has a real file, or whatever comes next) takes
+        # over again. Left set, "Document Classifying" would win forever: stage_override
+        # is a manual override by design, and nothing else ever clears one on its own.
+        job.stage_override = None
         db.commit()
         # The pipeline's own working copy of this email is deleted in the finally
         # block below the moment this job is done processing - this is the only chance
@@ -1430,6 +1539,13 @@ def _process_one_message(
         # once the service has recovered. Nothing was ever marked read (attachments
         # are read via BODY.PEEK[]), so there is no flag to undo either.
         db.rollback()
+        # The job itself (and a single-template mailbox's own early creation, see this
+        # function's own docstring) was already COMMITTED by this point - not just
+        # flushed - so the operator's browser could actually see it while classification
+        # ran. A plain rollback no longer undoes that on its own the way it used to
+        # before this feature existed; explicitly discard it, or the retry this handler
+        # is about to enable creates a genuine SECOND job once the AI service recovers.
+        _discard_pre_created_job(db, job)
         logger.warning(
             "email pull for %s deferred - AI service unavailable (%s); this message "
             "will be retried automatically on a later cycle", mid[:60], exc)

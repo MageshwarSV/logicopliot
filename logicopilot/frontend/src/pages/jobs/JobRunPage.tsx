@@ -412,6 +412,15 @@ function tabFromStage(job: JobDetail, isGk2: boolean): TabKey {
   return "capture";
 }
 
+/** "90s" -> "1m 30s", so the OCR progress bar's ETA reads like a duration a person would say,
+ *  not a raw second count. */
+function formatEtaSeconds(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
 export function JobRunPage() {
   const { jobId = "" } = useParams();
   const navigate = useNavigate();
@@ -499,6 +508,10 @@ export function JobRunPage() {
   // about how far it reached. The server works it out (from the live frame while running, from
   // the saved log afterwards) so the rule lives in one place, not two.
   const [progress, setProgress] = useState<jobsApi.RunProgress | null>(null);
+  // Page-by-page OCR progress for a job a single-template mailbox just created, before any
+  // document has landed in a slot - see jobPullProgress. null once there is nothing left to
+  // report (classification has started, or the job already has a real file in some slot).
+  const [pullProgress, setPullProgress] = useState<jobsApi.PullProgress | null>(null);
   // Pressing Submit with something unfilled used to paint a red banner naming the fields and
   // leave the operator to find them. On a fourteen-line invoice that is a hunt. Instead the
   // fields are asked for one at a time, in a popup, with a count of how many are left.
@@ -727,6 +740,42 @@ export function JobRunPage() {
       clearTimeout(timer);
     };
   }, [job?.id, job?.status]);
+
+  // Page-by-page OCR progress for a job a single-template mailbox just created, before any
+  // document has a real file in it yet - see jobsApi.jobPullProgress. Stops the moment any
+  // slot gets filled (classification has resolved it one way or another) or the job reaches
+  // a settled status - from there on the job's own stage/status already says what's happening.
+  const hasAnyUploadedDoc = job?.documents.some((d) => d.is_uploaded) ?? false;
+  useEffect(() => {
+    if (!job) {
+      setPullProgress(null);
+      return;
+    }
+    const settled = job.status === "completed" || job.status === "failed"
+      || job.status === "duplicate" || job.status === "possible_duplicate";
+    if (settled || hasAnyUploadedDoc) {
+      setPullProgress(null);
+      return;
+    }
+    const watchedJobId = job.id;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function tick() {
+      try {
+        const p = await jobsApi.jobPullProgress(watchedJobId);
+        if (stop) return;
+        setPullProgress(p.active ? p : null);
+      } catch {
+        /* a missed frame is not worth showing an error for; the next one will do */
+      }
+      if (!stop) timer = setTimeout(tick, 2000);
+    }
+    tick();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [job?.id, job?.status, hasAnyUploadedDoc]);
 
   // Extraction now starts on its own — the moment every slot is filled, or on a manual
   // (Re-run) press — and runs in the background, so there is nothing here to watch a live
@@ -1812,6 +1861,34 @@ export function JobRunPage() {
         </div>
       }
     >
+      {/* A single-template mailbox's job exists from the moment OCR starts, long before any
+          document lands in a slot - this is the one place that says what's actually happening
+          in that gap, instead of Document Capture just sitting there looking frozen. */}
+      {pullProgress?.active && (
+        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+          <div className="flex items-center justify-between gap-3 text-sm font-medium text-sky-800 dark:text-sky-200">
+            <span className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+              Reading the attached documents — {pullProgress.done ?? 0} of {pullProgress.total ?? 0} page(s)
+            </span>
+            {pullProgress.eta_seconds != null && (
+              <span className="shrink-0 text-xs text-sky-600 dark:text-sky-300">
+                ~{formatEtaSeconds(pullProgress.eta_seconds)} remaining
+              </span>
+            )}
+          </div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sky-100 dark:bg-sky-500/20">
+            <div
+              className="h-full rounded-full bg-sky-500 transition-all"
+              style={{
+                width: `${Math.round(
+                  ((pullProgress.done ?? 0) / Math.max(pullProgress.total ?? 1, 1)) * 100,
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
       <div className="mb-4 flex items-center justify-between">
         <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
         {job.status === "failed" && (

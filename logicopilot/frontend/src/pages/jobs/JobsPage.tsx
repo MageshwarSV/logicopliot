@@ -387,6 +387,7 @@ export function JobsPage() {
   // is WAITING, not something happening.
   const BUSY = new Set([
     "Running", "AI - Processing", "AI - Preparing for ERP", "ERP Entry Process Started", "Submitted",
+    "Document Classifying",
   ]);
 
   function stageBadge(stage?: string | null) {

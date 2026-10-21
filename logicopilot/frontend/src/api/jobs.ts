@@ -88,6 +88,23 @@ export async function jobLive(jobId: string): Promise<LiveRun> {
   return data;
 }
 
+/** How far OCR has got on a job a single-template mailbox just created, before any document
+ *  has landed in a slot - see app/core/email_progress.py. `active: false` once OCR has
+ *  finished (classification has started, or the job already has documents) - poll this
+ *  while a job has no uploaded documents yet instead of leaving Document Capture looking
+ *  frozen for however long reading every page takes. */
+export interface PullProgress {
+  active: boolean;
+  done?: number;
+  total?: number;
+  eta_seconds?: number | null;
+}
+
+export async function jobPullProgress(jobId: string): Promise<PullProgress> {
+  const { data } = await apiClient.get<PullProgress>(`/jobs/${jobId}/pull-progress`);
+  return data;
+}
+
 /** Everything that has happened to this job, oldest first. */
 export async function jobHistory(jobId: string): Promise<JobEvent[]> {
   const { data } = await apiClient.get<JobEvent[]>(`/jobs/${jobId}/history`);

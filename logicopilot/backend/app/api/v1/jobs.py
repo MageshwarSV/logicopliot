@@ -50,7 +50,7 @@ from app.models.field_mark import FieldMark
 from app.models.job import (
     Job, JobDocument, JobFieldValue, UnmatchedUploadPage,
 )
-from app.core import live_runs
+from app.core import email_progress, live_runs
 from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
@@ -1991,6 +1991,30 @@ def run_progress(log, debug: dict | None, total_hint: int | None = None) -> dict
         done = min(done, total)
     return {"done": done, "total": total,
             "percent": int(round(done * 100 / total)) if total else 0}
+
+
+@router.get("/jobs/{job_id}/pull-progress")
+def job_pull_progress(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """How far OCR has got on a job an email-connected mailbox just created - before any
+    document has landed in a slot, so Document Capture otherwise shows nothing happening for
+    however long reading every page takes. See app/core/email_progress.py.
+
+    "active": false once OCR has finished (classification has started, or the job already
+    has documents) - not an error, just nothing left to report; the frontend stops polling.
+    """
+    _load_job(db, job_id, scope, user)
+    frame = email_progress.latest(job_id)
+    if frame is None:
+        return {"active": False}
+    return {
+        "active": True, "done": frame["done"], "total": frame["total"],
+        "eta_seconds": frame["eta_seconds"],
+    }
 
 
 @router.get("/jobs/{job_id}/live")

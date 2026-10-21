@@ -115,6 +115,34 @@ def test_classify_document_outage_rolls_back_the_tentative_job_and_unclaims(db_s
     assert db_session.query(EmailSeen).filter(EmailSeen.message_id == "<outage-2@example.com>").first() is None
 
 
+def test_single_template_mailbox_outage_during_classification_discards_the_early_job(db_session):
+    # A single-template mailbox creates its job immediately, before OCR even runs (see
+    # test_email_puller_immediate_job.py) - unlike the shared-mailbox case above, that job
+    # is already committed by the time classification can fail. Confirms it still gets
+    # discarded rather than left behind as a half-built shell with no documents routed.
+    tenant = make_tenant(db_session)
+    owner = make_user(db_session, role="operator", tenant=tenant, email="outage-op4@example.com")
+    group, doc = _setup(db_session, tenant)
+
+    raw = _fake_message("<outage-4@example.com>")
+    conn = _mock_conn_with_one_message(raw)
+
+    with patch("app.core.email_puller._connect", return_value=conn), \
+         patch("app.core.docai.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
+         patch("app.core.classifier.assign_documents_detailed",
+               side_effect=AIServiceUnavailable("rate limited")):
+        result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
+                                   mail_email="outage-op4@zoho.com", mail_app_password="x",
+                                   mail_host="imap.zoho.com")
+
+    assert result["ok"] is True
+    assert result["processed"][0]["deferred"] is True
+    # The job that briefly existed (so the operator could watch OCR happen) is gone, and
+    # nothing was left behind for the retry to collide with.
+    assert db_session.query(Job).count() == 0
+    assert db_session.query(EmailSeen).filter(EmailSeen.message_id == "<outage-4@example.com>").first() is None
+
+
 def test_a_deferred_message_is_retried_by_the_very_next_ordinary_poll(db_session):
     # The whole point: once the service recovers, the SAME message succeeds on a completely
     # normal poll - no reexamine, no manual intervention, because nothing was ever recorded.
