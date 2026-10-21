@@ -4467,6 +4467,21 @@ function ExtractionReview({
       return next.size === prev.size ? prev : next;
     });
   }, [job.field_values]);
+  // Blocks the approval: shows the message as both the inline banner AND a native alert() (the
+  // user wants it impossible to miss, not just a banner that can scroll out of view), flags
+  // every listed field red, and scrolls/centers the FIRST one into view - "drag the user to
+  // where the empty field is" rather than leaving them to hunt for it on a long document.
+  const blockApproval = (message: string, ids: string[]) => {
+    setApproveError(message);
+    setMissingRequiredIds(new Set(ids));
+    window.alert(message);
+    const firstId = ids[0];
+    if (firstId) {
+      requestAnimationFrame(() => {
+        document.getElementById(`field-${firstId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  };
   const approveActive = async () => {
     if (!active) return;
     const approving = !isApproved(active);
@@ -4481,8 +4496,10 @@ function ExtractionReview({
       );
       const insuranceValue = (insuranceFv?.corrected_value ?? insuranceFv?.extracted_value ?? "").trim();
       if (!insuranceValue) {
-        setApproveError("You need to select or enter the insurance value.");
-        setMissingRequiredIds(insuranceFv ? new Set([insuranceFv.id]) : new Set());
+        blockApproval(
+          "You need to select or enter the insurance value.",
+          insuranceFv ? [insuranceFv.id] : [],
+        );
         return;
       }
     }
@@ -4508,13 +4525,13 @@ function ExtractionReview({
         (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
       );
       if (missing.length) {
-        setMissingRequiredIds(new Set(missing.map((fv) => fv.id)));
-        setApproveError(
+        blockApproval(
           `${missing.length} mandatory field${missing.length === 1 ? "" : "s"} still need${
             missing.length === 1 ? "s" : ""
           } a value before this document can be approved: ${
             [...new Set(missing.map((fv) => fv.label_name))].join(", ")
           }.`,
+          missing.map((fv) => fv.id),
         );
         return;
       }
@@ -4968,7 +4985,7 @@ function ExtractionReview({
                     : undefined;
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   return (
-                    <div key={fv.id}>
+                    <div key={fv.id} id={`field-${fv.id}`}>
                       <ExtractedField
                         fv={fv}
                         readOnly={readOnly}
