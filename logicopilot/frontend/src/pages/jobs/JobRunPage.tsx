@@ -272,6 +272,17 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
 // so the operator can find the right row themselves by inspecting the document.
 const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code"]);
+// Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
+// format-only for now (confirmed with the user) - there is no country master data source in
+// the system yet to also check the code is a REAL country, only that it LOOKS like one.
+const COUNTRY_CODE_FORMAT_FIELD_LABELS = new Set(["CountryOfShipmentCode"]);
+function countryCodeFormatError(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
+  return /^[A-Za-z]{2,3}$/.test(v)
+    ? null
+    : "Shipment Country Code must be 2-3 letters only (e.g. IN, IND) - no numbers, symbols, or longer codes.";
+}
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -3749,6 +3760,8 @@ function ExtractedField({
   comboOptions,
   onBeforeSave,
   onDraftChange,
+  transformBeforeSave,
+  id,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -3806,6 +3819,13 @@ function ExtractedField({
    *  this field live (e.g. ERP Quotation Address, keyed on ERP Quotation Name + ERP Quotation
    *  Branch) needs the in-progress draft, not the last-saved value. */
   onDraftChange?: (value: string) => void;
+  /** Normalizes the draft right before it's sent (e.g. Shipment Country Code's own
+   *  lowercase-to-uppercase conversion) - runs BEFORE onBeforeSave, which validates/rejects,
+   *  never transforms. */
+  transformBeforeSave?: (value: string) => string;
+  /** DOM id on the root element - lets a caller scroll/center this exact box into view (see
+   *  blockApproval's "drag the user to where the empty field is"). */
+  id?: string;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -3827,14 +3847,15 @@ function ExtractedField({
 
   const commit = async () => {
     if (!dirty || readOnly) return;
+    const value = transformBeforeSave ? transformBeforeSave(draft) : draft;
     if (onBeforeSave) {
-      const proceed = await onBeforeSave(draft);
+      const proceed = await onBeforeSave(value);
       if (!proceed) return;
     }
     setSaving(true);
     setFailed(false);
     try {
-      await jobsApi.correctFieldValue(fv.id, draft);
+      await jobsApi.correctFieldValue(fv.id, value);
       await reload();
     } catch {
       setFailed(true);
@@ -3845,7 +3866,7 @@ function ExtractedField({
 
   const corrected = fv.corrected_value != null && fv.corrected_value !== "";
   return (
-    <div className="min-w-0">
+    <div id={id} className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
         <p
           className={`${wrapLabel ? "break-words" : "truncate"} font-semibold text-slate-900 dark:text-slate-100 ${
@@ -4521,19 +4542,65 @@ function ExtractionReview({
       const relocated = relocatedLabels.size
         ? job.field_values.filter((fv) => fv.row_index == null && relocatedLabels.has(fv.label_name))
         : [];
-      const missing = [...markFields, ...relocated].filter(
+      const pool = [...markFields, ...relocated];
+      const missing = pool.filter(
         (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
       );
-      if (missing.length) {
+      // Format, not blank/missing - Shipment Country Code's own save path already rejects an
+      // invalid value (ExtractedField's onBeforeSave), but a value saved before that existed,
+      // or written some other way, is still caught here rather than silently approved.
+      const invalidFormat = pool.filter(
+        (fv) => COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null,
+      );
+      if (missing.length || invalidFormat.length) {
+        const parts: string[] = [];
+        if (missing.length) {
+          parts.push(
+            `${missing.length} mandatory field${missing.length === 1 ? "" : "s"} still need${
+              missing.length === 1 ? "s" : ""
+            } a value: ${[...new Set(missing.map((fv) => fv.label_name))].join(", ")}.`,
+          );
+        }
+        if (invalidFormat.length) {
+          parts.push(
+            `${invalidFormat.length} field${invalidFormat.length === 1 ? "" : "s"} ${
+              invalidFormat.length === 1 ? "has" : "have"
+            } an invalid value: ${[...new Set(invalidFormat.map((fv) => fv.label_name))].join(", ")}.`,
+          );
+        }
         blockApproval(
-          `${missing.length} mandatory field${missing.length === 1 ? "" : "s"} still need${
-            missing.length === 1 ? "s" : ""
-          } a value before this document can be approved: ${
-            [...new Set(missing.map((fv) => fv.label_name))].join(", ")
-          }.`,
-          missing.map((fv) => fv.id),
+          `This document can't be approved yet. ${parts.join(" ")}`,
+          [...missing, ...invalidFormat].map((fv) => fv.id),
         );
         return;
+      }
+      // Container Detail's own standalone, per-row fields (container_number/container_type,
+      // plus each row's own looked-up ContainerTypeCode/"CTR ISO CODE") - conditionally
+      // mandatory, confirmed with the user: a row only needs validating once it actually
+      // EXISTS (no container info on the document at all means nothing to check - an LCL
+      // shipment is never blocked over containers it never had), but once a row exists, every
+      // field on it that is itself marked mandatory must have a value.
+      const standaloneRows = job.field_values.filter(
+        (fv) => fv.row_index != null && fv.job_document_id === active.id && fv.standalone_multi_value,
+      );
+      if (standaloneRows.length) {
+        const selfFilled = job.field_values.filter(
+          (fv) => fv.row_index != null && fv.standalone_multi_value && fv.self_filled === true,
+        );
+        const missingContainer = [...standaloneRows, ...selfFilled].filter(
+          (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
+        );
+        if (missingContainer.length) {
+          blockApproval(
+            `This document can't be approved yet. ${missingContainer.length} container field${
+              missingContainer.length === 1 ? "" : "s"
+            } still need${missingContainer.length === 1 ? "s" : ""} a value: ${
+              [...new Set(missingContainer.map((fv) => fv.label_name))].join(", ")
+            }.`,
+            missingContainer.map((fv) => fv.id),
+          );
+          return;
+        }
       }
     }
     setApproveError(null);
@@ -4999,6 +5066,20 @@ function ExtractionReview({
                         onBeforeSave={
                           fv.label_name === "insurance_percentage" && fv.custom_field_id
                             ? () => requireInsuranceCertificate(fv.custom_field_id!)
+                            : COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? async (value: string) => {
+                                const err = countryCodeFormatError(value);
+                                if (err) {
+                                  window.alert(err);
+                                  return false;
+                                }
+                                return true;
+                              }
+                            : undefined
+                        }
+                        transformBeforeSave={
+                          COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
                         multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
@@ -5130,6 +5211,7 @@ function ExtractionReview({
                             {visibleCells.map((fv) => (
                               <ExtractedField
                                 key={fv.id}
+                                id={`field-${fv.id}`}
                                 fv={fv}
                                 readOnly={readOnly}
                                 reload={reload}
@@ -5137,8 +5219,12 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                                flagged={isNonEnglish && fv.label_name === "product_description"}
-                                flagNote="Not originally in English — translated."
+                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "product_description")}
+                                flagNote={
+                                  missingRequiredIds.has(fv.id)
+                                    ? "Mandatory — needs a value before this document can be approved."
+                                    : "Not originally in English — translated."
+                                }
                               />
                             ))}
                             {/* Looked up in the customer's own reference sheet by the part
@@ -5148,11 +5234,16 @@ function ExtractionReview({
                             {rest.map((fv) => (
                               <ExtractedField
                                 key={fv.id}
+                                id={`field-${fv.id}`}
                                 fv={fv}
                                 readOnly={readOnly}
                                 reload={reload}
-                                flagged={isNonEnglish && fv.label_name === "Combined Description"}
-                                flagNote="Not originally in English — translated."
+                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "Combined Description")}
+                                flagNote={
+                                  missingRequiredIds.has(fv.id)
+                                    ? "Mandatory — needs a value before this document can be approved."
+                                    : "Not originally in English — translated."
+                                }
                                 small
                                 tone="reference"
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
