@@ -72,6 +72,13 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
 );
+// Of every relocated field above, only these two were reported as showing a second time under
+// Additional Details' "Other" section (both now live on the Invoice tab's own Party Details) -
+// removed by request there, scoped to exactly these two labels. Every other relocated field
+// (insurance_percentage included) is meant to keep showing in Additional Details too.
+const DUPLICATED_ADDITIONAL_DETAILS_LABELS = new Set([
+  "ERP Importer Address / Branch Code", "ERP Consignee Name",
+]);
 // Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
 // separate, older field from "Consignment Type" (both read the same BL/Freight documents);
 // now that "Consignment Type" shows directly on the Bill of Lading tab, this duplicate has
@@ -1343,15 +1350,16 @@ export function JobRunPage() {
   // manual-ask fields are pooled together here (an operator doesn't care which one worked a
   // value out); a field not listed in any group still renders, under a final "Other" section.
   const groupedAdditionalDetailsFields = (() => {
-    // "ERP Importer Address / Branch Code" relocated onto the Invoice tab's own Party Details
-    // (see RELOCATED_FIELD_LABELS_BY_DOC_TYPE) but still rendered a second time here, under
-    // "Other" - removed by request, scoped to this one label only. Every OTHER relocated
-    // manual-ask field (insurance_percentage included) keeps showing here too, same as before -
-    // only this one was ever asked to be dropped from this screen.
+    // "ERP Importer Address / Branch Code" and "ERP Consignee Name" both relocated onto the
+    // Invoice tab's own Party Details (see RELOCATED_FIELD_LABELS_BY_DOC_TYPE) but still
+    // rendered a second time here, under "Other" - removed by request, scoped to exactly these
+    // two labels. Every OTHER relocated manual-ask field (insurance_percentage included) keeps
+    // showing here too, same as before - only these two were ever asked to be dropped from
+    // this screen.
     const pool = [
       ...commonComputedFields,
       ...manualFields.filter(
-        (fv) => fv.row_index == null && fv.label_name !== "ERP Importer Address / Branch Code",
+        (fv) => fv.row_index == null && !DUPLICATED_ADDITIONAL_DETAILS_LABELS.has(fv.label_name),
       ),
     ];
     const byLabel = new Map(pool.map((fv) => [fv.label_name, fv] as const));
