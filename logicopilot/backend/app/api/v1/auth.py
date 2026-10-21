@@ -20,6 +20,16 @@ from app.models.user import User
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, LoginResponse
 from app.schemas.user import UserOut
 
+# Every response here must carry the SAME derived/renamed fields the user list endpoint
+# already gets right (modes <- assigned_modes, user_type_name, assigned_operator_ids,
+# mail_connected) - UserOut.model_validate(user) alone only auto-maps same-named columns, so
+# a bare call here was silently leaving the CURRENT session's own user object with modes=None
+# and user_type_name=None regardless of its real assigned_modes/user_type, while every OTHER
+# user (fetched through GET /users, which already calls this) had them correctly populated.
+# Found live: a filter comparing "my own modes" against another user's real modes always
+# compared against an empty set on my own side.
+from app.api.v1.users import _user_out
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 
@@ -79,7 +89,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     db.add(user)
     _issue_tokens(db, user, response)
 
-    return LoginResponse(user=UserOut.model_validate(user))
+    return LoginResponse(user=_user_out(user))
 
 
 def _revoke_token_family(db: Session, user_id: str) -> None:
@@ -139,7 +149,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     db.commit()
 
     _set_auth_cookies(response, new_access_token, new_raw_refresh)
-    return LoginResponse(user=UserOut.model_validate(user))
+    return LoginResponse(user=_user_out(user))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -161,7 +171,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)) 
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)) -> UserOut:
-    return UserOut.model_validate(user)
+    return _user_out(user)
 
 
 @router.post("/change-password", response_model=UserOut)
@@ -181,4 +191,4 @@ def change_password(
     db.add(user)
     db.commit()
     db.refresh(user)
-    return UserOut.model_validate(user)
+    return _user_out(user)

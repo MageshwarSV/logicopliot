@@ -1,4 +1,4 @@
-from app.models.user import SUPER_ADMIN
+from app.models.user import OPERATOR, SUPER_ADMIN
 from tests.conftest import DEFAULT_PASSWORD, login, make_tenant, make_user
 
 
@@ -9,6 +9,27 @@ def test_login_success(client, db_session):
     assert response.json()["user"]["email"] == "sa@example.com"
     assert "access_token" in response.cookies
     assert "refresh_token" in response.cookies
+
+
+def test_login_response_carries_the_users_own_assigned_modes(client, db_session):
+    # UserOut.model_validate(user) alone never populates `modes` (renamed from the model's own
+    # assigned_modes column) - found live: a filter comparing "my own modes" against another
+    # user's real modes always compared against an empty set on my own side, because the
+    # login/me/refresh responses were built this bare way instead of through _user_out, which
+    # the GET /users list endpoint already used correctly.
+    tenant = make_tenant(db_session)
+    user = make_user(db_session, role=OPERATOR, tenant=tenant, email="modes-op@example.com")
+    user.assigned_modes = ["Sea Import"]
+    db_session.add(user)
+    db_session.commit()
+
+    response = login(client, "modes-op@example.com")
+    assert response.status_code == 200
+    assert response.json()["user"]["modes"] == ["Sea Import"]
+
+    me = client.get("/api/v1/auth/me")
+    assert me.status_code == 200
+    assert me.json()["modes"] == ["Sea Import"]
 
 
 def test_login_wrong_password(client, db_session):
