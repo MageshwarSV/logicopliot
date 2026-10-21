@@ -1343,15 +1343,15 @@ export function JobRunPage() {
   // manual-ask fields are pooled together here (an operator doesn't care which one worked a
   // value out); a field not listed in any group still renders, under a final "Other" section.
   const groupedAdditionalDetailsFields = (() => {
-    // commonComputedFields already drops a relocated label (see its own filter above) - the
-    // manual-ask half of the pool needs the same exclusion, or a field relocated onto its own
-    // document tab (e.g. "ERP Importer Address / Branch Code" on the Invoice tab) still showed
-    // a second time here under "Other", since ask_operator fields were never filtered against
-    // ALL_RELOCATED_FIELD_LABELS at all before now.
+    // "ERP Importer Address / Branch Code" relocated onto the Invoice tab's own Party Details
+    // (see RELOCATED_FIELD_LABELS_BY_DOC_TYPE) but still rendered a second time here, under
+    // "Other" - removed by request, scoped to this one label only. Every OTHER relocated
+    // manual-ask field (insurance_percentage included) keeps showing here too, same as before -
+    // only this one was ever asked to be dropped from this screen.
     const pool = [
       ...commonComputedFields,
       ...manualFields.filter(
-        (fv) => fv.row_index == null && !ALL_RELOCATED_FIELD_LABELS.has(fv.label_name),
+        (fv) => fv.row_index == null && fv.label_name !== "ERP Importer Address / Branch Code",
       ),
     ];
     const byLabel = new Map(pool.map((fv) => [fv.label_name, fv] as const));
