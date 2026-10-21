@@ -497,14 +497,26 @@ export function JobsPage() {
   // from the dropdown below would have no way to recognise or match.
   const assignedToLabel = (j: Job) => j.operator_name ?? j.pulled_from_sender ?? "";
   // The dropdown's own options: every real user of this tenant (operators already fetches
-  // this - see the effect above), not derived from whichever jobs happen to be loaded right
-  // now. Confirmed with the user: show every user even with zero jobs assigned, and never
-  // restrict this list based on existing job assignments - a brand new user must show up
-  // here the moment they're created, without needing a job of theirs to exist first.
-  const assignees = useMemo(
-    () => [...new Set(operators.map((o) => o.full_name).filter(Boolean))].sort(),
-    [operators],
-  );
+  // this - see the effect above) who shares the CURRENT user's own User Type and Shipment
+  // Modes - never derived from whichever jobs happen to be loaded right now, and never
+  // restricted by existing job assignments (a brand new user must show up here the moment
+  // they're created, without needing a job of theirs to exist first) - only by this
+  // type/modes match. null/undefined on either side means "no custom type"/"no modes
+  // assigned" and is treated as its own value, not a wildcard.
+  const sameModeSet = (a?: string[] | null, b?: string[] | null) => {
+    const as = new Set(a ?? []);
+    const bs = new Set(b ?? []);
+    return as.size === bs.size && [...as].every((m) => bs.has(m));
+  };
+  const assignees = useMemo(() => {
+    const matching = operators.filter(
+      (o) =>
+        (o.user_type_id ?? null) === (user?.user_type_id ?? null) &&
+        sameModeSet(o.modes, user?.modes),
+    );
+    return [...new Set(matching.map((o) => o.full_name).filter(Boolean))].sort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operators, user?.user_type_id, user?.modes]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
