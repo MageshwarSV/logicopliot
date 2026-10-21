@@ -55,7 +55,7 @@ def create_refresh_token(*, user_id: str) -> tuple[str, str, datetime]:
     """Returns (raw_token, jti, expires_at). Caller persists jti/hash to the refresh_tokens table."""
     now = datetime.now(timezone.utc)
     jti = str(uuid.uuid4())
-    expires_at = now + timedelta(days=settings.refresh_token_expire_days)
+    expires_at = now + timedelta(minutes=settings.refresh_token_expire_minutes)
     payload = {
         "sub": user_id,
         "jti": jti,

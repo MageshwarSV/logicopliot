@@ -66,6 +66,35 @@ def test_a_field_with_no_reference_rows_yet_returns_an_empty_list(client, db_ses
     assert resp.json() == {"options": []}
 
 
+def test_key_param_narrows_server_side_to_one_match_value_1(client, db_session):
+    """A table too large to ever fetch whole (one row per branch, tens of thousands across
+    every consignee) is narrowed server-side instead - see ERP Importer Address / Branch
+    Code's own comment on this endpoint. `key` is matched normalized (case/whitespace
+    insensitive), the same as every other reference lookup in this codebase."""
+    tenant, group, job, cf = _setup(db_session)
+    db_session.add_all([
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="ACME CORP",
+                                  resolved_value="BRANCH A"),
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="ACME CORP",
+                                  resolved_value="BRANCH B"),
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="OTHER CORP",
+                                  resolved_value="BRANCH C"),
+    ])
+    db_session.commit()
+
+    operator = make_user(db_session, role="operator", tenant=tenant, email="op-refopts-key@example.com")
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-options",
+                      params={"key": "  acme corp  "})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "options": [
+            {"value": "BRANCH A", "match_values": ["ACME CORP", "", "", ""]},
+            {"value": "BRANCH B", "match_values": ["ACME CORP", "", "", ""]},
+        ]
+    }
+
+
 def test_a_custom_field_from_a_different_template_group_is_not_found(client, db_session):
     tenant, group, job, cf = _setup(db_session)
     other_group = TemplateGroup(tenant_id=tenant.id, name="Air Import", status="approved")

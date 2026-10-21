@@ -425,12 +425,19 @@ export interface CustomFieldReferenceOption {
 
 /** Every row a reference-backed (is_target_value) custom field's table carries - e.g. every
  * real Customs House Code, alongside the keys it was uploaded under - so it can be offered as
- * a dropdown instead of only ever showing the one value an automatic lookup matched. */
+ * a dropdown instead of only ever showing the one value an automatic lookup matched.
+ *
+ * `key`, when given, narrows SERVER-SIDE to rows whose first match value equals it (e.g. "ERP
+ * Consignee Branch" - too large a table, tens of thousands of rows total, to ever fetch whole
+ * the way CustomsHouseCode/branch_name do; pass the picked consignee name to get back only
+ * that consignee's own branches). Omit it for a table small enough to fetch whole and filter
+ * client-side, same as before. */
 export async function listCustomFieldReferenceOptions(
-  jobId: string, customFieldId: string,
+  jobId: string, customFieldId: string, key?: string,
 ): Promise<CustomFieldReferenceOption[]> {
   const { data } = await apiClient.get<{ options: CustomFieldReferenceOption[] }>(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
+    key ? { params: { key } } : undefined,
   );
   return data.options;
 }

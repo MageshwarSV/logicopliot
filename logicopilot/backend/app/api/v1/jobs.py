@@ -2354,7 +2354,7 @@ def gk2_approve(
     job_id: str,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(GK2, SUPER_ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN)),
 ) -> JobDetailOut:
     """GK2 presses "Final Approve & Proceed" — moves to "preparing_erp" (shown as "AI -
     Preparing for ERP") right away, and a background thread does the actual work, landing on
@@ -2379,8 +2379,20 @@ def gk2_approve(
     "submitted", nothing real happens) until a real submission path exists for it too - only
     the "was this synchronous" gap is fixed everywhere; "was this real" is fixed only where an
     Excel mapping already makes it possible.
+
+    GK1 (operator) may call this too, but ONLY to retry a job that has already FAILED - never
+    for the original "pending" sign-off, which stays GK2's own genuine second approval. See
+    the requirement this was built for: "only failed jobs are eligible for correction and
+    resubmission." An operator pressing this on a "pending" job is refused below, same 409
+    shape as every other state guard here.
     """
     job = _load_job(db, job_id, scope, user)
+    if user.role == OPERATOR and job.gk2_status != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a failed ERP submission can be corrected and resubmitted here - "
+                   "the original approval is GK2's own.",
+        )
     if job.gk2_status not in ("pending", "failed"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -3196,6 +3208,7 @@ def get_job(
 def list_custom_field_reference_options(
     job_id: str,
     custom_field_id: str,
+    key: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
@@ -3209,6 +3222,14 @@ def list_custom_field_reference_options(
     alongside resolved_value so the caller can do that narrowing itself, against whichever of
     this job's OTHER fields it already knows are the relevant keys. Any role that can see the
     job can see this.
+
+    `key`, when given, narrows SERVER-SIDE instead: an exact (normalized) match against
+    match_value_1 only. For a table too large to ever ship whole to the browser (e.g. "ERP
+    Consignee Branch" - one row per branch, tens of thousands total across every consignee) the
+    caller passes the currently-picked consignee name here and gets back only that consignee's
+    own handful of branches, rather than fetching every branch of every consignee just to
+    filter it client-side (what CustomsHouseCode/branch_name do today, fine at their much
+    smaller scale, not fine at this one).
     """
     from app.models.custom_field import CustomField
 
@@ -3219,18 +3240,19 @@ def list_custom_field_reference_options(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Custom field not found on this job's template.",
         )
-    return _reference_options_payload(db, custom_field_id)
+    return _reference_options_payload(db, custom_field_id, key=key)
 
 
-def _reference_options_payload(db: Session, custom_field_id: str) -> dict:
+def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None) -> dict:
+    from app.core.reference_cache import normalize_key
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
-    rows = (
-        db.query(CustomFieldReferenceValue)
-        .filter(CustomFieldReferenceValue.custom_field_id == custom_field_id)
-        .order_by(CustomFieldReferenceValue.resolved_value)
-        .all()
+    query = db.query(CustomFieldReferenceValue).filter(
+        CustomFieldReferenceValue.custom_field_id == custom_field_id,
     )
+    if key and key.strip():
+        query = query.filter(CustomFieldReferenceValue.match_value_1 == normalize_key(key))
+    rows = query.order_by(CustomFieldReferenceValue.resolved_value).all()
     return {
         "options": [
             {

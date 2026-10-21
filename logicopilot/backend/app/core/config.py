@@ -10,8 +10,18 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = "change-me-to-a-long-random-string"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
-    refresh_token_expire_days: int = 7
+    # The real inactivity timeout: a session stays alive only as long as SOME request lands
+    # within this many minutes of the last one. The access token expiring mid-use is invisible
+    # to the user (apiClient's response interceptor silently calls /auth/refresh on the first
+    # 401 and retries), but /auth/refresh ROTATES the refresh token too (see auth.py), each new
+    # one good for another refresh_token_expire_minutes from THAT moment - so the clock only
+    # ever resets on real activity, never on a timer. Previously 15 minutes / 7 DAYS: the
+    # refresh token's own week-long window (not the access token's) was the real idle cap, so a
+    # user who touched the app even once a week never got logged out at all. Both now share one
+    # number so "the session timeout" is one clear, consistent figure across the app, per
+    # request: log out after 30 minutes of no activity, not a moment sooner while active.
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_minutes: int = 30
 
     cors_origins: str = "http://localhost:30300"
     cookie_secure: bool = False

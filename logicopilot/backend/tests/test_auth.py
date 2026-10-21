@@ -1,3 +1,4 @@
+from app.core.config import get_settings
 from app.models.user import OPERATOR, SUPER_ADMIN
 from tests.conftest import DEFAULT_PASSWORD, login, make_tenant, make_user
 
@@ -83,6 +84,28 @@ def test_refresh_rotates_token_and_replayed_old_token_is_rejected(client, db_ses
     client.cookies.set("refresh_token", new_refresh_cookie)
     after_theft_response = client.post("/api/v1/auth/refresh")
     assert after_theft_response.status_code == 401
+
+
+def test_session_timeout_is_30_minutes_and_applied_to_both_cookies(client, db_session):
+    """The real inactivity timeout is the REFRESH token's own lifetime, not the access token's -
+    see config.py's own comment on access_token_expire_minutes/refresh_token_expire_minutes for
+    why (refresh rotates on every use, so only real activity ever resets the clock). Both must
+    carry the same 30-minute figure for "the session timeout" to mean one consistent thing, and
+    both cookies' own Max-Age must actually reflect it - a config value nothing reads from would
+    pass the settings assertion alone while the real cookies stayed on the old numbers."""
+    settings = get_settings()
+    assert settings.access_token_expire_minutes == 30
+    assert settings.refresh_token_expire_minutes == 30
+
+    make_user(db_session, role=SUPER_ADMIN, email="sa-timeout@example.com")
+    response = login(client, "sa-timeout@example.com")
+    assert response.status_code == 200
+
+    set_cookie_headers = response.headers.get_list("set-cookie")
+    access_header = next(h for h in set_cookie_headers if h.startswith("access_token="))
+    refresh_header = next(h for h in set_cookie_headers if h.startswith("refresh_token="))
+    assert "Max-Age=1800" in access_header
+    assert "Max-Age=1800" in refresh_header
 
 
 def test_logout_invalidates_session(client, db_session):

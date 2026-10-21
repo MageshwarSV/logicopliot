@@ -283,7 +283,11 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
 // so the operator can find the right row themselves by inspecting the document.
-const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code"]);
+// "ERP Consignee Name" is the same scale of problem (~25,000 consignee organizations) - same
+// treatment. Its paired branch field ("ERP Importer Address / Branch Code") is NOT listed
+// here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
+// below), which a flat, ungated search box can't do.
+const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
 // the system yet to also check the code is a REAL country, only that it LOOKS like one.
@@ -2350,18 +2354,22 @@ export function JobRunPage() {
                   <h2 className="font-semibold text-slate-900 dark:text-slate-50">
                     {isGk2
                       ? "Final Approve & Proceed"
-                      : gk2NotNeeded
-                        ? "Final Submit"
-                        : "Final Submit for Approval"}
+                      : !isGk2 && job.gk2_status === "failed"
+                        ? "Retry & Proceed"
+                        : gk2NotNeeded
+                          ? "Final Submit"
+                          : "Final Submit for Approval"}
                   </h2>
                   <p className="text-xs text-slate-500">
                     {isGk2
                       ? "Give this job its final approval, or send it back for GK1 to fix."
-                      : gk2NotNeeded || gk2Skipped
-                        ? "GK2 review isn't required for this shipment type — this goes straight to the real ERP entry."
-                        : gk2Started
-                          ? "Waiting on GK2's final approval."
-                          : "Hand this job over to GK2 for a final approval and the real ERP entry."}
+                      : job.gk2_status === "failed"
+                        ? "The last ERP entry failed — fix what's wrong, then resubmit."
+                        : gk2NotNeeded || gk2Skipped
+                          ? "GK2 review isn't required for this shipment type — this goes straight to the real ERP entry."
+                          : gk2Started
+                            ? "Waiting on GK2's final approval."
+                            : "Hand this job over to GK2 for a final approval and the real ERP entry."}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -2399,7 +2407,16 @@ export function JobRunPage() {
                       {gk2NotNeeded ? "Final Submit" : "Final Submit for Approval"}
                     </Button>
                   )}
-                  {!readOnly && !isGk2 && gk2Started && (
+                  {/* GK1's own correct-and-resubmit, scoped to a FAILED ERP run only - the
+                      original "pending" sign-off stays GK2's own (see gk2_approve's own
+                      backend guard). Every other gk2Started state (mid-run, skipped,
+                      submitted) still shows as plain status text below, unchanged. */}
+                  {!readOnly && !isGk2 && gk2Started && job.gk2_status === "failed" && (
+                    <Button onClick={gk2ApproveAndProceed} isLoading={gk2Busy}>
+                      Retry & Proceed
+                    </Button>
+                  )}
+                  {!readOnly && !isGk2 && gk2Started && job.gk2_status !== "failed" && (
                     <span className="text-xs font-medium text-indigo-600 dark:text-indigo-400">
                       {gk2Skipped
                         ? erpRunning
@@ -4787,6 +4804,46 @@ function ExtractionReview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relocatedFields, jobId]);
 
+  // "ERP Importer Address / Branch Code"'s own options - deliberately NOT the generic
+  // DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY/dynamicReferenceOptions path CustomsHouseCode/
+  // branch_name use (that one fetches a field's ENTIRE reference table once and filters it
+  // client-side - fine at their scale, not at this one: one row per branch, ~31,000 total
+  // across every consignee). Narrowed SERVER-SIDE instead (see listCustomFieldReferenceOptions'
+  // own `key` param), refetched whenever the SAVED "ERP Consignee Name" value changes. Empty
+  // while no consignee is picked yet, rather than falling back to "every row" the way the
+  // generic path does for its own, much smaller tables - that fallback would mean fetching the
+  // whole 31,000-row table, exactly what this is built to avoid.
+  const savedConsigneeName = (
+    job.field_values.find((fv) => fv.row_index == null && fv.label_name === "ERP Consignee Name")
+      ?.corrected_value ??
+    job.field_values.find((fv) => fv.row_index == null && fv.label_name === "ERP Consignee Name")
+      ?.extracted_value ??
+    ""
+  ).trim();
+  const consigneeBranchFieldId = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === "ERP Importer Address / Branch Code",
+  )?.custom_field_id;
+  const [consigneeBranchOptions, setConsigneeBranchOptions] =
+    useState<jobsApi.CustomFieldReferenceOption[]>([]);
+  useEffect(() => {
+    if (!savedConsigneeName || !consigneeBranchFieldId) {
+      setConsigneeBranchOptions([]);
+      return;
+    }
+    let cancelled = false;
+    jobsApi
+      .listCustomFieldReferenceOptions(jobId, consigneeBranchFieldId, savedConsigneeName)
+      .then((options) => {
+        if (!cancelled) setConsigneeBranchOptions(options);
+      })
+      .catch(() => {
+        if (!cancelled) setConsigneeBranchOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [savedConsigneeName, consigneeBranchFieldId, jobId]);
+
   // Insurance Rate (%)'s own save-gate: ExtractedField's onBeforeSave resolves this promise
   // once InsuranceCertificatePopup is answered (a file uploaded, a reason typed, or cancelled).
   const [insurancePopup, setInsurancePopup] =
@@ -5063,7 +5120,7 @@ function ExtractionReview({
                     filterByLabel && fv.custom_field_id
                       ? dynamicReferenceOptions[fv.custom_field_id]
                       : undefined;
-                  let options = FIELD_SELECT_OPTIONS[fv.label_name];
+                  let options: FieldSelectOption[] | undefined = FIELD_SELECT_OPTIONS[fv.label_name];
                   if (dynamicRows !== undefined) {
                     const filterFv = job.field_values.find(
                       (x) => x.row_index == null && x.label_name === filterByLabel,
@@ -5075,6 +5132,20 @@ function ExtractionReview({
                       ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
                       : dynamicRows;
                     options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
+                  }
+                  // "ERP Importer Address / Branch Code" - narrowed to the picked consignee's
+                  // own branches server-side (see consigneeBranchOptions above), not via the
+                  // generic dynamicRows path above (too large a table for that - see its own
+                  // comment). `options` left undefined (not []) until a consignee is picked -
+                  // ExtractedField renders a plain text box for undefined, but an empty SELECT
+                  // with nothing pickable for [] - "not found" text reads better than that.
+                  if (fv.label_name === "ERP Importer Address / Branch Code") {
+                    options = consigneeBranchOptions.length
+                      ? dedupe(consigneeBranchOptions.map((o) => o.value)).map((v) => ({
+                          value: v,
+                          label: v,
+                        }))
+                      : undefined;
                   }
                   // Always offered, not just while blank - the operator can look up or correct
                   // Shipment Port Code at any time, the same way every other reference-backed

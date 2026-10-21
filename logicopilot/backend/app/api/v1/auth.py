@@ -52,7 +52,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
-        max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+        max_age=settings.refresh_token_expire_minutes * 60,
         path=AUTH_COOKIE_PATH,
     )
 

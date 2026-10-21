@@ -338,7 +338,9 @@ def test_gk1_and_gk2_validation_approvals_are_independent(client, db_session):
     assert job.gk2_validation_approved is True
 
 
-def test_operator_cannot_gk2_approve(client, db_session):
+def test_operator_cannot_gk2_approve_a_pending_job(client, db_session):
+    """The original "pending" sign-off stays GK2's own genuine second approval - an operator
+    (GK1) may only retry a job that has already FAILED, see the test right below this one."""
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="op-approve@example.com")
@@ -348,6 +350,42 @@ def test_operator_cannot_gk2_approve(client, db_session):
 
     resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
     assert resp.status_code == 403
+
+
+def test_operator_can_retry_a_failed_gk2_job(client, db_session, session_factory):
+    """"Allow GK1 users to view failed jobs, correct the errors, and resubmit them" - only a
+    FAILED ERP submission is eligible, reusing the exact same endpoint GK2 itself retries
+    with (see test_gk2_approve_moves_to_preparing_then_submitted, same shape)."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant, mode="Sea Import")
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-retry@example.com")
+    op.assigned_modes = ["Sea Import"]
+    db_session.add(op)
+    db_session.commit()
+    job = _make_job(db_session, tenant, group, status="extracted", validation_approved=True,
+                    gk2_status="failed", gk2_validation_approved=True, created_by_id=op.id)
+    login(client, op.email)
+
+    # Wait for the background thread to actually finish (same shape as
+    # test_gk2_approve_moves_to_preparing_then_submitted) BEFORE the `with patch(...)` block
+    # exits and this test's own in-memory engine gets disposed - found live: without this, the
+    # thread was still running against a database about to vanish underneath it, failing
+    # intermittently only when this test ran as part of the full suite (a fresh, lucky race
+    # every time it ran alone).
+    with patch("time.sleep", return_value=None), \
+         patch("app.db.session.SessionLocal", session_factory):
+        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outer_status"] == "AI - Preparing for ERP"
+        import time as _time
+        for _ in range(20):
+            db_session.expire_all()
+            fresh = db_session.get(Job, job.id)
+            if fresh.gk2_status == "submitted":
+                break
+            _time.sleep(0.05)
+        else:
+            raise AssertionError("gk2_status never reached 'submitted'")
 
 
 # ---------------------------------------------------------------- GK2's filtered job list
