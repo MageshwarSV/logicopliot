@@ -4452,6 +4452,21 @@ function ExtractionReview({
   }, [focusedFv]);
 
   const [approveError, setApproveError] = useState<string | null>(null);
+  // Which fields are painted red right now, after a blocked "Submit for Approval" press - see
+  // approveActive below. Cleared field-by-field, reactively, the moment each one actually gets
+  // a value (the effect right after this one) - never all at once, so filling in 3 of 4 still
+  // shows the 1 left, instead of the whole highlight vanishing only once every one is done.
+  const [missingRequiredIds, setMissingRequiredIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setMissingRequiredIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      for (const fv of job.field_values) {
+        if (next.has(fv.id) && (fv.value ?? "").trim()) next.delete(fv.id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [job.field_values]);
   const approveActive = async () => {
     if (!active) return;
     const approving = !isApproved(active);
@@ -4467,10 +4482,45 @@ function ExtractionReview({
       const insuranceValue = (insuranceFv?.corrected_value ?? insuranceFv?.extracted_value ?? "").trim();
       if (!insuranceValue) {
         setApproveError("You need to select or enter the insurance value.");
+        setMissingRequiredIds(insuranceFv ? new Set([insuranceFv.id]) : new Set());
+        return;
+      }
+    }
+    // Every OTHER mandatory field this document's own tab actually shows (the same two pools
+    // renderField below draws from - a plain extracted mark, or a relocated custom field like
+    // insurance_percentage above) - found live: an operator could press through to Cross Docs
+    // Verification with a mandatory field left blank, only to be bounced back there by a
+    // generic "N field(s) still need an answer" popup with no indication of WHERE on the actual
+    // form. Catching it right here, on the exact document it belongs to, highlights the actual
+    // box instead.
+    if (approving) {
+      const hidden = HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
+      const markFields = job.field_values.filter((fv) => {
+        if (fv.row_index != null || !fv.mark_id || hidden?.has(fv.label_name)) return false;
+        return fv.job_document_id === active.id ||
+          (!fv.job_document_id && fv.document_name === active.name);
+      });
+      const relocatedLabels = new Set(RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type] ?? []);
+      const relocated = relocatedLabels.size
+        ? job.field_values.filter((fv) => fv.row_index == null && relocatedLabels.has(fv.label_name))
+        : [];
+      const missing = [...markFields, ...relocated].filter(
+        (fv) => fv.ask_operator_required !== false && !(fv.value ?? "").trim(),
+      );
+      if (missing.length) {
+        setMissingRequiredIds(new Set(missing.map((fv) => fv.id)));
+        setApproveError(
+          `${missing.length} mandatory field${missing.length === 1 ? "" : "s"} still need${
+            missing.length === 1 ? "s" : ""
+          } a value before this document can be approved: ${
+            [...new Set(missing.map((fv) => fv.label_name))].join(", ")
+          }.`,
+        );
         return;
       }
     }
     setApproveError(null);
+    setMissingRequiredIds(new Set());
     setApprovingId(active.id);
     try {
       await jobsApi.approveDocument(jobId, active.id, approving);
@@ -4942,6 +4992,8 @@ function ExtractionReview({
                             : undefined
                         }
                         hint={FIELD_HINTS[fv.label_name]}
+                        flagged={missingRequiredIds.has(fv.id)}
+                        flagNote={missingRequiredIds.has(fv.id) ? "Mandatory — needs a value before this document can be approved." : undefined}
                       />
                       {showSearchFallback && (
                         <ReferenceSearchPicker
