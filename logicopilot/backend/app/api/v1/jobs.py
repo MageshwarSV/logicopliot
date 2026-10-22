@@ -6776,6 +6776,25 @@ def extract_job(
     if is_extraction_paused(db):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
+    # Only on a job's FIRST pass (still "draft") - the automatic trigger (_maybe_auto_extract)
+    # already refuses to start until every mandatory slot is filled, but this manual button had
+    # no such check at all, so a job could be pushed straight into "extracted" with a required
+    # document still missing - never showing "Pending Documents" (see _outer_status's own
+    # "Document Capture" branch), with that document's fields just sitting empty forever. A
+    # job already past its first pass keeps the old, deliberately unchecked re-run behaviour -
+    # an operator re-running with one document still absent on purpose (permanently
+    # unavailable, say) must still be able to.
+    if job.status == "draft":
+        group = db.get(TemplateGroup, job.group_id)
+        required = {td.id: td.name for td in (group.documents if group else []) if td.is_required}
+        filled_ids = {d.template_document_id for d in job.documents if d.file_path}
+        missing = [name for tid, name in required.items() if tid not in filled_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Upload every required document before running extraction - still "
+                       "waiting on: " + ", ".join(missing),
+            )
     if job.status == "extracting":
         # Without this, a manual Re-run click landing while the auto-trigger's own background
         # run_extraction was still in flight started a SECOND, fully concurrent run - both
