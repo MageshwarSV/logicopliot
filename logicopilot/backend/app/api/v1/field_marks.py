@@ -686,15 +686,56 @@ def edit_custom_field(
         from sqlalchemy.orm.attributes import flag_modified
 
         from app.core.excel_entry import rename_field_in_excel_config
+        from app.models.job import JobFieldValue
         from app.models.template_group import TemplateGroup
 
         group = db.get(TemplateGroup, cf.group_id)
         if group is not None and group.excel_config:
             if rename_field_in_excel_config(group.excel_config, old_label, new_label):
                 flag_modified(group, "excel_config")
+        # A job extracted before this rename keeps its OWN stored label_name snapshot (see
+        # this endpoint's own docstring above) - left as old_label forever, it would never
+        # again match anything keyed by the field's current label. Found live: the Excel
+        # export matches a column to a value by this exact label string (same excel_config
+        # "field" entries just rewritten above) - an old job's line exported BLANK in that
+        # column even though the value was sitting right there under the old label, while a
+        # job extracted after the rename exported fine. Carried onto every already-extracted
+        # job's own stored label here too, so a rename does not quietly break export for
+        # every job that came before it - this never touches extracted_value/corrected_value,
+        # only the label text.
+        db.query(JobFieldValue).filter(
+            JobFieldValue.custom_field_id == field_id,
+            JobFieldValue.label_name == old_label,
+        ).update({"label_name": new_label}, synchronize_session=False)
     db.commit()
     db.refresh(cf)
     return CustomFieldOut.model_validate(cf)
+
+
+@router.post("/custom-fields/{field_id}/backfill-label")
+def backfill_custom_field_label(
+    field_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """One-off correction for a field renamed BEFORE edit_custom_field started auto-backfilling
+    existing job values on every rename (see its own comment) - re-applies this field's CURRENT
+    label onto every JobFieldValue that still carries a stale one from an earlier rename, the
+    same way a rename from now on already does automatically. Only ever touches label_name,
+    never extracted_value/corrected_value - the actual data a job holds is untouched."""
+    from app.models.custom_field import CustomField
+    from app.models.job import JobFieldValue
+
+    cf = db.get(CustomField, field_id)
+    if cf is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    updated = (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.custom_field_id == field_id, JobFieldValue.label_name != cf.label_name)
+        .update({"label_name": cf.label_name}, synchronize_session=False)
+    )
+    db.commit()
+    return {"updated": updated}
 
 
 @router.delete("/custom-fields/{field_id}", status_code=status.HTTP_204_NO_CONTENT)
