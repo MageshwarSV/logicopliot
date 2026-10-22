@@ -28,12 +28,13 @@ def _make_group_with_required_doc(db_session, tenant):
 
 
 def _make_job(db_session, tenant, group, *, status="extracted", created_by_id=None,
-              validation_approved=False, gk2_status=None, gk2_validation_approved=False):
+              validation_approved=False, gk2_status=None, gk2_validation_approved=False,
+              gk2_skipped=False):
     job = Job(
         tenant_id=tenant.id, group_id=group.id, reference="JOB-TEST",
         status=status, created_by_id=created_by_id,
         validation_approved=validation_approved, gk2_status=gk2_status,
-        gk2_validation_approved=gk2_validation_approved,
+        gk2_validation_approved=gk2_validation_approved, gk2_skipped=gk2_skipped,
     )
     db_session.add(job)
     db_session.commit()
@@ -260,6 +261,69 @@ def test_gk2_approve_refused_before_gk2s_own_validation_approval(client, db_sess
 
     resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
     assert resp.status_code == 409
+
+
+def test_gk2_approve_skips_the_validation_check_when_gk2_was_skipped_for_this_mode(
+    client, db_session, session_factory,
+):
+    """gk2_skipped means GK2 review was never REQUIRED for this shipment mode, so
+    gk2_validation_approved is never set by anyone - found live: a skipped job whose real ERP
+    run failed could not be retried at all, blocked by a 409 demanding an approval that was
+    never going to happen for this job in the first place."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant, mode="Sea Import")
+    job = _make_job(db_session, tenant, group, status="extracted", validation_approved=True,
+                    gk2_status="failed", gk2_validation_approved=False, gk2_skipped=True)
+    gk2 = _make_gk2(db_session, tenant, ["Sea Import"], email="gk2-skipped-retry@example.com")
+    login(client, gk2.email)
+
+    with patch("time.sleep", return_value=None), \
+         patch("app.db.session.SessionLocal", session_factory):
+        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outer_status"] == "AI - Preparing for ERP"
+        # Wait for the background thread to actually finish BEFORE this `with patch(...)`
+        # exits, or it keeps running against a database about to be swapped out from under it -
+        # same fix as test_operator_can_retry_a_failed_gk2_job, same reason.
+        import time as _time
+        for _ in range(20):
+            db_session.expire_all()
+            fresh = db_session.get(Job, job.id)
+            if fresh.gk2_status == "submitted":
+                break
+            _time.sleep(0.05)
+        else:
+            raise AssertionError("gk2_status never reached 'submitted'")
+
+
+def test_operator_can_also_retry_a_skipped_failed_job(client, db_session, session_factory):
+    """Same gap, GK1's own side: an operator retrying a gk2_skipped job's failed ERP run must
+    not be blocked by the same never-applicable validation check either."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant, mode="Sea Import")
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-skipped-retry@example.com")
+    op.assigned_modes = ["Sea Import"]
+    db_session.add(op)
+    db_session.commit()
+    job = _make_job(db_session, tenant, group, status="extracted", validation_approved=True,
+                    gk2_status="failed", gk2_validation_approved=False, gk2_skipped=True,
+                    created_by_id=op.id)
+    login(client, op.email)
+
+    with patch("time.sleep", return_value=None), \
+         patch("app.db.session.SessionLocal", session_factory):
+        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outer_status"] == "AI - Preparing for ERP"
+        import time as _time
+        for _ in range(20):
+            db_session.expire_all()
+            fresh = db_session.get(Job, job.id)
+            if fresh.gk2_status == "submitted":
+                break
+            _time.sleep(0.05)
+        else:
+            raise AssertionError("gk2_status never reached 'submitted'")
 
 
 def test_gk1_and_gk2_document_approvals_are_independent(client, db_session):

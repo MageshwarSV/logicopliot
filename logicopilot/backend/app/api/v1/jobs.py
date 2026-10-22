@@ -2398,7 +2398,12 @@ def gk2_approve(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job is not waiting on a GK2 approval.",
         )
-    if not job.gk2_validation_approved:
+    # gk2_skipped means GK2 review was never REQUIRED for this shipment mode in the first
+    # place (see submit_for_gk2_approval's own skip path) - gk2_validation_approved is then
+    # never set by anyone, for any job of this mode, ever. Found live: a skipped job whose
+    # real ERP run failed could not be retried by GK1 OR GK2 at all - this 409 fired
+    # unconditionally even though there was no GK2 review to have approved.
+    if not job.gk2_skipped and not job.gk2_validation_approved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Approve Cross Docs Verification (GK2's own review) before the final approval.",
