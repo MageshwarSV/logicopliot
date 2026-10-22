@@ -5869,14 +5869,30 @@ def run_extraction(db: Session, job: Job) -> None:
             if missing_required:
                 pages = (jd.extracted_json or {}).get("pages", [])
                 pages_dir = _job_doc_dir(jd.id) / "pages"
+                # A COPY, not a reference to the original document's own "pages" folder - that
+                # folder belongs to this JobDocument slot, which is about to be freed
+                # (file_path cleared below) and handed straight back out to the next upload
+                # into the same slot (_slot_for_new_file prefers a free row over making a new
+                # one). That next upload re-renders its own pages into this exact same
+                # directory, silently overwriting the very files this bounce was about to
+                # point an UnmatchedUploadPage at - found live: dragging the bounced page back
+                # onto a slot then failed with a 500 (FileNotFoundError), because the page
+                # image it pointed to no longer existed. Same unmatched_dir/copy pattern the
+                # smart-upload classifier's own bounce path already uses correctly, just below.
+                import uuid
+
+                unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
+                unmatched_dir.mkdir(parents=True, exist_ok=True)
                 for p in range(1, jd.page_count + 1):
                     img = pages_dir / f"page_{p}.png"
                     if not img.exists():
                         continue
+                    dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                    shutil.copy(img, dest)
                     db.add(UnmatchedUploadPage(
                         tenant_id=job.tenant_id, job_id=job.id,
                         original_filename=(jd.original_name or tdoc.name)[:255],
-                        page_number=p, image_path=str(img),
+                        page_number=p, image_path=str(dest),
                         ocr_text=pages[p - 1] if p - 1 < len(pages) else "",
                     ))
                 db.flush()  # the just-written rows must be persisted before they can be deleted

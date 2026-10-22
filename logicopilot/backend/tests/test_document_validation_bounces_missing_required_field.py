@@ -143,6 +143,45 @@ def test_a_present_required_field_does_not_bounce_the_document(db_session):
     assert fv.extracted_value == "INV-001"
 
 
+def test_bounced_page_image_survives_a_later_reupload_into_the_same_slot(db_session):
+    """Found live: dragging a bounced page back onto a slot failed with a 500
+    (FileNotFoundError) once something else had already uploaded a replacement file into that
+    same (now-empty) slot in the meantime - _slot_for_new_file hands that upload the SAME
+    JobDocument row, which re-renders its pages into the SAME "pages" directory the bounce had
+    pointed the UnmatchedUploadPage at, silently destroying the very file it referenced. The
+    bounce must make its own independent COPY instead, the same way the smart-upload
+    classifier's own unmatched-page path already does."""
+    from pathlib import Path
+
+    tenant = make_tenant(db_session)
+    group, tdoc, mark = _make_template(db_session, tenant, invoice_no_required=True)
+    job, jd = _make_job_with_document(db_session, tenant, group, tdoc, "JOB-BOUNCE3")
+
+    _run_with_mocked_ai(db_session, job, invoice_no=None)
+    db_session.refresh(jd)
+    assert jd.file_path is None  # bounced
+
+    unmatched = (
+        db_session.query(UnmatchedUploadPage)
+        .filter(UnmatchedUploadPage.job_id == job.id)
+        .first()
+    )
+    assert unmatched is not None
+    image_path = Path(unmatched.image_path)
+    pages_dir = _job_doc_dir(jd.id) / "pages"
+    assert pages_dir not in image_path.parents
+    assert image_path.exists()
+    original_bytes = image_path.read_bytes()
+
+    # A brand new upload into the same now-empty slot re-renders this exact directory - same
+    # effect as upload_job_document's own _render_pages call for real.
+    (pages_dir / "page_1.png").write_bytes(b"a completely different later upload's own page")
+
+    # The bounced page's own independent copy is unaffected.
+    assert image_path.exists()
+    assert image_path.read_bytes() == original_bytes
+
+
 def test_reassigning_after_a_bounce_is_let_through_even_if_still_blank(db_session):
     # Confirmed with the user: bouncing happens only on a slot's very first extraction pass -
     # once it has been through one pass (bounced or not), a later pass must never bounce it
