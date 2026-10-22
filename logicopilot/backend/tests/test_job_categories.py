@@ -348,3 +348,68 @@ def test_verify_is_refused_to_a_read_only_manager(client, db_session):
 
     resp = client.post(f"/api/v1/jobs/{job.id}/verify")
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------- mark-erp-submitted
+
+
+def test_mark_erp_submitted_overrides_a_falsely_reported_failure(client, db_session):
+    """The exact production bug: a run submitted cleanly (erp_captured already held a real
+    ERP_Job_No matching this job's own reference) and only crashed LATER on an unrelated extra
+    screen, so persist_run_outcome marked the whole run failed despite the entry having gone
+    through."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    admin = make_user(db_session, role="super_admin", email="cat-mark1@example.com")
+    job = _make_job(
+        db_session, tenant, group, reference="JOB-ABCDEF", status="failed", gk2_status=None,
+        gk2_skipped=True, erp_status="failed", erp_reason="The web-entry got stuck too long.",
+        erp_captured={"ERP_Job_No": {"label": "ERP_Job_No", "value": "MAA/SI/03427/26-27",
+                                     "kind": "value", "description": "", "file": None,
+                                     "usage": "output"}},
+    )
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/mark-erp-submitted")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["erp_status"] == "ok"
+    assert body["gk2_status"] == "submitted"
+    assert body["reference"] == "MAA/SI/03427/26-27"  # placeholder promoted to the real one
+
+    db_session.refresh(job)
+    assert job.ai_submitted_at is not None
+    assert job.erp_captured["ERP_Job_No"]["value"] == "MAA/SI/03427/26-27"  # untouched
+
+
+def test_mark_erp_submitted_refused_without_a_captured_erp_job_number(client, db_session):
+    """No blanket override - refuses when there is no actual evidence the run ever reached
+    the ERP at all, not just a human's say-so."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    admin = make_user(db_session, role="super_admin", email="cat-mark2@example.com")
+    job = _make_job(db_session, tenant, group, status="failed", erp_captured=None)
+    login(client, admin.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/mark-erp-submitted")
+    assert resp.status_code == 409
+
+    db_session.refresh(job)
+    assert job.status == "failed"  # untouched
+
+
+def test_mark_erp_submitted_is_refused_to_an_operator(client, db_session):
+    """Super Admin only - this is overriding what the automation itself reported, not an
+    ordinary operator action."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-mark3@example.com")
+    job = _make_job(
+        db_session, tenant, group, status="failed",
+        erp_captured={"ERP_Job_No": {"value": "MAA/SI/03427/26-27"}},
+    )
+    login(client, op.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/mark-erp-submitted")
+    assert resp.status_code == 403

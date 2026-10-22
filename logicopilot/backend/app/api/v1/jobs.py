@@ -2481,6 +2481,54 @@ def verify_job(
     return _build_detail(db, job)
 
 
+@router.post("/jobs/{job_id}/mark-erp-submitted", response_model=JobDetailOut)
+def mark_erp_submitted(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> JobDetailOut:
+    """A human confirming the entry actually went through on the ERP's own side, even though
+    the automation itself reported this run as failed - the mirror image of verify_job (which
+    confirms an automation-reported SUCCESS), for when the automation gets the outcome wrong
+    the other way. Found live: a run submitted cleanly (erp_captured already held a real
+    ERP_Job_No matching this job's own reference) and only crashed LATER, on an unrelated extra
+    screen the ERP showed afterward - persist_run_outcome has no way to tell "crashed after
+    succeeding" apart from "never succeeded at all", so it marked the whole run failed.
+
+    Gated on real evidence, not a blanket override: refuses unless erp_captured already holds a
+    non-blank ERP_Job_No, so this can only confirm a run that genuinely got far enough to read
+    one back - an admin cannot use it to wave through a run that truly never reached the ERP.
+    """
+    job = _load_job(db, job_id, scope, user)
+    erp_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
+    if not erp_job_no:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No ERP job number was ever captured for this job - there is no evidence "
+                   "the entry actually went through to confirm.",
+        )
+    job.status = "completed"
+    job.stage_override = None
+    job.gk2_status = "submitted"
+    if job.ai_submitted_at is None:
+        job.ai_submitted_at = datetime.now(timezone.utc)
+    job.erp_status = "ok"
+    job.erp_reason = (
+        f"Manually confirmed by {user.email}: the ERP entry actually succeeded "
+        f"(ERP job number {erp_job_no}) - the automation crashed on an unrelated later screen "
+        "and reported this run as failed by mistake."
+    )
+    # Same "placeholder reference -> the ERP's own job number" promotion persist_run_outcome
+    # already does on a real success - this job may not have gone through that path cleanly if
+    # the crash happened before it got there.
+    if re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
+        job.reference = erp_job_no
+    db.commit()
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
 def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     """The background kickoff gk2_approve's own real-submission path uses - factored out so
     the IRN-signing completion path (app/api/v1/public_irn.py's sign endpoint, once every
