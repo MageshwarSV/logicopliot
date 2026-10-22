@@ -149,7 +149,12 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     product_amount: "Product Amount",
     "product quantity type": "Product Quantity Unit",
     "Customer Part code": "Customer Part Code",
-    "RITC No.": "RITC / Customs Tariff Code",
+    // Covers a job extracted BEFORE the underlying field was renamed from "RITC No." to "CTH"
+    // (see app/api/v1/field_marks.py's edit_custom_field - a rename only applies to jobs
+    // extracted after it, a job's own stored field keeps whatever label it was extracted
+    // under). Mapping the old label to the same "CTH" text here means an old job and a new
+    // one read identically on screen either way, with no data backfill needed.
+    "RITC No.": "CTH",
     "Combined Description": "Combined Product Description",
   },
   PackingList: {
