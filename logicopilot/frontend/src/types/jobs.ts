@@ -7,7 +7,7 @@ export interface Job {
   stage?: string | null; // Documents | Verification | ERP Entry | Completed
   /** The single word for the job list and header — coarser than `stage` and the one to
    *  actually show: AI Processing, Ready for Review, Review in Progress, Ready for
-   *  Submission, Submitted, Completed, Failed, Duplicate, Document Capture. */
+   *  Submission, Submitted, Completed, Failed, Document Capture. */
   outer_status?: string | null;
   /** The consignee on this job's own documents - NOT the template's name. */
   customer_name?: string | null;

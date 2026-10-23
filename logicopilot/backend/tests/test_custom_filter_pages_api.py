@@ -387,14 +387,25 @@ def test_sweep_skips_a_completed_job(db_session):
     assert jd.file_path == "fake/does-not-exist.pdf"
 
 
-def test_sweep_skips_a_duplicate_job(db_session):
-    """Already reviewed and settled as a duplicate - not this sweep's business either."""
-    _, _, job, jd = _make_job_with_document(
-        db_session, page_texts=[REFERENCE_TEXT], job_status="duplicate")
+def test_sweep_still_applies_to_a_failed_job(db_session):
+    """A "failed" job (which now also covers what used to be its own separate "duplicate"
+    outcome - see persist_run_outcome) is still retryable, still being worked - not a finished,
+    audited outcome like "completed" - so it is NOT exempt from this sweep. A second,
+    non-matching document keeps the job alive, so this checks the matched document's own
+    cleared state in isolation (same pattern as the "every page matches" test above)."""
+    tenant, group, job, jd = _make_job_with_document(
+        db_session, page_texts=[REFERENCE_TEXT], job_status="failed")
+    other_tdoc = _make_template_document(db_session, tenant, group, name="PackingList")
+    jd_real = JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=other_tdoc.id,
+                          file_path="fake/real.pdf", page_count=1, file_index=1,
+                          extracted_json={"pages": [NON_MATCHING_TEXT]})
+    db_session.add(jd_real)
+    db_session.commit()
+
     _sweep_old_jobs_for_reference(db_session, REFERENCE_TEXT)
 
     db_session.refresh(jd)
-    assert jd.file_path == "fake/does-not-exist.pdf"
+    assert jd.file_path is None
 
 
 def test_upload_starts_the_background_sweep(client, db_session):

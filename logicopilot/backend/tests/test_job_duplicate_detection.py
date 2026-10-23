@@ -1,9 +1,9 @@
 """Duplicate detection: a job's extracted data is fingerprinted (_compute_content_checksum)
 so a re-sent email - a forward, a resend, the same PDF pulled from two mailboxes, each with
 its own new Message-ID - is recognised as the same shipment instead of silently becoming a
-second job. Flagged jobs get status "possible_duplicate" (never the existing "duplicate",
-which means something else entirely: the ERP itself already had this record) and wait for
-an operator decision via POST /jobs/{id}/duplicate-decision."""
+second job. Flagged jobs get status "possible_duplicate" (unrelated to the ERP itself reporting "this
+record already exists" during submission - persist_run_outcome folds that into plain "failed")
+and wait for an operator decision via POST /jobs/{id}/duplicate-decision."""
 
 from app.api.v1.jobs import _compute_content_checksum, _find_duplicate_job
 from app.models.job import Job

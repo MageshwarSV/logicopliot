@@ -30,7 +30,10 @@ def _make_job(db_session, gk2_status=None, reference="JOB-GK2STALE"):
 
 def test_a_later_success_clears_a_stale_failed_gk2_status(db_session):
     job = _make_job(db_session, gk2_status="failed")
-    persist_run_outcome(db_session, job, script=None, result={"status": "ok", "log": ["ok"]})
+    persist_run_outcome(db_session, job, script=None, result={
+        "status": "ok", "log": ["ok"],
+        "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-001122", "kind": "value"}},
+    })
     assert job.status == "completed"
     assert job.gk2_status is None
 
@@ -45,18 +48,39 @@ def test_a_fresh_failure_clears_a_stale_submitted_gk2_status(db_session):
 
 
 def test_a_duplicate_outcome_clears_a_stale_gk2_status(db_session):
+    # The ERP's own "duplicated" outcome ("the record already exists") is folded into the
+    # ordinary "failed" status, on the user's own call - no separate "Duplicate" bucket, just
+    # Completed or Failed, based on what the full run actually achieved. Same Super Admin
+    # report and Retry & Proceed path as any other failure.
     job = _make_job(db_session, gk2_status="failed")
     persist_run_outcome(db_session, job, script=None, result={"status": "duplicated", "log": []})
-    assert job.status == "duplicate"
+    assert job.status == "failed"
     assert job.gk2_status is None
 
 
 def test_a_partial_outcome_still_completes_and_clears_a_stale_gk2_status(db_session):
+    """A step failing along the way does not by itself block completion - what decides it,
+    on the user's own rule, is whether a real ERP job number came back."""
+    job = _make_job(db_session, gk2_status="failed")
+    persist_run_outcome(db_session, job, script=None, result={
+        "status": "partial", "failed_steps": ["step 9"], "log": [],
+        "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-334455", "kind": "value"}},
+    })
+    assert job.status == "completed"
+    assert job.gk2_status is None
+
+
+def test_a_partial_outcome_without_a_job_number_is_failed(db_session):
+    """Found live (JOB-AF9B0B, JOB-6B2F53): the script can reach its own last recorded step -
+    reporting "ok"/"partial" - while the real ERP screen on show was a validation error popup
+    or an unrelated dialog, never a genuine success confirmation. Only two outcomes exist on
+    the user's own rule: no captured job number means Failed, full stop, regardless of what
+    the script itself reported."""
     job = _make_job(db_session, gk2_status="failed")
     persist_run_outcome(db_session, job, script=None, result={
         "status": "partial", "failed_steps": ["step 9"], "log": [],
     })
-    assert job.status == "completed"
+    assert job.status == "failed"
     assert job.gk2_status is None
 
 
@@ -64,7 +88,10 @@ def test_a_run_with_no_prior_gk2_status_is_unaffected(db_session):
     """The common case - a job never touched by GK2 at all - must keep behaving exactly as
     before this fix: gk2_status stays None, nothing new to clear."""
     job = _make_job(db_session, gk2_status=None)
-    persist_run_outcome(db_session, job, script=None, result={"status": "ok", "log": ["ok"]})
+    persist_run_outcome(db_session, job, script=None, result={
+        "status": "ok", "log": ["ok"],
+        "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-556677", "kind": "value"}},
+    })
     assert job.status == "completed"
     assert job.gk2_status is None
 

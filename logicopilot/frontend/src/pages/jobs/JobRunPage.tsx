@@ -449,7 +449,7 @@ function tabFromStage(job: JobDetail, isGk2: boolean): TabKey {
     case "Manual Data Entry":
       return "extraction";
   }
-  if (status === "completed" || status === "duplicate" || status === "failed") return "submission";
+  if (status === "completed" || status === "failed") return "submission";
   if (status === "extracted" || status === "processing") return "validation";
   return "capture";
 }
@@ -817,7 +817,7 @@ export function JobRunPage() {
       return;
     }
     const settled = job.status === "completed" || job.status === "failed"
-      || job.status === "duplicate" || job.status === "possible_duplicate";
+      || job.status === "possible_duplicate";
     if (settled || hasAnyUploadedDoc) {
       setPullProgress(null);
       return;
@@ -1328,6 +1328,14 @@ export function JobRunPage() {
   const entryFailed =
     !!job && job.status === "extracted" &&
     (job.erp_status === "failed" || job.erp_status === "error");
+  /** "Completed" but the ERP's own job number was never actually captured - its capture step
+   *  may simply have failed against a differently-laid-out page (see persist_run_outcome /
+   *  _outer_status's "AI - ERP Submitted"). Not trustworthy as a real success, so - unlike a
+   *  genuinely completed entry - still shown as retryable (backend enforces the same rule:
+   *  see _put_back_on_entry). */
+  const erpJobNoCapture = job?.erp_captured?.["ERP_Job_No"];
+  const erpJobNo = (typeof erpJobNoCapture === "object" ? erpJobNoCapture?.value : "")?.trim();
+  const completedWithoutJobNo = !!job && job.status === "completed" && !erpJobNo;
   /**
    * The document slots, each with every file uploaded into it. A slot holds as many files as
    * the shipment has — three invoices is three files under one "Invoice" heading, not three
@@ -2103,13 +2111,17 @@ export function JobRunPage() {
       )}
       <div className="mb-4 flex items-center justify-between">
         <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
-        {job.status === "failed" && (
+        {(job.status === "failed" || completedWithoutJobNo) && (
           <Button
             size="sm"
             variant="secondary"
             onClick={rerunJob}
             isLoading={rerunning}
-            title="Clears the last failed run and makes this job ready to enter again. Everything you have filled in is kept."
+            title={
+              completedWithoutJobNo
+                ? "This run reported success but never captured the ERP's own job number - there is no proof it actually went in. Clears it and makes this job ready to enter again. Everything you have filled in is kept."
+                : "Clears the last failed run and makes this job ready to enter again. Everything you have filled in is kept."
+            }
           >
             ↻ Rerun job
           </Button>
@@ -2895,7 +2907,7 @@ export function JobRunPage() {
               className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
                 job.erp_status === "ok"
                   ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
-                  : job.erp_status === "no_script" || job.erp_status === "duplicated" || job.erp_status === "partial"
+                  : job.erp_status === "no_script" || job.erp_status === "partial"
                     ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
                     : "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300"
               }`}
@@ -2907,9 +2919,7 @@ export function JobRunPage() {
                     ? /* Submitted, but not cleanly — the entry may be missing a date, a
                          document or a captured value. Not a re-run: that would duplicate it. */
                       `⚠ Entered and submitted, but some steps failed — check the entry in the ERP before relying on it.${job.erp_reason ? " " + job.erp_reason : ""}`
-                  : job.erp_status === "duplicated"
-                    ? `⧉ Duplicate — this entry already exists in the ERP, so it wasn't submitted.${job.erp_reason ? " " + job.erp_reason : ""}`
-                    : job.erp_status === "no_script"
+                  : job.erp_status === "no_script"
                       ? "No ERP script configured for this template — nothing was entered."
                       : `✗ ERP entry failed — reported to the Super Admin inbox.${job.erp_reason ? " " + job.erp_reason : ""}`}
               </p>
@@ -3030,11 +3040,13 @@ export function JobRunPage() {
       )}
 
       {/* ------- ERP Submission: the job once it has settled -------
-          Completed, duplicate AND failed all land here — this panel reports the outcome
-          whichever way it went, and narrowing it to "completed" would have silently hidden
-          the failure screen, which is the one an operator most needs to see. */}
+          Completed AND failed both land here — this panel reports the outcome whichever way
+          it went, and narrowing it to "completed" would have silently hidden the failure
+          screen, which is the one an operator most needs to see. (The ERP already having a
+          record used to be its own separate "duplicate" status - now folded into "failed",
+          on the user's own call: just Completed or Failed, nothing else.) */}
       {activeTab === "submission" &&
-        (job.status === "completed" || job.status === "duplicate" || job.status === "failed") && (
+        (job.status === "completed" || job.status === "failed") && (
         <div className="flex flex-col gap-4">
           {(() => {
             const failed = job.status === "failed" || job.erp_status === "error" || job.erp_status === "failed";

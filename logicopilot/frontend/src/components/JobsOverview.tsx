@@ -117,7 +117,7 @@ const GK2_IN_FLIGHT = new Set([
 // per-user table, for one) uses the identical rule instead of a second copy that could drift
 // out of sync with these boxes.
 export function isJobPending(j: Job): boolean {
-  return !["completed", "failed", "duplicate"].includes(j.status)
+  return !["completed", "failed"].includes(j.status)
     && !GK2_IN_FLIGHT.has(j.outer_status ?? "")
     // Counted in its own dedicated Missing Documents box instead - same reasoning as
     // GK2_IN_FLIGHT above, so a job is never counted as "pending" in two boxes at once.

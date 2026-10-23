@@ -171,13 +171,33 @@ def test_rerun_job_still_rejected_while_processing(client, db_session):
     assert "running" in resp.json()["detail"].lower()
 
 
-def test_rerun_job_still_rejected_when_completed(client, db_session):
+def test_rerun_job_still_rejected_when_completed_with_a_real_job_number(client, db_session):
+    """A genuinely completed entry - the ERP's own job number was actually captured - must
+    never be re-run: that would enter the same shipment into the real ERP a second time."""
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="op-rerun5@example.com")
     job = _make_job(db_session, tenant, group, status="completed", created_by_id=op.id)
+    job.erp_captured = {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-998877", "kind": "value"}}
+    db_session.commit()
     login(client, op.email)
 
     resp = client.post(f"/api/v1/jobs/{job.id}/rerun")
     assert resp.status_code == 409
     assert "twice" in resp.json()["detail"].lower()
+
+
+def test_rerun_job_allowed_when_completed_but_no_job_number_was_captured(client, db_session):
+    """Found live: a run can report "completed" without ever actually capturing the ERP's own
+    job number - its capture step may simply have failed against a differently-laid-out page
+    (see persist_run_outcome/_outer_status). Confirmed with the user: unlike a genuinely
+    completed entry, this should still be retryable - there is no proof it actually went in."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-rerun6@example.com")
+    job = _make_job(db_session, tenant, group, status="completed", created_by_id=op.id)
+    login(client, op.email)
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/rerun")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["stage"] == "ERP Submission"

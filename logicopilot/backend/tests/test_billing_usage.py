@@ -99,7 +99,7 @@ def test_billable_pages_count_regardless_of_job_status(client, db_session):
     tdoc = _make_template_document(db_session, tenant, group)
     now = datetime.now(timezone.utc)
     _make_job_with_pages(db_session, tenant, group, tdoc, pages=5, created_at=now, status="failed")
-    _make_job_with_pages(db_session, tenant, group, tdoc, pages=3, created_at=now, status="duplicate")
+    _make_job_with_pages(db_session, tenant, group, tdoc, pages=3, created_at=now, status="possible_duplicate")
     _save_billing_config(db_session, tenant, created_at=now - timedelta(days=5))
 
     resp = client.get(f"/api/v1/tenants/{tenant.id}/billing/usage")

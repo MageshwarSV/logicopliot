@@ -12,7 +12,7 @@ selectively erase only the mark rows.
 The real culprit is a SEPARATE, unrelated feature: app/api/v1/custom_filter_pages.py's
 `_sweep_old_jobs_for_reference`, which retroactively re-applies a newly-uploaded Super Admin
 "custom filter page" to every already-extracted job in the system (`Job.status.notin_(
-("draft", "extracting", "completed", "duplicate"))` — "Hold"/"extracted"/etc. are all in
+("draft", "extracting", "completed"))` — "failed"/"extracted"/etc. are all in
 scope). For any JobDocument whose OCR'd page text near-matches the new reference, it calls
 `_remove_document_file`, which deletes JobFieldValue rows keyed on job_document_id. Every
 mark-based row (single- or multi-value) IS written with job_document_id set, so it is wiped.

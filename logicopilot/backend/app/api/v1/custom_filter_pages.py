@@ -84,10 +84,12 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
     performed by hand earlier this session (172 documents, then 4 jobs), now automatic.
 
     Scoped to jobs still actually being worked - never a job already "completed" (its ERP
-    entry has gone through - the real, filed customs record) or "duplicate" (already
-    reviewed and settled). Those are finished, audited outcomes; silently rewriting their
-    paperwork weeks later because an admin uploaded an unrelated filter reference is exactly
-    the kind of surprise a customs-automation product cannot afford.
+    entry has gone through - the real, filed customs record). That is a finished, audited
+    outcome; silently rewriting its paperwork weeks later because an admin uploaded an
+    unrelated filter reference is exactly the kind of surprise a customs-automation product
+    cannot afford. A "failed" job (which also covers what used to be its own separate
+    "duplicate" outcome - the ERP already having the record - see persist_run_outcome) is NOT
+    exempt: it is still retryable, still being worked, and still wants this sweep applied.
 
     Removing a document goes through _remove_document_file (jobs.py), which also clears the
     job's stale tenant custom-field values and flags Job.needs_reextraction - a custom field
@@ -99,7 +101,7 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
 
     jobs = (
         db.query(Job)
-        .filter(Job.status.notin_(("draft", "extracting", "completed", "duplicate")))
+        .filter(Job.status.notin_(("draft", "extracting", "completed")))
         .all()
     )
     docs_removed = jobs_deleted = 0

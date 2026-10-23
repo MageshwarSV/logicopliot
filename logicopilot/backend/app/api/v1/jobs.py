@@ -238,7 +238,7 @@ def _load_job(db: Session, job_id: str, scope: TenantScope, user: User | None = 
 # Statuses that describe where a job ENDED UP, as opposed to where it is waiting. A stage
 # override says "this job is parked on such-and-such a screen", which stops being true the
 # moment the job reaches one of these - so these win over it.
-_SETTLED = {"processing", "completed", "failed", "duplicate"}
+_SETTLED = {"processing", "completed", "failed"}
 
 # The stages an operator works through, in order. The words the job list, the job header and
 # the history all use — one list, so they cannot drift apart. The backend can only OBSERVE
@@ -771,12 +771,11 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
     if job.status == "processing":
         return "Running"
     if job.status == "possible_duplicate":
-        # Not the same thing as "duplicate" below - that one means the ERP itself already had
-        # this record. This means a NEW job's extracted data matched an EXISTING job's, before
-        # either ever reached the ERP - an operator decision, not an ERP outcome.
+        # A NEW job's extracted data matched an EXISTING job's, before either ever reached the
+        # ERP - an operator decision, not an ERP outcome. Unrelated to the ERP itself reporting
+        # "this record already exists" during submission - that outcome is folded into "failed"
+        # by persist_run_outcome, on the user's own call: just Completed or Failed, nothing else.
         return "Possible Duplicate"
-    if job.status == "duplicate":
-        return "Duplicate"
     if job.status == "failed":
         return "Failed"
     if job.status == "completed":
@@ -841,7 +840,7 @@ def _missing_mandatory_documents(db: Session, job: Job) -> list[str]:
 # "missing" category/dashboard group can narrow down to the same candidates before running the
 # real per-job check below, instead of silently drifting from _outer_status's own exclusions.
 _MISSING_DOCS_EXCLUDED_STATUSES = (
-    "processing", "possible_duplicate", "duplicate", "failed", "completed", "extracting",
+    "processing", "possible_duplicate", "failed", "completed", "extracting",
 )
 
 
@@ -920,7 +919,7 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     # actually gone. A job that is genuinely finished, failed, flagged a duplicate, or already
     # mid-GK2 keeps its own real word regardless - this never overrides those.
     if job.gk2_status is None and job.status not in (
-        "processing", "possible_duplicate", "duplicate", "failed", "completed",
+        "processing", "possible_duplicate", "failed", "completed",
     ) and _missing_mandatory_documents(db, job):
         return "Missing Documents"
     stage = stage if stage is not None else _job_stage(db, job)
@@ -1641,7 +1640,7 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
     `group` picks which one; `bucket` narrows it to a calendar window (or "all" for none)."""
     bounds = _bucket_bounds(bucket)
     if group == "pending":
-        query = query.filter(Job.status.notin_(["completed", "failed", "duplicate"]))
+        query = query.filter(Job.status.notin_(["completed", "failed"]))
         # Once a job is handed to GK2 (any non-null gk2_status - pending, preparing_erp,
         # entering_erp, submitted, or failed) it is no longer "pending" in GK1's own queue,
         # even though its raw status is still "extracted". Without this, a job counted here
@@ -1999,17 +1998,25 @@ def _put_back_on_entry(db: Session, job: Job) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job is running. Stop it before putting it back on ERP Entry.")
-    if job.status == "completed":
+    # A "completed" run that never actually captured the ERP's own job number is not
+    # trustworthy as a real success (its capture step may simply have failed against a
+    # differently-laid-out page - see persist_run_outcome/_outer_status) - confirmed with the
+    # user this should still be retryable, unlike a completed run that DID capture one, where
+    # running it again would risk entering the exact same shipment into the real ERP twice.
+    erp_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
+    completed_without_job_no = job.status == "completed" and not erp_job_no
+    if job.status == "completed" and erp_job_no:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=("This job has already been entered into the ERP. Running it again would "
                     "enter it twice."))
-    if job.status != "failed":
+    if job.status != "failed" and not completed_without_job_no:
         # Both docstrings above say "failed" explicitly - this exists to retry an ERP run
-        # that broke on one step, not to fast-forward a job that has never reached ERP Entry
-        # at all. Without this, "Rerun job" being visible on every job page regardless of
-        # state let it skip a job straight from Data Validation to "Ready for Submission" -
-        # past its own GK1 review - just by being pressed early.
+        # that broke on one step (or completed without proof it really went in), not to
+        # fast-forward a job that has never reached ERP Entry at all. Without this, "Rerun
+        # job" being visible on every job page regardless of state let it skip a job straight
+        # from Data Validation to "Ready for Submission" - past its own GK1 review - just by
+        # being pressed early.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job has no failed ERP run to retry.")
@@ -2026,6 +2033,14 @@ def _put_back_on_entry(db: Session, job: Job) -> None:
     job.erp_failed_value = None
     job.erp_log = None
     job.erp_diagnosis = None
+    if completed_without_job_no and job.gk2_status == "submitted":
+        # A GK2-involved run that reported "submitted" but never proved a job number actually
+        # went in - clear this so the UI re-offers the normal Final Submit flow instead of
+        # being stuck showing "AI - ERP Submitted" (with GK2's own button disabled, since
+        # gk2CanAct only allows "pending"/"failed") for a job that was just put back on ERP
+        # Entry. A genuinely FAILED gk2_status is never touched here - GK2 retries that
+        # directly through their own Retry & Proceed button, unchanged.
+        job.gk2_status = None
     db.commit()
     live_runs.clear(job.id)
     db.refresh(job)
@@ -2822,12 +2837,12 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
 
     persist_run_outcome(db, job, script, result, operator_id=job.assigned_operator_id)
     db.refresh(job)
-    if job.status in ("failed", "duplicate"):
-        # persist_run_outcome's own terminology for a run the ERP rejected, OR one the ERP
-        # says it already has (erp_status "duplicated" - found live: this used to fall into
-        # the "else" success branch below, leaving the job stuck on "AI - ERP Submitted" with
-        # no Retry & Proceed button at all, even though nothing was actually (re-)entered).
-        # GK2 gets the same retry-yourself path every other failure here gets, not a dead end
+    if job.status == "failed":
+        # persist_run_outcome now folds a run the ERP already had (its own "duplicated"
+        # outcome) into this same "failed" status - found live: this used to fall into the
+        # "else" success branch below, leaving the job stuck on "AI - ERP Submitted" with no
+        # Retry & Proceed button at all, even though nothing was actually (re-)entered. GK2
+        # gets the same retry-yourself path every other failure here gets, not a dead end
         # needing GK1/admin.
         job.status = "extracted"
         job.gk2_status = "failed"
@@ -4434,13 +4449,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     # again right after calling this function based on the fresh outcome, so clearing it here
     # unconditionally is harmless for that caller and is exactly what the regular caller needs.
     job.gk2_status = None
-    if status == "duplicated":
-        # The form locked after entry - the record already exists. Not a failure.
-        job.status = "duplicate"
-        job.stage_override = None
-        db.commit()
-        return erp
-    if status in ("error", "failed"):
+    if status in ("error", "failed", "duplicated"):
+        # "duplicated" used to be its own status ("the form locked after entry - the record
+        # already exists - not a failure") - confirmed with the user this should not be its
+        # own outcome: the job should read as just Completed or Failed, based on what the full
+        # script run actually achieved, same as any other run. Folded in here so a job the ERP
+        # already had behaves exactly like any other failed entry - same Super Admin report,
+        # same "Failed" badge, same Retry & Proceed / Rerun job button - rather than being a
+        # third, retry-less dead end (found live: a job reaching "duplicated" via the regular
+        # entry screen, not through GK2, had no way to be resubmitted at all).
         # Don't complete. Raise a report to the Super Admin inbox and surface it to the operator.
         failed_steps = result.get("failed_steps") or []
         parts = []
@@ -4454,18 +4471,37 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
         job.stage_override = None
         db.commit()
         return erp
-    job.status = "completed"
-    # An override says where a job is WAITING. It has just finished, so there is nothing left
-    # to wait on - and leaving it behind is what made a completed job read "ERP Entry".
+    # An override says where a job is WAITING. It has just finished one way or another, so
+    # there is nothing left to wait on - and leaving it behind is what made a completed job
+    # read "ERP Entry".
     job.stage_override = None
+    erp_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
+    # Only two outcomes exist, on the user's own explicit rule: "AI - ERP Submitted" means the
+    # submission succeeded AND a job number was generated; anything else is "Failed" - no
+    # third, in-between state. Found live (JOB-AF9B0B, JOB-6B2F53): the script can reach its
+    # own last recorded step - and so report "ok" - while the real ERP screen on show was an
+    # "Invalid Data Found" validation popup, or an unrelated Excel import/export dialog, never
+    # the genuine success confirmation. Reaching the end of the script is not proof anything
+    # was actually entered; only a real captured job number is.
+    if not erp_job_no:
+        _report(
+            result.get("reason") or "The ERP run finished without ever producing a job number.",
+            "The script reported "
+            + repr(status)
+            + " but no ERP job number was captured - treated as a failure.\nLog:\n"
+            + "\n".join(str(x) for x in (result.get("log") or [])),
+        )
+        job.status = "failed"
+        db.commit()
+        return erp
+    job.status = "completed"
     # A job auto-created from an incoming email (or any job that never got a real reference of
     # its own) carries a placeholder ("JOB-7F3A9C" - see generate_job_no()) until the real ERP
     # entry exists. The moment it does, the ERP's own job number IS the job's real identity -
     # the placeholder has done its job and should stop being what everyone sees (the page
     # title, the Jobs list, the E-Docket's own "JOB No." field, which reads this same value).
     # Only ever replaces an untouched placeholder, never a reference someone set on purpose.
-    erp_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
-    if erp_job_no and re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
+    if re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
         job.reference = erp_job_no
     db.commit()
     return erp

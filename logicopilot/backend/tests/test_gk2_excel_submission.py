@@ -189,15 +189,20 @@ def test_run_gk2_submission_runs_the_real_erp_script_and_marks_submitted(db_sess
 
     with patch("app.core.browser.play_steps") as mock_play:
         # "ok" is the real status play_steps reports for a clean run - the same value
-        # complete_job's own Submit Entry gets back and the screen already renders for.
-        mock_play.return_value = {"status": "ok", "log": ["logged in", "uploaded", "submitted"]}
+        # complete_job's own Submit Entry gets back and the screen already renders for. A
+        # captured ERP_Job_No is what actually makes this a genuine success, on the user's own
+        # rule: "ok" alone is not proof anything was entered (see persist_run_outcome).
+        mock_play.return_value = {
+            "status": "ok", "log": ["logged in", "uploaded", "submitted"],
+            "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-112233", "kind": "value"}},
+        }
         _run_gk2_submission(db_session, job.id, is_excel_entry=True)
 
     assert mock_play.called
     db_session.refresh(job)
     assert job.gk2_status == "submitted"
     assert job.erp_status == "ok"
-    assert job.status != "failed"
+    assert job.status == "completed"
 
 
 def test_run_gk2_submission_sends_a_failed_build_to_failed_for_a_retry(db_session):
@@ -273,7 +278,10 @@ def test_run_gk2_submission_shows_entering_erp_while_the_real_script_runs(db_ses
     def fake_play_steps(*args, **kwargs):
         db_session.refresh(job)
         seen["gk2_status"] = job.gk2_status
-        return {"status": "ok", "log": ["ok"]}
+        return {
+            "status": "ok", "log": ["ok"],
+            "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-445566", "kind": "value"}},
+        }
 
     with patch("app.core.browser.play_steps", side_effect=fake_play_steps):
         _run_gk2_submission(db_session, job.id, is_excel_entry=True)
@@ -310,12 +318,11 @@ def test_run_gk2_submission_fails_when_the_real_erp_run_fails(db_session):
 
 def test_run_gk2_submission_sends_a_duplicate_result_to_failed_for_a_retry(db_session):
     """Found live (JOB-AF9B0B): the ERP reported "this record already exists" (status
-    "duplicated") - persist_run_outcome correctly set job.status="duplicate" rather than
-    "failed", but this wrapper only treated an exact "failed" as needing a retry, so a
-    duplicate outcome fell into the success branch instead: gk2_status="submitted", with no
-    Retry & Proceed button anywhere and no way to run it again. A duplicate is not a success
-    either - nothing was actually (re-)entered - so it gets the exact same retry-yourself
-    treatment a genuine failure already gets."""
+    "duplicated"). persist_run_outcome now folds that straight into "failed" (no separate
+    "Duplicate" status at all - just Completed or Failed, on the user's own call), so this
+    wrapper's own "failed means retry" check already catches it with no special-casing needed.
+    A duplicate outcome is not a success either - nothing was actually (re-)entered - so it
+    gets the exact same retry-yourself treatment a genuine failure already gets."""
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
     _make_erp_script(db_session, tenant, group)
@@ -400,7 +407,10 @@ def test_run_gk2_submission_clears_a_stale_failed_status_on_success(db_session):
     db_session.commit()
 
     with patch("app.core.browser.play_steps") as mock_play:
-        mock_play.return_value = {"status": "ok", "log": ["ok"]}
+        mock_play.return_value = {
+            "status": "ok", "log": ["ok"],
+            "captured": {"ERP_Job_No": {"label": "ERP Job No", "value": "BE-778899", "kind": "value"}},
+        }
         _run_gk2_submission(db_session, job.id, is_excel_entry=True)
 
     db_session.refresh(job)
