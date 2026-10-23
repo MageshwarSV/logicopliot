@@ -6154,11 +6154,30 @@ def play_steps(
             # (e.g. login already done) don't fail the run as long as the final action ran.
             success_checkpoint = success_shot.get("step_index")
             last_action_done, unfinished = _last_action_done(steps, executed, success_checkpoint)
+            # A step the Super Admin marked "this proves the entry succeeded" (the recorder's
+            # "✓ Success" button, or the same flag set by hand on an already-recorded step) must
+            # have genuinely produced something, not merely run - found live: the script can
+            # reach its own last recorded step (every element-bound action "done") while the
+            # real ERP screen on show was a validation-error popup or an unrelated dialog, with
+            # a marked get_text step either never reached at all or reading back nothing. A
+            # marked step that didn't run, or ran but captured an empty value, means the real
+            # confirmation this job actually went in never showed up - treated as a failure the
+            # same way the final action itself not completing already is. An assert_text step
+            # needs no extra check here - it already hard-fails the whole run the moment it
+            # doesn't find its text (see the main loop above), marked or not.
+            success_check_failed = None
+            for k, s in enumerate(steps):
+                if not s.get("is_success_check") or s.get("action") != "get_text":
+                    continue
+                name = s.get("capture_as") or s.get("field_label") or f"value_{k + 1}"
+                if k not in executed or not (captured.get(name) or {}).get("value"):
+                    success_check_failed = s
+                    break
             # Reaching the screenshot step at all means `aborted` was never true before it (the
             # loop would have stopped before getting there otherwise) - so an abort that fires
             # on one of the steps after the checkpoint is the same "already done, something
             # afterward broke" case, not a real failure either.
-            if (aborted and success_checkpoint is None) or not last_action_done:
+            if (aborted and success_checkpoint is None) or not last_action_done or success_check_failed is not None:
                 # A run somebody stopped is not the same as one that broke, and the summary
                 # must not accuse the ERP of failing when a person pressed the button.
                 if stopped:
@@ -6166,10 +6185,19 @@ def play_steps(
                               "below was entered - check the ERP before re-running.")
                 elif aborted:
                     reason = "The web-entry got stuck too long and could not be completed."
+                elif success_check_failed is not None:
+                    name = (success_check_failed.get("description")
+                            or success_check_failed.get("field_label")
+                            or success_check_failed.get("capture_as") or "the marked success step")
+                    reason = (f"The marked success check ({name!r}) never came through - not "
+                              "trusted as a genuine success.")
                 else:
                     reason = ("Could not complete the ERP entry — a required step could not be "
                               "done, even with AI assistance.")
                 failed_steps = [
+                    (success_check_failed.get("description") or success_check_failed.get("field_label")
+                     or success_check_failed.get("capture_as") or "success check")
+                ] if success_check_failed is not None else [
                     (steps[k].get("description") or steps[k].get("field_label") or steps[k].get("selector") or steps[k].get("action"))
                     for k in unfinished
                 ]

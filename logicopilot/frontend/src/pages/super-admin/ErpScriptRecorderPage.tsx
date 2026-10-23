@@ -2475,6 +2475,11 @@ export function ErpScriptRecorderPage() {
                   optional — skip if absent
                 </span>
               )}
+              {s.is_success_check && (
+                <span className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                  🏆 proof of success
+                </span>
+              )}
               {s.action === "scroll" && (
                 <span className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
                   {Number(s.value ?? 0) > 0 ? "▼ down" : "▲ up"} {Math.abs(Number(s.value ?? 0))}px
@@ -2545,6 +2550,26 @@ export function ErpScriptRecorderPage() {
                 >
                   🔓
                 </button>
+                {/* Marks an already-recorded "Pick data" step as the proof the entry actually
+                    succeeded - the same thing the live Scan panel's "✓ Success" button does
+                    for a fresh element, now reachable on a step recorded earlier too, without
+                    re-recording it. At run time this step must then come back with a real,
+                    non-empty value - present and non-empty -> completed; missing or empty ->
+                    the run is reported Failed, even if the script otherwise reached its end. */}
+                {s.action === "get_text" && (
+                  <button
+                    type="button"
+                    title={s.is_success_check
+                      ? "Marked as proof of success - if this comes back empty, the run is reported Failed even if the script otherwise finishes. Press to unmark."
+                      : "Mark as proof of success: this step must read back a real value for the run to count as genuinely successful"}
+                    onClick={() =>
+                      setSteps((arr) => arr.map((st, j) => (j === i ? { ...st, is_success_check: !st.is_success_check } : st)))
+                    }
+                    className={`rounded px-1 text-xs ${s.is_success_check ? "text-amber-500" : "text-slate-300 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"}`}
+                  >
+                    🏆
+                  </button>
+                )}
                 {/* Success screenshot only: whether the picture this step keeps is shown to
                     GK1/GK2/Super Admin at all (Captured Items on the completed job screen) or
                     kept purely internal - reuses capture_usage, the same field a "Pick data"
