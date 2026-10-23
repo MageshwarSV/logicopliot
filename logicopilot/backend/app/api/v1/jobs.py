@@ -1770,13 +1770,23 @@ def _category_condition(category: str):
     if category == "submitted":
         return Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.is_(None)
     if category == "new":
-        return not_ai_submitted & (Job.status != "completed")
+        # Excludes Failed here too (found live: a job already showing its own "Failed" badge,
+        # and already listed on ERP Failed Jobs, was ALSO still showing up under New Jobs -
+        # the same reasoning "pending" already excludes GK2-in-flight jobs with, now applied
+        # here). "Missing Documents" is excluded too, but that can't be a SQL predicate (see
+        # _is_missing_documents) - list_jobs/job_category_counts apply that part themselves,
+        # in Python, against whatever this narrows down to first.
+        return (
+            not_ai_submitted
+            & (Job.status != "completed")
+            & (Job.status != "failed")
+            & Job.gk2_status.isnot("failed")
+        )
     if category == "missing":
-        # "Missing Documents" (_outer_status's own "Document Capture" branch) only ever
-        # applies to a job still sitting in "draft" - _maybe_auto_extract fires synchronously
-        # the moment every mandatory document is in, so a draft row with nothing missing does
-        # not meaningfully persist for this to ever see - the same approximation the dashboard's
-        # own group=missing filter already makes, for the same reason.
+        # Only reached directly by job_category_counts's OWN precise (db, job) loop now -
+        # list_jobs special-cases "missing" entirely (see _missing_documents_sql_candidates),
+        # since the real check cannot be a single SQL predicate. Kept here only as the
+        # "category must be one of..." error's own recognised-name list below.
         return Job.status == "draft"
     if category == "failed":
         # The exact same condition _outer_status itself checks (gk2_status first, then
@@ -1798,12 +1808,16 @@ def job_category_counts(
     ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
     visibility list_jobs itself applies."""
     base = _jobs_visible_query(db, scope, user)
-    # Cannot be a single SQL predicate like the other four (see _is_missing_documents) - the
+    # Cannot be a single SQL predicate like the other three (see _is_missing_documents) - the
     # SQL narrowing already excludes everything it could never be, so this is only ever
     # re-checking a small candidate set, not the whole tenant's job table.
     missing_candidates = _missing_documents_sql_candidates(base).all()
+    # "new" excludes "Missing Documents" too (see _category_condition's own comment on "new") -
+    # same reason, applied the same way: a job in missing_candidates that IS actually missing
+    # a document is never counted here.
+    new_candidates = base.filter(_category_condition("new")).all()
     return JobCategoryCounts(
-        new=base.filter(_category_condition("new")).count(),
+        new=sum(1 for j in new_candidates if not _is_missing_documents(db, j)),
         missing=sum(1 for j in missing_candidates if _is_missing_documents(db, j)),
         failed=base.filter(_category_condition("failed")).count(),
         submitted=base.filter(_category_condition("submitted")).count(),
@@ -1850,9 +1864,14 @@ def list_jobs(
     # "missing" (either as group=missing, the dashboard box, or category=missing, the sidebar
     # link) cannot be a single SQL predicate - see _is_missing_documents. The filters above
     # already narrowed to a small candidate set, so this only re-checks those, not the whole
-    # table, then paginates in Python instead of in the database.
+    # table, then paginates in Python instead of in the database. "new" similarly needs that
+    # same check applied the OTHER way (excluding, not selecting) - a job already showing its
+    # own "Missing Documents" badge must not also appear under New Jobs.
     if group == "missing" or category == "missing":
         jobs_all = [j for j in query.all() if _is_missing_documents(db, j)]
+        jobs = jobs_all[offset: offset + limit] if limit is not None else jobs_all
+    elif category == "new":
+        jobs_all = [j for j in query.all() if not _is_missing_documents(db, j)]
         jobs = jobs_all[offset: offset + limit] if limit is not None else jobs_all
     else:
         if limit is not None:

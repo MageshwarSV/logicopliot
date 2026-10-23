@@ -163,7 +163,14 @@ export function JobsPage() {
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   useEffect(() => {
-    if (group) {
+    // A dashboard box click or one of the five sidebar category links both mean "show me
+    // exactly what this screen is for" - the SAME "quick" value is shared across every screen
+    // on this one page (sessionStorage has no idea which category it was last set on), so a
+    // "Last 7 days" left over from New Jobs silently hid everything on, say, ERP Verified Jobs
+    // (its own jobs are usually older) until the operator noticed and reset it by hand. A fresh
+    // category - just like a fresh group/bucket - resets it instead of inheriting whatever was
+    // last picked somewhere else entirely.
+    if (group || category) {
       setQuick("all");
       return;
     }
@@ -171,7 +178,7 @@ export function JobsPage() {
       setQuick(quickParam);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [group, quickParam]);
+  }, [group, category, quickParam]);
   useEffect(() => {
     if (assignedToParam === "me") {
       // Names the CURRENT operator, whose own display name isn't known until the user

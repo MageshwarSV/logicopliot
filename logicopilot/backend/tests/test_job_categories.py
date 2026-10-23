@@ -137,6 +137,43 @@ def test_category_new_excludes_submitted_and_completed(client, db_session):
     assert completed_job.id not in ids
 
 
+def test_category_new_also_excludes_failed_and_missing_documents(client, db_session):
+    """Found live: a job already showing its own "Failed" (or "Missing Documents") badge, and
+    already listed on its own dedicated screen, was ALSO still showing up under New Jobs -
+    the same double-counting "pending" already avoids for GK2-in-flight jobs, now closed here
+    too."""
+    from app.models.job import JobDocument
+    from app.models.template_document import TemplateDocument
+
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    invoice = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice",
+                              doc_type="Invoice", is_required=True)
+    db_session.add(invoice)
+    db_session.commit()
+    db_session.refresh(invoice)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op12@example.com")
+    new_job = _make_job(db_session, tenant, group, reference="JOB-NEW2")
+    db_session.add(JobDocument(tenant_id=tenant.id, job_id=new_job.id,
+                               template_document_id=invoice.id, file_path="fake.pdf", page_count=1))
+    db_session.commit()
+    failed_status = _make_job(db_session, tenant, group, reference="JOB-NEW-FAILED", status="failed")
+    failed_gk2 = _make_job(db_session, tenant, group, reference="JOB-NEW-FAILED-GK2",
+                           status="extracted", gk2_status="failed")
+    missing = _make_job(db_session, tenant, group, reference="JOB-NEW-MISSING", status="draft")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "new"})
+    ids = {j["id"] for j in resp.json()}
+    assert new_job.id in ids
+    assert failed_status.id not in ids
+    assert failed_gk2.id not in ids
+    assert missing.id not in ids
+
+    counts = client.get("/api/v1/jobs/category-counts").json()
+    assert counts["new"] == 1
+
+
 def test_category_submitted_is_only_unverified_ai_erp_submissions(client, db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant)
