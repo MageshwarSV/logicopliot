@@ -870,20 +870,23 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
         return "Failed"
     if job.status == "extracting":
         return "AI - Processing"
+    # Whether every MANDATORY document slot actually has a file yet - the same test
+    # _maybe_auto_extract() uses to decide when to fire extraction on its own. Checked here,
+    # BEFORE computing the rail stage at all, not only for a job on its first pass - a document
+    # removed or swapped out AFTER a job was already extracted (job.status stays "extracted";
+    # it never reverts to "draft" just because a slot was cleared) left it reading "GK1 Review"
+    # or whatever its last real stage was, with nothing anywhere saying a required document was
+    # actually gone. A job that is genuinely finished, failed, flagged a duplicate, or already
+    # mid-GK2 keeps its own real word regardless - this never overrides those.
+    if job.gk2_status is None and job.status not in (
+        "processing", "possible_duplicate", "duplicate", "failed", "completed",
+    ) and _missing_mandatory_documents(db, job):
+        return "Missing Documents"
     stage = stage if stage is not None else _job_stage(db, job)
     if stage == "Running":
         return "Submitted"  # the ERP run is in flight — this IS the act of submitting
     if stage == "Document Capture":
-        # Whether every MANDATORY document slot actually has a file yet - the same test
-        # _maybe_auto_extract() uses to decide when to fire extraction on its own. A job
-        # short of one is genuinely waiting on paperwork, not merely "capturing" - that used
-        # to read the same as a job one upload away from starting, which is why an operator
-        # working a stack of jobs could not tell which ones actually needed something from
-        # them versus which were already complete and about to move on their own. One label
-        # either way (never "Pre-Alert Received"/"Pending Documents" by origin) - which
-        # document(s) are actually missing is shown via JobOut/JobDetailOut's own
-        # missing_documents field instead, not by picking a different word for the status.
-        return "Document Capture" if not _missing_mandatory_documents(db, job) else "Missing Documents"
+        return "Document Capture"
     if stage == "Completed":
         # A real ERP run finishing is, in the words this feature introduced, the entry
         # having been submitted - the same outcome the GK2 placeholder's "submitted" state

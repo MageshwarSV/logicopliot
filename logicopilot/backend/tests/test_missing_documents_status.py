@@ -76,6 +76,37 @@ def test_optional_documents_are_never_listed_as_missing(client, db_session):
     assert not resp.json()["missing_documents"]
 
 
+def test_missing_documents_applies_even_to_an_already_extracted_job(client, db_session):
+    """The real production bug: a job extracted successfully once (status stays "extracted"
+    forever - it never reverts to "draft"), then EVERY document was later removed from it (the
+    Remove button clears a JobDocument's file_path but never touches job.status). Found live:
+    such a job kept reading "GK1 Review" (or whatever its last real stage happened to be)
+    with nothing anywhere saying a required document was actually gone."""
+    tenant = make_tenant(db_session)
+    group, invoice, bl, freight = _make_group_with_docs(db_session, tenant)
+    job = _make_job(db_session, tenant, group, [], status="extracted")
+    admin = make_user(db_session, role="super_admin", email="sa-missing5@example.com")
+    login(client, admin.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.json()["outer_status"] == "Missing Documents"
+    assert set(resp.json()["missing_documents"]) == {"Invoice", "Bill of Lading"}
+
+
+def test_missing_documents_never_overrides_a_genuinely_completed_job(client, db_session):
+    """A finished job must never be reinterpreted as "Missing Documents" just because its
+    documents happen to be gone by then (e.g. cleaned up after completion) - completed is a
+    real terminal state and stays one."""
+    tenant = make_tenant(db_session)
+    group, invoice, bl, freight = _make_group_with_docs(db_session, tenant)
+    job = _make_job(db_session, tenant, group, [], status="completed")
+    admin = make_user(db_session, role="super_admin", email="sa-missing6@example.com")
+    login(client, admin.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}")
+    assert resp.json()["outer_status"] != "Missing Documents"
+
+
 def test_missing_documents_clears_once_the_last_mandatory_document_is_uploaded(client, db_session):
     """Requirement #4: the status (and the missing list) updates automatically once resolved -
     nothing besides re-reading the job is needed."""

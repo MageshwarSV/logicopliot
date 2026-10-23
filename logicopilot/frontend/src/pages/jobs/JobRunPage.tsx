@@ -415,6 +415,13 @@ const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePrior
  */
 function tabFromStage(job: JobDetail, isGk2: boolean): TabKey {
   const { stage, status, documents } = job;
+  // A mandatory document is missing RIGHT NOW (outer_status "Missing Documents") - checked
+  // first, ahead of everything else below, since this can be true even for a job whose own
+  // `stage` says it progressed further already (a document removed or swapped out AFTER a
+  // job was extracted leaves job.status/stage exactly where they were - see _outer_status's
+  // own identical precedence on the backend). Always opens on Document Capture so there is
+  // somewhere to actually fix it, regardless of what tab the stale stage would otherwise pick.
+  if (job.missing_documents && job.missing_documents.length > 0) return "capture";
   // AI processing just finished, but nobody has looked at a single document yet — the
   // backend's own stage computation defaults straight to "Data Validation" the moment there
   // is no blocking cross-check, well before anything on Data Extraction has actually been
