@@ -5140,6 +5140,47 @@ def download_prealert_attachment(
     return FileResponse(path, filename=match.get("name") or stored_as)
 
 
+def _wipe_derived_field_values(db: Session, job: Job, jd: JobDocument) -> None:
+    """Field values that came from this document's content are no longer trustworthy once that
+    content changes - the whole file being removed, or (delete_job_document_page) one of its
+    pages being cut out. Shared so both wipe exactly the same things the exact same way.
+
+    Anything read from this file goes with it, or the job keeps reporting values from content
+    that no longer matches what is actually attached to it.
+
+    Tenant CUSTOM fields (lookup/AI-computed/composite) have no job_document_id of their own to
+    key the delete above on - a field with no source_document_ids reads every document as its
+    fallback, so there is no reliable way to tell "did this field actually depend on the content
+    just changed" from the field's own config. A live job (JOB-7EED74) was found with EVERY
+    mark-based value gone this way while its custom fields sat there untouched, computed from
+    data that no longer existed, with nothing anywhere saying so.
+
+    kind="hardcoded" is excluded from this wipe - it never reads any document at all, so a
+    document changing has no bearing on it either way. Its value is only ever the field's own
+    static default or whatever an operator typed in by hand (e.g. a duty notification number on
+    Additional Details) - wiping it on an unrelated document change destroyed that operator's
+    own input with no way for a later Extract to bring it back (Extract only knows the static
+    default, never what was actually typed).
+
+    Only when this job has actually been extracted before (status != "draft") - losing an
+    upload before the first Extract is an operator swapping files, nothing stale exists yet.
+    """
+    db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
+    if job.status != "draft":
+        from app.models.custom_field import CustomField
+
+        non_hardcoded_cf_ids = [
+            cid for (cid,) in db.query(CustomField.id)
+            .filter(CustomField.group_id == job.group_id, CustomField.kind != "hardcoded").all()
+        ]
+        if non_hardcoded_cf_ids:
+            db.query(JobFieldValue).filter(
+                JobFieldValue.job_id == job.id,
+                JobFieldValue.custom_field_id.in_(non_hardcoded_cf_ids),
+            ).delete(synchronize_session=False)
+        job.needs_reextraction = True
+
+
 def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
     """Clear one uploaded file from a job document slot - the wrong invoice, uploaded by
     mistake, or (see custom_filter_pages.py's old-job sweep) a page content-matching an
@@ -5157,38 +5198,7 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
         .order_by(JobDocument.file_index)
         .all()
     )
-    # Anything read from this file goes with it, or the job keeps reporting values from a
-    # document that is no longer attached to it.
-    db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
-    # Tenant CUSTOM fields (lookup/AI-computed/composite) have no job_document_id of their own
-    # to key the delete above on - a field with no source_document_ids reads every document as
-    # its fallback, so there is no reliable way to tell "did this field actually depend on the
-    # file just removed" from the field's own config. A live job (JOB-7EED74) was found with
-    # EVERY mark-based value gone this way while its custom fields sat there untouched,
-    # computed from data that no longer existed, with nothing anywhere saying so.
-    #
-    # kind="hardcoded" is excluded from this wipe - it never reads any document at all, so a
-    # document being removed has no bearing on it either way. Its value is only ever the
-    # field's own static default or whatever an operator typed in by hand (e.g. a duty
-    # notification number on Additional Details) - wiping it on an unrelated document swap
-    # destroyed that operator's own input with no way for a later Extract to bring it back
-    # (Extract only knows the static default, never what was actually typed).
-    #
-    # Only when this job has actually been extracted before (status != "draft") - losing an
-    # upload before the first Extract is an operator swapping files, nothing stale exists yet.
-    if job.status != "draft":
-        from app.models.custom_field import CustomField
-
-        non_hardcoded_cf_ids = [
-            cid for (cid,) in db.query(CustomField.id)
-            .filter(CustomField.group_id == job.group_id, CustomField.kind != "hardcoded").all()
-        ]
-        if non_hardcoded_cf_ids:
-            db.query(JobFieldValue).filter(
-                JobFieldValue.job_id == job.id,
-                JobFieldValue.custom_field_id.in_(non_hardcoded_cf_ids),
-            ).delete(synchronize_session=False)
-        job.needs_reextraction = True
+    _wipe_derived_field_values(db, job, jd)
     doc_dir = _job_doc_dir(jd.id)
 
     if len(siblings) == 1:
@@ -5234,6 +5244,86 @@ def delete_job_document_file(
     doc_dir = _remove_document_file(db, job, jd)
     db.commit()
     shutil.rmtree(doc_dir, ignore_errors=True)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+@router.delete("/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}", response_model=JobDetailOut)
+def delete_job_document_page(
+    job_id: str,
+    job_document_id: str,
+    page_number: int,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """Cuts ONE page out of a multi-page document, rebuilding it from its remaining pages - the
+    second half of "Move page N to another slot" (the frontend calls
+    copy_job_document_page_to_slot FIRST, landing a copy of the page elsewhere, then this to
+    remove it from here).
+
+    If this is the document's ONLY remaining page, removing it IS removing the whole document -
+    handled by the exact same path delete_job_document_file already uses
+    (_remove_document_file), not treated as a special case of page-cutting.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    jd = (
+        db.query(JobDocument)
+        .filter(JobDocument.id == job_document_id, JobDocument.job_id == job.id)
+        .first()
+    )
+    if jd is None or not jd.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if page_number < 1 or page_number > jd.page_count:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page does not exist on this document.")
+
+    if jd.page_count == 1:
+        doc_dir = _remove_document_file(db, job, jd)
+        db.commit()
+        shutil.rmtree(doc_dir, ignore_errors=True)
+        db.refresh(job)
+        return _build_detail(db, job)
+
+    src_path = Path(jd.file_path)
+    if src_path.suffix.lower() != ".pdf":
+        # Every other allowed type (.png/.jpg/.jpeg) is inherently single-page, so page_count
+        # being > 1 here while the file isn't a PDF would mean something is already wrong.
+        raise HTTPException(status_code=422, detail="Only a multi-page PDF document can have a single page removed.")
+    if not src_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The document's file is missing on disk.")
+
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(src_path)
+    try:
+        doc.delete_page(page_number - 1)
+        rebuilt = doc.tobytes()
+    finally:
+        doc.close()
+    # fitz refuses to save a document back over the file it was opened from directly - write
+    # the rebuilt bytes out ourselves, same as every other place in this file that lands file
+    # content on disk.
+    src_path.write_bytes(rebuilt)
+
+    pages_dir = _job_doc_dir(jd.id) / "pages"
+    shutil.rmtree(pages_dir, ignore_errors=True)
+    jd.page_count = _render_pages(src_path, pages_dir)
+    jd.extracted_json = None
+    jd.extraction_attempted = False
+    # The approved content just changed under this slot - same reasoning _remove_document_file
+    # already applies to a whole-file swap: a stale approval must not silently attach itself to
+    # content nobody has actually reviewed yet.
+    jd.approved = False
+    jd.gk2_approved = False
+    _wipe_derived_field_values(db, job, jd)
+
+    db.commit()
+    _maybe_auto_extract(db, job)
     db.refresh(job)
     return _build_detail(db, job)
 

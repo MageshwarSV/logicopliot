@@ -226,6 +226,21 @@ export async function copyJobDocumentPageToSlot(
   return data;
 }
 
+/** Cuts ONE page out of a multi-page document, rebuilding it from the remaining pages - the
+ *  second half of "Move page N to X" (copyJobDocumentPageToSlot lands a copy elsewhere FIRST,
+ *  then this removes it from here). If it is the document's only remaining page, this removes
+ *  the whole document instead - the exact same thing deleteJobDocumentFile does. */
+export async function deleteJobDocumentPage(
+  jobId: string,
+  jobDocumentId: string,
+  pageNumber: number,
+): Promise<JobDetail> {
+  const { data } = await apiClient.delete<JobDetail>(
+    `/jobs/${jobId}/documents/${jobDocumentId}/pages/${pageNumber}`,
+  );
+  return data;
+}
+
 export async function extractJob(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/extract`);
   return data;

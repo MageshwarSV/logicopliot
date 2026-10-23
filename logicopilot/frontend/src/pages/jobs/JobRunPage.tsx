@@ -927,8 +927,7 @@ export function JobRunPage() {
   }
 
   /** ONE page of a multi-page document, copied into another slot as its own single-page
-   *  document — the source document (every page of it) is left exactly as it was. No "move"
-   *  equivalent exists at this granularity — see copyJobDocumentPageToSlot's own docstring. */
+   *  document — the source document (every page of it) is left exactly as it was. */
   async function handleCopyDocumentPageToSlot(
     jobDocumentId: string,
     pageNumber: number,
@@ -940,6 +939,26 @@ export function JobRunPage() {
       setJob(await jobsApi.copyJobDocumentPageToSlot(jobId, jobDocumentId, pageNumber, targetTemplateDocumentId));
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not copy that page.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** "Move page N to X" — the same per-page copy, immediately followed by cutting that page
+   *  out of the source document (rebuilt from its remaining pages, or removed outright if it
+   *  was the only one left). */
+  async function handleMoveDocumentPageToSlot(
+    jobDocumentId: string,
+    pageNumber: number,
+    targetTemplateDocumentId: string,
+  ) {
+    setError(null);
+    setDocActionBusyId(jobDocumentId);
+    try {
+      await jobsApi.copyJobDocumentPageToSlot(jobId, jobDocumentId, pageNumber, targetTemplateDocumentId);
+      setJob(await jobsApi.deleteJobDocumentPage(jobId, jobDocumentId, pageNumber));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not move that page.");
     } finally {
       setDocActionBusyId(null);
     }
@@ -2271,7 +2290,7 @@ export function JobRunPage() {
                         updatedAt={d.updated_at}
                         readOnly={readOnly}
                         onPageMenu={(pageNumber, x, y) =>
-                          setDocMenu({ docId: d.id, fromTdocId: tdocId, x, y, mode: "copy", pageNumber })
+                          setDocMenu({ docId: d.id, fromTdocId: tdocId, x, y, mode: null, pageNumber })
                         }
                       />
                     </div>
@@ -2341,11 +2360,13 @@ export function JobRunPage() {
               onClose={() => setViewingPageIndex(null)}
             />
           )}
-          {/* Right-click menu on an already-placed document - for a page that genuinely IS two
-              documents at once (e.g. one sheet that is both the BL and the Freight
-              Certificate). "Copy and send to X" keeps the original and extracts a fresh,
-              independent copy into X too; "Move to X" does the same copy and then removes the
-              original (handleMoveDocumentToSlot) - also what dragging the document card does. */}
+          {/* The "..." menu on an already-placed document (whole document) or on one of its own
+              page thumbnails (that one page only) - for a sheet that genuinely IS two documents
+              at once (e.g. one sheet that is both the BL and the Freight Certificate). "Copy and
+              send to X" keeps the original and extracts a fresh, independent copy into X too;
+              "Move to X" does the same copy and then removes the original (the whole document
+              via handleMoveDocumentToSlot/dragging the document card, or just the one page via
+              handleMoveDocumentPageToSlot). */}
           {docMenu && (
             <>
               <div
@@ -2364,29 +2385,27 @@ export function JobRunPage() {
                       onClick={() => setDocMenu({ ...docMenu, mode: "copy" })}
                       className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
                     >
-                      Copy and send to <span className="text-slate-400">▸</span>
+                      {docMenu.pageNumber != null ? `Copy page ${docMenu.pageNumber} to` : "Copy and send to"}{" "}
+                      <span className="text-slate-400">▸</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setDocMenu({ ...docMenu, mode: "move" })}
                       className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
                     >
-                      Move to <span className="text-slate-400">▸</span>
+                      {docMenu.pageNumber != null ? `Move page ${docMenu.pageNumber} to` : "Move to"}{" "}
+                      <span className="text-slate-400">▸</span>
                     </button>
                   </>
                 ) : (
                   <>
                     <button
                       type="button"
-                      // A page-scoped menu has no top-level chooser to go back to (only "copy"
-                      // exists at that granularity) - back just closes it instead.
-                      onClick={() => docMenu.pageNumber != null
-                        ? setDocMenu(null)
-                        : setDocMenu({ ...docMenu, mode: null })}
+                      onClick={() => setDocMenu({ ...docMenu, mode: null })}
                       className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
                     >
                       ‹ {docMenu.pageNumber != null
-                        ? `Copy page ${docMenu.pageNumber} to`
+                        ? `${docMenu.mode === "copy" ? "Copy" : "Move"} page ${docMenu.pageNumber} to`
                         : docMenu.mode === "copy" ? "Copy and send to" : "Move to"}
                     </button>
                     <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
@@ -2399,7 +2418,11 @@ export function JobRunPage() {
                           type="button"
                           onClick={() => {
                             if (docMenu.pageNumber != null) {
-                              handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                              if (docMenu.mode === "copy") {
+                                handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                              } else {
+                                handleMoveDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                              }
                             } else if (docMenu.mode === "copy") {
                               handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
                             } else {

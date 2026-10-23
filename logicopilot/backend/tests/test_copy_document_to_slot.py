@@ -256,3 +256,109 @@ def test_refuses_a_page_copy_while_the_job_is_mid_extraction(client, db_session)
 
     resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/1/copy-to/{freight.id}")
     assert resp.status_code == 409
+
+
+# ------------------------------------------------- DELETE .../pages/{page_number} ("Move page
+# ------------------------------------------------- N" is this, called right after the copy above)
+
+
+def test_deleting_one_page_of_a_two_page_document_leaves_one_page_behind(client, db_session):
+    """"Move page 2 to Freight" on the frontend = copy page 2 there (already tested above),
+    then this call to cut page 2 out of the source - leaving the source with exactly its
+    remaining page, not the whole document gone."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    up = _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    assert up.status_code == 200, up.text
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    assert source.page_count == 2
+
+    resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/2")
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    still_there = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert still_there.page_count == 1
+    assert still_there.file_path is not None  # the document itself is still here, just shorter
+
+
+def test_deleting_the_only_remaining_page_removes_the_whole_document(client, db_session):
+    """A 1-page document has no "remaining pages" to rebuild from - cutting its only page IS
+    removing the document, same as the existing DELETE .../file endpoint already does."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)  # single page
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    assert source.page_count == 1
+
+    resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/1")
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    emptied = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert emptied.file_path is None
+    assert emptied.page_count == 0
+
+
+def test_refuses_a_page_number_outside_range_for_delete(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    up = _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    assert up.status_code == 200, up.text
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/5")
+    assert resp.status_code == 404
+
+
+def test_refuses_to_delete_a_page_while_the_job_is_mid_extraction(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    up = _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    assert up.status_code == 200, up.text
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    job.status = "extracting"
+    db_session.commit()
+
+    resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/1")
+    assert resp.status_code == 409
+
+
+def test_full_move_a_page_recipe_copy_then_delete(client, db_session):
+    """The exact sequence the frontend's "Move page N to X" performs: copy page 2 into
+    Freight, then delete page 2 from the source - end state is page 1 alone in BL, page 2
+    alone (as its own document) in Freight."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    up = _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    assert up.status_code == 200, up.text
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    copy_resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/2/copy-to/{freight.id}")
+    assert copy_resp.status_code == 200, copy_resp.text
+    delete_resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/2")
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    db_session.expire_all()
+    bl_doc = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert bl_doc.page_count == 1
+
+    freight_doc = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+    assert freight_doc.page_count == 1
+    assert freight_doc.id != bl_doc.id
