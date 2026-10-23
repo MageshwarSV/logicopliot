@@ -164,14 +164,23 @@ export function JobsPage() {
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   useEffect(() => {
     // A dashboard box click or one of the five sidebar category links both mean "show me
-    // exactly what this screen is for" - the SAME "quick" value is shared across every screen
-    // on this one page (sessionStorage has no idea which category it was last set on), so a
-    // "Last 7 days" left over from New Jobs silently hid everything on, say, ERP Verified Jobs
-    // (its own jobs are usually older) until the operator noticed and reset it by hand. A fresh
-    // category - just like a fresh group/bucket - resets it instead of inheriting whatever was
-    // last picked somewhere else entirely.
+    // exactly what this screen is for" - EVERY client-side refinement (quick date range,
+    // customer, status, assignee, shipment type) is shared across every screen on this one
+    // page (sessionStorage has no idea which category it was last set on), so e.g. a
+    // "Status: Duplicate" left over from New Jobs silently hid EVERY job on, say, ERP Verified
+    // Jobs (none of which are ever "Duplicate") until the operator noticed and pressed Reset
+    // by hand - found live, the exact same class of bug the "quick"-only reset below already
+    // fixed for the date range, just missed for the other five. A fresh category - just like a
+    // fresh group/bucket - resets all of them instead of inheriting whatever was last picked
+    // somewhere else entirely.
     if (group || category) {
       setQuick("all");
+      setCustomer(QUICK_ALL);
+      setStatusFilter(QUICK_ALL);
+      setAssignedTo(QUICK_ALL);
+      setShipmentType(QUICK_ALL);
+      setDateFrom("");
+      setDateTo("");
       return;
     }
     if (quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all") {
