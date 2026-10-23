@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
+import { notifySessionExpired } from "../auth/sessionExpiry";
 
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 
@@ -51,6 +52,11 @@ apiClient.interceptors.response.use(
       await refreshPromise;
       return apiClient(originalRequest);
     } catch (refreshError) {
+      // The refresh token itself was rejected - the session is genuinely gone, not just this
+      // one request's bad luck. notifySessionExpired is deduped (see sessionExpiry.ts), so
+      // several requests failing from the same dead session at once still only logs out and
+      // redirects once.
+      notifySessionExpired();
       return Promise.reject(refreshError);
     } finally {
       refreshPromise = null;

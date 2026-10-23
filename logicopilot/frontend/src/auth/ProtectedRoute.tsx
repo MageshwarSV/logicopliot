@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./useAuth";
 import type { Role } from "../types/auth";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
@@ -11,6 +11,7 @@ interface ProtectedRouteProps {
 
 export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -24,7 +25,10 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    // Where they were headed, so a successful sign-in can send them straight back instead of
+    // always landing on the role's own default home page.
+    const from = location.pathname + location.search;
+    return <Navigate to="/login" replace state={{ from }} />;
   }
 
   if (!allowedRoles.includes(user.role)) {

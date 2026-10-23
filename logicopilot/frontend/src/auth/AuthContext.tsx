@@ -1,6 +1,8 @@
 import { createContext, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import * as authApi from "../api/auth";
 import type { User } from "../types/auth";
+import { resetSessionExpiredNotice, setSessionExpiredHandler } from "./sessionExpiry";
 
 interface AuthContextValue {
   user: User | null;
@@ -27,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // Tokens live only in httpOnly cookies, invisible to JS — this is the only way
@@ -57,10 +60,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => channel.close();
   }, []);
 
+  // The session genuinely expired (apiClient's refresh call itself failed, see
+  // api/client.ts) - not a normal "never logged in" visit to a protected URL, which
+  // ProtectedRoute already handles on its own. Drops this tab's session, tells every other
+  // tab to do the same (same broadcast logout already uses), and sends the user back to
+  // Login with where they were, so a successful sign-in can return them there.
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      setUser(null);
+      channelRef.current?.postMessage({ type: "logout" } satisfies AuthBroadcast);
+      const from = window.location.pathname + window.location.search;
+      navigate("/login", { replace: true, state: { from, expired: true } });
+    });
+    return () => setSessionExpiredHandler(null);
+  }, [navigate]);
+
   const login = useCallback(async (email: string, password: string) => {
     const loggedInUser = await authApi.login(email, password);
     setUser(loggedInUser);
     channelRef.current?.postMessage({ type: "login", userId: loggedInUser.id } satisfies AuthBroadcast);
+    // A fresh, successful sign-in means any later failure is a NEW expiry, not an echo of
+    // this one - let it notify again next time.
+    resetSessionExpiredNotice();
     return loggedInUser;
   }, []);
 

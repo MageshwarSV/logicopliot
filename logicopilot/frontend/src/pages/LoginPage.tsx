@@ -7,6 +7,20 @@ import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { Alert } from "../components/ui/Alert";
 
+// The only thing ever remembered is the email address itself - never the password, and only
+// when the user explicitly ticks the box. Wrapped in try/catch everywhere it's touched, same
+// convention as sessionStorage elsewhere (JobsPage.tsx) - a private window or blocked storage
+// must never break the form, just silently not remember anything.
+const REMEMBERED_EMAIL_KEY = "cargora-remembered-email";
+
+function readRememberedEmail(): string {
+  try {
+    return window.localStorage.getItem(REMEMBERED_EMAIL_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 // Operator lands straight on New Jobs (not the Dashboard), pre-filtered to their own work from
 // the last 7 days - the dashboard and every other page stay one click away, this just changes
 // what the FIRST screen after signing in shows. assignedTo=me is resolved to the operator's own
@@ -30,10 +44,15 @@ const FEATURES = [
 export function LoginPage() {
   const { user, login } = useAuth();
   const location = useLocation();
-  const [email, setEmail] = useState("");
+  const rememberedEmail = readRememberedEmail();
+  const [email, setEmail] = useState(rememberedEmail);
   const [password, setPassword] = useState("");
+  // Unchecked unless a previously-remembered email exists - never checked by default.
+  const [rememberMe, setRememberMe] = useState(rememberedEmail !== "");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const sessionExpired = (location.state as { expired?: boolean } | null)?.expired === true;
 
   if (user) {
     const redirectTo = (location.state as { from?: string } | null)?.from ?? ROLE_HOME[user.role];
@@ -46,6 +65,15 @@ export function LoginPage() {
     setIsSubmitting(true);
     try {
       await login(email, password);
+      // Only the email is ever persisted, and only on an explicit opt-in - never the
+      // password, never saved automatically.
+      try {
+        if (rememberMe) window.localStorage.setItem(REMEMBERED_EMAIL_KEY, email);
+        else window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+      } catch {
+        // Private window or blocked storage - the sign-in itself already succeeded, so this
+        // is a convenience that just silently doesn't persist, never a reason to fail here.
+      }
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 401) {
         setError(err.response.data?.detail ?? "Invalid email or password");
@@ -130,13 +158,36 @@ export function LoginPage() {
             />
             <Input
               label="Password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
               placeholder="••••••••"
               required
+              trailingAdornment={
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  tabIndex={-1}
+                  title={showPassword ? "Hide password" : "Show password"}
+                  className="text-base leading-none text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                >
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              }
             />
+            <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-600 dark:bg-slate-800"
+              />
+              Remember me
+            </label>
+            {sessionExpired && (
+              <Alert>Your session has expired. Please log in again to continue.</Alert>
+            )}
             {error && <Alert>{error}</Alert>}
             <Button type="submit" isLoading={isSubmitting} className="mt-2 w-full">
               {isSubmitting ? "Signing in..." : "Sign in"}
