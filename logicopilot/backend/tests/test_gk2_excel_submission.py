@@ -308,6 +308,32 @@ def test_run_gk2_submission_fails_when_the_real_erp_run_fails(db_session):
     assert job.erp_reason == "The ERP rejected the AD Code."
 
 
+def test_run_gk2_submission_sends_a_duplicate_result_to_failed_for_a_retry(db_session):
+    """Found live (JOB-AF9B0B): the ERP reported "this record already exists" (status
+    "duplicated") - persist_run_outcome correctly set job.status="duplicate" rather than
+    "failed", but this wrapper only treated an exact "failed" as needing a retry, so a
+    duplicate outcome fell into the success branch instead: gk2_status="submitted", with no
+    Retry & Proceed button anywhere and no way to run it again. A duplicate is not a success
+    either - nothing was actually (re-)entered - so it gets the exact same retry-yourself
+    treatment a genuine failure already gets."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    _make_erp_script(db_session, tenant, group)
+    job = _make_job(db_session, tenant, group, gk2_status="preparing_erp")
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, label_name="consignee_full_name",
+                                 extracted_value="ACME IMPORTS PVT LTD"))
+    db_session.commit()
+
+    with patch("app.core.browser.play_steps") as mock_play:
+        mock_play.return_value = {"status": "duplicated", "log": ["logged in", "already exists"]}
+        _run_gk2_submission(db_session, job.id, is_excel_entry=True)
+
+    db_session.refresh(job)
+    assert job.gk2_status == "failed"
+    assert job.status == "extracted"
+    assert job.erp_status == "duplicated"
+
+
 def test_run_gk2_submission_non_excel_template_marks_submitted(db_session):
     tenant = make_tenant(db_session)
     group = _make_group(db_session, tenant, excel=False)
