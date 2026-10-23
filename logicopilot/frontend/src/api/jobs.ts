@@ -208,6 +208,24 @@ export async function copyJobDocumentToSlot(
   return data;
 }
 
+/** ONE page out of a (possibly multi-page) placed document, copied into ANOTHER slot as its
+ *  own single-page document - for a sheet that is genuinely two documents bound together
+ *  (page 1 is the BL, page 2 is the Freight Certificate, say). The source document, every page
+ *  of it, is left completely untouched - this only ever ADDS a copy elsewhere, it never cuts
+ *  the page out of the original (real page-removal would mean rebuilding the source file with
+ *  one fewer page - not supported). */
+export async function copyJobDocumentPageToSlot(
+  jobId: string,
+  jobDocumentId: string,
+  pageNumber: number,
+  templateDocumentId: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/documents/${jobDocumentId}/pages/${pageNumber}/copy-to/${templateDocumentId}`,
+  );
+  return data;
+}
+
 export async function extractJob(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/extract`);
   return data;

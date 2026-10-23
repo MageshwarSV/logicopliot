@@ -570,12 +570,15 @@ export function JobRunPage() {
   const [draggedDocId, setDraggedDocId] = useState<string | null>(null);
   const [draggedDocFromTdocId, setDraggedDocFromTdocId] = useState<string | null>(null);
   const [docActionBusyId, setDocActionBusyId] = useState<string | null>(null);
-  // Right-click menu on an already-placed document: "Copy and send to X" / "Move to X", for a
-  // document that is genuinely two documents at once (e.g. one sheet that is both the BL and
-  // the Freight Certificate). mode null = the two top-level choices; "copy"/"move" = the list
-  // of other document-type labels to send it to.
+  // Menu on an already-placed document: "Copy and send to X" / "Move to X", for a document
+  // that is genuinely two documents at once (e.g. one sheet that is both the BL and the
+  // Freight Certificate). mode null = the two top-level choices; "copy"/"move" = the list of
+  // other document-type labels to send it to. `pageNumber` set means this is scoped to ONE
+  // page of a multi-page document rather than the whole file - only "copy" exists at that
+  // granularity (see copyJobDocumentPageToSlot's own docstring for why "move" a single page
+  // out of a multi-page file is out of scope), so that case skips straight to the slot list.
   const [docMenu, setDocMenu] = useState<
-    { docId: string; fromTdocId: string; x: number; y: number; mode: "copy" | "move" | null } | null
+    { docId: string; fromTdocId: string; x: number; y: number; mode: "copy" | "move" | null; pageNumber?: number } | null
   >(null);
   // Which unclassified page the zoom viewer is open on - an index into unclassifiedPages, not
   // a copy of it, so Prev/Next just move this and the viewer re-fetches that page's image.
@@ -918,6 +921,25 @@ export function JobRunPage() {
       setJob(await jobsApi.deleteJobDocumentFile(jobId, jobDocumentId));
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not move that document.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** ONE page of a multi-page document, copied into another slot as its own single-page
+   *  document — the source document (every page of it) is left exactly as it was. No "move"
+   *  equivalent exists at this granularity — see copyJobDocumentPageToSlot's own docstring. */
+  async function handleCopyDocumentPageToSlot(
+    jobDocumentId: string,
+    pageNumber: number,
+    targetTemplateDocumentId: string,
+  ) {
+    setError(null);
+    setDocActionBusyId(jobDocumentId);
+    try {
+      setJob(await jobsApi.copyJobDocumentPageToSlot(jobId, jobDocumentId, pageNumber, targetTemplateDocumentId));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not copy that page.");
     } finally {
       setDocActionBusyId(null);
     }
@@ -2242,7 +2264,16 @@ export function JobRunPage() {
                           </div>
                         )}
                       </div>
-                      <JobDocPreview jobId={jobId} docId={d.id} pages={d.page_count} updatedAt={d.updated_at} />
+                      <JobDocPreview
+                        jobId={jobId}
+                        docId={d.id}
+                        pages={d.page_count}
+                        updatedAt={d.updated_at}
+                        readOnly={readOnly}
+                        onPageMenu={(pageNumber, x, y) =>
+                          setDocMenu({ docId: d.id, fromTdocId: tdocId, x, y, mode: "copy", pageNumber })
+                        }
+                      />
                     </div>
                   ))}
                   {readOnly ? (
@@ -2347,10 +2378,16 @@ export function JobRunPage() {
                   <>
                     <button
                       type="button"
-                      onClick={() => setDocMenu({ ...docMenu, mode: null })}
+                      // A page-scoped menu has no top-level chooser to go back to (only "copy"
+                      // exists at that granularity) - back just closes it instead.
+                      onClick={() => docMenu.pageNumber != null
+                        ? setDocMenu(null)
+                        : setDocMenu({ ...docMenu, mode: null })}
                       className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
                     >
-                      ‹ {docMenu.mode === "copy" ? "Copy and send to" : "Move to"}
+                      ‹ {docMenu.pageNumber != null
+                        ? `Copy page ${docMenu.pageNumber} to`
+                        : docMenu.mode === "copy" ? "Copy and send to" : "Move to"}
                     </button>
                     <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
                     {docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).length === 0 ? (
@@ -2361,8 +2398,13 @@ export function JobRunPage() {
                           key={s.tdocId}
                           type="button"
                           onClick={() => {
-                            if (docMenu.mode === "copy") handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
-                            else handleMoveDocumentToSlot(docMenu.docId, s.tdocId);
+                            if (docMenu.pageNumber != null) {
+                              handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                            } else if (docMenu.mode === "copy") {
+                              handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
+                            } else {
+                              handleMoveDocumentToSlot(docMenu.docId, s.tdocId);
+                            }
                             setDocMenu(null);
                           }}
                           className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -5902,8 +5944,14 @@ function UnclassifiedPageViewer({
 }
 
 function JobDocPreview({
-  jobId, docId, pages, updatedAt,
-}: { jobId: string; docId: string; pages: number; updatedAt?: string }) {
+  jobId, docId, pages, updatedAt, readOnly, onPageMenu,
+}: {
+  jobId: string; docId: string; pages: number; updatedAt?: string;
+  readOnly?: boolean;
+  /** Opens the Copy-to-another-slot menu scoped to just this one page (see docMenu's own
+   *  `pageNumber` field) - 1-indexed, with the click's own position to anchor the menu. */
+  onPageMenu?: (pageNumber: number, x: number, y: number) => void;
+}) {
   const [urls, setUrls] = useState<string[]>([]);
   const [zoom, setZoom] = useState<string | null>(null);
 
@@ -5938,9 +5986,21 @@ function JobDocPreview({
     <>
       <div className="mt-2 flex flex-wrap gap-2">
         {urls.map((u, i) => (
-          <button key={i} type="button" onClick={() => setZoom(u)} className="block" title={`Page ${i + 1} — click to enlarge`}>
-            <img src={u} alt={`page ${i + 1}`} className="h-28 w-auto rounded border border-slate-300 object-cover hover:ring-2 hover:ring-indigo-400 dark:border-slate-700" />
-          </button>
+          <div key={i} className="relative">
+            <button type="button" onClick={() => setZoom(u)} className="block" title={`Page ${i + 1} — click to enlarge`}>
+              <img src={u} alt={`page ${i + 1}`} className="h-28 w-auto rounded border border-slate-300 object-cover hover:ring-2 hover:ring-indigo-400 dark:border-slate-700" />
+            </button>
+            {!readOnly && onPageMenu && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onPageMenu(i + 1, e.clientX, e.clientY); }}
+                title={`Copy page ${i + 1} to another document type`}
+                className="absolute right-0.5 top-0.5 rounded bg-white/90 px-1 text-xs font-bold leading-none text-emerald-700 shadow hover:bg-white dark:bg-slate-900/90 dark:text-emerald-300"
+              >
+                ⋯
+              </button>
+            )}
+          </div>
         ))}
       </div>
       {zoom && (

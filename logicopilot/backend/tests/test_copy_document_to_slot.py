@@ -20,6 +20,15 @@ def _tiny_pdf_bytes() -> bytes:
     return doc.tobytes()
 
 
+def _two_page_pdf_bytes() -> bytes:
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page(width=200, height=200)
+    doc.new_page(width=200, height=200)
+    return doc.tobytes()
+
+
 def _make_template_two_slots(db_session, tenant):
     group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
     db_session.add(group)
@@ -55,10 +64,10 @@ def _login_operator(client, db_session, tenant):
     return op
 
 
-def _upload(client, job_id, tdoc_id):
+def _upload(client, job_id, tdoc_id, content: bytes | None = None):
     return client.post(
         f"/api/v1/jobs/{job_id}/documents/{tdoc_id}/upload",
-        files={"file": ("bl.pdf", _tiny_pdf_bytes(), "application/pdf")},
+        files={"file": ("bl.pdf", content or _tiny_pdf_bytes(), "application/pdf")},
     )
 
 
@@ -161,4 +170,89 @@ def test_refuses_to_copy_while_the_job_is_mid_extraction(client, db_session):
     db_session.commit()
 
     resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/copy-to/{freight.id}")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------- per-page copy (a single page out of a
+# ---------------------------------------------------- multi-page document, into another slot)
+
+
+def test_copies_one_page_of_a_multi_page_document_into_another_slot_as_its_own_document(client, db_session):
+    """Page 1 is the BL, page 2 is the Freight Certificate - both bound into one uploaded PDF.
+    Copying page 2 alone must land in the destination slot as its OWN single-page document,
+    and the source must keep every one of its original pages untouched."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    up = _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    assert up.status_code == 200, up.text
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    assert source.page_count == 2
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/2/copy-to/{freight.id}")
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    still_there = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert still_there.page_count == 2  # the source is untouched, both of its pages intact
+
+    copies = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).all()
+    assert len(copies) == 1
+    assert copies[0].page_count == 1
+    assert copies[0].id != source.id
+    assert "page 2" in (copies[0].original_name or "")
+
+
+def test_refuses_a_page_number_outside_the_documents_own_range(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)  # a single-page document
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/2/copy-to/{freight.id}")
+    assert resp.status_code == 404
+
+
+def test_refuses_a_page_copy_when_the_source_document_has_no_file_yet(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    empty_source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{empty_source.id}/pages/1/copy-to/{freight.id}")
+    assert resp.status_code == 404
+
+
+def test_refuses_a_page_copy_to_a_destination_slot_not_on_this_job(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl)  # no "freight" slot on this job
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/1/copy-to/{freight.id}")
+    assert resp.status_code == 404
+
+
+def test_refuses_a_page_copy_while_the_job_is_mid_extraction(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    job.status = "extracting"
+    db_session.commit()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/pages/1/copy-to/{freight.id}")
     assert resp.status_code == 409

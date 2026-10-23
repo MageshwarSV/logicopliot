@@ -4775,6 +4775,61 @@ def copy_job_document_to_slot(
     return _build_detail(db, job)
 
 
+@router.post(
+    "/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}/copy-to/{template_document_id}",
+    response_model=JobDetailOut,
+)
+def copy_job_document_page_to_slot(
+    job_id: str,
+    job_document_id: str,
+    page_number: int,
+    template_document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """ONE page out of an already-placed, possibly multi-page document, copied into ANOTHER
+    slot as its own single-page document - for a sheet that is genuinely two documents bound
+    together (page 1 is the BL, page 2 is the Freight Certificate, say), narrower than
+    copy_job_document_to_slot's whole-file copy.
+
+    The source document is left completely untouched, every page of it included - this only
+    ever ADDS a single-page copy elsewhere, built from that page's own already-rendered PNG
+    (the same image the thumbnail/OCR already use). It never cuts the page out of the
+    original - that would mean rebuilding the source file with one fewer page, real document
+    surgery nothing in this system does, deliberately out of scope here.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    source = (
+        db.query(JobDocument)
+        .filter(JobDocument.id == job_document_id, JobDocument.job_id == job.id)
+        .first()
+    )
+    if source is None or not source.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found")
+    if page_number < 1 or page_number > source.page_count:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page does not exist on this document.")
+
+    page_path = _job_doc_dir(source.id) / "pages" / f"page_{page_number}.png"
+    if not page_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page's image is missing on disk.")
+
+    content = page_path.read_bytes()
+    base_name = Path(source.original_name or "document").stem
+    page_name = f"{base_name} - page {page_number}.png"
+    _land_file_in_slot(db, job, template_document_id, ".png", content, page_name)
+
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
 # ---- IRN Documents Upload (GK1) / IRN Processing (GK2): supporting documents + prealert -----
 # Arbitrary files stored against a job under a label the operator types, and the original
 # email a job was created from - see app/models/supporting_document.py and
