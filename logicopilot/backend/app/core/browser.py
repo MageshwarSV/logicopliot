@@ -6155,24 +6155,28 @@ def play_steps(
             success_checkpoint = success_shot.get("step_index")
             last_action_done, unfinished = _last_action_done(steps, executed, success_checkpoint)
             # A step the Super Admin marked "this proves the entry succeeded" (the recorder's
-            # "✓ Success" button, or the same flag set by hand on an already-recorded step) must
-            # have genuinely produced something, not merely run - found live: the script can
-            # reach its own last recorded step (every element-bound action "done") while the
-            # real ERP screen on show was a validation-error popup or an unrelated dialog, with
-            # a marked get_text step either never reached at all or reading back nothing. A
-            # marked step that didn't run, or ran but captured an empty value, means the real
-            # confirmation this job actually went in never showed up - treated as a failure the
-            # same way the final action itself not completing already is. An assert_text step
-            # needs no extra check here - it already hard-fails the whole run the moment it
-            # doesn't find its text (see the main loop above), marked or not.
+            # "✓ Success" button, on ANY step - a click, a tab switch, a screenshot, a picked
+            # value, not just get_text) must have genuinely happened, not merely been scheduled -
+            # found live: the script can reach its own last recorded step (every element-bound
+            # action "done") while the real ERP screen on show was a validation-error popup or
+            # an unrelated dialog, with a marked step either never reached at all or (for a
+            # picked value specifically) reading back nothing. A marked step that never ran
+            # means the real confirmation this job actually went in never showed up - treated
+            # as a failure the same way the final action itself not completing already is. An
+            # assert_text step needs no extra check here - it already hard-fails the whole run
+            # the moment it doesn't find its text (see the main loop above), marked or not.
             success_check_failed = None
             for k, s in enumerate(steps):
-                if not s.get("is_success_check") or s.get("action") != "get_text":
+                if not s.get("is_success_check"):
                     continue
-                name = s.get("capture_as") or s.get("field_label") or f"value_{k + 1}"
-                if k not in executed or not (captured.get(name) or {}).get("value"):
+                if k not in executed:
                     success_check_failed = s
                     break
+                if s.get("action") == "get_text":
+                    name = s.get("capture_as") or s.get("field_label") or f"value_{k + 1}"
+                    if not (captured.get(name) or {}).get("value"):
+                        success_check_failed = s
+                        break
             # Reaching the screenshot step at all means `aborted` was never true before it (the
             # loop would have stopped before getting there otherwise) - so an abort that fires
             # on one of the steps after the checkpoint is the same "already done, something
