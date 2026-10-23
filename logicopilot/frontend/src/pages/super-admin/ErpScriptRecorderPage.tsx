@@ -2566,7 +2566,14 @@ export function ErpScriptRecorderPage() {
                   onClick={() =>
                     setSteps((arr) => arr.map((st, j) => (j === i ? { ...st, is_success_check: !st.is_success_check } : st)))
                   }
-                  className={`rounded px-1 text-xs ${s.is_success_check ? "text-amber-500" : "text-slate-300 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"}`}
+                  // 🏆 is a colour emoji - its glyph ignores CSS `color`/text-* classes
+                  // entirely (confirmed live: every trophy rendered identically gold no matter
+                  // what text colour class was applied), so "on" vs "off" has to come from a
+                  // pixel-level filter instead: full colour when marked, grayscale + dimmed
+                  // when not, exactly as asked for.
+                  className={`rounded px-1 text-xs transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                    s.is_success_check ? "" : "grayscale opacity-40 hover:opacity-70"
+                  }`}
                 >
                     🏆
                   </button>
