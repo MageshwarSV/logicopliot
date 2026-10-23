@@ -1780,7 +1780,13 @@ def _category_condition(category: str):
             not_ai_submitted
             & (Job.status != "completed")
             & (Job.status != "failed")
-            & Job.gk2_status.isnot("failed")
+            # NOT `.isnot("failed")` - that compiles to `IS NOT 'failed'`, which SQLite tolerates
+            # but PostgreSQL (production) rejects outright as a syntax error ("IS NOT" there only
+            # ever takes NULL/TRUE/FALSE/UNKNOWN) - found live, invisible in the test suite since
+            # it runs against SQLite. Spelled out so NULL (never submitted to GK2 at all) still
+            # counts as "not failed" on every database, the same thing `.isnot(None)` elsewhere
+            # already relies on being database-portable to do.
+            & (Job.gk2_status.is_(None) | (Job.gk2_status != "failed"))
         )
     if category == "missing":
         # Only reached directly by job_category_counts's OWN precise (db, job) loop now -

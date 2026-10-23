@@ -15,10 +15,26 @@ moment the AI path first succeeds, and never cleared again, so it survives that 
 
 from datetime import datetime, timezone
 
-from app.api.v1.jobs import _job_category
+from app.api.v1.jobs import _category_condition, _job_category
 from app.models.job import Job
 from app.models.template_group import TemplateGroup
 from tests.conftest import login, make_tenant, make_user
+
+
+def test_category_new_condition_compiles_safely_for_postgresql():
+    """Found live: `.isnot("failed")` compiles to `IS NOT 'failed'`, which SQLite's lenient
+    parser accepts but PostgreSQL (production) rejects outright as a syntax error - "IS NOT"
+    there only ever takes NULL/TRUE/FALSE/UNKNOWN, never an arbitrary value. Invisible in this
+    whole suite (SQLite-backed) until it 500'd every single "New Jobs" request in production.
+    Compiling the SAME condition for the postgresql dialect here - without needing a real
+    Postgres server - catches this exact class of mistake from ever reaching production again."""
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(_category_condition("new").compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True},
+    ))
+    assert "IS NOT 'failed'" not in sql
+    assert "IS NOT 'completed'" not in sql
 
 
 def _make_group(db_session, tenant, mode="Sea Import"):
