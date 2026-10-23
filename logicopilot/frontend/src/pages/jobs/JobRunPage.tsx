@@ -2196,11 +2196,7 @@ export function JobRunPage() {
                           setDraggedDocFromTdocId(tdocId);
                         }}
                         onDragEnd={() => { setDraggedDocId(null); setDraggedDocFromTdocId(null); setDragOverId(null); }}
-                        onClick={(e) => {
-                          if (readOnly) return;
-                          setDocMenu({ docId: d.id, fromTdocId: tdocId, x: e.clientX, y: e.clientY, mode: null });
-                        }}
-                        title={readOnly ? undefined : "Click for Copy/Move options, or drag onto another document type to move it there"}
+                        title={readOnly ? undefined : "Drag onto another document type to move it there"}
                         className={`flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 ${
                           !readOnly ? "cursor-grab active:cursor-grabbing" : ""
                         } ${docActionBusyId === d.id ? "opacity-50" : ""}`}
@@ -2216,14 +2212,34 @@ export function JobRunPage() {
                           </span>
                         </span>
                         {!readOnly && (
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleRemoveFile(d.id); }}
-                            disabled={uploadingId === d.id || docActionBusyId === d.id}
-                            className="ml-2 shrink-0 text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
-                          >
-                            {uploadingId === d.id ? "Removing…" : "Remove"}
-                          </button>
+                          <div className="ml-2 flex shrink-0 items-center gap-2">
+                            {/* A dedicated small button for Copy/Move, separate from the row's
+                                own drag handle - a click anywhere on the row used to open this
+                                same menu, which fought with starting a drag from that same
+                                spot (a touchpad tap-then-slide in particular reads as a click,
+                                not a drag, so the menu kept winning). */}
+                            <button
+                              type="button"
+                              draggable={false}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDocMenu({ docId: d.id, fromTdocId: tdocId, x: e.clientX, y: e.clientY, mode: null });
+                              }}
+                              disabled={docActionBusyId === d.id}
+                              title="Copy or move this document to another document type"
+                              className="rounded p-1 leading-none text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
+                            >
+                              ⋯
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleRemoveFile(d.id); }}
+                              disabled={uploadingId === d.id || docActionBusyId === d.id}
+                              className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
+                            >
+                              {uploadingId === d.id ? "Removing…" : "Remove"}
+                            </button>
+                          </div>
                         )}
                       </div>
                       <JobDocPreview jobId={jobId} docId={d.id} pages={d.page_count} updatedAt={d.updated_at} />
