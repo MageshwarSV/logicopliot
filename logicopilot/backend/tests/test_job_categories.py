@@ -258,9 +258,19 @@ def test_category_counts_matches_the_filtered_lists(client, db_session):
     assert body == {"new": 2, "missing": 0, "failed": 0, "submitted": 1, "completed": 1}
 
 
+def _make_group_with_required_doc(db_session, tenant):
+    from app.models.template_document import TemplateDocument
+
+    group = _make_group(db_session, tenant)
+    db_session.add(TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice",
+                                    doc_type="Invoice", is_required=True))
+    db_session.commit()
+    return group
+
+
 def test_category_counts_includes_missing_and_failed(client, db_session):
     tenant = make_tenant(db_session)
-    group = _make_group(db_session, tenant)
+    group = _make_group_with_required_doc(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op8@example.com")
     _make_job(db_session, tenant, group, reference="JOB-DRAFT1", status="draft")
     _make_job(db_session, tenant, group, reference="JOB-DRAFT2", status="draft")
@@ -277,16 +287,47 @@ def test_category_counts_includes_missing_and_failed(client, db_session):
 
 
 def test_missing_category_filters_the_jobs_list_to_draft_jobs(client, db_session):
+    from app.models.job import JobDocument
+
     tenant = make_tenant(db_session)
-    group = _make_group(db_session, tenant)
+    group = _make_group_with_required_doc(db_session, tenant)
+    invoice_tdoc_id = group.documents[0].id
     op = make_user(db_session, role="operator", tenant=tenant, email="cat-op9@example.com")
     draft = _make_job(db_session, tenant, group, reference="JOB-DRAFT3", status="draft")
-    _make_job(db_session, tenant, group, reference="JOB-EXTRACTED1")
+    has_its_doc = _make_job(db_session, tenant, group, reference="JOB-EXTRACTED1")
+    db_session.add(JobDocument(tenant_id=tenant.id, job_id=has_its_doc.id,
+                               template_document_id=invoice_tdoc_id, file_path="fake.pdf", page_count=1))
+    db_session.commit()
     login(client, op.email)
 
     resp = client.get("/api/v1/jobs", params={"category": "missing"})
     ids = {j["id"] for j in resp.json()}
     assert ids == {draft.id}
+
+
+def test_missing_category_also_finds_an_already_extracted_job_stripped_of_documents(client, db_session):
+    """The real production bug: a job extracted once (status stays "extracted" forever once it
+    is), then had every document later removed - still genuinely missing a mandatory document,
+    so it must still show up on the "missing" screen, not just a job still in "draft"."""
+    from app.models.job import JobDocument
+
+    tenant = make_tenant(db_session)
+    group = _make_group_with_required_doc(db_session, tenant)
+    invoice_tdoc_id = group.documents[0].id
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op11@example.com")
+    stripped = _make_job(db_session, tenant, group, reference="JOB-STRIPPED", status="extracted")
+    has_its_doc = _make_job(db_session, tenant, group, reference="JOB-NOT-MISSING", status="extracted")
+    db_session.add(JobDocument(tenant_id=tenant.id, job_id=has_its_doc.id,
+                               template_document_id=invoice_tdoc_id, file_path="fake.pdf", page_count=1))
+    db_session.commit()
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "missing"})
+    ids = {j["id"] for j in resp.json()}
+    assert ids == {stripped.id}
+
+    counts = client.get("/api/v1/jobs/category-counts").json()
+    assert counts["missing"] == 1
 
 
 def test_failed_category_filters_the_jobs_list_to_failed_jobs_either_way(client, db_session):

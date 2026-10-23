@@ -835,6 +835,47 @@ def _missing_mandatory_documents(db: Session, job: Job) -> list[str]:
     return [td.name for td in group.documents if td.is_required and td.id not in filled_ids]
 
 
+# Any job in one of these states is a genuinely terminal or already-dispatched outcome -
+# _outer_status never reinterprets it as "Missing Documents" even if a document happens to be
+# absent by then (e.g. cleaned up after completion). Kept as one shared tuple so the Jobs list's
+# "missing" category/dashboard group can narrow down to the same candidates before running the
+# real per-job check below, instead of silently drifting from _outer_status's own exclusions.
+_MISSING_DOCS_EXCLUDED_STATUSES = (
+    "processing", "possible_duplicate", "duplicate", "failed", "completed", "extracting",
+)
+
+
+def _is_missing_documents(db: Session, job: Job) -> bool:
+    """Whether _outer_status would currently read this job as "Missing Documents" - the exact
+    same precedence/exclusions as that function's own check. Factored out so the Jobs list's
+    "missing" category and the dashboard's "Missing Documents" box can filter/count by it
+    directly, instead of the cheaper status=="draft" approximation this used to be - found live
+    to be wrong: a job extracted once, then stripped of every document afterward, stays
+    status=="extracted" forever, so it IS "Missing Documents" (outer_status agrees) but was
+    invisible to this screen entirely under the old approximation.
+    """
+    if job.gk2_status is not None:
+        return False
+    if job.status in _MISSING_DOCS_EXCLUDED_STATUSES:
+        return False
+    return bool(_missing_mandatory_documents(db, job))
+
+
+def _missing_documents_sql_candidates(query, bucket: str | None = None):
+    """Cheap SQL narrowing shared by the "missing" dashboard group and Jobs-list category -
+    everything _is_missing_documents could ever say yes to. The real per-job document check
+    cannot be expressed as a single SQL predicate (it needs each job's own template's documents
+    and its own uploaded files), so this only ever narrows the candidates that check then runs
+    against in Python, rather than scanning the whole table."""
+    query = query.filter(Job.gk2_status.is_(None), Job.status.notin_(_MISSING_DOCS_EXCLUDED_STATUSES))
+    if bucket:
+        bounds = _bucket_bounds(bucket)
+        if bounds:
+            start, end = (b.astimezone(timezone.utc) for b in bounds)
+            query = query.filter(Job.created_at >= start, Job.created_at < end)
+    return query
+
+
 def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     """The single word shown on the job list and the job header — coarser than the seven-stage
     rail on purpose. The rail's words are screens an operator navigates between; this is the
@@ -1626,16 +1667,12 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
         query = query.filter(Job.gk2_status == "submitted")
         date_col = Job.created_at
     elif group == "missing":
-        # "Missing Documents" (_outer_status's own "Document Capture" branch) only ever
-        # applies to a job still sitting in "draft" - _maybe_auto_extract fires synchronously
-        # the moment every mandatory document is in, so a draft row with nothing missing does
-        # not meaningfully persist for this filter to ever see. Close enough that recomputing
-        # the real required-vs-filled check per row here (as _outer_status itself does) would
-        # be needless extra work for what is already an edge case too thin to matter, matching
-        # how "pending"/"completed" above are also approximations rather than exact replays of
-        # _outer_status's own logic.
-        query = query.filter(Job.status == "draft")
-        date_col = Job.created_at
+        # Only a cheap SQL pre-narrowing - the real required-vs-filled check cannot be
+        # expressed as a single predicate (see _is_missing_documents/
+        # _missing_documents_sql_candidates). list_jobs runs that real check against whatever
+        # this returns before ever paginating, so returning early here (skipping the generic
+        # bucket-filtering tail below, already applied inside the helper) is correct.
+        return _missing_documents_sql_candidates(query, bucket)
     else:
         return query
     if bounds:
@@ -1761,9 +1798,13 @@ def job_category_counts(
     ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
     visibility list_jobs itself applies."""
     base = _jobs_visible_query(db, scope, user)
+    # Cannot be a single SQL predicate like the other four (see _is_missing_documents) - the
+    # SQL narrowing already excludes everything it could never be, so this is only ever
+    # re-checking a small candidate set, not the whole tenant's job table.
+    missing_candidates = _missing_documents_sql_candidates(base).all()
     return JobCategoryCounts(
         new=base.filter(_category_condition("new")).count(),
-        missing=base.filter(_category_condition("missing")).count(),
+        missing=sum(1 for j in missing_candidates if _is_missing_documents(db, j)),
         failed=base.filter(_category_condition("failed")).count(),
         submitted=base.filter(_category_condition("submitted")).count(),
         completed=base.filter(_category_condition("completed")).count(),
@@ -1799,14 +1840,24 @@ def list_jobs(
         query = _apply_dashboard_filter(query, group, bucket)
     if gk2_status is not None:
         query = query.filter(Job.gk2_status == gk2_status)
-    if category is not None:
+    if category is not None and category != "missing":
         query = query.filter(_category_condition(category))
+    elif category == "missing":
+        query = _missing_documents_sql_candidates(query)
 
     query = query.order_by(Job.created_at.desc())
-    if limit is not None:
-        query = query.offset(offset).limit(limit)
 
-    jobs = query.all()
+    # "missing" (either as group=missing, the dashboard box, or category=missing, the sidebar
+    # link) cannot be a single SQL predicate - see _is_missing_documents. The filters above
+    # already narrowed to a small candidate set, so this only re-checks those, not the whole
+    # table, then paginates in Python instead of in the database.
+    if group == "missing" or category == "missing":
+        jobs_all = [j for j in query.all() if _is_missing_documents(db, j)]
+        jobs = jobs_all[offset: offset + limit] if limit is not None else jobs_all
+    else:
+        if limit is not None:
+            query = query.offset(offset).limit(limit)
+        jobs = query.all()
 
     # Bulk-prefetched ONCE for this whole list, instead of once per job inside _job_out - see
     # that function's own docstring. _job_stage's own verification-findings queries and
