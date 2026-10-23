@@ -163,31 +163,46 @@ export function JobsPage() {
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   useEffect(() => {
-    // A dashboard box click or one of the five sidebar category links both mean "show me
-    // exactly what this screen is for" - EVERY client-side refinement (quick date range,
-    // customer, status, assignee, shipment type) is shared across every screen on this one
-    // page (sessionStorage has no idea which category it was last set on), so e.g. a
-    // "Status: Duplicate" left over from New Jobs silently hid EVERY job on, say, ERP Verified
-    // Jobs (none of which are ever "Duplicate") until the operator noticed and pressed Reset
-    // by hand - found live, the exact same class of bug the "quick"-only reset below already
-    // fixed for the date range, just missed for the other five. A fresh category - just like a
-    // fresh group/bucket - resets all of them instead of inheriting whatever was last picked
-    // somewhere else entirely.
+    // EVERY client-side refinement (quick date range, customer, status, assignee, shipment
+    // type) is shared across every screen on this one page (sessionStorage has no idea which
+    // category it was last set on), so e.g. a "Status: Duplicate" left over from New Jobs
+    // silently hid EVERY job on, say, ERP Verified Jobs (none of which are ever "Duplicate")
+    // until the operator noticed and pressed Reset by hand - found live, the exact same class
+    // of bug the "quick"-only reset below used to fix for the date range alone. A fresh
+    // category or group/bucket always resets customer/status/shipment type/dates, instead of
+    // inheriting whatever was last picked somewhere else entirely.
     if (group || category) {
-      setQuick("all");
       setCustomer(QUICK_ALL);
       setStatusFilter(QUICK_ALL);
-      setAssignedTo(QUICK_ALL);
       setShipmentType(QUICK_ALL);
       setDateFrom("");
       setDateTo("");
+    }
+    // A dashboard box click means "show me exactly what this box counted" - "all time", every
+    // assignee, no narrowing beyond what the box itself already applied server-side.
+    if (group) {
+      setQuick("all");
+      setAssignedTo(QUICK_ALL);
+      return;
+    }
+    // One of the five sidebar menus (New Jobs/Missing Documents/ERP Failed/Submitted/Verified)
+    // means "show ME what's waiting on ME right now" - the user's own explicit default,
+    // applied every time any of these five is opened, not just once at login (ROLE_HOME's
+    // own quick=7&assignedTo=me for the very first New Jobs visit is just this same default,
+    // reached a different way - redundant with this, not overridden by it).
+    if (category) {
+      setQuick("7");
+      // Needs user.full_name, which may not have loaded yet on the very first render - this
+      // effect re-runs the moment it does (same mechanism the assignedToParam effect below
+      // already uses), so it still lands on "me" rather than silently staying "all assignees".
+      if (user?.full_name) setAssignedTo(user.full_name);
       return;
     }
     if (quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all") {
       setQuick(quickParam);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [group, category, quickParam]);
+  }, [group, category, quickParam, user?.full_name]);
   useEffect(() => {
     if (assignedToParam === "me") {
       // Names the CURRENT operator, whose own display name isn't known until the user
