@@ -108,11 +108,6 @@ ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 MAX_FILE_BYTES = 25 * 1024 * 1024
 RENDER_DPI = 150
 
-# Stage shown while a job is waiting on the operator to answer the ruling's question
-# (e.g. the incoterm could not be found in any document). Stored in Job.stage_override,
-# which _job_stage already honours ahead of the computed stage — so no schema change.
-HOLD_STAGE = "Hold"
-
 # Character budget for the document text handed to the ruling, split evenly between the
 # uploaded documents so every one is represented rather than the largest swallowing it all.
 # Characters, not tokens: ~4 chars per token, so 40k is ~10k tokens against a 128k context.
@@ -881,20 +876,6 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
         # that arrived before its documents were ready to work — a manual smart-upload job in
         # the same stage has no such thing to report, so it keeps the plain word instead.
         return "Pre-Alert Received" if job.created_by_id is None else "Pending Documents"
-    if stage == HOLD_STAGE:
-        # A ruling hold ("which Incoterm applies?") is a genuinely different thing from
-        # waiting on paperwork - it can fire even with every document already in hand. But
-        # several of these holds turned out to ALSO be missing a required document (the AI
-        # cannot read an Incoterm off a Bill of Lading nobody uploaded yet), and showing
-        # "Hold" for those told the operator to go answer a question when the real, more
-        # fundamental blocker was still an upload. Missing paperwork wins: only once every
-        # required document is actually in does this read as a real ruling question.
-        group = db.get(TemplateGroup, job.group_id)
-        required_ids = {td.id for td in (group.documents if group else []) if td.is_required}
-        filled_ids = {d.template_document_id for d in job.documents if d.file_path}
-        if not required_ids.issubset(filled_ids):
-            return "Pre-Alert Received" if job.created_by_id is None else "Pending Documents"
-        return "Hold"
     if stage == "Completed":
         # A real ERP run finishing is, in the words this feature introduced, the entry
         # having been submitted - the same outcome the GK2 placeholder's "submitted" state
@@ -2265,6 +2246,11 @@ def submit_for_gk2_approval(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cross Docs Verification must be approved before this can go to GK2.",
         )
+    # Checked here too, not only in _finalize_job_approval below - an unresolved ruling must
+    # block the hand-off to GK2 just as much as it blocks the real ERP submission, so GK2 is
+    # never handed a job that was never actually submittable in the first place.
+    group = db.get(TemplateGroup, job.group_id)
+    _check_ruling_before_submit(db, job, group)
     if _gk2_required_for_job(db, job):
         job.gk2_status = "pending"
         db.commit()
@@ -2419,8 +2405,9 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
     turned GK2 review off for this job's shipment type - see Tenant.gk2_required_by_mode) - a
     skipped job is held to exactly the same bar a GK2-reviewed one is."""
     # The same pre-flight complete_job requires before it touches the real ERP - a GK2 run is
-    # no less real now, so a required field the operator never answered, or a job parked on
-    # the ruling's own hold question, must block it here exactly as it would block Submit Entry.
+    # no less real now, so a required field the operator never answered, or a ruling this
+    # shipment's documents still can't resolve, must block it here exactly as it would block
+    # Submit Entry.
     pending = _unanswered_operator_fields(db, job)
     if pending:
         raise HTTPException(
@@ -2428,11 +2415,8 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
             detail=("Enter a value for these fields before submitting the entry: "
                     + ", ".join(pending)),
         )
-    if job.stage_override == HOLD_STAGE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This job is on hold — answer the required-documents question before submitting the entry.",
-        )
+    group = db.get(TemplateGroup, job.group_id)
+    _check_ruling_before_submit(db, job, group)
 
     # GK1 chose Approval for IRN (not Skip) on IRN Documents Upload - the real ERP submission
     # does not run yet. Park the job in its own wait-state instead, next to the per-document
@@ -3708,30 +3692,6 @@ def _ruling_context(db: Session, job: Job, group: TemplateGroup) -> tuple[list[s
     return all_names, uploaded, docs_text
 
 
-def apply_ruling_hold(db: Session, job: Job) -> None:
-    """Run the template's ruling and hold the job if it needs the operator to decide.
-
-    Called automatically after extraction so a job holds itself — the operator should not
-    have to press a button to discover the incoterm could not be determined. Best-effort:
-    a ruling failure must never break extraction.
-    """
-    from app.core.llm import evaluate_ruling
-
-    group = db.get(TemplateGroup, job.group_id)
-    if group is None or not group.ruling_prompt:
-        return
-    try:
-        all_names, _uploaded, docs_text = _ruling_context(db, job, group)
-        result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, None)
-    except Exception:  # noqa: BLE001
-        logger.exception("auto-ruling failed for job %s", job.id)
-        return
-    if result.get("needs_input"):
-        job.stage_override = HOLD_STAGE
-        db.commit()
-        logger.info("job %s held: %s", job.id, result.get("question"))
-
-
 @router.post("/jobs/{job_id}/ruling")
 def evaluate_job_ruling(
     job_id: str,
@@ -3742,7 +3702,16 @@ def evaluate_job_ruling(
 ):
     """Apply the template's custom ruling to this job's uploaded documents and return
     which documents are required (and, if the AI can't decide, a question for the operator).
-    Optionally pass the operator's `answer` to resolve an earlier question."""
+
+    There is no "Hold" job status any more - this never changes where the job sits in its own
+    pipeline. A real answer the operator gives here is PERSISTED on the job (Job.ruling_answer),
+    so it is remembered the next time the ruling is evaluated - in particular by
+    _check_ruling_before_submit, which Submit for Approval/Final Approve/Submit Entry now run
+    for themselves rather than trusting a stage flag that could go stale.
+
+    `req.answer`, if given, both answers THIS call and is saved for every later one; omitting it
+    re-evaluates using whatever was saved last time (if anything).
+    """
     from app.core.llm import evaluate_ruling
 
     job = _load_job(db, job_id, scope, user)
@@ -3750,27 +3719,98 @@ def evaluate_job_ruling(
     if not group.ruling_prompt:
         return {"has_ruling": False}
 
+    answer = (req.answer or "").strip()
+    if answer:
+        job.ruling_answer = answer
+        db.commit()
+
     all_names, uploaded, docs_text = _ruling_context(db, job, group)
-    result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, req.answer)
+    result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, answer or job.ruling_answer)
     result["has_ruling"] = True
     result["all_documents"] = all_names
     result["uploaded_documents"] = uploaded
     result["missing_documents"] = [
         n for n in (result.get("required_documents") or []) if n not in uploaded
     ]
-
-    # The rule could not determine the deciding value (e.g. no incoterm in the BL, the
-    # Invoice or the Packing List) and the operator has not answered yet — hold the job so
-    # it cannot be pushed to the ERP on a guess. stage_override is what the operator's
-    # stage badge reads, and rerun_job already clears it.
-    if result["needs_input"] and not (req.answer or "").strip():
-        job.stage_override = HOLD_STAGE
-        db.commit()
-    elif job.stage_override == HOLD_STAGE:
-        job.stage_override = None
-        db.commit()
-    result["held"] = job.stage_override == HOLD_STAGE
     return result
+
+
+def _check_ruling_before_submit(db: Session, job: Job, group: TemplateGroup) -> None:
+    """The final-submission gate for a template's conditional document ruling - replaces the
+    old "Hold" job status entirely. A job is never parked on a separate stage/status for this;
+    instead, Submit for Approval, Final Approve & Proceed, and Submit Entry all call this and
+    refuse outright (409, before anything real happens) until the ruling can be evaluated AND
+    every document it names as required has actually been uploaded.
+
+    Uses Job.ruling_answer - whatever the operator already answered via the "Check required
+    documents" box (evaluate_job_ruling persists it there) - exactly as a fresh "Check required
+    documents" press would, so an operator who already answered the question is never asked
+    again just because they moved on to pressing the real Submit button.
+
+    A technical failure (the AI call itself errors) is logged AND still blocks submission with
+    a clear message - unlike the old best-effort auto-check after extraction, skipping this
+    silently would mean submitting on exactly as much of a guess as ignoring a real
+    "needs_input" would.
+    """
+    if group is None or not group.ruling_prompt:
+        return
+    from app.core.llm import evaluate_ruling
+
+    try:
+        all_names, uploaded, docs_text = _ruling_context(db, job, group)
+        result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, job.ruling_answer)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ruling evaluation failed at submission for job %s", job.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot submit this job for approval — the document ruling could not be "
+                   "evaluated due to a technical error. Try again, or use \"Check required "
+                   "documents\" on Document Capture for more detail.",
+        ) from exc
+
+    if result.get("needs_input"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot submit this job for approval — "
+                   + (result.get("reason") or "the required documents could not be determined")
+                   + ". " + (result.get("question") or "Answer the required-documents question")
+                   + " — use \"Check required documents\" on Document Capture to answer it, then try again.",
+        )
+
+    missing = [n for n in (result.get("required_documents") or []) if n not in uploaded]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot submit this job for approval — upload the document(s) this shipment "
+                   "requires first: " + ", ".join(missing),
+        )
+
+
+@router.post("/jobs/{job_id}/clear-stale-hold", response_model=JobDetailOut)
+def clear_stale_hold(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> JobDetailOut:
+    """One-off cleanup for a job left over from before the "Hold" job status was removed
+    entirely (see _check_ruling_before_submit) - nothing sets stage_override to "Hold" any
+    more, so a job that still carries that stale value from before this change would otherwise
+    keep showing it forever (an unrecognised stage_override is passed straight through by
+    _outer_status's own fallback).
+
+    Clears ONLY stage_override, and only when it is actually still "Hold" - status, extracted
+    data, documents and every approval stay exactly as they are. The job simply falls back to
+    whatever its own computed stage already is.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.stage_override != "Hold":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This job is not carrying a stale Hold override.")
+    job.stage_override = None
+    db.commit()
+    db.refresh(job)
+    return _build_detail(db, job)
 
 
 @router.post("/jobs/{job_id}/rerun", response_model=JobDetailOut)
@@ -4338,12 +4378,10 @@ def complete_job(
             detail=("Enter a value for these fields before submitting the entry: "
                     + ", ".join(pending)),
         )
-    # Held on the ruling's question — entering this into the ERP would be acting on a guess.
-    if job.stage_override == HOLD_STAGE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This job is on hold — answer the required-documents question before submitting the entry.",
-        )
+    # The ruling must be resolvable, and everything it names as required must be uploaded -
+    # entering this into the ERP on an unresolved guess is exactly what this refuses.
+    group = db.get(TemplateGroup, job.group_id)
+    _check_ruling_before_submit(db, job, group)
 
     # Find the ready ERP script that covers this job's template.
     script = next(
@@ -7197,12 +7235,6 @@ def run_extraction(db: Session, job: Job) -> None:
     db.commit()
     db.refresh(job)
 
-    # Now that every document has been read, let the ruling decide whether this job can
-    # proceed — or must wait on the operator. Covers both the Extract button and jobs
-    # created by the email puller, since both land here.
-    apply_ruling_hold(db, job)
-    db.refresh(job)
-
 
 @router.post("/jobs/{job_id}/extract", response_model=JobDetailOut)
 def extract_job(
@@ -7280,8 +7312,6 @@ def resolve_duplicate(
                             detail='Only "approve" is handled here — see Delete/Hold above.')
     job.status = "extracted"
     db.commit()
-    db.refresh(job)
-    apply_ruling_hold(db, job)
     db.refresh(job)
     return _build_detail(db, job)
 

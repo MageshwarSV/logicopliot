@@ -131,8 +131,6 @@ export interface RulingResult {
   question?: string;
   /** Choices to offer the operator when the rule can't decide (e.g. incoterm codes). */
   options?: string[];
-  /** True while the job is held waiting for that answer. */
-  held?: boolean;
   reason?: string;
 }
 

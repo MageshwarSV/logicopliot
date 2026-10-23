@@ -2211,7 +2211,7 @@ export function JobRunPage() {
                   {ruling.needs_input && (
                     <div className="mt-2 rounded-md border border-amber-300 bg-white p-2 dark:border-amber-500/30 dark:bg-slate-900">
                       <p className="mb-1 font-medium text-amber-700 dark:text-amber-300">
-                        ⏸ This job is on hold — {ruling.question || "the AI needs your input to decide which documents are required."}
+                        ⚠ {ruling.question || "The AI needs your input to decide which documents are required."}
                       </p>
                       <div className="flex gap-2">
                         {ruling.options && ruling.options.length > 0 ? (

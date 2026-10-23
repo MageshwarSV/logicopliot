@@ -36,6 +36,15 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Manual stage override for one job (Documents | Verification | ERP Entry | Completed).
     # When set, it wins over the computed stage.
     stage_override: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # The operator's own answer to the template's ruling question (e.g. "CIF"), when the AI
+    # could not determine it from the documents themselves - see evaluate_job_ruling /
+    # _check_ruling_before_submit in app/api/v1/jobs.py. Persisted so a later re-evaluation
+    # (in particular the one Submit-for-Approval itself runs) uses what the operator already
+    # answered instead of asking the same question again every time. There is deliberately no
+    # separate "Hold" job status any more - a job the ruling cannot resolve simply stays
+    # wherever it already was, and Submit/Final Approve/Submit Entry refuse outright until this
+    # is set (or the AI can read the value straight off the documents).
+    ruling_answer: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Cross-doc-link ids the operator explicitly accepted despite a review/mismatch flag.
     accepted_verifications: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # The operator pressed "Approved and Proceed" on Data Validation for THIS run of the
