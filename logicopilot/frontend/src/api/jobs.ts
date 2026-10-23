@@ -193,6 +193,21 @@ export async function deleteJobDocumentFile(
   return data;
 }
 
+/** A single uploaded file sometimes genuinely IS two documents at once (a combined BL/Freight
+ *  sheet, say) - puts an already-placed document into a SECOND slot too, as its own
+ *  independent copy. "Move to X" (as opposed to "Copy and send to X") is this same call
+ *  followed by deleteJobDocumentFile on the source - there is no separate move endpoint. */
+export async function copyJobDocumentToSlot(
+  jobId: string,
+  jobDocumentId: string,
+  templateDocumentId: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/documents/${jobDocumentId}/copy-to/${templateDocumentId}`,
+  );
+  return data;
+}
+
 export async function extractJob(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/extract`);
   return data;

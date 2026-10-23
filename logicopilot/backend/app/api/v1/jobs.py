@@ -2722,9 +2722,13 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
 
     persist_run_outcome(db, job, script, result, operator_id=job.assigned_operator_id)
     db.refresh(job)
-    if job.status == "failed":
-        # persist_run_outcome's own terminology for a run the ERP rejected - GK2 gets the same
-        # retry-yourself path every other failure here gets, not a dead end needing GK1/admin.
+    if job.status in ("failed", "duplicate"):
+        # persist_run_outcome's own terminology for a run the ERP rejected, OR one the ERP
+        # says it already has (erp_status "duplicated" - found live: this used to fall into
+        # the "else" success branch below, leaving the job stuck on "AI - ERP Submitted" with
+        # no Retry & Proceed button at all, even though nothing was actually (re-)entered).
+        # GK2 gets the same retry-yourself path every other failure here gets, not a dead end
+        # needing GK1/admin.
         job.status = "extracted"
         job.gk2_status = "failed"
         db.commit()
@@ -4588,28 +4592,20 @@ def _slot_for_new_file(db: Session, job: Job, template_document_id: str) -> JobD
     return jd
 
 
-@router.post("/jobs/{job_id}/documents/{template_document_id}/upload", response_model=JobDetailOut)
-def upload_job_document(
-    job_id: str,
-    template_document_id: str,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
-) -> JobDetailOut:
-    job = _load_job(db, job_id, scope, user)
-    if job.status == "extracting":
-        # run_extraction snapshots this job's documents ONCE, at the top, and never
-        # refreshes that list for the rest of its (multi-second to multi-minute) run - a
-        # file landing here mid-run is invisible to the loop that actually writes its
-        # fields, even though later steps that re-query fresh (custom-field computation)
-        # do see it. Found live: a job ended up with one document's marks entirely blank
-        # while everything else on it looked normal, because its file was uploaded while
-        # extraction on the rest of the job was still in flight.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
-        )
+def _land_file_in_slot(
+    db: Session, job: Job, template_document_id: str, ext: str, content: bytes,
+    original_name: str | None,
+) -> JobDocument:
+    """Write `content` into a free (or new) row of the given slot — the duplicate-content
+    check, disk write + page render, and the classifier's own OCR sample, in one place.
+
+    Shared by a fresh upload (upload_job_document) and copying an already-placed document into
+    ANOTHER slot (copy_job_document_to_slot — for a page that is genuinely two documents at
+    once, e.g. a combined BL/Freight sheet): only where the bytes come from differs, landing
+    them into a slot is identical either way. The caller still does db.commit() /
+    _maybe_auto_extract() / db.refresh() itself — a copy's own caller also has the SOURCE row to
+    leave untouched, so the transaction boundary is the caller's to decide, not this helper's.
+    """
     existing = (
         db.query(JobDocument)
         .filter(JobDocument.job_id == job.id, JobDocument.template_document_id == template_document_id)
@@ -4619,18 +4615,7 @@ def upload_job_document(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job document slot not found")
 
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=422, detail=f"File type not allowed — use one of {sorted(ALLOWED_EXTENSIONS)}")
-    if file.size is not None and file.size > MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
-    content = file.file.read(MAX_FILE_BYTES + 1)
-    if len(content) > MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
-    if not content:
-        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
-
-    # The same file uploaded twice into one slot is a slip, not a second document. Caught
+    # The same file landing twice in one slot is a slip, not a second document. Caught
     # here, because further down it is indistinguishable from a genuine extra invoice: it
     # would pair into the same set by its own number and sit there as a duplicate nobody
     # ordered. Compared by content, so a renamed copy is still caught.
@@ -4654,12 +4639,12 @@ def upload_job_document(
             "upload the next document instead."))
 
     jd = _slot_for_new_file(db, job, template_document_id)
-    jd.original_name = (file.filename or "")[:255] or None
-    # A deliberate fresh upload always gets validated again by run_extraction, even when it
-    # reuses a slot a prior document was just bounced out of (see JobDocument.extraction_attempted) -
-    # this is a different file the operator chose to put here, not the Unclassified Pages
-    # drag-and-drop recovery flow for the SAME one (assign_unclassified_page, which leaves
-    # this flag untouched on purpose).
+    jd.original_name = (original_name or "")[:255] or None
+    # A deliberate fresh upload (or copy into a new slot) always gets validated again by
+    # run_extraction, even when it reuses a slot a prior document was just bounced out of (see
+    # JobDocument.extraction_attempted) - this is a different file the operator chose to put
+    # here, not the Unclassified Pages drag-and-drop recovery flow for the SAME one
+    # (assign_unclassified_page, which leaves this flag untouched on purpose).
     jd.extraction_attempted = False
 
     ddir = _job_doc_dir(jd.id)
@@ -4671,7 +4656,7 @@ def upload_job_document(
     except Exception:  # noqa: BLE001
         logger.exception("Failed to render job document %s", jd.id)
         shutil.rmtree(ddir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail="Could not read the uploaded document. Is it a valid PDF or image?")
+        raise HTTPException(status_code=422, detail="Could not read the document. Is it a valid PDF or image?")
 
     jd.file_path = str(original)
     jd.page_count = page_count
@@ -4697,6 +4682,92 @@ def upload_job_document(
         # already seen succeed.
         logger.debug("could not sample %s for slot %s", jd.id, template_document_id,
                      exc_info=True)
+
+    return jd
+
+
+@router.post("/jobs/{job_id}/documents/{template_document_id}/upload", response_model=JobDetailOut)
+def upload_job_document(
+    job_id: str,
+    template_document_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        # run_extraction snapshots this job's documents ONCE, at the top, and never
+        # refreshes that list for the rest of its (multi-second to multi-minute) run - a
+        # file landing here mid-run is invisible to the loop that actually writes its
+        # fields, even though later steps that re-query fresh (custom-field computation)
+        # do see it. Found live: a job ended up with one document's marks entirely blank
+        # while everything else on it looked normal, because its file was uploaded while
+        # extraction on the rest of the job was still in flight.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=422, detail=f"File type not allowed — use one of {sorted(ALLOWED_EXTENSIONS)}")
+    if file.size is not None and file.size > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
+    content = file.file.read(MAX_FILE_BYTES + 1)
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
+    if not content:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+
+    _land_file_in_slot(db, job, template_document_id, ext, content, file.filename)
+
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+@router.post("/jobs/{job_id}/documents/{job_document_id}/copy-to/{template_document_id}",
+             response_model=JobDetailOut)
+def copy_job_document_to_slot(
+    job_id: str,
+    job_document_id: str,
+    template_document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """A single uploaded file sometimes genuinely IS two documents at once (a combined BL/
+    Freight sheet, say) - this puts an already-uploaded document into a SECOND slot too, as its
+    own independent copy: a new JobDocument row, its own file on disk, extracted fresh exactly
+    as a brand new upload into that slot would be.
+
+    The SOURCE document is left exactly as it was. The frontend's "Move to X" (as opposed to
+    "Copy and send to X") is built from this same endpoint plus the existing Remove button
+    (DELETE .../file) on the source, in that order - there is no separate "move" endpoint,
+    since a move is just a copy the operator chooses to also remove the original of.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    source = (
+        db.query(JobDocument)
+        .filter(JobDocument.id == job_document_id, JobDocument.job_id == job.id)
+        .first()
+    )
+    if source is None or not source.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found")
+    if template_document_id == source.template_document_id:
+        raise HTTPException(status_code=422, detail="Pick a different document type to copy into.")
+    src_path = Path(source.file_path)
+    if not src_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The source file is missing on disk.")
+
+    content = src_path.read_bytes()
+    _land_file_in_slot(db, job, template_document_id, src_path.suffix.lower(), content, source.original_name)
 
     db.commit()
     _maybe_auto_extract(db, job)

@@ -564,6 +564,19 @@ export function JobRunPage() {
   const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
+  // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
+  // sharing the same copy-then-remove-the-source recipe the right-click menu uses. Distinct
+  // from draggedPageId (an Unclassified Pages card), which assigns rather than moves.
+  const [draggedDocId, setDraggedDocId] = useState<string | null>(null);
+  const [draggedDocFromTdocId, setDraggedDocFromTdocId] = useState<string | null>(null);
+  const [docActionBusyId, setDocActionBusyId] = useState<string | null>(null);
+  // Right-click menu on an already-placed document: "Copy and send to X" / "Move to X", for a
+  // document that is genuinely two documents at once (e.g. one sheet that is both the BL and
+  // the Freight Certificate). mode null = the two top-level choices; "copy"/"move" = the list
+  // of other document-type labels to send it to.
+  const [docMenu, setDocMenu] = useState<
+    { docId: string; fromTdocId: string; x: number; y: number; mode: "copy" | "move" | null } | null
+  >(null);
   // Which unclassified page the zoom viewer is open on - an index into unclassifiedPages, not
   // a copy of it, so Prev/Next just move this and the viewer re-fetches that page's image.
   const [viewingPageIndex, setViewingPageIndex] = useState<number | null>(null);
@@ -876,6 +889,37 @@ export function JobRunPage() {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not remove that file.");
     } finally {
       setUploadingId(null);
+    }
+  }
+
+  /** "Copy and send to X" — the document stays where it is AND a fresh, independent copy is
+   *  extracted into the other slot too. For a page that genuinely is two documents at once
+   *  (a combined BL/Freight sheet, say). */
+  async function handleCopyDocumentToSlot(jobDocumentId: string, targetTemplateDocumentId: string) {
+    setError(null);
+    setDocActionBusyId(jobDocumentId);
+    try {
+      setJob(await jobsApi.copyJobDocumentToSlot(jobId, jobDocumentId, targetTemplateDocumentId));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not copy that document.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** "Move to X" — the same copy, immediately followed by removing the original from its old
+   *  slot (the existing Remove button's own call). Also what dragging a placed document onto a
+   *  different slot does. */
+  async function handleMoveDocumentToSlot(jobDocumentId: string, targetTemplateDocumentId: string) {
+    setError(null);
+    setDocActionBusyId(jobDocumentId);
+    try {
+      await jobsApi.copyJobDocumentToSlot(jobId, jobDocumentId, targetTemplateDocumentId);
+      setJob(await jobsApi.deleteJobDocumentFile(jobId, jobDocumentId));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not move that document.");
+    } finally {
+      setDocActionBusyId(null);
     }
   }
 
@@ -2099,21 +2143,27 @@ export function JobRunPage() {
             {docSlots.map(({ tdocId, name, doc_type, required, files }) => {
               const isUploading = uploadingId === tdocId;
               const uploaded = files.filter((f) => f.is_uploaded);
-              const isDropTarget = draggedPageId !== null;
+              const isDropTarget = draggedPageId !== null
+                || (draggedDocId !== null && draggedDocFromTdocId !== tdocId);
               return (
                 <div
                   key={tdocId}
                   onDragOver={(e) => {
-                    if (!draggedPageId) return;
+                    if (!isDropTarget) return;
                     e.preventDefault();
                     setDragOverId(tdocId);
                   }}
-                  onDragLeave={() => { if (draggedPageId) setDragOverId(null); }}
+                  onDragLeave={() => { if (draggedPageId || draggedDocId) setDragOverId(null); }}
                   onDrop={(e) => {
-                    if (!draggedPageId) return;
                     e.preventDefault();
                     setDragOverId(null);
-                    handleAssignUnclassifiedPage(draggedPageId, tdocId);
+                    if (draggedPageId) {
+                      handleAssignUnclassifiedPage(draggedPageId, tdocId);
+                    } else if (draggedDocId && draggedDocFromTdocId !== tdocId) {
+                      handleMoveDocumentToSlot(draggedDocId, tdocId);
+                    }
+                    setDraggedDocId(null);
+                    setDraggedDocFromTdocId(null);
                   }}
                   className={isDropTarget
                     ? `rounded-lg p-1.5 transition-colors ${dragOverId === tdocId ? "bg-teal-50 ring-2 ring-teal-400 dark:bg-teal-500/10" : "ring-1 ring-dashed ring-teal-300 dark:ring-teal-500/30"}`
@@ -2134,7 +2184,24 @@ export function JobRunPage() {
                   </p>
                   {uploaded.map((d) => (
                     <div key={d.id} className="mb-2">
-                      <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
+                      <div
+                        draggable={!readOnly && docActionBusyId !== d.id}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          setDraggedDocId(d.id);
+                          setDraggedDocFromTdocId(tdocId);
+                        }}
+                        onDragEnd={() => { setDraggedDocId(null); setDraggedDocFromTdocId(null); setDragOverId(null); }}
+                        onContextMenu={(e) => {
+                          if (readOnly) return;
+                          e.preventDefault();
+                          setDocMenu({ docId: d.id, fromTdocId: tdocId, x: e.clientX, y: e.clientY, mode: null });
+                        }}
+                        title={readOnly ? undefined : "Drag onto another document type to move it there, or right-click for more options"}
+                        className={`flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 ${
+                          !readOnly ? "cursor-grab active:cursor-grabbing" : ""
+                        } ${docActionBusyId === d.id ? "opacity-50" : ""}`}
+                      >
                         <span className="min-w-0 truncate">
                           ✓ {d.original_name ?? `${d.page_count} page${d.page_count === 1 ? "" : "s"}`}
                           <span className="ml-1 text-xs opacity-70">
@@ -2149,7 +2216,7 @@ export function JobRunPage() {
                           <button
                             type="button"
                             onClick={() => handleRemoveFile(d.id)}
-                            disabled={uploadingId === d.id}
+                            disabled={uploadingId === d.id || docActionBusyId === d.id}
                             className="ml-2 shrink-0 text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
                           >
                             {uploadingId === d.id ? "Removing…" : "Remove"}
@@ -2223,6 +2290,72 @@ export function JobRunPage() {
               onIndexChange={setViewingPageIndex}
               onClose={() => setViewingPageIndex(null)}
             />
+          )}
+          {/* Right-click menu on an already-placed document - for a page that genuinely IS two
+              documents at once (e.g. one sheet that is both the BL and the Freight
+              Certificate). "Copy and send to X" keeps the original and extracts a fresh,
+              independent copy into X too; "Move to X" does the same copy and then removes the
+              original (handleMoveDocumentToSlot) - also what dragging the document card does. */}
+          {docMenu && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setDocMenu(null)}
+                onContextMenu={(e) => { e.preventDefault(); setDocMenu(null); }}
+              />
+              <div
+                className="fixed z-50 w-60 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900"
+                style={{ left: docMenu.x, top: docMenu.y }}
+              >
+                {docMenu.mode === null ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setDocMenu({ ...docMenu, mode: "copy" })}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      Copy and send to <span className="text-slate-400">▸</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocMenu({ ...docMenu, mode: "move" })}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      Move to <span className="text-slate-400">▸</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setDocMenu({ ...docMenu, mode: null })}
+                      className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    >
+                      ‹ {docMenu.mode === "copy" ? "Copy and send to" : "Move to"}
+                    </button>
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                    {docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).length === 0 ? (
+                      <p className="px-3 py-2 text-xs text-slate-400">No other document type on this template.</p>
+                    ) : (
+                      docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).map((s) => (
+                        <button
+                          key={s.tdocId}
+                          type="button"
+                          onClick={() => {
+                            if (docMenu.mode === "copy") handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
+                            else handleMoveDocumentToSlot(docMenu.docId, s.tdocId);
+                            setDocMenu(null);
+                          }}
+                          className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          {s.name}
+                        </button>
+                      ))
+                    )}
+                  </>
+                )}
+              </div>
+            </>
           )}
           </div>
           {!allUploaded && !readOnly && <p className="mt-3 text-xs text-slate-400">Upload every document — extraction starts on its own once all of them are in.</p>}
