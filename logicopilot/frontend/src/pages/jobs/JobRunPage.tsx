@@ -2187,17 +2187,20 @@ export function JobRunPage() {
                       <div
                         draggable={!readOnly && docActionBusyId !== d.id}
                         onDragStart={(e) => {
+                          // Firefox refuses to start a drag at all without setData (Chrome is
+                          // lenient about this, which is how this went unnoticed at first) -
+                          // same call the Unclassified Pages cards already make.
+                          e.dataTransfer.setData("text/plain", d.id);
                           e.dataTransfer.effectAllowed = "move";
                           setDraggedDocId(d.id);
                           setDraggedDocFromTdocId(tdocId);
                         }}
                         onDragEnd={() => { setDraggedDocId(null); setDraggedDocFromTdocId(null); setDragOverId(null); }}
-                        onContextMenu={(e) => {
+                        onClick={(e) => {
                           if (readOnly) return;
-                          e.preventDefault();
                           setDocMenu({ docId: d.id, fromTdocId: tdocId, x: e.clientX, y: e.clientY, mode: null });
                         }}
-                        title={readOnly ? undefined : "Drag onto another document type to move it there, or right-click for more options"}
+                        title={readOnly ? undefined : "Click for Copy/Move options, or drag onto another document type to move it there"}
                         className={`flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 ${
                           !readOnly ? "cursor-grab active:cursor-grabbing" : ""
                         } ${docActionBusyId === d.id ? "opacity-50" : ""}`}
@@ -2215,7 +2218,7 @@ export function JobRunPage() {
                         {!readOnly && (
                           <button
                             type="button"
-                            onClick={() => handleRemoveFile(d.id)}
+                            onClick={(e) => { e.stopPropagation(); handleRemoveFile(d.id); }}
                             disabled={uploadingId === d.id || docActionBusyId === d.id}
                             className="ml-2 shrink-0 text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
                           >
