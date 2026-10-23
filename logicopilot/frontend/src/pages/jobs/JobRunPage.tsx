@@ -570,15 +570,22 @@ export function JobRunPage() {
   const [draggedDocId, setDraggedDocId] = useState<string | null>(null);
   const [draggedDocFromTdocId, setDraggedDocFromTdocId] = useState<string | null>(null);
   const [docActionBusyId, setDocActionBusyId] = useState<string | null>(null);
-  // Menu on an already-placed document: "Copy and send to X" / "Move to X", for a document
-  // that is genuinely two documents at once (e.g. one sheet that is both the BL and the
-  // Freight Certificate). mode null = the two top-level choices; "copy"/"move" = the list of
-  // other document-type labels to send it to. `pageNumber` set means this is scoped to ONE
-  // page of a multi-page document rather than the whole file - only "copy" exists at that
-  // granularity (see copyJobDocumentPageToSlot's own docstring for why "move" a single page
-  // out of a multi-page file is out of scope), so that case skips straight to the slot list.
+  // An already-placed document being dragged directly OVER another specific already-placed
+  // document (not just its slot's general area) - that drop target means "merge into THIS
+  // one", separate from dragOverId's slot-level "land as its own, separate document" highlight.
+  const [dragOverDocId, setDragOverDocId] = useState<string | null>(null);
+  // Menu on an already-placed document (whole document, or one of its own pages when
+  // `pageNumber` is set): "Copy and send to X" / "Move to X". mode null = the two top-level
+  // choices; "copy"/"move" = the list of other document-type labels to send it to. Once a slot
+  // is picked, `chosenTdocId` advances to a THIRD step ONLY when that slot already holds one or
+  // more documents - merge into one of them (same as dropping directly onto it) or keep this
+  // as its own, separate document. A slot with nothing in it yet skips straight to acting, same
+  // as before this step existed.
   const [docMenu, setDocMenu] = useState<
-    { docId: string; fromTdocId: string; x: number; y: number; mode: "copy" | "move" | null; pageNumber?: number } | null
+    {
+      docId: string; fromTdocId: string; x: number; y: number;
+      mode: "copy" | "move" | null; pageNumber?: number; chosenTdocId?: string;
+    } | null
   >(null);
   // Which unclassified page the zoom viewer is open on - an index into unclassifiedPages, not
   // a copy of it, so Prev/Next just move this and the viewer re-fetches that page's image.
@@ -959,6 +966,64 @@ export function JobRunPage() {
       setJob(await jobsApi.deleteJobDocumentPage(jobId, jobDocumentId, pageNumber));
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not move that page.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** Dropping a whole document directly ONTO an already-placed document (as opposed to onto
+   *  the slot's general area) means "this belongs WITH that one" - merges its pages onto the
+   *  end of the target, then (since dragging is always a move, same as handleMoveDocumentToSlot)
+   *  removes the source outright. */
+  async function handleMergeDocumentIntoDocument(sourceJobDocumentId: string, targetJobDocumentId: string) {
+    setError(null);
+    setDocActionBusyId(sourceJobDocumentId);
+    try {
+      await jobsApi.mergeJobDocumentIntoDocument(jobId, targetJobDocumentId, sourceJobDocumentId);
+      setJob(await jobsApi.deleteJobDocumentFile(jobId, sourceJobDocumentId));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not merge that document.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** The "..." menu's own "merge into X" choice (as opposed to dragging) - keeps the source
+   *  untouched (a copy-style merge) when `isMove` is false, or removes it afterward when true. */
+  async function handleMergeDocumentIntoDocumentFromMenu(
+    sourceJobDocumentId: string,
+    targetJobDocumentId: string,
+    isMove: boolean,
+  ) {
+    setError(null);
+    setDocActionBusyId(sourceJobDocumentId);
+    try {
+      const updated = await jobsApi.mergeJobDocumentIntoDocument(jobId, targetJobDocumentId, sourceJobDocumentId);
+      setJob(isMove ? await jobsApi.deleteJobDocumentFile(jobId, sourceJobDocumentId) : updated);
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not merge that document.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
+  /** The single-page version of handleMergeDocumentIntoDocumentFromMenu - merges ONE page into
+   *  an already-placed document instead of sending it in as its own new entry. */
+  async function handleMergeDocumentPageIntoDocument(
+    sourceJobDocumentId: string,
+    pageNumber: number,
+    targetJobDocumentId: string,
+    isMove: boolean,
+  ) {
+    setError(null);
+    setDocActionBusyId(sourceJobDocumentId);
+    try {
+      const updated = await jobsApi.mergeJobDocumentPageIntoDocument(
+        jobId, targetJobDocumentId, sourceJobDocumentId, pageNumber,
+      );
+      setJob(isMove ? await jobsApi.deleteJobDocumentPage(jobId, sourceJobDocumentId, pageNumber) : updated);
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not merge that page.");
     } finally {
       setDocActionBusyId(null);
     }
@@ -2236,11 +2301,34 @@ export function JobRunPage() {
                           setDraggedDocId(d.id);
                           setDraggedDocFromTdocId(tdocId);
                         }}
-                        onDragEnd={() => { setDraggedDocId(null); setDraggedDocFromTdocId(null); setDragOverId(null); }}
-                        title={readOnly ? undefined : "Drag onto another document type to move it there"}
-                        className={`flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300 ${
-                          !readOnly ? "cursor-grab active:cursor-grabbing" : ""
-                        } ${docActionBusyId === d.id ? "opacity-50" : ""}`}
+                        onDragEnd={() => { setDraggedDocId(null); setDraggedDocFromTdocId(null); setDragOverId(null); setDragOverDocId(null); }}
+                        // Dropping directly ON this specific document (rather than on the
+                        // slot's general area below) means "merge into THIS one" - caught and
+                        // stopped here before it can also bubble to the slot's own onDrop,
+                        // which would otherwise ALSO fire and land it as a second, separate
+                        // document instead.
+                        onDragOver={(e) => {
+                          if (!draggedDocId || draggedDocId === d.id) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDragOverDocId(d.id);
+                        }}
+                        onDragLeave={() => { if (draggedDocId) setDragOverDocId(null); }}
+                        onDrop={(e) => {
+                          if (!draggedDocId || draggedDocId === d.id) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDragOverDocId(null);
+                          handleMergeDocumentIntoDocument(draggedDocId, d.id);
+                          setDraggedDocId(null);
+                          setDraggedDocFromTdocId(null);
+                        }}
+                        title={readOnly ? undefined : "Drag onto another document type to move it there, or onto another document to merge into it"}
+                        className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors ${
+                          dragOverDocId === d.id
+                            ? "border-indigo-400 bg-indigo-50 text-indigo-800 ring-2 ring-indigo-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
+                            : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
+                        } ${!readOnly ? "cursor-grab active:cursor-grabbing" : ""} ${docActionBusyId === d.id ? "opacity-50" : ""}`}
                       >
                         <span className="min-w-0 truncate">
                           ✓ {d.original_name ?? `${d.page_count} page${d.page_count === 1 ? "" : "s"}`}
@@ -2397,7 +2485,7 @@ export function JobRunPage() {
                       <span className="text-slate-400">▸</span>
                     </button>
                   </>
-                ) : (
+                ) : docMenu.chosenTdocId === undefined ? (
                   <>
                     <button
                       type="button"
@@ -2412,31 +2500,100 @@ export function JobRunPage() {
                     {docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).length === 0 ? (
                       <p className="px-3 py-2 text-xs text-slate-400">No other document type on this template.</p>
                     ) : (
-                      docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).map((s) => (
-                        <button
-                          key={s.tdocId}
-                          type="button"
-                          onClick={() => {
-                            if (docMenu.pageNumber != null) {
-                              if (docMenu.mode === "copy") {
-                                handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                      docSlots.filter((s) => s.tdocId !== docMenu.fromTdocId).map((s) => {
+                        const existing = s.files.filter((f) => f.is_uploaded);
+                        return (
+                          <button
+                            key={s.tdocId}
+                            type="button"
+                            onClick={() => {
+                              if (existing.length === 0) {
+                                // Nothing there yet - land as its own document immediately,
+                                // same as before this merge step existed.
+                                if (docMenu.pageNumber != null) {
+                                  if (docMenu.mode === "copy") {
+                                    handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                                  } else {
+                                    handleMoveDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                                  }
+                                } else if (docMenu.mode === "copy") {
+                                  handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
+                                } else {
+                                  handleMoveDocumentToSlot(docMenu.docId, s.tdocId);
+                                }
+                                setDocMenu(null);
                               } else {
-                                handleMoveDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, s.tdocId);
+                                // Already has one or more documents - ask whether this belongs
+                                // WITH one of them (merge) or stays its own, separate entry.
+                                setDocMenu({ ...docMenu, chosenTdocId: s.tdocId });
                               }
-                            } else if (docMenu.mode === "copy") {
-                              handleCopyDocumentToSlot(docMenu.docId, s.tdocId);
-                            } else {
-                              handleMoveDocumentToSlot(docMenu.docId, s.tdocId);
-                            }
-                            setDocMenu(null);
-                          }}
-                          className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
-                        >
-                          {s.name}
-                        </button>
-                      ))
+                            }}
+                            className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                          >
+                            <span className="truncate">{s.name}</span>
+                            {existing.length > 0 && <span className="shrink-0 text-slate-400">▸</span>}
+                          </button>
+                        );
+                      })
                     )}
                   </>
+                ) : (
+                  (() => {
+                    const chosenSlot = docSlots.find((s) => s.tdocId === docMenu.chosenTdocId);
+                    const existing = chosenSlot?.files.filter((f) => f.is_uploaded) ?? [];
+                    const isMove = docMenu.mode === "move";
+                    const keepSeparate = () => {
+                      if (docMenu.pageNumber != null) {
+                        if (docMenu.mode === "copy") {
+                          handleCopyDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, docMenu.chosenTdocId!);
+                        } else {
+                          handleMoveDocumentPageToSlot(docMenu.docId, docMenu.pageNumber, docMenu.chosenTdocId!);
+                        }
+                      } else if (docMenu.mode === "copy") {
+                        handleCopyDocumentToSlot(docMenu.docId, docMenu.chosenTdocId!);
+                      } else {
+                        handleMoveDocumentToSlot(docMenu.docId, docMenu.chosenTdocId!);
+                      }
+                      setDocMenu(null);
+                    };
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setDocMenu({ ...docMenu, chosenTdocId: undefined })}
+                          className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
+                        >
+                          ‹ {chosenSlot?.name}
+                        </button>
+                        <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                        {existing.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => {
+                              if (docMenu.pageNumber != null) {
+                                handleMergeDocumentPageIntoDocument(docMenu.docId, docMenu.pageNumber, f.id, isMove);
+                              } else {
+                                handleMergeDocumentIntoDocumentFromMenu(docMenu.docId, f.id, isMove);
+                              }
+                              setDocMenu(null);
+                            }}
+                            className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                          >
+                            Merge into {f.original_name ?? "this document"}
+                          </button>
+                        ))}
+                        <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                        <button
+                          type="button"
+                          onClick={keepSeparate}
+                          className="block w-full truncate px-3 py-2 text-left text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                        >
+                          Keep as a separate, new document
+                        </button>
+                      </>
+                    );
+                  })()
                 )}
               </div>
             </>

@@ -4830,6 +4830,163 @@ def copy_job_document_page_to_slot(
     return _build_detail(db, job)
 
 
+def _append_to_pdf(target_path: Path, insert_bytes: bytes, insert_ext: str) -> bytes:
+    """Builds and returns the bytes of target_path's own PDF with insert_bytes' page(s)
+    appended at the END. insert_bytes is either another PDF (merging a whole document) or a
+    single image (.png/.jpg/.jpeg - an already-rendered page PNG, same as _land_file_in_slot
+    reads) - PyMuPDF's insert_pdf requires a genuine PDF on both sides, so an image is first
+    converted into a one-page PDF of its own (fitz opens a raster image as a one-page
+    pseudo-document, but only convert_to_pdf's OWN output satisfies insert_pdf's check)."""
+    import fitz  # PyMuPDF
+
+    target_doc = fitz.open(target_path)
+    try:
+        if insert_ext == ".pdf":
+            insert_pdf_bytes = insert_bytes
+        else:
+            img_doc = fitz.open(stream=insert_bytes, filetype=insert_ext.lstrip("."))
+            try:
+                insert_pdf_bytes = img_doc.convert_to_pdf()
+            finally:
+                img_doc.close()
+        insert_doc = fitz.open(stream=insert_pdf_bytes, filetype="pdf")
+        try:
+            target_doc.insert_pdf(insert_doc)
+        finally:
+            insert_doc.close()
+        return target_doc.tobytes()
+    finally:
+        target_doc.close()
+
+
+def _merge_into_document(
+    db: Session, job: Job, target: JobDocument, insert_bytes: bytes, insert_ext: str,
+) -> None:
+    """Appends insert_bytes' page(s) onto the END of an EXISTING document already sitting in a
+    slot - for "this page/document belongs WITH that one", not as its own separate entry (see
+    copy_job_document_to_slot/copy_job_document_page_to_slot for the separate-entry version).
+    Only a PDF target can grow more pages this way - a single image is inherently one page and
+    would need converting to a PDF first, deliberately out of scope here (the operator can
+    still send it in as a separate document instead).
+    """
+    if not target.file_path or Path(target.file_path).suffix.lower() != ".pdf":
+        raise HTTPException(
+            status_code=422,
+            detail="Only a PDF document can have more pages merged into it - send this in as a separate document instead.",
+        )
+    target_path = Path(target.file_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The target document's file is missing on disk.")
+
+    rebuilt = _append_to_pdf(target_path, insert_bytes, insert_ext)
+    target_path.write_bytes(rebuilt)
+
+    pages_dir = _job_doc_dir(target.id) / "pages"
+    shutil.rmtree(pages_dir, ignore_errors=True)
+    target.page_count = _render_pages(target_path, pages_dir)
+    target.extracted_json = None
+    target.extraction_attempted = False
+    target.approved = False
+    target.gk2_approved = False
+    _wipe_derived_field_values(db, job, target)
+
+
+@router.post(
+    "/jobs/{job_id}/documents/{target_job_document_id}/merge-with/{source_job_document_id}",
+    response_model=JobDetailOut,
+)
+def merge_job_document_into_document(
+    job_id: str,
+    target_job_document_id: str,
+    source_job_document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """Dropping a WHOLE document directly onto an already-placed document (rather than onto the
+    general slot area) means "this belongs WITH that one" - appends every page of the source
+    onto the end of the target's own PDF, instead of landing as its own separate entry.
+
+    The source is left untouched by this call alone - the frontend's "merge by dragging"
+    follows this with the existing DELETE .../file call on the source (a move), the same
+    copy-then-remove recipe copy_job_document_to_slot's own "Move to X" already uses.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    if target_job_document_id == source_job_document_id:
+        raise HTTPException(status_code=422, detail="Pick a different document to merge into.")
+    target = db.query(JobDocument).filter(
+        JobDocument.id == target_job_document_id, JobDocument.job_id == job.id).first()
+    source = db.query(JobDocument).filter(
+        JobDocument.id == source_job_document_id, JobDocument.job_id == job.id).first()
+    if target is None or not target.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target document not found")
+    if source is None or not source.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found")
+    src_path = Path(source.file_path)
+    if not src_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The source file is missing on disk.")
+
+    _merge_into_document(db, job, target, src_path.read_bytes(), src_path.suffix.lower())
+
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+@router.post(
+    "/jobs/{job_id}/documents/{target_job_document_id}/merge-page/{source_job_document_id}/{page_number}",
+    response_model=JobDetailOut,
+)
+def merge_job_document_page_into_document(
+    job_id: str,
+    target_job_document_id: str,
+    source_job_document_id: str,
+    page_number: int,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """The single-page version of merge_job_document_into_document - appends ONE page out of
+    another document onto the end of an already-placed document's own PDF, for when only that
+    one page (not the whole source file) belongs there. The frontend's "Move page N here"
+    follows this with the existing DELETE .../pages/{page_number} call on the source."""
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    if target_job_document_id == source_job_document_id:
+        raise HTTPException(status_code=422, detail="Pick a different document to merge into.")
+    target = db.query(JobDocument).filter(
+        JobDocument.id == target_job_document_id, JobDocument.job_id == job.id).first()
+    source = db.query(JobDocument).filter(
+        JobDocument.id == source_job_document_id, JobDocument.job_id == job.id).first()
+    if target is None or not target.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target document not found")
+    if source is None or not source.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found")
+    if page_number < 1 or page_number > source.page_count:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page does not exist on this document.")
+
+    page_path = _job_doc_dir(source.id) / "pages" / f"page_{page_number}.png"
+    if not page_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page's image is missing on disk.")
+
+    _merge_into_document(db, job, target, page_path.read_bytes(), ".png")
+
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
 # ---- IRN Documents Upload (GK1) / IRN Processing (GK2): supporting documents + prealert -----
 # Arbitrary files stored against a job under a label the operator types, and the original
 # email a job was created from - see app/models/supporting_document.py and

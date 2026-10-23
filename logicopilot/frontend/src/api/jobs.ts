@@ -241,6 +241,36 @@ export async function deleteJobDocumentPage(
   return data;
 }
 
+/** Dropping a document directly onto an already-placed one means "this belongs WITH that one" -
+ *  appends every page of sourceJobDocumentId onto the END of targetJobDocumentId's own PDF,
+ *  instead of landing as its own separate entry (compare copyJobDocumentToSlot). The source is
+ *  untouched by this call alone; "merge by dragging" (a move) follows it with
+ *  deleteJobDocumentFile on the source. */
+export async function mergeJobDocumentIntoDocument(
+  jobId: string,
+  targetJobDocumentId: string,
+  sourceJobDocumentId: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/documents/${targetJobDocumentId}/merge-with/${sourceJobDocumentId}`,
+  );
+  return data;
+}
+
+/** The single-page version of mergeJobDocumentIntoDocument - appends ONE page out of another
+ *  document onto the end of an already-placed document's own PDF. */
+export async function mergeJobDocumentPageIntoDocument(
+  jobId: string,
+  targetJobDocumentId: string,
+  sourceJobDocumentId: string,
+  pageNumber: number,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/documents/${targetJobDocumentId}/merge-page/${sourceJobDocumentId}/${pageNumber}`,
+  );
+  return data;
+}
+
 export async function extractJob(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/extract`);
   return data;

@@ -64,10 +64,25 @@ def _login_operator(client, db_session, tenant):
     return op
 
 
+def _tiny_png_bytes() -> bytes:
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    return page.get_pixmap().tobytes("png")
+
+
 def _upload(client, job_id, tdoc_id, content: bytes | None = None):
     return client.post(
         f"/api/v1/jobs/{job_id}/documents/{tdoc_id}/upload",
         files={"file": ("bl.pdf", content or _tiny_pdf_bytes(), "application/pdf")},
+    )
+
+
+def _upload_png(client, job_id, tdoc_id):
+    return client.post(
+        f"/api/v1/jobs/{job_id}/documents/{tdoc_id}/upload",
+        files={"file": ("scan.png", _tiny_png_bytes(), "image/png")},
     )
 
 
@@ -362,3 +377,138 @@ def test_full_move_a_page_recipe_copy_then_delete(client, db_session):
     freight_doc = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
     assert freight_doc.page_count == 1
     assert freight_doc.id != bl_doc.id
+
+
+# ------------------------------------------------- merge-with / merge-page (dropping a document
+# ------------------------------------------------- or page directly ONTO an existing document)
+
+
+def test_merging_a_whole_document_appends_its_pages_onto_the_target(client, db_session):
+    """Dropping a document directly onto an already-placed one means "this belongs WITH that
+    one" - the target grows by the source's own page count, the source is left untouched."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    _upload(client, job.id, freight.id)  # 1-page target
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-with/{source.id}")
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    merged_target = db_session.query(JobDocument).filter(JobDocument.id == target.id).one()
+    assert merged_target.page_count == 3  # 1 original + 2 from the source
+    still_there = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert still_there.page_count == 2  # the source itself is untouched
+
+
+def test_merging_one_page_appends_a_single_page_onto_the_target(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id, content=_two_page_pdf_bytes())
+    _upload(client, job.id, freight.id)  # 1-page target
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-page/{source.id}/2")
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    merged_target = db_session.query(JobDocument).filter(JobDocument.id == target.id).one()
+    assert merged_target.page_count == 2  # 1 original + 1 merged page
+    still_there = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert still_there.page_count == 2  # the source itself is untouched
+
+
+def test_full_move_via_merge_recipe_copy_then_delete_the_source(client, db_session):
+    """The frontend's "merge by dragging" recipe: merge-with, then remove the source outright -
+    the pages end up living only in the target now."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    _upload(client, job.id, freight.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    merge_resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-with/{source.id}")
+    assert merge_resp.status_code == 200, merge_resp.text
+    remove_resp = client.delete(f"/api/v1/jobs/{job.id}/documents/{source.id}/file")
+    assert remove_resp.status_code == 200, remove_resp.text
+
+    db_session.expire_all()
+    emptied = db_session.query(JobDocument).filter(JobDocument.id == source.id).one()
+    assert emptied.file_path is None
+    merged_target = db_session.query(JobDocument).filter(JobDocument.id == target.id).one()
+    assert merged_target.page_count == 2
+
+
+def test_refuses_merging_a_document_into_itself(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{source.id}/merge-with/{source.id}")
+    assert resp.status_code == 422
+
+
+def test_refuses_merging_into_a_non_pdf_target(client, db_session):
+    """A single image is inherently one page - it cannot gain more pages without first being
+    converted to a PDF, deliberately out of scope."""
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    _upload_png(client, job.id, freight.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-with/{source.id}")
+    assert resp.status_code == 422
+
+
+def test_refuses_merge_when_target_has_no_file_yet(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    empty_target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{empty_target.id}/merge-with/{source.id}")
+    assert resp.status_code == 404
+
+
+def test_refuses_merge_while_the_job_is_mid_extraction(client, db_session):
+    tenant = make_tenant(db_session)
+    group, bl, freight = _make_template_two_slots(db_session, tenant)
+    job = _make_job_with_slots(db_session, tenant, group, bl, freight)
+    _login_operator(client, db_session, tenant)
+
+    _upload(client, job.id, bl.id)
+    _upload(client, job.id, freight.id)
+    source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
+    target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+
+    job.status = "extracting"
+    db_session.commit()
+
+    resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-with/{source.id}")
+    assert resp.status_code == 409
