@@ -19,9 +19,10 @@ class Settings(BaseSettings):
     # refresh token's own week-long window (not the access token's) was the real idle cap, so a
     # user who touched the app even once a week never got logged out at all. Both now share one
     # number so "the session timeout" is one clear, consistent figure across the app, per
-    # request: log out after 30 minutes of no activity, not a moment sooner while active.
-    access_token_expire_minutes: int = 30
-    refresh_token_expire_minutes: int = 30
+    # request: log out after 60 minutes of no activity (raised from 30 by a later request), not
+    # a moment sooner while active.
+    access_token_expire_minutes: int = 60
+    refresh_token_expire_minutes: int = 60
 
     cors_origins: str = "http://localhost:30300"
     cookie_secure: bool = False

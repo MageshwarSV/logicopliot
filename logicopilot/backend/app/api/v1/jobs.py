@@ -4034,6 +4034,31 @@ def entry_uploads(db: Session, job: Job, values: dict, rows: dict, out_dir) -> d
     return up_map
 
 
+class _UnionFind:
+    """Plain disjoint-set over a fixed collection of ids - groups custom fields linked by
+    paired_custom_field_id/sync_field_ids into connected components, treating every link as
+    undirected (a link declared by either side joins both), so a chain of several related
+    fields collapses into one group regardless of which one named which."""
+
+    def __init__(self, ids):
+        self._parent = {i: i for i in ids}
+
+    def find(self, i):
+        if i not in self._parent:
+            self._parent[i] = i
+        root = i
+        while self._parent[root] != root:
+            root = self._parent[root]
+        while self._parent[i] != root:
+            self._parent[i], i = root, self._parent[i]
+        return root
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[ra] = rb
+
+
 def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     """Labels of ask_operator fields this job still needs the operator to confirm."""
     from app.models.custom_field import CustomField
@@ -4070,6 +4095,26 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     # the screen showed the CTH and RITC on all fourteen lines, filled from the dump, while
     # Submit refused because no CORRECTED value had been saved on them.
     self_filling = {c.id for c in asked_custom_rows if getattr(c, "kind", "") == "lookup"}
+    # "Dump CTH Number" / "Document CTH" / "CTH" (paired_custom_field_id and sync_field_ids -
+    # see CustomField's own docstrings) are three separate ways of answering the SAME real
+    # question for one line, not three independent questions. Found live: an operator typed
+    # the code straight into "CTH" (bypassing the "Dump CTH Number"/"Document CTH" picker
+    # entirely, since neither had a usable value), and Submit still refused, demanding "Dump
+    # CTH Number" - a field whose own value nothing had touched, even though the real answer
+    # for this line plainly existed. Confirmed with the user: any ONE of a linked group having
+    # a value is enough for every member of that group, on that same line - built from the
+    # existing pairing/sync relationships already on these fields (undirected: a link declared
+    # by either side joins both), not hardcoded to this one named trio, so it covers any other
+    # template with the same shape.
+    all_per_row = db.query(CustomField).filter(
+        CustomField.group_id == job.group_id, CustomField.per_row.is_(True),
+    ).all()
+    link_groups = _UnionFind([c.id for c in all_per_row])
+    for c in all_per_row:
+        if c.paired_custom_field_id:
+            link_groups.union(c.id, c.paired_custom_field_id)
+        for sync_id in (c.sync_field_ids or []):
+            link_groups.union(c.id, sync_id)
     if not asked_marks and not asked_customs and not per_row_ids:
         return []
 
@@ -4086,17 +4131,41 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
         if (fv.value or fv.extracted_value or "").strip():
             answered_customs.add(fv.custom_field_id)
 
+    # A field never ask_operator at all (e.g. "Document CTH", read straight off the document,
+    # nobody is ever asked to confirm it) is just as trusted without a correction as a lookup
+    # field is - its own reading is the final word either way.
+    trusted_without_correction = self_filling | {c.id for c in all_per_row if not c.ask_operator}
+
+    def _effective_answer(fv: "JobFieldValue") -> str:
+        ans = (fv.corrected_value or "").strip()
+        if not ans and fv.custom_field_id in trusted_without_correction:
+            ans = (fv.value or fv.extracted_value or "").strip()
+        return ans
+
     unanswered_rows: list[str] = []
     if per_row_ids:
+        all_per_row_ids = {c.id for c in all_per_row}
+        # Every linked group's own answer, per line - including a member outside per_row_ids
+        # (never itself ask_operator, like "Document CTH") whose reading still counts as the
+        # group's real answer. See the comment on link_groups above for why groups exist at all.
+        group_answer_by_row: dict[tuple, str] = {}
+        for fv in db.query(JobFieldValue).filter(
+            JobFieldValue.job_id == job.id,
+            JobFieldValue.custom_field_id.in_(list(all_per_row_ids)),
+            JobFieldValue.row_index.isnot(None),
+        ).all():
+            ans = _effective_answer(fv)
+            if ans:
+                key = (link_groups.find(fv.custom_field_id), fv.row_index)
+                group_answer_by_row.setdefault(key, ans)
+
         for fv in db.query(JobFieldValue).filter(
             JobFieldValue.job_id == job.id,
             JobFieldValue.custom_field_id.in_(list(per_row_ids)),
             JobFieldValue.row_index.isnot(None),
         ).order_by(JobFieldValue.row_index).all():
-            answered = (fv.corrected_value or "").strip()
-            if not answered and fv.custom_field_id in self_filling:
-                # filled from the reference sheet - that IS the answer
-                answered = (fv.value or fv.extracted_value or "").strip()
+            answered = _effective_answer(fv) or group_answer_by_row.get(
+                (link_groups.find(fv.custom_field_id), fv.row_index), "")
             if not answered:
                 unanswered_rows.append(f"{per_row_ids[fv.custom_field_id]} (line {fv.row_index})")
 
