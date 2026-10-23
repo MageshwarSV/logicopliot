@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures } from "../features/registry";
+import * as jobsApi from "../api/jobs";
 
 function initials(name: string): string {
   return name
@@ -17,6 +18,64 @@ const NAV_ACTIVE =
   "flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300";
 const NAV_INACTIVE =
   "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50";
+
+// One icon per Jobs-list screen, each kept at its own fixed accent colour regardless of
+// whether that row is the active one (NAV_ACTIVE/INACTIVE only ever change the row's
+// background/text, never these) - a plain page for New, amber document-with-warning for
+// Missing Documents, a red warning triangle for ERP Failed, a blue upload for ERP Submitted,
+// a green check for ERP Verified.
+function NewJobsIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 3h7l5 5v12a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 3v5h5" />
+    </svg>
+  );
+}
+
+function MissingDocumentsIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 3h7l5 5v12a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 3v5h5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 11v3" />
+      <circle cx="12" cy="16.5" r="0.75" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function ErpFailedIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.9 18.4a1 1 0 00.87 1.6h18.46a1 1 0 00.87-1.6L13.71 3.86a1 1 0 00-1.72 0z" />
+    </svg>
+  );
+}
+
+function ErpSubmittedIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4.5 20h15" />
+    </svg>
+  );
+}
+
+function ErpVerifiedIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <circle cx="12" cy="12" r="9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.5 12.5l2.5 2.5 4.5-5" />
+    </svg>
+  );
+}
+
+function CountBadge({ count, cls }: { count: number; cls: string }) {
+  return (
+    <span className={`ml-auto inline-flex min-w-[1.375rem] shrink-0 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none ${cls}`}>
+      {count}
+    </span>
+  );
+}
 
 export function AppShell({
   title,
@@ -42,28 +101,61 @@ export function AppShell({
   // at all, because it actively tells you the wrong thing.
   const navClass = (path: string) => (location.pathname === path ? NAV_ACTIVE : NAV_INACTIVE);
 
-  // The Jobs list's three screens - New Jobs (Pre-Alert through anything short of the ERP
-  // submission actually running), Submitted Jobs (the AI/ERP automation already went
-  // through; each row there gets a Verified button), Completed Jobs (confirmed, or
-  // completed the direct Submit Entry way). Every role that sees a plain Jobs link gets
-  // these three instead - see Job.category in api/v1/jobs.py; applies identically whether
-  // the tenant/mode requires GK2 review or not.
-  const JOB_CATEGORIES: { key: "new" | "submitted" | "completed"; label: string }[] = [
-    { key: "new", label: "New Jobs" },
-    { key: "submitted", label: "ERP Submitted Jobs" },
-    { key: "completed", label: "ERP Verified Jobs" },
+  // The Jobs list's five screens - New Jobs (Pre-Alert through anything short of the ERP
+  // submission actually running), Missing Documents (a mandatory document hasn't arrived yet -
+  // see outer_status "Missing Documents"), ERP Failed Jobs (status or gk2_status "failed"),
+  // Submitted Jobs (the AI/ERP automation already went through; each row there gets a Verified
+  // button), Completed Jobs (confirmed, or completed the direct Submit Entry way). Every role
+  // that sees a plain Jobs link gets all five - see Job.category/_category_condition in
+  // api/v1/jobs.py; applies identically whether the tenant/mode requires GK2 review or not.
+  const JOB_CATEGORIES: {
+    key: "new" | "missing" | "failed" | "submitted" | "completed";
+    label: string;
+    icon: () => ReactNode;
+    badgeCls: string;
+  }[] = [
+    { key: "new", label: "New Jobs", icon: NewJobsIcon,
+      badgeCls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
+    { key: "missing", label: "Missing Documents", icon: MissingDocumentsIcon,
+      badgeCls: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" },
+    { key: "failed", label: "ERP Failed Jobs", icon: ErpFailedIcon,
+      badgeCls: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" },
+    { key: "submitted", label: "ERP Submitted Jobs", icon: ErpSubmittedIcon,
+      badgeCls: "bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300" },
+    { key: "completed", label: "ERP Verified Jobs", icon: ErpVerifiedIcon,
+      badgeCls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" },
   ];
   const activeJobCategory = location.pathname === "/jobs"
     ? new URLSearchParams(location.search).get("category")
     : null;
+
+  // Live badge counts for the five links above - fetched once a role that actually shows them
+  // logs in, then refreshed every 30s (same interval the operator dashboard's own live counts
+  // already poll at) so a job moving between screens updates the sidebar without a reload.
+  const showsJobCategories =
+    user != null && ["operator", "admin", "gk2", "manager"].includes(user.role);
+  const [categoryCounts, setCategoryCounts] = useState<jobsApi.JobCategoryCounts | null>(null);
+  useEffect(() => {
+    if (!showsJobCategories) return;
+    let alive = true;
+    const load = () => {
+      jobsApi.getJobCategoryCounts().then((c) => { if (alive) setCategoryCounts(c); }).catch(() => {});
+    };
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [showsJobCategories]);
+
   function jobCategoryLinks() {
-    return JOB_CATEGORIES.map(({ key, label }) => (
+    return JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
       <Link
         key={key}
         to={`/jobs?category=${key}`}
         className={activeJobCategory === key ? NAV_ACTIVE : NAV_INACTIVE}
       >
-        {label}
+        <Icon />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {categoryCounts && <CountBadge count={categoryCounts[key]} cls={badgeCls} />}
       </Link>
     ));
   }

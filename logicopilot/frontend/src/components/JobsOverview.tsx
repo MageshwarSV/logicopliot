@@ -14,7 +14,7 @@ import type { Job } from "../types/jobs";
  *  shows never disagree.
  */
 type Bucket = "today" | "week" | "month" | "all";
-type Group = "pending" | "eta" | "approval" | "completed";
+type Group = "pending" | "eta" | "approval" | "completed" | "missing";
 
 // Exported so the Jobs list page (navigated to from a box's onClick, with ?group=&bucket=)
 // can show the same labels in its own filter banner without redefining them.
@@ -30,6 +30,7 @@ export const GROUP_LABELS: Record<Group, string> = {
   eta: "ETA",
   approval: "Pending Approval",
   completed: "Completed",
+  missing: "Missing Documents",
 };
 
 // A distinct accent per group so the three sections read apart from a glance, not just from
@@ -73,6 +74,16 @@ const GROUP_THEME: Record<Group, {
     boxHover: "hover:border-emerald-400 dark:hover:border-emerald-400",
     number: "text-emerald-900 dark:text-emerald-100",
   },
+  // Same amber "attention" family the Status column already uses for the Missing Documents
+  // badge itself (see stageBadge in JobsPage.tsx).
+  missing: {
+    heading: "text-amber-700 dark:text-amber-300",
+    cardTop: "border-t-4 border-t-amber-400 dark:border-t-amber-500",
+    boxBg: "bg-amber-50/70 dark:bg-amber-500/10",
+    boxBorder: "border-amber-100 dark:border-amber-500/20",
+    boxHover: "hover:border-amber-400 dark:hover:border-amber-400",
+    number: "text-amber-900 dark:text-amber-100",
+  },
 };
 
 // Every customer and operator is in India - reckoned in IST explicitly, not the browser's own
@@ -106,7 +117,11 @@ const GK2_IN_FLIGHT = new Set([
 // per-user table, for one) uses the identical rule instead of a second copy that could drift
 // out of sync with these boxes.
 export function isJobPending(j: Job): boolean {
-  return !["completed", "failed", "duplicate"].includes(j.status) && !GK2_IN_FLIGHT.has(j.outer_status ?? "");
+  return !["completed", "failed", "duplicate"].includes(j.status)
+    && !GK2_IN_FLIGHT.has(j.outer_status ?? "")
+    // Counted in its own dedicated Missing Documents box instead - same reasoning as
+    // GK2_IN_FLIGHT above, so a job is never counted as "pending" in two boxes at once.
+    && j.outer_status !== "Missing Documents";
 }
 
 // A job GK2 has fully approved and whose ERP entry finished submitting - the same condition
@@ -182,10 +197,10 @@ function FilterSection({
   );
 }
 
-// Which boxes to show, and in what order — defaults to the operator's own three. Manager's
+// Which boxes to show, and in what order — defaults to the operator's own four. Manager's
 // dashboard passes just ["completed", "pending"] instead, reusing this exact component (and
 // its live-count/click-through wiring) rather than a second copy of it.
-const DEFAULT_GROUPS: Group[] = ["pending", "eta", "approval"];
+const DEFAULT_GROUPS: Group[] = ["pending", "missing", "eta", "approval"];
 
 export function JobsOverview({ jobs, groups = DEFAULT_GROUPS }: { jobs: Job[]; groups?: Group[] }) {
   const navigate = useNavigate();
@@ -198,7 +213,13 @@ export function JobsOverview({ jobs, groups = DEFAULT_GROUPS }: { jobs: Job[]; g
     [jobs],
   );
   const completed = useMemo(() => jobs.filter(isJobCompleted), [jobs]);
-  const populationFor: Record<Group, Job[]> = { pending, eta: withEta, approval: pendingApproval, completed };
+  const missingDocuments = useMemo(
+    () => jobs.filter((j) => j.outer_status === "Missing Documents"),
+    [jobs],
+  );
+  const populationFor: Record<Group, Job[]> = {
+    pending, eta: withEta, approval: pendingApproval, completed, missing: missingDocuments,
+  };
 
   function select(group: Group, bucket: Bucket) {
     navigate(`/jobs?group=${group}&bucket=${bucket}`);

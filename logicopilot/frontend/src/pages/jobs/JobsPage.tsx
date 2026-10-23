@@ -46,14 +46,16 @@ interface StoredJobsFilters {
   dateTo: string;
 }
 
-// The Jobs list's three screens - which one is active lives in the URL (?category=...), set
+// The Jobs list's five screens - which one is active lives in the URL (?category=...), set
 // by the real left-nav links (AppShell.tsx's jobCategoryLinks) - not in component state, the
 // same way group/bucket (a dashboard box click) already work. Omitted entirely (a plain visit
 // to /jobs, or a dashboard box click that sets group/bucket but not category) means "every
-// category", unchanged from before this feature existed - only clicking one of the three nav
+// category", unchanged from before this feature existed - only clicking one of the five nav
 // links actually narrows it. See Job.category / _category_condition in api/v1/jobs.py.
 const CATEGORY_TITLES: Record<string, string> = {
   new: "New Jobs",
+  missing: "Missing Documents",
+  failed: "ERP Failed Jobs",
   submitted: "ERP Submitted Jobs",
   completed: "ERP Verified Jobs",
 };
@@ -76,12 +78,13 @@ export function JobsPage() {
   // what that box counted, server-side (see group/bucket in app/api/v1/jobs.py).
   const group = searchParams.get("group");
   const bucket = searchParams.get("bucket") ?? "all";
-  // The Jobs list's own screen - set by one of the three real nav links (see AppShell.tsx).
+  // The Jobs list's own screen - set by one of the five real nav links (see AppShell.tsx).
   // undefined (not "new") when absent, so a plain /jobs visit or a dashboard box click still
   // shows everything, exactly as before this feature existed - see CATEGORY_TITLES above.
   const categoryParam = searchParams.get("category");
-  const category: "new" | "submitted" | "completed" | undefined =
-    categoryParam === "new" || categoryParam === "submitted" || categoryParam === "completed"
+  const category: "new" | "missing" | "failed" | "submitted" | "completed" | undefined =
+    categoryParam === "new" || categoryParam === "missing" || categoryParam === "failed" ||
+    categoryParam === "submitted" || categoryParam === "completed"
       ? categoryParam
       : undefined;
   // Only these two roles ever see jobs outside their own tenant — the tenant filter and
@@ -423,7 +426,7 @@ export function JobsPage() {
     "Document Classifying",
   ]);
 
-  function stageBadge(stage?: string | null) {
+  function stageBadge(stage?: string | null, missingDocuments?: string[] | null) {
     const s = stage ?? "Document Capture";
     const cls =
       s === "Completed" || s === "AI - ERP Submitted"
@@ -445,14 +448,28 @@ export function JobsPage() {
           : s === "Data Validation" || s === "Data Extraction" || s === "Ready for Review" ||
             s === "Review in Progress" || s === "GK1 Review" || s === "GK1 Reviewing"
             ? "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
-            : s === "Pending Documents" || s === "Pre-Alert Received"
-              ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-300"
+            // "Pending Documents"/"Pre-Alert Received" kept here too, purely as a fallback for
+            // a row the browser still has cached from before this was unified into one label.
+            : s === "Missing Documents" || s === "Pending Documents" || s === "Pre-Alert Received"
+              ? "bg-amber-50 text-amber-800 ring-1 ring-amber-300 dark:bg-amber-500/10 dark:text-amber-300"
               : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
     return (
-      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
-        {BUSY.has(s) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
-        {s}
-      </span>
+      <div className="flex flex-col gap-0.5">
+        <span
+          className={`inline-flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}
+          title={missingDocuments?.length ? `Missing: ${missingDocuments.join(", ")}` : undefined}
+        >
+          {BUSY.has(s) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
+          {s}
+        </span>
+        {/* Named right here too, not only on hover - the whole point is an operator can tell
+            WHICH document to go find without opening the job. */}
+        {missingDocuments && missingDocuments.length > 0 && (
+          <span className="max-w-[220px] truncate text-[11px] text-amber-700 dark:text-amber-400">
+            {missingDocuments.join(", ")}
+          </span>
+        )}
+      </div>
     );
   }
 
@@ -630,7 +647,7 @@ export function JobsPage() {
         />
       ),
     },
-    { header: "Status", render: (j) => stageBadge(j.outer_status ?? j.stage) },
+    { header: "Status", render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents) },
     // Who this job is assigned to. Editable for operator/super_admin/admin — the candidate
     // list is narrowed to operators scoped to THIS job's own mode (a Sea Import job only
     // offers Sea Import operators), same idea as the mode tabs above but per-row instead of

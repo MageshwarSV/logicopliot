@@ -33,9 +33,9 @@ export interface ListJobsOptions {
   /** IrnPendingPage's own filter - jobs GK2 has parked in "IRN Document Process". See
    *  Job.gk2_status; independent of group/bucket. */
   gk2Status?: string;
-  /** The Jobs list's own left-side screen - "new" | "submitted" | "completed". See
-   *  Job.category / _category_condition in api/v1/jobs.py. Omitted (the default) returns
-   *  every category, same as before this existed. */
+  /** The Jobs list's own left-side screen - "new" | "missing" | "failed" | "submitted" |
+   *  "completed". See Job.category / _category_condition in api/v1/jobs.py. Omitted (the
+   *  default) returns every category, same as before this existed. */
   category?: string;
 }
 
@@ -57,6 +57,8 @@ export async function listJobs(options: ListJobsOptions = {}): Promise<Job[]> {
  *  tenant/role visibility - see GET /jobs/category-counts. */
 export interface JobCategoryCounts {
   new: number;
+  missing: number;
+  failed: number;
   submitted: number;
   completed: number;
 }

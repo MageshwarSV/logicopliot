@@ -74,12 +74,19 @@ class JobOut(BaseModel):
     # confirmation), or "completed" (confirmed, or submitted the direct Submit Entry way,
     # which needs no separate confirmation). See _job_category in api/v1/jobs.py.
     category: str = "new"
+    # Names of the mandatory documents this job still has not received, in template order -
+    # populated only when outer_status is "Missing Documents" (empty/None otherwise). See
+    # _missing_mandatory_documents in api/v1/jobs.py - shown wherever the status itself is,
+    # so an operator never has to open the job just to find out WHICH document is missing.
+    missing_documents: list[str] | None = None
 
 
 class JobCategoryCounts(BaseModel):
-    """How many jobs sit in each of the three Jobs-list screens, under the same tenant/role
+    """How many jobs sit in each of the five Jobs-list screens, under the same tenant/role
     visibility list_jobs itself applies - the left-side nav's own badge counts."""
     new: int = 0
+    missing: int = 0
+    failed: int = 0
     submitted: int = 0
     completed: int = 0
 
@@ -248,6 +255,9 @@ class JobDetailOut(BaseModel):
     status: str
     stage: str | None = None
     outer_status: str | None = None
+    # Names of the mandatory documents this job still has not received - same meaning as on
+    # JobOut, populated only when outer_status is "Missing Documents".
+    missing_documents: list[str] | None = None
     mode: str | None = None
     # Same meaning as on JobOut - who this job is assigned to, and their name, so the Jobs
     # list's assign dropdown reflects a change immediately without waiting for its own

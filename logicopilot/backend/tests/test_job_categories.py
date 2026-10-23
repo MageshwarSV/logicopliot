@@ -255,7 +255,53 @@ def test_category_counts_matches_the_filtered_lists(client, db_session):
     resp = client.get("/api/v1/jobs/category-counts")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body == {"new": 2, "submitted": 1, "completed": 1}
+    assert body == {"new": 2, "missing": 0, "failed": 0, "submitted": 1, "completed": 1}
+
+
+def test_category_counts_includes_missing_and_failed(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op8@example.com")
+    _make_job(db_session, tenant, group, reference="JOB-DRAFT1", status="draft")
+    _make_job(db_session, tenant, group, reference="JOB-DRAFT2", status="draft")
+    _make_job(db_session, tenant, group, reference="JOB-FAILED-STATUS", status="failed")
+    _make_job(db_session, tenant, group, reference="JOB-FAILED-GK2",
+             status="extracted", gk2_status="failed")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["missing"] == 2
+    assert body["failed"] == 2
+
+
+def test_missing_category_filters_the_jobs_list_to_draft_jobs(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op9@example.com")
+    draft = _make_job(db_session, tenant, group, reference="JOB-DRAFT3", status="draft")
+    _make_job(db_session, tenant, group, reference="JOB-EXTRACTED1")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "missing"})
+    ids = {j["id"] for j in resp.json()}
+    assert ids == {draft.id}
+
+
+def test_failed_category_filters_the_jobs_list_to_failed_jobs_either_way(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op10@example.com")
+    failed_status = _make_job(db_session, tenant, group, reference="JOB-F1", status="failed")
+    failed_gk2 = _make_job(db_session, tenant, group, reference="JOB-F2",
+                           status="extracted", gk2_status="failed")
+    _make_job(db_session, tenant, group, reference="JOB-OK")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "failed"})
+    ids = {j["id"] for j in resp.json()}
+    assert ids == {failed_status.id, failed_gk2.id}
 
 
 # --------------------------------------------------------------- POST /jobs/{id}/verify

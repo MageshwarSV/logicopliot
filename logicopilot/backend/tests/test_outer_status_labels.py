@@ -59,7 +59,7 @@ def test_data_extraction_stage_shows_gk1_reviewing_once_a_document_is_approved(d
     assert _outer_status(db_session, job) == "GK1 Reviewing"
 
 
-def test_pending_documents_with_one_of_two_required_uploaded(db_session):
+def test_missing_documents_with_one_of_two_required_uploaded(db_session):
     from app.models.job import JobDocument
     from app.models.template_document import TemplateDocument
 
@@ -86,13 +86,13 @@ def test_pending_documents_with_one_of_two_required_uploaded(db_session):
     db_session.commit()
     db_session.refresh(job)
 
-    assert _outer_status(db_session, job) == "Pending Documents"
+    assert _outer_status(db_session, job) == "Missing Documents"
 
 
 def test_document_capture_once_a_previously_extracted_job_reverts_to_draft(db_session):
     """A job whose background extraction crashed reverts to "draft" with its documents
     already uploaded (see _start_extraction_background's except branch) - it must read as
-    "Document Capture" (ready to try again), not "Pending Documents" (still needs paperwork
+    "Document Capture" (ready to try again), not "Missing Documents" (still needs paperwork
     it already has)."""
     from app.models.job import JobDocument
     from app.models.template_document import TemplateDocument

@@ -80,7 +80,7 @@ def _make_group_with_docs(db_session, tenant, *, pl_required=True):
 def test_refuses_a_drafts_first_pass_when_a_required_document_is_missing(client, db_session):
     """The exact production bug: BL and Invoice uploaded, Packing List (required) never
     uploaded - the manual Extract button let this job jump straight to "extracted" with no
-    check at all, so it never showed "Pending Documents" and the missing document's fields
+    check at all, so it never showed "Missing Documents" and the missing document's fields
     just sat empty forever."""
     tenant = make_tenant(db_session)
     group, bl, inv, pl = _make_group_with_docs(db_session, tenant)

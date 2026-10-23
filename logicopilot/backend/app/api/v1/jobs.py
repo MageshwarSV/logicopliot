@@ -822,6 +822,19 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
     return "ERP Submission"
 
 
+def _missing_mandatory_documents(db: Session, job: Job) -> list[str]:
+    """Names of the mandatory documents this job still has not received, in template order -
+    the same required-vs-filled test _maybe_auto_extract/_outer_status's own "Document
+    Capture" branch already use to decide the job is still waiting on paperwork, exposed here
+    so the list itself (not just the fact that something is missing) can be shown wherever the
+    job's status is - JobOut/JobDetailOut's own missing_documents field."""
+    group = db.get(TemplateGroup, job.group_id)
+    if group is None:
+        return []
+    filled_ids = {d.template_document_id for d in job.documents if d.file_path}
+    return [td.name for td in group.documents if td.is_required and td.id not in filled_ids]
+
+
 def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     """The single word shown on the job list and the job header — coarser than the seven-stage
     rail on purpose. The rail's words are screens an operator navigates between; this is the
@@ -866,16 +879,11 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
         # short of one is genuinely waiting on paperwork, not merely "capturing" - that used
         # to read the same as a job one upload away from starting, which is why an operator
         # working a stack of jobs could not tell which ones actually needed something from
-        # them versus which were already complete and about to move on their own.
-        group = db.get(TemplateGroup, job.group_id)
-        required_ids = {td.id for td in (group.documents if group else []) if td.is_required}
-        filled_ids = {d.template_document_id for d in job.documents if d.file_path}
-        if required_ids.issubset(filled_ids):
-            return "Document Capture"
-        # A job the email poller created (no operator ever pressed "New Job") is a pre-alert
-        # that arrived before its documents were ready to work — a manual smart-upload job in
-        # the same stage has no such thing to report, so it keeps the plain word instead.
-        return "Pre-Alert Received" if job.created_by_id is None else "Pending Documents"
+        # them versus which were already complete and about to move on their own. One label
+        # either way (never "Pre-Alert Received"/"Pending Documents" by origin) - which
+        # document(s) are actually missing is shown via JobOut/JobDetailOut's own
+        # missing_documents field instead, not by picking a different word for the status.
+        return "Document Capture" if not _missing_mandatory_documents(db, job) else "Missing Documents"
     if stage == "Completed":
         # A real ERP run finishing is, in the words this feature introduced, the entry
         # having been submitted - the same outcome the GK2 placeholder's "submitted" state
@@ -1403,6 +1411,8 @@ def _job_out(
     links = links_by_group.get(job.group_id) if links_by_group is not None else None
     out.stage = _job_stage(db, job, links=links)
     out.outer_status = _outer_status(db, job, stage=out.stage)
+    if out.outer_status == "Missing Documents":
+        out.missing_documents = _missing_mandatory_documents(db, job)
     out.customer_name = _customer_name(
         db, job,
         rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
@@ -1612,6 +1622,17 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
         # manager dashboard's "Completed" box.
         query = query.filter(Job.gk2_status == "submitted")
         date_col = Job.created_at
+    elif group == "missing":
+        # "Missing Documents" (_outer_status's own "Document Capture" branch) only ever
+        # applies to a job still sitting in "draft" - _maybe_auto_extract fires synchronously
+        # the moment every mandatory document is in, so a draft row with nothing missing does
+        # not meaningfully persist for this filter to ever see. Close enough that recomputing
+        # the real required-vs-filled check per row here (as _outer_status itself does) would
+        # be needless extra work for what is already an edge case too thin to matter, matching
+        # how "pending"/"completed" above are also approximations rather than exact replays of
+        # _outer_status's own logic.
+        query = query.filter(Job.status == "draft")
+        date_col = Job.created_at
     else:
         return query
     if bounds:
@@ -1710,8 +1731,21 @@ def _category_condition(category: str):
         return Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.is_(None)
     if category == "new":
         return not_ai_submitted & (Job.status != "completed")
+    if category == "missing":
+        # "Missing Documents" (_outer_status's own "Document Capture" branch) only ever
+        # applies to a job still sitting in "draft" - _maybe_auto_extract fires synchronously
+        # the moment every mandatory document is in, so a draft row with nothing missing does
+        # not meaningfully persist for this to ever see - the same approximation the dashboard's
+        # own group=missing filter already makes, for the same reason.
+        return Job.status == "draft"
+    if category == "failed":
+        # The exact same condition _outer_status itself checks (gk2_status first, then
+        # job.status) to produce "Failed" - a job already counted elsewhere (e.g. "new", if it
+        # never reached ai_submitted_at) is deliberately NOT excluded from there: changing what
+        # an EXISTING category counts is out of scope for adding this new one.
+        return (Job.gk2_status == "failed") | (Job.status == "failed")
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="category must be one of: new, submitted, completed")
+                        detail="category must be one of: new, missing, failed, submitted, completed")
 
 
 @router.get("/jobs/category-counts", response_model=JobCategoryCounts)
@@ -1720,11 +1754,14 @@ def job_category_counts(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
 ) -> JobCategoryCounts:
-    """Badge counts for the Jobs list's three left-side screens - New Jobs / Submitted Jobs /
-    Completed Jobs - under the exact same tenant/role visibility list_jobs itself applies."""
+    """Badge counts for the Jobs list's five left-side screens - New Jobs / Missing Documents /
+    ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
+    visibility list_jobs itself applies."""
     base = _jobs_visible_query(db, scope, user)
     return JobCategoryCounts(
         new=base.filter(_category_condition("new")).count(),
+        missing=base.filter(_category_condition("missing")).count(),
+        failed=base.filter(_category_condition("failed")).count(),
         submitted=base.filter(_category_condition("submitted")).count(),
         completed=base.filter(_category_condition("completed")).count(),
     )
@@ -3185,6 +3222,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         v.status not in BLOCKING_VERIFICATION_STATUSES or v.accepted for v in verifications
     )
     job_stage = _job_stage(db, job)
+    outer_status = _outer_status(db, job, stage=job_stage)
     return JobDetailOut(
         id=job.id,
         tenant_id=job.tenant_id,
@@ -3193,7 +3231,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         reference=job.reference,
         status=job.status,
         stage=job_stage,
-        outer_status=_outer_status(db, job, stage=job_stage),
+        outer_status=outer_status,
+        missing_documents=(_missing_mandatory_documents(db, job)
+                          if outer_status == "Missing Documents" else None),
         mode=_shipment_mode(db, job),
         assigned_operator_id=job.assigned_operator_id,
         operator_name=_operator_name(db, job),

@@ -41,6 +41,9 @@ export interface Job {
    *  automation already went through; awaiting a human's confirmation), or "completed"
    *  (confirmed, or submitted the direct Submit Entry way). */
   category?: "new" | "submitted" | "completed";
+  /** Names of the mandatory documents still missing, in template order - set only when
+   *  outer_status is "Missing Documents". */
+  missing_documents?: string[] | null;
 }
 
 /** One line of a job's history - what the Last updated popup lists. */
@@ -190,6 +193,9 @@ export interface JobDetail {
   mode?: string | null;
   stage?: string | null;
   outer_status?: string | null;
+  /** Names of the mandatory documents still missing, in template order - set only when
+   *  outer_status is "Missing Documents". */
+  missing_documents?: string[] | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;
   /** Whether this job's template submits via a bulk Excel import (TemplateGroup.entry_mode)

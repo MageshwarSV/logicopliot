@@ -2033,7 +2033,9 @@ export function JobRunPage() {
                         ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
                         : outer === "GK1 Review" || outer === "GK1 Reviewing"
                           ? "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
-                          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+                          : outer === "Missing Documents"
+                            ? "bg-amber-50 text-amber-800 ring-1 ring-amber-300 dark:bg-amber-500/10 dark:text-amber-300"
+                            : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
               return (
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>
                   {busy && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
@@ -2041,6 +2043,13 @@ export function JobRunPage() {
                 </span>
               );
             })()}
+            {/* Named right here too, not only on the Document Capture tab below - an operator
+                scanning the header should see WHICH document without switching tabs. */}
+            {job.missing_documents && job.missing_documents.length > 0 && (
+              <p className="mt-0.5 max-w-[220px] text-[11px] text-amber-700 dark:text-amber-400">
+                Missing: {job.missing_documents.join(", ")}
+              </p>
+            )}
             {/* WHEN it reached this stage, from the job's own history. "Last updated" alone
                 says something moved without saying what, and on a job parked for two days
                 that is the question being asked. */}

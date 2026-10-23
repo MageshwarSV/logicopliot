@@ -54,9 +54,10 @@ def _make_gk2(db_session, tenant, modes, email=None):
 # ---------------------------------------------------------------- _outer_status branches
 
 
-def test_pre_alert_received_for_an_email_created_job(client, db_session):
-    """Still missing its one required document - an email pre-alert with nothing uploaded
-    yet reads as "Pre-Alert Received", not the operator-facing "Pending Documents"."""
+def test_missing_documents_for_an_email_created_job(client, db_session):
+    """Still missing its one required document - an email pre-alert with nothing uploaded yet
+    reads as "Missing Documents" too, the one unified label (no more "Pre-Alert Received" vs
+    "Pending Documents" split by origin) - and names exactly which document is missing."""
     tenant = make_tenant(db_session)
     group = _make_group_with_required_doc(db_session, tenant)
     job = _make_job(db_session, tenant, group, status="draft", created_by_id=None)
@@ -65,12 +66,12 @@ def test_pre_alert_received_for_an_email_created_job(client, db_session):
 
     resp = client.get("/api/v1/jobs")
     row = next(j for j in resp.json() if j["id"] == job.id)
-    assert row["outer_status"] == "Pre-Alert Received"
+    assert row["outer_status"] == "Missing Documents"
+    assert row["missing_documents"] == ["Invoice"]
 
 
-def test_pending_documents_for_a_manually_created_job(client, db_session):
-    """Still missing its one required document - a manually created job with nothing
-    uploaded yet reads as "Pending Documents"."""
+def test_missing_documents_for_a_manually_created_job(client, db_session):
+    """Same unified label regardless of who/what created the job."""
     tenant = make_tenant(db_session)
     group = _make_group_with_required_doc(db_session, tenant)
     op = make_user(db_session, role="operator", tenant=tenant, email="op-outer1@example.com")
@@ -80,7 +81,8 @@ def test_pending_documents_for_a_manually_created_job(client, db_session):
 
     resp = client.get("/api/v1/jobs")
     row = next(j for j in resp.json() if j["id"] == job.id)
-    assert row["outer_status"] == "Pending Documents"
+    assert row["outer_status"] == "Missing Documents"
+    assert row["missing_documents"] == ["Invoice"]
 
 
 def test_document_capture_once_every_required_document_is_present(client, db_session):
