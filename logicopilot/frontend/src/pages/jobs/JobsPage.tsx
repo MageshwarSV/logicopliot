@@ -834,6 +834,19 @@ export function JobsPage() {
     <AppShell
       title={category ? CATEGORY_TITLES[category] : "Jobs"}
       subtitle="Upload a transaction's documents, extract, and cross-verify."
+      // The sidebar's own 5 badges, kept in step with whichever of these filters is actually
+      // narrowing the list open right now (found live: a badge read 7 while its own filtered
+      // list, "Last 7 days" + assigned to "malar", showed 1) - QUICK_ALL ("All customers"/"All
+      // statuses"/etc, this page's own "no filter" sentinel) becomes undefined, not the literal
+      // placeholder string, so an unset filter still counts everything on that dimension.
+      categoryCountFilters={{
+        dateFrom: quickRange.from || undefined,
+        dateTo: quickRange.to || undefined,
+        assignedTo: assignedTo !== QUICK_ALL ? assignedTo : undefined,
+        customer: customer !== QUICK_ALL ? customer : undefined,
+        status: statusFilter !== QUICK_ALL ? statusFilter : undefined,
+        shipmentType: shipmentType !== QUICK_ALL ? shipmentType : undefined,
+      }}
       actions={
         <div className="flex gap-2">
           {crossTenant && (

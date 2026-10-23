@@ -63,8 +63,29 @@ export interface JobCategoryCounts {
   completed: number;
 }
 
-export async function getJobCategoryCounts(): Promise<JobCategoryCounts> {
-  const { data } = await apiClient.get<JobCategoryCounts>("/jobs/category-counts");
+/** Mirrors the Jobs list's own client-side filters exactly (JobsPage.tsx) - omitted (the
+ *  default) counts every job, unchanged from before these existed. dateFrom/dateTo are
+ *  quickRange's own already-resolved "YYYY-MM-DD" strings, not the raw quick filter value. */
+export interface JobCategoryCountFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  assignedTo?: string;
+  customer?: string;
+  status?: string;
+  shipmentType?: string;
+}
+
+export async function getJobCategoryCounts(filters?: JobCategoryCountFilters): Promise<JobCategoryCounts> {
+  const { data } = await apiClient.get<JobCategoryCounts>("/jobs/category-counts", {
+    params: {
+      date_from: filters?.dateFrom || undefined,
+      date_to: filters?.dateTo || undefined,
+      assigned_to: filters?.assignedTo || undefined,
+      customer: filters?.customer || undefined,
+      status: filters?.status || undefined,
+      shipment_type: filters?.shipmentType || undefined,
+    },
+  });
   return data;
 }
 

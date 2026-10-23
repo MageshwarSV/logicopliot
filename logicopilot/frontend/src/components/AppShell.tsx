@@ -83,6 +83,7 @@ export function AppShell({
   actions,
   sidebar,
   children,
+  categoryCountFilters,
 }: {
   title: string;
   /** ReactNode, not string: the job header puts an icon beside the words. */
@@ -93,6 +94,12 @@ export function AppShell({
    *  area beside a sidebar reads as a second, competing navigation; there should be one. */
   sidebar?: ReactNode;
   children?: ReactNode;
+  /** The Jobs list's OWN currently-applied filters (JobsPage.tsx) - passed down so the five
+   *  sidebar badges below count exactly the same filtered population the list itself is
+   *  showing, instead of a flat unfiltered total that could disagree with it (found live: a
+   *  badge read 7 while its own filtered list, "Last 7 days" + assigned to "malar", showed 1).
+   *  undefined on every other page, which keeps counting everything, unchanged. */
+  categoryCountFilters?: jobsApi.JobCategoryCountFilters;
 }) {
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -131,20 +138,33 @@ export function AppShell({
 
   // Live badge counts for the five links above - fetched once a role that actually shows them
   // logs in, then refreshed every 30s (same interval the operator dashboard's own live counts
-  // already poll at) so a job moving between screens updates the sidebar without a reload.
+  // already poll at) so a job moving between screens updates the sidebar without a reload. Also
+  // refetched the moment any of the Jobs list's OWN filters change (categoryCountFilters, from
+  // JobsPage.tsx) - destructured into individual primitive deps rather than depending on the
+  // object itself, which JobsPage passes as a new reference every render and would otherwise
+  // refetch on every keystroke-unrelated re-render too.
   const showsJobCategories =
     user != null && ["operator", "admin", "gk2", "manager"].includes(user.role);
   const [categoryCounts, setCategoryCounts] = useState<jobsApi.JobCategoryCounts | null>(null);
+  const ccfDateFrom = categoryCountFilters?.dateFrom;
+  const ccfDateTo = categoryCountFilters?.dateTo;
+  const ccfAssignedTo = categoryCountFilters?.assignedTo;
+  const ccfCustomer = categoryCountFilters?.customer;
+  const ccfStatus = categoryCountFilters?.status;
+  const ccfShipmentType = categoryCountFilters?.shipmentType;
   useEffect(() => {
     if (!showsJobCategories) return;
     let alive = true;
     const load = () => {
-      jobsApi.getJobCategoryCounts().then((c) => { if (alive) setCategoryCounts(c); }).catch(() => {});
+      jobsApi.getJobCategoryCounts({
+        dateFrom: ccfDateFrom, dateTo: ccfDateTo, assignedTo: ccfAssignedTo,
+        customer: ccfCustomer, status: ccfStatus, shipmentType: ccfShipmentType,
+      }).then((c) => { if (alive) setCategoryCounts(c); }).catch(() => {});
     };
     load();
     const t = window.setInterval(load, 30000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [showsJobCategories]);
+  }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
 
   function jobCategoryLinks() {
     return JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (

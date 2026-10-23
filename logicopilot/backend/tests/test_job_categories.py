@@ -16,7 +16,7 @@ moment the AI path first succeeds, and never cleared again, so it survives that 
 from datetime import datetime, timezone
 
 from app.api.v1.jobs import _category_condition, _job_category
-from app.models.job import Job
+from app.models.job import Job, JobFieldValue
 from app.models.template_group import TemplateGroup
 from tests.conftest import login, make_tenant, make_user
 
@@ -342,6 +342,87 @@ def test_category_counts_matches_the_filtered_lists(client, db_session):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body == {"new": 2, "missing": 0, "failed": 0, "submitted": 1, "completed": 1}
+
+
+def test_category_counts_narrowed_by_date_range(client, db_session):
+    """Found live: a badge read 7 while its own filtered list (Quick filter "Last 7 days")
+    showed 1 - the counts endpoint ignored the date range entirely. date_from/date_to are the
+    Jobs list's own already-resolved quickRange strings (JobsPage.tsx), not a raw "quick"
+    value - see _count_bound_day_range."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op8@example.com")
+    old = _make_job(db_session, tenant, group, reference="JOB-OLD",
+                    created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    recent = _make_job(db_session, tenant, group, reference="JOB-RECENT",
+                       created_at=datetime.now(timezone.utc))
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts", params={"date_from": "2026-01-10"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["new"] == 1  # only the recent job - the old one falls outside the window
+
+    resp = client.get("/api/v1/jobs/category-counts")
+    assert resp.json()["new"] == 2  # no date filter - both count, unchanged from before
+
+
+def test_category_counts_narrowed_by_assigned_to(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op9@example.com",
+                   full_name="Malar")
+    other = make_user(db_session, role="operator", tenant=tenant, email="cat-op9b@example.com",
+                      full_name="Thaniga")
+    _make_job(db_session, tenant, group, reference="JOB-MINE", created_by_id=op.id)
+    _make_job(db_session, tenant, group, reference="JOB-OTHER", created_by_id=other.id)
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts", params={"assigned_to": "Malar"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["new"] == 1
+
+
+def test_category_counts_narrowed_by_customer(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op10@example.com")
+    nokia = _make_job(db_session, tenant, group, reference="JOB-NOKIA")
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=nokia.id,
+                                 label_name="consignee_full_name", extracted_value="NOKIA INDIA"))
+    _make_job(db_session, tenant, group, reference="JOB-NONE")
+    db_session.commit()
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts", params={"customer": "NOKIA INDIA"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["new"] == 1
+
+
+def test_category_counts_narrowed_by_status(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op11@example.com")
+    _make_job(db_session, tenant, group, reference="JOB-PEND1", gk2_status="pending")
+    _make_job(db_session, tenant, group, reference="JOB-DRAFT1")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts", params={"status": "Pending GK2 Approval"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["new"] == 1
+
+
+def test_category_counts_narrowed_by_shipment_type(client, db_session):
+    tenant = make_tenant(db_session)
+    sea = _make_group(db_session, tenant, mode="Sea Import")
+    air = _make_group(db_session, tenant, mode="Air Export")
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op12@example.com")
+    _make_job(db_session, tenant, sea, reference="JOB-SEA1")
+    _make_job(db_session, tenant, air, reference="JOB-AIR1")
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs/category-counts", params={"shipment_type": "Air Export"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["new"] == 1
 
 
 def _make_group_with_required_doc(db_session, tenant):

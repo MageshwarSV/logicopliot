@@ -1821,16 +1821,82 @@ def _category_condition(category: str):
                         detail="category must be one of: new, missing, failed, submitted, completed")
 
 
+def _count_bound_day_range(date_from: str | None, date_to: str | None) -> tuple[datetime | None, datetime | None]:
+    """Calendar-day boundaries in IST, the timezone every real user of this product operates
+    in - same assumption _bucket_bounds already makes. date_from/date_to are the exact
+    "YYYY-MM-DD" strings the Jobs list's own quickRange (JobsPage.tsx) already resolves
+    client-side (whichever of the quick filter or explicit date inputs is active) - sent as-is,
+    not re-derived from a raw "quick" value a second time server-side, so there is only ever
+    ONE place deciding what a day boundary means and the badge can never disagree with the
+    list sitting right next to it."""
+    lo = hi = None
+    if date_from:
+        y, m, d = (int(x) for x in date_from.split("-"))
+        lo = datetime(y, m, d, tzinfo=IST)
+    if date_to:
+        y, m, d = (int(x) for x in date_to.split("-"))
+        hi = datetime(y, m, d, tzinfo=IST) + timedelta(days=1)
+    return lo, hi
+
+
+def _job_passes_extra_filters(
+    db: Session, job: Job, *, assigned_to: str | None, customer: str | None,
+    status: str | None, shipment_type: str | None,
+) -> bool:
+    """The remaining Jobs-list filters (Assigned To/Customer/Status/Shipment Type) - none of
+    these are plain columns (see _operator_name/_customer_name/_outer_status/_shipment_mode's
+    own docstrings), so unlike the date range above they cannot be a SQL predicate. Applied
+    only against each category's own already-narrowed candidate set (bounded further still by
+    the date range and, usually, today's own "last 7 days + me" default), not the whole
+    tenant - the same "SQL narrows, Python decides" split _is_missing_documents already uses."""
+    if assigned_to and _operator_name(db, job) != assigned_to:
+        return False
+    if customer and _customer_name(db, job) != customer:
+        return False
+    if status and _outer_status(db, job) != status:
+        return False
+    if shipment_type and _shipment_mode(db, job) != shipment_type:
+        return False
+    return True
+
+
 @router.get("/jobs/category-counts", response_model=JobCategoryCounts)
 def job_category_counts(
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+    # All optional, all mirroring the Jobs list's own client-side filters exactly (JobsPage.tsx)
+    # - omitted (the default) counts every job, unchanged from before these existed. date_from/
+    # date_to are quickRange's own already-resolved "YYYY-MM-DD" strings, not a raw "quick"
+    # value - see _count_bound_day_range. assigned_to/customer/status/shipment_type are the
+    # exact display strings those dropdowns themselves offer (an operator's full_name, a
+    # consignee name, an outer_status/stage word, a template mode) - never an id.
+    date_from: str | None = None,
+    date_to: str | None = None,
+    assigned_to: str | None = None,
+    customer: str | None = None,
+    status: str | None = None,
+    shipment_type: str | None = None,
 ) -> JobCategoryCounts:
     """Badge counts for the Jobs list's five left-side screens - New Jobs / Missing Documents /
     ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
-    visibility list_jobs itself applies."""
+    visibility list_jobs itself applies, AND the exact same filters currently applied on
+    whichever of those five screens is open, so a badge never disagrees with the list sitting
+    right next to it (found live: "ERP Failed Jobs" read 7 while its own filtered list, Quick
+    filter "Last 7 days" + Assigned To "malar", showed a single row)."""
     base = _jobs_visible_query(db, scope, user)
+    lo, hi = _count_bound_day_range(date_from, date_to)
+    if lo is not None:
+        base = base.filter(Job.created_at >= lo)
+    if hi is not None:
+        base = base.filter(Job.created_at < hi)
+
+    def _extra(j: Job) -> bool:
+        return _job_passes_extra_filters(
+            db, j, assigned_to=assigned_to, customer=customer,
+            status=status, shipment_type=shipment_type,
+        )
+
     # Cannot be a single SQL predicate like the other three (see _is_missing_documents) - the
     # SQL narrowing already excludes everything it could never be, so this is only ever
     # re-checking a small candidate set, not the whole tenant's job table.
@@ -1839,12 +1905,15 @@ def job_category_counts(
     # same reason, applied the same way: a job in missing_candidates that IS actually missing
     # a document is never counted here.
     new_candidates = base.filter(_category_condition("new")).all()
+    failed_candidates = base.filter(_category_condition("failed")).all()
+    submitted_candidates = base.filter(_category_condition("submitted")).all()
+    completed_candidates = base.filter(_category_condition("completed")).all()
     return JobCategoryCounts(
-        new=sum(1 for j in new_candidates if not _is_missing_documents(db, j)),
-        missing=sum(1 for j in missing_candidates if _is_missing_documents(db, j)),
-        failed=base.filter(_category_condition("failed")).count(),
-        submitted=base.filter(_category_condition("submitted")).count(),
-        completed=base.filter(_category_condition("completed")).count(),
+        new=sum(1 for j in new_candidates if not _is_missing_documents(db, j) and _extra(j)),
+        missing=sum(1 for j in missing_candidates if _is_missing_documents(db, j) and _extra(j)),
+        failed=sum(1 for j in failed_candidates if _extra(j)),
+        submitted=sum(1 for j in submitted_candidates if _extra(j)),
+        completed=sum(1 for j in completed_candidates if _extra(j)),
     )
 
 
