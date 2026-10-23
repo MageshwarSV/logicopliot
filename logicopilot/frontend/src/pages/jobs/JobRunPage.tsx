@@ -4261,7 +4261,7 @@ function DualSourcePicker({
   }
   const primaryValue = ownPrimaryValueRef.current;
 
-  const [selected, setSelected] = useState<"primary" | "other">(() => {
+  const [selected, setSelected] = useState<"primary" | "other" | null>(() => {
     const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
     // primary's OWN raw computed value - UNLIKE primaryValue above, this is never touched by
     // picking "other" (which only ever overwrites corrected_value, so exports still read the
@@ -4296,7 +4296,25 @@ function DualSourcePicker({
   if (!other) return null;
 
   const choose = async (which: "primary" | "other") => {
-    if (readOnly || saving || which === selected) return;
+    if (readOnly || saving) return;
+    if (which === selected) {
+      // Clicking the already-selected box again unselects it - clears the saved answer so
+      // the operator can pick again or type a fresh value, instead of being stuck once either
+      // side has been chosen.
+      setSaving(true);
+      try {
+        await jobsApi.correctFieldValue(primary.id, "");
+        for (const target of syncTargets) {
+          await jobsApi.correctFieldValue(target.id, "");
+        }
+        setSelected(null);
+        setPrimaryDraft("");
+        await reload();
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     const value = which === "primary" ? primaryValue : otherValue;
     setSaving(true);
     try {
