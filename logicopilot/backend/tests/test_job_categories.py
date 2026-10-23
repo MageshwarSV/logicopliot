@@ -116,20 +116,26 @@ def test_the_old_placeholder_non_excel_path_is_also_submitted_not_completed():
 
 
 def test_a_later_retry_through_the_regular_entry_screen_does_not_un_submit_the_job():
-    # THE bug found live in production. persist_run_outcome resets gk2_status to None on a
-    # later retry through the regular entry screen (an Entry Browser rerun, complete_job) -
-    # on purpose, so a stale badge doesn't linger - and that retry can itself fail afterward
-    # too. A job that genuinely went through the AI path once must stay on Submitted Jobs
-    # (awaiting Verified) through all of that churn, never sliding back to New or jumping
-    # straight to Completed just because gk2_status/job.status moved on without it.
-    job = Job(status="failed", gk2_status=None, ai_submitted_at=NOW, erp_verified_at=None)
-    assert _job_category(job) == "submitted"
-
-    job.status = "completed"  # the retry then succeeds on its own, via the regular screen
+    # persist_run_outcome resets gk2_status to None on a later retry through the regular entry
+    # screen (an Entry Browser rerun, complete_job) - on purpose, so a stale badge doesn't
+    # linger. A job that genuinely went through the AI path once, and whose later retry ALSO
+    # succeeds, must stay on Submitted Jobs (awaiting Verified) rather than jumping straight to
+    # Completed just because gk2_status moved on without it.
+    job = Job(status="completed", gk2_status=None, ai_submitted_at=NOW, erp_verified_at=None)
     assert _job_category(job) == "submitted"  # still not Completed - nobody pressed Verified
 
     job.erp_verified_at = datetime.now(timezone.utc)
     assert _job_category(job) == "completed"
+
+
+def test_a_later_retry_that_fails_is_not_submitted_either():
+    """Found live (JOB-AF9B0B, JOB-6B2F53): ai_submitted_at is set once and never cleared, on
+    purpose (see _job_category's own docstring) - but a run that never actually produced a job
+    number is now "failed" (persist_run_outcome), and that is not "mid-flight" the way an
+    in-progress retry is. job.status == "failed" must win over a stale ai_submitted_at, or a
+    job that is really Failed keeps showing under "ERP Submitted Jobs" forever."""
+    job = Job(status="failed", gk2_status=None, ai_submitted_at=NOW, erp_verified_at=None)
+    assert _job_category(job) == "new"
 
 
 # --------------------------------------------------------------- GET /jobs?category=...
@@ -208,6 +214,33 @@ def test_category_submitted_is_only_unverified_ai_erp_submissions(client, db_ses
     assert ids == {unverified.id}
     assert verified.id not in ids
     assert pending.id not in ids
+
+
+def test_category_submitted_excludes_a_job_that_is_now_failed(client, db_session):
+    """Found live (JOB-AF9B0B, JOB-6B2F53): ai_submitted_at was set on an earlier attempt and
+    never cleared, but the run itself never actually produced a job number, so job.status is
+    now "failed" (persist_run_outcome). That job must not keep showing on "ERP Submitted
+    Jobs" - it belongs on "ERP Failed Jobs" (and that category list, same as _category_condition
+    "failed" already checks) instead."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email="cat-op2c@example.com")
+    failed_but_once_submitted = _make_job(
+        db_session, tenant, group, reference="JOB-WASSUB",
+        status="failed", gk2_status=None, ai_submitted_at=NOW, erp_verified_at=None,
+    )
+    login(client, op.email)
+
+    resp = client.get("/api/v1/jobs", params={"category": "submitted"})
+    assert resp.status_code == 200, resp.text
+    assert failed_but_once_submitted.id not in {j["id"] for j in resp.json()}
+
+    resp = client.get("/api/v1/jobs", params={"category": "failed"})
+    assert failed_but_once_submitted.id in {j["id"] for j in resp.json()}
+
+    counts = client.get("/api/v1/jobs/category-counts").json()
+    assert counts["submitted"] == 0
+    assert counts["failed"] == 1
 
 
 def test_category_submitted_survives_a_gk2_status_reset_from_a_later_retry(client, db_session):

@@ -992,7 +992,14 @@ def _job_category(job: Job) -> str:
     other way, silently moving it back to New Jobs or straight to Completed with nobody ever
     having pressed Verified - confirmed live in production. ai_submitted_at is set once and
     never cleared, so it survives that reset.
+
+    job.status == "failed" always wins over ai_submitted_at, though (see _category_condition's
+    own "submitted" exclusion) - a run that never actually produced a job number is not
+    "mid-flight", it is done and done badly, and must not keep reading "submitted" forever
+    just because ai_submitted_at still remembers one attempt.
     """
+    if job.status == "failed":
+        return "new"
     if job.ai_submitted_at is not None:
         return "completed" if job.erp_verified_at is not None else "submitted"
     if job.status == "completed":
@@ -1767,7 +1774,18 @@ def _category_condition(category: str):
             | (not_ai_submitted & (Job.status == "completed"))
         )
     if category == "submitted":
-        return Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.is_(None)
+        # ai_submitted_at is set once and never cleared (see _job_category's own docstring) -
+        # on purpose, so a later retry through the regular entry screen (which resets
+        # gk2_status) doesn't silently un-submit a job that is still genuinely mid-flight.
+        # But found live (JOB-AF9B0B, JOB-6B2F53): a job whose run never actually produced a
+        # job number is now "failed" (see persist_run_outcome), and that is NOT "mid-flight" -
+        # it needs the same exclusion "new" already applies, or it keeps showing under "ERP
+        # Submitted Jobs" forever purely because ai_submitted_at still remembers one attempt.
+        return (
+            Job.ai_submitted_at.isnot(None)
+            & Job.erp_verified_at.is_(None)
+            & (Job.status != "failed")
+        )
     if category == "new":
         # Excludes Failed here too (found live: a job already showing its own "Failed" badge,
         # and already listed on ERP Failed Jobs, was ALSO still showing up under New Jobs -
