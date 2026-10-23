@@ -6009,16 +6009,18 @@ function JobDocPreview({
     <>
       <div className="mt-2 flex flex-wrap gap-2">
         {urls.map((u, i) => (
-          <div key={i} className="relative">
+          <div key={i} className="group relative">
             <button type="button" onClick={() => setZoom(u)} className="block" title={`Page ${i + 1} — click to enlarge`}>
-              <img src={u} alt={`page ${i + 1}`} className="h-28 w-auto rounded border border-slate-300 object-cover hover:ring-2 hover:ring-indigo-400 dark:border-slate-700" />
+              <img src={u} alt={`page ${i + 1}`} className="h-28 w-auto rounded border border-slate-300 object-cover transition group-hover:brightness-75 hover:ring-2 hover:ring-indigo-400 dark:border-slate-700" />
             </button>
             {!readOnly && onPageMenu && (
+              // Hidden until the thumbnail is hovered, then a big, obvious circle - the earlier
+              // small always-on corner mark was too easy to miss entirely.
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onPageMenu(i + 1, e.clientX, e.clientY); }}
-                title={`Copy page ${i + 1} to another document type`}
-                className="absolute right-0.5 top-0.5 rounded bg-white/90 px-1 text-xs font-bold leading-none text-emerald-700 shadow hover:bg-white dark:bg-slate-900/90 dark:text-emerald-300"
+                title={`Copy or move page ${i + 1} to another document type`}
+                className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-slate-900/80 text-base font-bold leading-none text-white opacity-0 shadow-lg transition hover:bg-slate-900 focus-visible:opacity-100 group-hover:opacity-100"
               >
                 ⋯
               </button>
