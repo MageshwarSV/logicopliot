@@ -25,3 +25,16 @@ export function notifySessionExpired(): void {
 export function resetSessionExpiredNotice(): void {
   notified = false;
 }
+
+/**
+ * Found live: logging out deliberately clears the auth cookie right away, but a background
+ * request already in flight at that exact moment (AppShell's own 30s badge-count poll, for
+ * one) can still land a 401 a moment later - its own refresh attempt then fails too (there is
+ * nothing left to refresh), which used to read as a genuine session expiry and threw up "Your
+ * session has expired" immediately after a perfectly ordinary, intentional logout. Call this
+ * the instant a deliberate logout starts, so any such stray failure is swallowed exactly like
+ * an already-notified one - cleared again by the next successful login (resetSessionExpiredNotice).
+ */
+export function suppressSessionExpiredNotice(): void {
+  notified = true;
+}

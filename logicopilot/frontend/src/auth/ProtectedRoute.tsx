@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./useAuth";
 import type { Role } from "../types/auth";
+import { ROLE_HOME } from "./roleHome";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
 
 interface ProtectedRouteProps {
@@ -32,7 +33,13 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
   }
 
   if (!allowedRoles.includes(user.role)) {
-    return <Navigate to="/not-authorized" replace />;
+    // Found live: logging in as a DIFFERENT account right after someone else's left a
+    // location.state.from behind (see AuthContext/LoginPage) sent the new account straight to
+    // a page it has no business on - a dead-end "Not authorized" page helps nobody here; this
+    // account's own real home does. Not shown for every possible reason a role could be
+    // blocked (a stale `from` is only one of them), but it is always the more useful landing
+    // spot than an error screen regardless of why this was reached.
+    return <Navigate to={ROLE_HOME[user.role]} replace />;
   }
 
   // Blocks every role/route uniformly, regardless of which dashboard it lands on, rather than

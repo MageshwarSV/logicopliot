@@ -2,7 +2,7 @@ import { createContext, useCallback, useEffect, useRef, useState, type ReactNode
 import { useNavigate } from "react-router-dom";
 import * as authApi from "../api/auth";
 import type { User } from "../types/auth";
-import { resetSessionExpiredNotice, setSessionExpiredHandler } from "./sessionExpiry";
+import { resetSessionExpiredNotice, setSessionExpiredHandler, suppressSessionExpiredNotice } from "./sessionExpiry";
 
 interface AuthContextValue {
   user: User | null;
@@ -47,6 +47,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     channelRef.current = channel;
     channel.onmessage = (event: MessageEvent<AuthBroadcast>) => {
       const msg = event.data;
+      // This tab's own cookie just died too (it's shared across every tab) - its own in-flight
+      // request can race into the same false "expired" read logout() already guards against
+      // locally (see sessionExpiry.ts).
+      if (msg.type === "logout") suppressSessionExpiredNotice();
       setUser((current) => {
         if (!current) return current;
         if (msg.type === "logout") return null;
@@ -86,6 +90,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    // Before the cookie is even cleared - a request already in flight at this exact moment
+    // can still land a 401 a moment later and read as a surprise expiry otherwise (see
+    // sessionExpiry.ts's own docstring on this).
+    suppressSessionExpiredNotice();
     await authApi.logout();
     setUser(null);
     channelRef.current?.postMessage({ type: "logout" } satisfies AuthBroadcast);
