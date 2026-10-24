@@ -293,6 +293,15 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
 const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
+// ReferenceSearchPicker's own placeholder, per field - found live: it was hardcoded to the
+// Shipment Port Code wording ("Search by city or country...") even while showing up under ERP
+// Consignee Name, which searches company names, not places. A label added to
+// SEARCHABLE_REFERENCE_FIELD_LABELS without an entry here still gets a sensible generic prompt
+// instead of silently inheriting the wrong one.
+const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
+  "Shipment Port Code": "Search by city or country to find or correct the code…",
+  "ERP Consignee Name": "Search by consignee to find or correct the match…",
+};
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
 // the system yet to also check the code is a REAL country, only that it LOOKS like one.
@@ -4513,17 +4522,23 @@ function ExtractedField({
  * dropdown (see SEARCHABLE_REFERENCE_FIELD_LABELS) - always available, not just while the field
  * is blank, so the operator can look one up or correct it at any time. Typing searches the
  * field's reference table server-side (reference-search), debounced so every keystroke doesn't
- * fire its own request, and each result shows as "Country City(CODE)" so the operator can match
- * it against whatever they see on the document; picking a result commits it as this field's
- * corrected value exactly like any other correction. */
+ * fire its own request; each result's own label (r.label - e.g. "Country City(CODE)" for a
+ * port, a plain organization name for a consignee) is whatever the backend formats for THAT
+ * field, so the operator can match it against whatever they see on the document. Picking a
+ * result commits it as this field's corrected value exactly like any other correction. */
 function ReferenceSearchPicker({
   jobId,
   customFieldId,
+  label,
   readOnly,
   onPick,
 }: {
   jobId: string;
   customFieldId: string;
+  /** This field's own label (fv.label_name) - picks the right placeholder wording from
+   *  REFERENCE_SEARCH_PLACEHOLDERS, since this one component serves several very different
+   *  reference fields (a port code, a consignee name, ...). */
+  label: string;
   readOnly: boolean;
   onPick: (value: string) => Promise<void>;
 }) {
@@ -4574,15 +4589,18 @@ function ReferenceSearchPicker({
         onFocus={() => setOpen(true)}
         // A short delay so a click on a result (below) lands before the blur closes the list.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="Search by city or country to find or correct the code…"
+        placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${label}…`}
         className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
       />
       {open && query.trim().length >= 2 && (
-        // min-w-full (not just w-full): a result name (an organization, say) is often longer
-        // than the narrow input box sitting in a 2-column grid - the panel is free to grow
-        // wider than its own input, up to a sane cap, rather than wrapping every result onto
-        // several lines inside that same narrow width.
-        <div className="absolute z-10 mt-1 max-h-56 min-w-full w-max max-w-[28rem] overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+        // Locked to the input's own width (not wider, as this used to try) - found live: this
+        // field sits in the RIGHT column of a 2-column grid, often close to the page's own
+        // right edge, so a panel allowed to grow wider than its input could extend past the
+        // visible area, leaving a result's text only reachable by scrolling the whole page
+        // sideways. whitespace-normal + break-words still wraps a long result onto several
+        // lines rather than ever clipping it - the trade this makes on purpose, so the full
+        // text is always visible without scrolling anything.
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
           {loading ? (
             <p className="px-3 py-2 text-slate-400">Searching…</p>
           ) : results.length === 0 ? (
@@ -5631,6 +5649,7 @@ function ExtractionReview({
                         <ReferenceSearchPicker
                           jobId={jobId}
                           customFieldId={fv.custom_field_id!}
+                          label={fv.label_name}
                           readOnly={readOnly}
                           onPick={async (value) => {
                             await jobsApi.correctFieldValue(fv.id, value);
