@@ -67,7 +67,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "Currency_type", "Product Value", "Consignee", "Shipper Address",
     "ERP Consignee Name", "ERP Importer Address / Branch Code",
   ],
-  Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage"],
+  Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage", "insurance_amount"],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
@@ -163,6 +163,7 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
   },
   Custom: {
     insurance_percentage: "Insurance Rate (%)",
+    insurance_amount: "Insurance Amount",
   },
 };
 // A static, informational caption under a field - background on a business rule applied to
@@ -364,7 +365,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
     {
       heading: "Charges",
-      labels: ["Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency", "insurance_percentage"],
+      labels: [
+        "Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency",
+        "insurance_percentage", "insurance_amount",
+      ],
     },
     { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
   ],
@@ -402,6 +406,8 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   "IGM No": "IGM Number",
   "MBL No": "Master Bill of Lading Number",
   "MBL Date": "Master Bill of Lading Date",
+  insurance_percentage: "Insurance Rate (%)",
+  insurance_amount: "Insurance Amount",
 };
 // These dropdowns' own options already cover every real possibility - no blank "not found"
 // choice to accidentally leave selected.
@@ -1499,6 +1505,44 @@ export function JobRunPage() {
   const [liveBranchName, setLiveBranchName] = useState(savedBranchName);
   useEffect(() => setLiveErpEntryName(savedErpEntryName), [savedErpEntryName]);
   useEffect(() => setLiveBranchName(savedBranchName), [savedBranchName]);
+  // insurance_percentage and insurance_amount are mutually exclusive - a checkbox picks which
+  // ONE the operator fills in; the ERP import reads whichever one actually holds a value (each
+  // maps to its own Excel column already), so the one being hidden is cleared the moment the
+  // operator switches, rather than silently keeping a stale number alongside the one they
+  // actually meant. Shared between the Additional Details card below and ExtractionReview's own
+  // copy on the Custom document tab (same field, shown in both places already, same as
+  // insurance_percentage alone always has been) - lifted up here so the two stay in sync rather
+  // than drifting into two independent checkboxes.
+  const insurancePercentageFv = jobFieldValues.find(
+    (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
+  );
+  const insuranceAmountFv = jobFieldValues.find(
+    (fv) => fv.row_index == null && fv.label_name === "insurance_amount",
+  );
+  const [insuranceUseAmount, setInsuranceUseAmount] = useState(false);
+  useEffect(() => {
+    // Amount is never pre-filled with a default the way percentage is (confirmed with the
+    // user: it starts blank every time) - so a non-blank amount can only mean it was
+    // deliberately set, on an earlier visit to this job. Never flips back to percentage on its
+    // own; only switchInsuranceMode below does that.
+    const amt = (insuranceAmountFv?.corrected_value ?? insuranceAmountFv?.extracted_value ?? "").trim();
+    if (amt) setInsuranceUseAmount(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insuranceAmountFv?.corrected_value, insuranceAmountFv?.extracted_value]);
+  async function switchInsuranceMode(toAmount: boolean) {
+    setInsuranceUseAmount(toAmount);
+    try {
+      if (toAmount && insurancePercentageFv) {
+        const v = (insurancePercentageFv.corrected_value ?? insurancePercentageFv.extracted_value ?? "").trim();
+        if (v) await jobsApi.correctFieldValue(insurancePercentageFv.id, "");
+      } else if (!toAmount && insuranceAmountFv) {
+        const v = (insuranceAmountFv.corrected_value ?? insuranceAmountFv.extracted_value ?? "").trim();
+        if (v) await jobsApi.correctFieldValue(insuranceAmountFv.id, "");
+      }
+    } finally {
+      await load();
+    }
+  }
   // Suggested starting value for a SUGGESTED_VALUE_KEYED_ON_LABEL field (e.g. Insurance Rate
   // (%), suggested off this job's own Consignee) - only ever a default, never forced; the
   // operator can still pick a different option or type a new one. Only fetched while the field
@@ -3188,6 +3232,8 @@ export function JobRunPage() {
               readOnly={!canEditValues}
               activeFileId={activeFile?.id ?? null}
               setActiveFileId={setActiveFileId}
+              insuranceUseAmount={insuranceUseAmount}
+              onToggleInsuranceMode={switchInsuranceMode}
             />
           )}
 
@@ -3230,6 +3276,25 @@ export function JobRunPage() {
                     </h3>
                     <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                       {items.map((fv) => {
+                        // insurance_amount never renders on its own - it's shown (or not) from
+                        // insurance_percentage's own slot below, via InsuranceModeField, so the
+                        // toggle only ever appears once per card instead of as two separate rows.
+                        if (fv.label_name === "insurance_amount") return null;
+                        if (fv.label_name === "insurance_percentage") {
+                          return (
+                            <InsuranceModeField
+                              key={fv.id}
+                              percentageFv={insurancePercentageFv}
+                              amountFv={insuranceAmountFv}
+                              useAmount={insuranceUseAmount}
+                              onToggle={switchInsuranceMode}
+                              readOnly={!canEditValues}
+                              reload={load}
+                              labelOverridePercentage={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                              labelOverrideAmount={ADDITIONAL_DETAILS_LABEL_OVERRIDES["insurance_amount"]}
+                            />
+                          );
+                        }
                         const defaultValue =
                           fv.label_name === "AdvancePriorNormal"
                             ? "A"
@@ -4635,6 +4700,65 @@ function ReferenceSearchPicker({
   );
 }
 
+/** insurance_percentage and insurance_amount are mutually exclusive - this renders whichever ONE
+ *  is currently active (useAmount picks which), with a checkbox above it to switch. The field
+ *  actually being hidden is cleared by the caller (see switchInsuranceMode in JobRunPage) the
+ *  moment the operator switches, so the ERP import - which reads whichever field holds a value,
+ *  each already mapped to its own Excel column - never ends up with both at once. Used in both
+ *  places insurance_percentage alone already showed (Additional Details, and the Custom document
+ *  tab), with `percentageFv`/`amountFv` possibly undefined if this template has no such field at
+ *  all, in which case this renders nothing. */
+function InsuranceModeField({
+  percentageFv,
+  amountFv,
+  useAmount,
+  onToggle,
+  readOnly,
+  reload,
+  labelOverridePercentage,
+  labelOverrideAmount,
+  onBeforeSave,
+}: {
+  percentageFv: JobFieldValue | undefined;
+  amountFv: JobFieldValue | undefined;
+  useAmount: boolean;
+  onToggle: (toAmount: boolean) => void;
+  readOnly: boolean;
+  reload: () => Promise<void>;
+  labelOverridePercentage?: string;
+  labelOverrideAmount?: string;
+  onBeforeSave?: (value: string) => Promise<boolean>;
+}) {
+  const active = useAmount ? amountFv : percentageFv;
+  if (!active) return null;
+  return (
+    <div>
+      {amountFv && (
+        <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          <input
+            type="checkbox"
+            checked={useAmount}
+            onChange={(e) => onToggle(e.target.checked)}
+            disabled={readOnly}
+            className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-600 dark:bg-slate-800"
+          />
+          Use a fixed insurance amount instead of a percentage
+        </label>
+      )}
+      <ExtractedField
+        fv={active}
+        readOnly={readOnly}
+        reload={reload}
+        labelOverride={useAmount ? labelOverrideAmount : labelOverridePercentage}
+        onBeforeSave={onBeforeSave}
+      />
+      {active.ask_operator_hint && (
+        <p className="mt-1 text-[11px] text-slate-400">{active.ask_operator_hint}</p>
+      )}
+    </div>
+  );
+}
+
 /** Any two already-configured custom fields paired together (see the backend's
  * CustomField.paired_custom_field_id) - exactly one is ever the real answer for one product
  * line, and picking one sets it as `primary`'s own corrected value, since that is the field
@@ -4873,6 +4997,8 @@ function ExtractionReview({
   readOnly,
   activeFileId,
   setActiveFileId,
+  insuranceUseAmount,
+  onToggleInsuranceMode,
 }: {
   job: JobDetail;
   jobId: string;
@@ -4885,6 +5011,11 @@ function ExtractionReview({
   // so the setter is passed down too.
   activeFileId: string | null;
   setActiveFileId: (id: string) => void;
+  // insurance_percentage/insurance_amount's shared toggle state - owned by JobRunPage (see
+  // switchInsuranceMode there) so this copy and Additional Details' own copy of the same field
+  // never drift into two independent checkboxes.
+  insuranceUseAmount: boolean;
+  onToggleInsuranceMode: (toAmount: boolean) => void;
 }) {
   const files = useMemo(
     () =>
@@ -4893,6 +5024,12 @@ function ExtractionReview({
       // alphabetically, which is not how anyone works through a shipment.
       (job.documents ?? []).filter((d) => d.is_uploaded),
     [job.documents],
+  );
+  const insurancePercentageFv = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
+  );
+  const insuranceAmountFv = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === "insurance_amount",
   );
   const { user } = useAuth();
   const isGk2 = user?.role === "gk2";
@@ -5006,9 +5143,10 @@ function ExtractionReview({
     // here too means the operator finds out right where the field actually is, not several
     // screens later.
     if (approving && active.doc_type === "Custom") {
-      const insuranceFv = job.field_values.find(
-        (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
-      );
+      // Whichever of the two the operator is actually using (see InsuranceModeField) - a
+      // percentage-mode job must not be blocked over an amount that was never meant to be
+      // filled in, and vice versa.
+      const insuranceFv = insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv;
       const insuranceValue = (insuranceFv?.corrected_value ?? insuranceFv?.extracted_value ?? "").trim();
       if (!insuranceValue) {
         blockApproval(
@@ -5560,6 +5698,34 @@ function ExtractionReview({
             <>
               {(() => {
                 const renderField = (fv: JobFieldValue) => {
+                  // insurance_amount never renders on its own - it's shown (or not) from
+                  // insurance_percentage's own slot below, via InsuranceModeField, so the toggle
+                  // only ever appears once per section instead of as two separate rows.
+                  if (fv.label_name === "insurance_amount") return null;
+                  if (fv.label_name === "insurance_percentage") {
+                    return (
+                      <div key={fv.id} id={`field-${fv.id}`}>
+                        <InsuranceModeField
+                          percentageFv={insurancePercentageFv}
+                          amountFv={insuranceAmountFv}
+                          useAmount={insuranceUseAmount}
+                          onToggle={onToggleInsuranceMode}
+                          readOnly={readOnly}
+                          reload={reload}
+                          labelOverridePercentage={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                          labelOverrideAmount={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.["insurance_amount"]}
+                          onBeforeSave={
+                            (insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv)?.custom_field_id
+                              ? () =>
+                                  requireInsuranceCertificate(
+                                    (insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv)!.custom_field_id!,
+                                  )
+                              : undefined
+                          }
+                        />
+                      </div>
+                    );
+                  }
                   const from = usedFrom.get(fv.label_name);
                   const isMark = !!fv.mark_id;
                   const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
