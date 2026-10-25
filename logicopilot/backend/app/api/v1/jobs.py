@@ -4166,6 +4166,21 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         values.setdefault(label, vals[0] if vals else "")
     values.setdefault("job_reference", job.reference or "")
 
+    # insurance_percentage/insurance_amount are mutually exclusive in the ERP import (see
+    # InsuranceModeField in JobRunPage.tsx) - exactly one of the two Excel columns may be
+    # non-blank. Enforced HERE, at read time, against whichever the "insurance_mode" hidden
+    # field says is active, rather than by ever clearing the inactive field's own stored
+    # value: an earlier version had the frontend blank the hidden field's corrected_value on
+    # every toggle, which permanently destroyed insurance_percentage's hardcoded tenant
+    # default the first time anyone switched to amount mode and back - found live on
+    # MAA/SI/03328/26-27 and JOB-470880. No-op for every template without this field.
+    insurance_mode = (values.get("insurance_mode") or "percentage").strip() or "percentage"
+    if "insurance_percentage" in values or "insurance_amount" in values:
+        if insurance_mode == "amount":
+            values["insurance_percentage"] = ""
+        else:
+            values["insurance_amount"] = ""
+
     # Each invoice's OWN job-level readings, for a sheet scoped one-row-per-invoice. Only
     # attached when the job really has several, so a single-invoice job produces exactly the
     # workbook it produced before this change.

@@ -1519,25 +1519,38 @@ export function JobRunPage() {
   const insuranceAmountFv = jobFieldValues.find(
     (fv) => fv.row_index == null && fv.label_name === "insurance_amount",
   );
+  // Tracks which of the two is active WITHOUT ever touching either field's own stored value -
+  // an earlier version cleared the hidden field's corrected_value on every toggle instead, which
+  // permanently destroyed insurance_percentage's hardcoded tenant default the first time anyone
+  // switched to amount mode and back (found live on MAA/SI/03328/26-27 and JOB-470880: the
+  // field read blank forever after, with no way for an operator to get the default back short
+  // of retyping it from memory). A hidden_from_capture custom field (never shown, never part of
+  // any Excel column) is the one thing both ExtractedField copies and the Excel/ERP export
+  // (_category_condition's own sibling, entry_values_and_rows in jobs.py) can read the SAME
+  // decision from - the backend blanks whichever Excel column is inactive at read time instead.
+  const insuranceModeFv = jobFieldValues.find(
+    (fv) => fv.row_index == null && fv.label_name === "insurance_mode",
+  );
   const [insuranceUseAmount, setInsuranceUseAmount] = useState(false);
   useEffect(() => {
-    // Amount is never pre-filled with a default the way percentage is (confirmed with the
-    // user: it starts blank every time) - so a non-blank amount can only mean it was
-    // deliberately set, on an earlier visit to this job. Never flips back to percentage on its
-    // own; only switchInsuranceMode below does that.
+    if (insuranceModeFv) {
+      const mode = (insuranceModeFv.corrected_value ?? insuranceModeFv.extracted_value ?? "percentage").trim();
+      setInsuranceUseAmount(mode === "amount");
+      return;
+    }
+    // No insurance_mode field on this template (not yet backfilled, or an older template this
+    // feature was never added to) - fall back to the old heuristic: a non-blank amount can only
+    // mean it was deliberately set on an earlier visit, since amount is never pre-filled.
     const amt = (insuranceAmountFv?.corrected_value ?? insuranceAmountFv?.extracted_value ?? "").trim();
     if (amt) setInsuranceUseAmount(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [insuranceAmountFv?.corrected_value, insuranceAmountFv?.extracted_value]);
+  }, [insuranceModeFv?.corrected_value, insuranceModeFv?.extracted_value,
+      insuranceAmountFv?.corrected_value, insuranceAmountFv?.extracted_value]);
   async function switchInsuranceMode(toAmount: boolean) {
     setInsuranceUseAmount(toAmount);
     try {
-      if (toAmount && insurancePercentageFv) {
-        const v = (insurancePercentageFv.corrected_value ?? insurancePercentageFv.extracted_value ?? "").trim();
-        if (v) await jobsApi.correctFieldValue(insurancePercentageFv.id, "");
-      } else if (!toAmount && insuranceAmountFv) {
-        const v = (insuranceAmountFv.corrected_value ?? insuranceAmountFv.extracted_value ?? "").trim();
-        if (v) await jobsApi.correctFieldValue(insuranceAmountFv.id, "");
+      if (insuranceModeFv) {
+        await jobsApi.correctFieldValue(insuranceModeFv.id, toAmount ? "amount" : "percentage");
       }
     } finally {
       await load();
@@ -4701,13 +4714,15 @@ function ReferenceSearchPicker({
 }
 
 /** insurance_percentage and insurance_amount are mutually exclusive - this renders whichever ONE
- *  is currently active (useAmount picks which), with a checkbox above it to switch. The field
- *  actually being hidden is cleared by the caller (see switchInsuranceMode in JobRunPage) the
- *  moment the operator switches, so the ERP import - which reads whichever field holds a value,
- *  each already mapped to its own Excel column - never ends up with both at once. Used in both
- *  places insurance_percentage alone already showed (Additional Details, and the Custom document
- *  tab), with `percentageFv`/`amountFv` possibly undefined if this template has no such field at
- *  all, in which case this renders nothing. */
+ *  is currently active (useAmount picks which), with a checkbox above it to switch. Neither
+ *  field's own stored value is ever touched by switching - an earlier version cleared the hidden
+ *  one, which permanently destroyed insurance_percentage's hardcoded tenant default the first
+ *  time anyone toggled to amount mode and back. The ERP import stays exclusive by reading a
+ *  separate, never-shown "insurance_mode" field instead (see switchInsuranceMode in JobRunPage,
+ *  and entry_values_and_rows in jobs.py, which blanks whichever Excel column is inactive at
+ *  read time). Used in both places insurance_percentage alone already showed (Additional
+ *  Details, and the Custom document tab), with `percentageFv`/`amountFv` possibly undefined if
+ *  this template has no such field at all, in which case this renders nothing. */
 function InsuranceModeField({
   percentageFv,
   amountFv,
