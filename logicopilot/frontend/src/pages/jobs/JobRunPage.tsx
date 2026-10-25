@@ -3295,17 +3295,18 @@ export function JobRunPage() {
                         if (fv.label_name === "insurance_amount") return null;
                         if (fv.label_name === "insurance_percentage") {
                           return (
-                            <InsuranceModeField
-                              key={fv.id}
-                              percentageFv={insurancePercentageFv}
-                              amountFv={insuranceAmountFv}
-                              useAmount={insuranceUseAmount}
-                              onToggle={switchInsuranceMode}
-                              readOnly={!canEditValues}
-                              reload={load}
-                              labelOverridePercentage={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
-                              labelOverrideAmount={ADDITIONAL_DETAILS_LABEL_OVERRIDES["insurance_amount"]}
-                            />
+                            <div key={fv.id} className="sm:col-span-2">
+                              <InsuranceModeField
+                                percentageFv={insurancePercentageFv}
+                                amountFv={insuranceAmountFv}
+                                useAmount={insuranceUseAmount}
+                                onToggle={switchInsuranceMode}
+                                readOnly={!canEditValues}
+                                reload={load}
+                                labelOverridePercentage={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                                labelOverrideAmount={ADDITIONAL_DETAILS_LABEL_OVERRIDES["insurance_amount"]}
+                              />
+                            </div>
                           );
                         }
                         const defaultValue =
@@ -4713,16 +4714,21 @@ function ReferenceSearchPicker({
   );
 }
 
-/** insurance_percentage and insurance_amount are mutually exclusive - this renders whichever ONE
- *  is currently active (useAmount picks which), with a checkbox above it to switch. Neither
- *  field's own stored value is ever touched by switching - an earlier version cleared the hidden
- *  one, which permanently destroyed insurance_percentage's hardcoded tenant default the first
- *  time anyone toggled to amount mode and back. The ERP import stays exclusive by reading a
- *  separate, never-shown "insurance_mode" field instead (see switchInsuranceMode in JobRunPage,
- *  and entry_values_and_rows in jobs.py, which blanks whichever Excel column is inactive at
- *  read time). Used in both places insurance_percentage alone already showed (Additional
- *  Details, and the Custom document tab), with `percentageFv`/`amountFv` possibly undefined if
- *  this template has no such field at all, in which case this renders nothing. */
+/** insurance_percentage and insurance_amount are mutually exclusive - BOTH fields show at once,
+ *  each with its own checkbox beside it (radio-style: checking one unchecks the other; the
+ *  already-checked one can't be unchecked on its own, since exactly one is always meant to be
+ *  active). Only the checked field is editable - the other is shown read-only so it is obvious
+ *  which one actually counts, without inviting an edit that would never be used.
+ *
+ *  Neither field's own stored value is ever touched by switching which is checked - an earlier
+ *  version cleared the unchecked one's corrected_value outright, which permanently destroyed
+ *  insurance_percentage's hardcoded tenant default the first time anyone checked "amount" and
+ *  switched back. The ERP import stays exclusive by reading a separate, never-shown
+ *  "insurance_mode" field instead (see switchInsuranceMode in JobRunPage, and
+ *  entry_values_and_rows in jobs.py, which blanks whichever Excel column is inactive at read
+ *  time). Used in both places insurance_percentage alone already showed (Additional Details,
+ *  and the Custom document tab), with `percentageFv`/`amountFv` possibly undefined if this
+ *  template has no such field at all, in which case this renders nothing. */
 function InsuranceModeField({
   percentageFv,
   amountFv,
@@ -4744,32 +4750,53 @@ function InsuranceModeField({
   labelOverrideAmount?: string;
   onBeforeSave?: (value: string) => Promise<boolean>;
 }) {
-  const active = useAmount ? amountFv : percentageFv;
-  if (!active) return null;
-  return (
-    <div>
-      {amountFv && (
+  if (!percentageFv && !amountFv) return null;
+  // Only the active field's save is gated behind the insurance-certificate check - the
+  // inactive one is read-only, so there is nothing for it to save in the first place.
+  const row = (
+    fv: JobFieldValue | undefined,
+    isAmount: boolean,
+    labelOverride: string | undefined,
+  ) => {
+    if (!fv) return null;
+    const checked = useAmount === isAmount;
+    return (
+      <div>
         <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
           <input
             type="checkbox"
-            checked={useAmount}
-            onChange={(e) => onToggle(e.target.checked)}
+            checked={checked}
+            onChange={() => {
+              if (!checked) onToggle(isAmount);
+            }}
             disabled={readOnly}
             className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-600 dark:bg-slate-800"
           />
-          Use a fixed insurance amount instead of a percentage
+          Use this value
         </label>
-      )}
-      <ExtractedField
-        fv={active}
-        readOnly={readOnly}
-        reload={reload}
-        labelOverride={useAmount ? labelOverrideAmount : labelOverridePercentage}
-        onBeforeSave={onBeforeSave}
-      />
-      {active.ask_operator_hint && (
-        <p className="mt-1 text-[11px] text-slate-400">{active.ask_operator_hint}</p>
-      )}
+        {/* Unchecked is read-only, but ExtractedField's own "blank = missing, flag it red"
+            styling (see boxClassName above) has no idea this field is deliberately not the
+            one being used - without dimming it, an untouched amount field would show the
+            same alarming red "not found" box as a genuinely missing mandatory value. */}
+        <div className={checked ? undefined : "opacity-40"}>
+          <ExtractedField
+            fv={fv}
+            readOnly={readOnly || !checked}
+            reload={reload}
+            labelOverride={labelOverride}
+            onBeforeSave={checked ? onBeforeSave : undefined}
+          />
+        </div>
+        {fv.ask_operator_hint && (
+          <p className="mt-1 text-[11px] text-slate-400">{fv.ask_operator_hint}</p>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+      {row(percentageFv, false, labelOverridePercentage)}
+      {row(amountFv, true, labelOverrideAmount)}
     </div>
   );
 }
@@ -5719,7 +5746,7 @@ function ExtractionReview({
                   if (fv.label_name === "insurance_amount") return null;
                   if (fv.label_name === "insurance_percentage") {
                     return (
-                      <div key={fv.id} id={`field-${fv.id}`}>
+                      <div key={fv.id} id={`field-${fv.id}`} className="sm:col-span-2">
                         <InsuranceModeField
                           percentageFv={insurancePercentageFv}
                           amountFv={insuranceAmountFv}
