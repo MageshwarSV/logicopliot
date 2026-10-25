@@ -16,4 +16,5 @@ export const ROLE_HOME: Record<Role, string> = {
   admin: "/jobs",
   gk2: "/jobs",
   manager: "/manager",
+  saas_finance: "/saas-finance",
 };

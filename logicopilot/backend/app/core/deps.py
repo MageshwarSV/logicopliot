@@ -7,7 +7,7 @@ from sqlalchemy.orm import Query, Session
 
 from app.core.security import TokenType, decode_token
 from app.db.session import SessionLocal
-from app.models.user import ADMIN, GK2, OPERATOR, SUPER_ADMIN, User
+from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, User
 
 ACCESS_TOKEN_COOKIE = "access_token"
 REFRESH_TOKEN_COOKIE = "refresh_token"
@@ -92,16 +92,17 @@ def get_tenant_scope(
     user: User = Depends(get_current_user),
     tenant_id: str | None = None,
 ) -> TenantScope:
-    """Super admins and admins are unrestricted (optionally narrowed via ?tenant_id=, which
-    is how the jobs list's tenant-filter dropdown works); everyone else is forced to their
-    own tenant regardless of what's passed in.
+    """Super admins, admins, and SaaS Finance are unrestricted (optionally narrowed via
+    ?tenant_id=, which is how the jobs list's tenant-filter dropdown works); everyone else
+    is forced to their own tenant regardless of what's passed in.
 
     is_super_admin is deliberately not renamed to something broader: it drives query SCOPE
     only (which tenant's rows a query may touch). It grants no endpoint by itself — an admin
-    reaches exactly the routes that name ADMIN in their own require_role(...), same as any
-    other role. See app/models/user.py for why admin has no tenant_id to fall back on.
+    (or saas_finance) reaches exactly the routes that name it in their own
+    require_role(...), same as any other role. See app/models/user.py for why these roles
+    have no tenant_id to fall back on.
     """
-    if user.role in (SUPER_ADMIN, ADMIN):
+    if user.role in (SUPER_ADMIN, ADMIN, SAAS_FINANCE):
         return TenantScope(tenant_id=tenant_id, is_super_admin=True)
     return TenantScope(tenant_id=user.tenant_id, is_super_admin=False)
 

@@ -9,7 +9,9 @@ from app.core.deps import TenantScope, get_current_user, get_db, get_tenant_scop
 from app.core.mail_crypto import encrypt_secret
 from app.core.security import hash_password
 from app.models.tenant import Tenant
-from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
+from app.models.user import (
+    ADMIN, GK2, MANAGER, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User,
+)
 from app.models.user_type import UserType
 from app.schemas.user import UserCreate, UserOut, UserUpdate
 
@@ -125,7 +127,7 @@ def create_user(
     Operator. Operators are blocked from this endpoint entirely by require_role above."""
     effective_role = payload.role
     user_type: UserType | None = None
-    if creator.role == SUPER_ADMIN and payload.role == ADMIN:
+    if creator.role == SUPER_ADMIN and payload.role in (ADMIN, SAAS_FINANCE):
         # Cross-tenant, like Super Admin itself — no tenant to belong to, and none is
         # accepted even if one was sent (the check constraint would reject it anyway).
         tenant_id = None
@@ -133,7 +135,7 @@ def create_user(
         if payload.role != TENANT_ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Super admins may only create tenant_admin or admin accounts here",
+                detail="Super admins may only create tenant_admin, admin, or saas_finance accounts here",
             )
         if not payload.tenant_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tenant_id is required")
@@ -304,10 +306,10 @@ def update_user(
     if user.id == actor.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot change your own account")
 
-    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, ADMIN):
+    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, ADMIN, SAAS_FINANCE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super admins may only manage tenant_admin or admin accounts here",
+            detail="Super admins may only manage tenant_admin, admin, or saas_finance accounts here",
         )
     if actor.role == TENANT_ADMIN and user.role not in (OPERATOR, GK2, MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant admins may only manage operator, GK2, or manager accounts")
@@ -441,7 +443,7 @@ def delete_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if user.id == actor.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own account")
-    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER):
+    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete this account")
     if actor.role == TENANT_ADMIN and user.role not in (OPERATOR, GK2, MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant admins may only delete operator, GK2, or manager accounts")

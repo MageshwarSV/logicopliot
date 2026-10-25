@@ -28,6 +28,15 @@ import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
+import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
+import { SaasFinanceCustomersPage } from "../pages/saas-finance/CustomersPage";
+import { SaasFinanceCustomerDetailPage } from "../pages/saas-finance/CustomerDetailPage";
+import { SaasFinanceUsageBillingPage } from "../pages/saas-finance/UsageBillingPage";
+import { SaasFinanceInvoicesPage } from "../pages/saas-finance/InvoicesPage";
+import { SaasFinancePaymentsPage } from "../pages/saas-finance/PaymentsPage";
+import { SaasFinancePricingPlansPage } from "../pages/saas-finance/PricingPlansPage";
+import { SaasFinanceReportsPage } from "../pages/saas-finance/ReportsPage";
+import { SaasFinanceInvoicePrintPage } from "../pages/saas-finance/InvoicePrintPage";
 
 export function AppRoutes() {
   return (
@@ -229,8 +238,80 @@ export function AppRoutes() {
       <Route
         path="/account"
         element={
-          <ProtectedRoute allowedRoles={["tenant_admin", "operator", "gk2"]}>
+          <ProtectedRoute allowedRoles={["tenant_admin", "operator", "gk2", "saas_finance"]}>
             <AccountSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/customers"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceCustomersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/customers/:tenantId"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceCustomerDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/usage-billing"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceUsageBillingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/invoices"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceInvoicesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/invoices/:tenantId/:invoiceId/print"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceInvoicePrintPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/payments"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinancePaymentsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/pricing-plans"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinancePricingPlansPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/reports"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance"]}>
+            <SaasFinanceReportsPage />
           </ProtectedRoute>
         }
       />

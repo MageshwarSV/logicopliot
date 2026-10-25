@@ -186,9 +186,11 @@ export function AppShell({
         ? "/tenant-admin"
         : user?.role === "manager"
           ? "/manager"
-          : user?.role === "admin" || user?.role === "gk2"
-            ? "/jobs"
-            : "/operator";
+          : user?.role === "saas_finance"
+            ? "/saas-finance"
+            : user?.role === "admin" || user?.role === "gk2"
+              ? "/jobs"
+              : "/operator";
 
   return (
     <div className="flex h-svh overflow-hidden bg-slate-50 dark:bg-slate-950">
@@ -284,6 +286,28 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
+              </div>
+            </div>
+          )}
+
+          {user?.role === "saas_finance" && (
+            <div className="mt-8">
+              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Finance</h3>
+              <div className="mt-2 space-y-1">
+                {[
+                  { to: "/saas-finance", label: "Dashboard" },
+                  { to: "/saas-finance/customers", label: "Customers" },
+                  { to: "/saas-finance/usage-billing", label: "Usage & Billing" },
+                  { to: "/saas-finance/invoices", label: "Invoices" },
+                  { to: "/saas-finance/payments", label: "Payments" },
+                  { to: "/saas-finance/pricing-plans", label: "Pricing & Plans" },
+                  { to: "/saas-finance/reports", label: "Reports" },
+                  { to: "/account", label: "Settings" },
+                ].map((item) => (
+                  <Link key={item.to} to={item.to} className={navClass(item.to)}>
+                    {item.label}
+                  </Link>
+                ))}
               </div>
             </div>
           )}

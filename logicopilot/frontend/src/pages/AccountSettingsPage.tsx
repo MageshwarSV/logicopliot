@@ -5,10 +5,10 @@ import { Button } from "../components/ui/Button";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
 import { useAuth } from "../auth/useAuth";
 
-/** Shared across Tenant Admin, Gate Keeper 1 (operator), and Gate Keeper 2 - the one thing
- * every one of these roles can do for their own account today is change their own password.
- * Super Admin's own Settings page (SettingsPage.tsx) is unrelated system-wide config, not an
- * account page, and manager has no page here yet - add one if asked. */
+/** Shared across Tenant Admin, Gate Keeper 1 (operator), Gate Keeper 2, and SaaS Finance -
+ * the one thing every one of these roles can do for their own account today is change their
+ * own password. Super Admin's own Settings page (SettingsPage.tsx) is unrelated system-wide
+ * config, not an account page, and manager has no page here yet - add one if asked. */
 export function AccountSettingsPage() {
   const { user } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);

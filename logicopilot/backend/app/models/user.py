@@ -24,7 +24,12 @@ GK2 = "gk2"
 # anywhere (approve/edit/upload/submit) — every action a Manager might want is something to
 # ask GK1 or GK2 to do, never something Manager does directly.
 MANAGER = "manager"
-ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER)
+# Cross-tenant, like Admin, but for the finance team rather than jobs — every tenant's
+# usage/billing/invoices, read-only, with exactly one write action (marking an invoice
+# paid). Created by Super Admin alone, same as Admin. Never manages tenants or users, never
+# sees a single tenant's own operational job data.
+SAAS_FINANCE = "saas_finance"
+ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE)
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -32,8 +37,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         CheckConstraint(f"role IN {ROLES}", name="ck_users_role_valid"),
         CheckConstraint(
-            "(role IN ('super_admin', 'admin') AND tenant_id IS NULL) OR "
-            "(role NOT IN ('super_admin', 'admin') AND tenant_id IS NOT NULL)",
+            "(role IN ('super_admin', 'admin', 'saas_finance') AND tenant_id IS NULL) OR "
+            "(role NOT IN ('super_admin', 'admin', 'saas_finance') AND tenant_id IS NOT NULL)",
             name="ck_users_tenant_scope",
         ),
     )

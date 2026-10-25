@@ -7,6 +7,7 @@ const ROLE_CLASSES: Record<Role, string> = {
   admin: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
   gk2: "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300",
   manager: "bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-300",
+  saas_finance: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300",
 };
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -16,6 +17,7 @@ const ROLE_LABELS: Record<Role, string> = {
   admin: "Admin",
   gk2: "Gate Keeper 2",
   manager: "Manager",
+  saas_finance: "SaaS Finance",
 };
 
 export function RoleBadge({ role }: { role: Role }) {

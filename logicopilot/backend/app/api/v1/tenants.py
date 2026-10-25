@@ -12,7 +12,7 @@ from app.core.security import hash_password
 from app.models.invoice import Invoice
 from app.models.tenant import Tenant
 from app.models.tenant_billing_config import TenantBillingConfig
-from app.models.user import ADMIN, GK2, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
+from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
     BillingUsageOut,
@@ -92,7 +92,8 @@ def create_tenant(
 def list_tenants(
     db: Session = Depends(get_db),
     # ADMIN needs this too: the jobs list's tenant-filter dropdown is built from it.
-    _=Depends(require_role(SUPER_ADMIN, ADMIN)),
+    # SAAS_FINANCE needs the full tenant list for its own Customers page.
+    _=Depends(require_role(SUPER_ADMIN, ADMIN, SAAS_FINANCE)),
 ) -> list[TenantOut]:
     tenants = db.query(Tenant).all()
     return [TenantOut.model_validate(t) for t in tenants]
@@ -104,9 +105,10 @@ def get_tenant(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TenantOut:
-    """Super admins can look up any tenant; everyone else only their own (404 otherwise) —
-    this is how a Tenant Admin/Operator dashboard shows its own tenant's name."""
-    if user.role != SUPER_ADMIN and user.tenant_id != tenant_id:
+    """Super admins and SaaS Finance can look up any tenant; everyone else only their own
+    (404 otherwise) — this is how a Tenant Admin/Operator dashboard shows its own tenant's
+    name, and how Finance's customer-detail page resolves any tenant by id."""
+    if user.role not in (SUPER_ADMIN, SAAS_FINANCE) and user.tenant_id != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
@@ -176,7 +178,9 @@ def update_tenant(
 def get_tenant_billing_config(
     tenant_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(SUPER_ADMIN)),
+    # SaaS Finance may VIEW pricing (its own Pricing & Plans page) but never change it -
+    # update_tenant_billing_config below stays Super-Admin-only.
+    user: User = Depends(require_role(SUPER_ADMIN, SAAS_FINANCE)),
 ) -> TenantBillingConfigOut:
     """Pure reference data for the Super Admin's own records - what this tenant is billed for
     CARGORA itself and the TrackContainer.in integration. Returns the model's own defaults
@@ -237,7 +241,7 @@ def update_tenant_billing_config(
 
 
 def _require_billing_read_access(user: User, tenant_id: str) -> None:
-    if user.role not in (SUPER_ADMIN, TENANT_ADMIN):
+    if user.role not in (SUPER_ADMIN, TENANT_ADMIN, SAAS_FINANCE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     if user.role == TENANT_ADMIN and user.tenant_id != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
@@ -348,10 +352,12 @@ def mark_invoice_paid(
     invoice_id: str,
     payload: MarkInvoicePaid,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    # SaaS Finance owns this in practice day to day - the one write action it gets.
+    _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE)),
 ) -> InvoiceOut:
     """There is no payment gateway integration yet - a tenant pays by bank transfer to the
-    company's own account, outside the platform, and a Super Admin marks the invoice paid by
+    company's own account, outside the platform, and a Super Admin or SaaS Finance user
+    marks the invoice paid by
     hand once that payment is actually received. Super Admin only - a Tenant Admin cannot
     mark their own invoice paid."""
     invoice = db.get(Invoice, invoice_id)

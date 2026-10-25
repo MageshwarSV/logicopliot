@@ -8,6 +8,7 @@ import { Modal } from "../../components/ui/Modal";
 import { RoleBadge, StatusBadge } from "../../components/ui/Badge";
 import { CreateTenantModal } from "./CreateTenantModal";
 import { CreateTenantAdminModal } from "./CreateTenantAdminModal";
+import { CreateFinanceUserModal } from "./CreateFinanceUserModal";
 import { InboxButton } from "./InboxButton";
 import { TenantUsersModal } from "./TenantUsersModal";
 import * as tenantsApi from "../../api/tenants";
@@ -28,6 +29,8 @@ export function SuperAdminDashboard() {
   const [tenantModalOpen, setTenantModalOpen] = useState(false);
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [editAdmin, setEditAdmin] = useState<User | null>(null);
+  const [financeModalOpen, setFinanceModalOpen] = useState(false);
+  const [editFinance, setEditFinance] = useState<User | null>(null);
   const [usersOfTenant, setUsersOfTenant] = useState<Tenant | null>(null);
   const [irnLinkTenant, setIrnLinkTenant] = useState<Tenant | null>(null);
   const [irnLinkBusy, setIrnLinkBusy] = useState(false);
@@ -52,6 +55,7 @@ export function SuperAdminDashboard() {
 
   const tenantAdmins = users.filter((u) => u.role === "tenant_admin");
   const operators = users.filter((u) => u.role === "operator");
+  const financeUsers = users.filter((u) => u.role === "saas_finance");
   const tenantNameById = new Map(tenants.map((t) => [t.id, t.name]));
 
   async function handleToggleActive(user: User) {
@@ -169,6 +173,27 @@ export function SuperAdminDashboard() {
     },
   ];
 
+  const financeColumns: Column<User>[] = [
+    { header: "Name", render: (u) => <span className="font-medium text-slate-900 dark:text-slate-100">{u.full_name}</span> },
+    { header: "Email", render: (u) => u.email },
+    { header: "Role", render: (u) => <RoleBadge role={u.role} /> },
+    { header: "Status", render: (u) => <StatusBadge isActive={u.is_active} /> },
+    {
+      header: "",
+      className: "text-right",
+      render: (u) => (
+        <div className="flex justify-end gap-1">
+          <Button variant="ghost" size="sm" onClick={() => { setEditFinance(u); setFinanceModalOpen(true); }}>
+            Edit
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => handleToggleActive(u)}>
+            {u.is_active ? "Disable" : "Enable"}
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
   return (
     <AppShell title="Super Admin" subtitle="Manage tenants and the admins who run them." actions={<InboxButton />}>
       {error && (
@@ -201,7 +226,7 @@ export function SuperAdminDashboard() {
         )}
       </Card>
 
-      <Card>
+      <Card className="mb-8">
         <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
           <h2 className="font-semibold text-slate-900 dark:text-slate-50">Tenant Admins</h2>
           <p className="mt-0.5 text-xs text-slate-500">
@@ -215,6 +240,28 @@ export function SuperAdminDashboard() {
             rows={tenantAdmins}
             keyFor={(u) => u.id}
             emptyMessage="No tenant admins yet — create a tenant first, then issue its admin a login here."
+          />
+        )}
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+          <div>
+            <h2 className="font-semibold text-slate-900 dark:text-slate-50">Finance Users</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Cross-tenant, read-only access to usage/billing/invoices for the finance team.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setFinanceModalOpen(true)}>
+            + New Finance User
+          </Button>
+        </div>
+        {!isLoading && (
+          <DataTable
+            columns={financeColumns}
+            rows={financeUsers}
+            keyFor={(u) => u.id}
+            emptyMessage="No Finance users yet."
           />
         )}
       </Card>
@@ -269,6 +316,20 @@ export function SuperAdminDashboard() {
         onCreated={() => {
           setAdminModalOpen(false);
           setEditAdmin(null);
+          refresh();
+        }}
+      />
+
+      <CreateFinanceUserModal
+        open={financeModalOpen}
+        onClose={() => {
+          setFinanceModalOpen(false);
+          setEditFinance(null);
+        }}
+        editUser={editFinance}
+        onCreated={() => {
+          setFinanceModalOpen(false);
+          setEditFinance(null);
           refresh();
         }}
       />

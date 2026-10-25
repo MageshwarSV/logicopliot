@@ -1,4 +1,11 @@
-export type Role = "super_admin" | "tenant_admin" | "operator" | "admin" | "gk2" | "manager";
+export type Role =
+  | "super_admin"
+  | "tenant_admin"
+  | "operator"
+  | "admin"
+  | "gk2"
+  | "manager"
+  | "saas_finance";
 
 export interface User {
   id: string;

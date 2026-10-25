@@ -146,8 +146,8 @@ export async function listInvoices(tenantId: string): Promise<Invoice[]> {
   return response.data;
 }
 
-/** Super Admin only - marks an invoice paid once payment is actually received outside the
- *  platform (there is no payment gateway integration yet). */
+/** Super Admin or SaaS Finance - marks an invoice paid once payment is actually received
+ *  outside the platform (there is no payment gateway integration yet). */
 export async function markInvoicePaid(tenantId: string, invoiceId: string, paid = true): Promise<Invoice> {
   const response = await apiClient.post<Invoice>(
     `/tenants/${tenantId}/billing/invoices/${invoiceId}/mark-paid`,
