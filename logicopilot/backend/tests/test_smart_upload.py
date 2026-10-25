@@ -302,14 +302,15 @@ def test_zip_with_only_unsupported_files_is_rejected_as_empty(client, db_session
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("readme.txt", b"nothing useful")
-        z.writestr("notes.docx", b"also nothing useful")
+        z.writestr("data.csv", b"also nothing useful")
     resp = _upload(client, job.id, [("junk.zip", buf.getvalue(), "application/zip")])
 
     # Unlike a direct unsupported-extension upload (silently dropped, 200 with empty
     # results), a ZIP whose contents are ALL unsupported never even makes it into `files`
-    # at all, so the endpoint correctly reports the whole request as empty.
+    # at all, so the endpoint correctly reports the whole request as empty. .docx/.xlsx are
+    # no longer an example of "unsupported" here - see test_smart_upload_office_conversion.py.
     assert resp.status_code == 422
-    assert "No PDF/image files found" in resp.json()["detail"]
+    assert "No PDF/image/Word/Excel files found" in resp.json()["detail"]
 
 
 def test_zip_ignores_unsupported_entries_but_still_processes_the_supported_one(client, db_session):

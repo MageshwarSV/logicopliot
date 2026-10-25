@@ -2241,7 +2241,7 @@ export function JobRunPage() {
                   <input
                     type="file"
                     multiple
-                    accept=".pdf,.png,.jpg,.jpeg,.zip"
+                    accept=".pdf,.png,.jpg,.jpeg,.zip,.doc,.docx,.xls,.xlsx"
                     className="hidden"
                     disabled={smartBusy}
                     onChange={(e) => {

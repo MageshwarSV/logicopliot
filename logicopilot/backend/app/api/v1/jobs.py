@@ -5781,6 +5781,10 @@ def delete_job_document_page(
 
 
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+# Word/Excel files are converted to PDF before classification ever sees them (see
+# app.core.office_convert) - accepted at the upload boundary alongside CLASSIFY_EXTS, but never
+# themselves passed to the classifier.
+UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"}
 
 
 @router.post("/jobs/{job_id}/smart-upload")
@@ -5811,6 +5815,8 @@ def smart_upload(
     import uuid
 
     import fitz  # PyMuPDF
+
+    from app.core import office_convert
 
     job = _load_job(db, job_id, scope, user)
     if is_extraction_paused(db):
@@ -5863,24 +5869,50 @@ def smart_upload(
             try:
                 with zipfile.ZipFile(io.BytesIO(content)) as z:
                     for n in z.namelist():
-                        if not n.endswith("/") and Path(n).suffix.lower() in CLASSIFY_EXTS:
+                        if not n.endswith("/") and Path(n).suffix.lower() in UPLOAD_EXTS:
                             files.append((Path(n).name, z.read(n)))
             except zipfile.BadZipFile:
                 raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
         else:
             files.append((fname, content))
     if not files:
-        raise HTTPException(status_code=422, detail="No PDF/image files found to classify.")
+        raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
     tmp = Path(get_settings().uploads_dir) / "_classify" / job_id
     shutil.rmtree(tmp, ignore_errors=True)
+    results: list[dict] = []
+    # Word -> one PDF, Excel -> one PDF per worksheet (see app.core.office_convert) - done
+    # BEFORE the per-file prepare loop below, so everything that loop sees is already a real
+    # PDF/image and needs no special-casing there. A file that fails to convert is reported the
+    # same way an unreadable PDF already is, rather than silently vanishing from the batch.
+    office_work_dir = tmp / "_office"
+    converted: list[tuple[str, bytes]] = []
+    for name, data in files:
+        ext = Path(name).suffix.lower()
+        if ext not in office_convert.OFFICE_EXTS:
+            converted.append((name, data))
+            continue
+        office_work_dir.mkdir(parents=True, exist_ok=True)
+        src = office_work_dir / f"{uuid.uuid4().hex}{ext}"
+        src.write_bytes(data)
+        try:
+            if ext in office_convert.WORD_EXTS:
+                pdf = office_convert.convert_word_to_pdf(src, office_work_dir, office_work_dir)
+                converted.append((f"{Path(name).stem}.pdf", pdf.read_bytes()))
+            else:
+                for sheet_name, pdf in office_convert.convert_excel_sheets_to_pdfs(
+                    src, office_work_dir, office_work_dir
+                ):
+                    converted.append((f"{Path(name).stem} - {sheet_name}.pdf", pdf.read_bytes()))
+        except office_convert.OfficeConversionFailed as exc:
+            results.append({"filename": name, "matched": [], "error": str(exc)})
+    files = converted
     # A page the classifier cannot confidently place lives here PERMANENTLY, not in `tmp`
     # above - `tmp` is unconditionally wiped in the `finally` below no matter how
     # classification goes, which used to mean a page nobody could place was gone with no
     # trace it ever existed (see UnmatchedUploadPage's own docstring).
     unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job_id / "unmatched"
     custom_filter_texts = get_active_custom_filter_texts(db)
-    results: list[dict] = []
     try:
         # PREPARE every file first, then assign them together. One slot can only take one file
         # and the whole set has to be weighed at once to decide which file that is - classifying
