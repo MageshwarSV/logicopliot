@@ -14,7 +14,7 @@ import * as jobsApi from "../../api/jobs";
 import * as emailApi from "../../api/email";
 import * as tenantsApi from "../../api/tenants";
 import * as usersApi from "../../api/users";
-import type { Job } from "../../types/jobs";
+import type { Job, JobEvent } from "../../types/jobs";
 import type { Tenant } from "../../types/tenant";
 import type { User } from "../../types/auth";
 import { useAuth } from "../../auth/useAuth";
@@ -111,6 +111,25 @@ export function JobsPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [checkingMail, setCheckingMail] = useState(false);
   const [mailMsg, setMailMsg] = useState<string | null>(null);
+  // Clicking a row's own Date cell (not the row itself, which opens the job) pops up its full
+  // status log with a timestamp on every entry - "when did this actually move" answered right
+  // from the list, without opening the job just to find out.
+  const [historyJob, setHistoryJob] = useState<Job | null>(null);
+  const [historyRows, setHistoryRows] = useState<JobEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  function openHistory(j: Job) {
+    setHistoryJob(j);
+    setHistoryRows([]);
+    setHistoryError(null);
+    setHistoryLoading(true);
+    jobsApi
+      .jobHistory(j.id)
+      .then(setHistoryRows)
+      .catch(() => setHistoryError("Could not load this job's history."))
+      .finally(() => setHistoryLoading(false));
+  }
   // Which row's "⋮" menu is open — one at a time, closed by its own backdrop click.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   // Mode tabs: a personal-assignment filter, not a general one — only shown for operator/gk2,
@@ -650,7 +669,17 @@ export function JobsPage() {
     {
       header: "Date",
       render: (j) => (
-        <span className="text-slate-600 dark:text-slate-300">{when(j.created_at, false)}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openHistory(j);
+          }}
+          title="View full status history"
+          className="text-slate-600 underline decoration-dotted underline-offset-2 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
+        >
+          {when(j.created_at, false)}
+        </button>
       ),
     },
     {
@@ -1069,6 +1098,36 @@ export function JobsPage() {
           {error && <Alert>{error}</Alert>}
           <Button type="submit" isLoading={submitting} className="mt-1">Create &amp; open</Button>
         </form>
+      </Modal>
+
+      <Modal
+        open={historyJob !== null}
+        onClose={() => setHistoryJob(null)}
+        title={historyJob ? `History · ${historyJob.reference}` : "History"}
+      >
+        {historyLoading && <p className="text-sm text-slate-400">Loading…</p>}
+        {historyError && <Alert>{historyError}</Alert>}
+        {!historyLoading && !historyError && (
+          historyRows.length === 0 ? (
+            <p className="text-sm text-slate-400">No history recorded for this job yet.</p>
+          ) : (
+            <ol className="flex flex-col gap-3">
+              {[...historyRows].reverse().map((ev) => (
+                <li key={ev.id} className="flex items-start gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0 dark:border-slate-800">
+                  <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                      {ev.label ?? ev.status}
+                      {ev.stage && <span className="ml-2 text-xs font-normal text-slate-400">({ev.stage})</span>}
+                    </p>
+                    {ev.note && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{ev.note}</p>}
+                    <p className="mt-0.5 text-xs text-slate-400">{when(ev.at, true)}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )
+        )}
       </Modal>
     </AppShell>
   );
