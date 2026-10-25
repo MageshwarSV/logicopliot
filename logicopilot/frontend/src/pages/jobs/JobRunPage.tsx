@@ -1531,26 +1531,31 @@ export function JobRunPage() {
   const insuranceModeFv = jobFieldValues.find(
     (fv) => fv.row_index == null && fv.label_name === "insurance_mode",
   );
-  const [insuranceUseAmount, setInsuranceUseAmount] = useState(false);
+  // null = neither box checked yet. Starts unselected on purpose - the operator must actively
+  // pick one rather than silently inheriting a pre-checked default they could approve without
+  // ever having looked at (the insurance_mode field's own hardcoded_value is blank for exactly
+  // this reason). Both fields stay read-only until a choice is made - see InsuranceModeField.
+  const [insuranceMode, setInsuranceModeState] = useState<"percentage" | "amount" | null>(null);
   useEffect(() => {
     if (insuranceModeFv) {
-      const mode = (insuranceModeFv.corrected_value ?? insuranceModeFv.extracted_value ?? "percentage").trim();
-      setInsuranceUseAmount(mode === "amount");
+      const mode = (insuranceModeFv.corrected_value ?? insuranceModeFv.extracted_value ?? "").trim();
+      setInsuranceModeState(mode === "amount" ? "amount" : mode === "percentage" ? "percentage" : null);
       return;
     }
     // No insurance_mode field on this template (not yet backfilled, or an older template this
     // feature was never added to) - fall back to the old heuristic: a non-blank amount can only
     // mean it was deliberately set on an earlier visit, since amount is never pre-filled.
     const amt = (insuranceAmountFv?.corrected_value ?? insuranceAmountFv?.extracted_value ?? "").trim();
-    if (amt) setInsuranceUseAmount(true);
+    if (amt) setInsuranceModeState("amount");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insuranceModeFv?.corrected_value, insuranceModeFv?.extracted_value,
       insuranceAmountFv?.corrected_value, insuranceAmountFv?.extracted_value]);
   async function switchInsuranceMode(toAmount: boolean) {
-    setInsuranceUseAmount(toAmount);
+    const mode = toAmount ? "amount" : "percentage";
+    setInsuranceModeState(mode);
     try {
       if (insuranceModeFv) {
-        await jobsApi.correctFieldValue(insuranceModeFv.id, toAmount ? "amount" : "percentage");
+        await jobsApi.correctFieldValue(insuranceModeFv.id, mode);
       }
     } finally {
       await load();
@@ -3245,7 +3250,7 @@ export function JobRunPage() {
               readOnly={!canEditValues}
               activeFileId={activeFile?.id ?? null}
               setActiveFileId={setActiveFileId}
-              insuranceUseAmount={insuranceUseAmount}
+              insuranceMode={insuranceMode}
               onToggleInsuranceMode={switchInsuranceMode}
             />
           )}
@@ -3299,7 +3304,7 @@ export function JobRunPage() {
                               <InsuranceModeField
                                 percentageFv={insurancePercentageFv}
                                 amountFv={insuranceAmountFv}
-                                useAmount={insuranceUseAmount}
+                                mode={insuranceMode}
                                 onToggle={switchInsuranceMode}
                                 readOnly={!canEditValues}
                                 reload={load}
@@ -4732,7 +4737,7 @@ function ReferenceSearchPicker({
 function InsuranceModeField({
   percentageFv,
   amountFv,
-  useAmount,
+  mode,
   onToggle,
   readOnly,
   reload,
@@ -4742,7 +4747,7 @@ function InsuranceModeField({
 }: {
   percentageFv: JobFieldValue | undefined;
   amountFv: JobFieldValue | undefined;
-  useAmount: boolean;
+  mode: "percentage" | "amount" | null;
   onToggle: (toAmount: boolean) => void;
   readOnly: boolean;
   reload: () => Promise<void>;
@@ -4759,7 +4764,7 @@ function InsuranceModeField({
     labelOverride: string | undefined,
   ) => {
     if (!fv) return null;
-    const checked = useAmount === isAmount;
+    const checked = mode === (isAmount ? "amount" : "percentage");
     return (
       <div>
         <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
@@ -5039,7 +5044,7 @@ function ExtractionReview({
   readOnly,
   activeFileId,
   setActiveFileId,
-  insuranceUseAmount,
+  insuranceMode,
   onToggleInsuranceMode,
 }: {
   job: JobDetail;
@@ -5055,8 +5060,8 @@ function ExtractionReview({
   setActiveFileId: (id: string) => void;
   // insurance_percentage/insurance_amount's shared toggle state - owned by JobRunPage (see
   // switchInsuranceMode there) so this copy and Additional Details' own copy of the same field
-  // never drift into two independent checkboxes.
-  insuranceUseAmount: boolean;
+  // never drift into two independent checkboxes. null = neither picked yet.
+  insuranceMode: "percentage" | "amount" | null;
   onToggleInsuranceMode: (toAmount: boolean) => void;
 }) {
   const files = useMemo(
@@ -5184,11 +5189,18 @@ function ExtractionReview({
     // runs at the job's own Final Submit, long after this document is approved. Catching it
     // here too means the operator finds out right where the field actually is, not several
     // screens later.
-    if (approving && active.doc_type === "Custom") {
-      // Whichever of the two the operator is actually using (see InsuranceModeField) - a
-      // percentage-mode job must not be blocked over an amount that was never meant to be
-      // filled in, and vice versa.
-      const insuranceFv = insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv;
+    if (approving && active.doc_type === "Custom" && (insurancePercentageFv || insuranceAmountFv)) {
+      if (insuranceMode === null) {
+        blockApproval(
+          "You need to choose either Insurance Rate (%) or Insurance Amount first.",
+          [insurancePercentageFv, insuranceAmountFv].filter((fv): fv is JobFieldValue => !!fv).map((fv) => fv.id),
+        );
+        return;
+      }
+      // Whichever of the two the operator picked (see InsuranceModeField) - a percentage-mode
+      // job must not be blocked over an amount that was never meant to be filled in, and vice
+      // versa.
+      const insuranceFv = insuranceMode === "amount" ? insuranceAmountFv : insurancePercentageFv;
       const insuranceValue = (insuranceFv?.corrected_value ?? insuranceFv?.extracted_value ?? "").trim();
       if (!insuranceValue) {
         blockApproval(
@@ -5750,17 +5762,17 @@ function ExtractionReview({
                         <InsuranceModeField
                           percentageFv={insurancePercentageFv}
                           amountFv={insuranceAmountFv}
-                          useAmount={insuranceUseAmount}
+                          mode={insuranceMode}
                           onToggle={onToggleInsuranceMode}
                           readOnly={readOnly}
                           reload={reload}
                           labelOverridePercentage={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                           labelOverrideAmount={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.["insurance_amount"]}
                           onBeforeSave={
-                            (insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv)?.custom_field_id
+                            (insuranceMode === "amount" ? insuranceAmountFv : insurancePercentageFv)?.custom_field_id
                               ? () =>
                                   requireInsuranceCertificate(
-                                    (insuranceUseAmount ? insuranceAmountFv : insurancePercentageFv)!.custom_field_id!,
+                                    (insuranceMode === "amount" ? insuranceAmountFv : insurancePercentageFv)!.custom_field_id!,
                                   )
                               : undefined
                           }
