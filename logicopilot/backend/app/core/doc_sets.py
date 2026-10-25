@@ -66,7 +66,40 @@ def pairing_key(values: dict[str, str | None]) -> str | None:
     return None
 
 
-def _same_number(a: str, b: str) -> bool:
+# Read straight off a page's raw OCR text with a regex, not an AI call or a label->value dict -
+# this runs once per classified page during Smart Upload, before any real field extraction
+# exists to read pairing_key() from. A Packing List is keyed on the SAME pattern as an Invoice
+# (it names the invoice it belongs to, not a packing-list number of its own) - mirrors
+# email_puller._document_name's own _REF_PATTERNS, kept separate since that one also covers BL
+# and is used for cosmetic file-naming rather than grouping/splitting documents.
+_INVOICE_NUMBER_PATTERNS = {
+    "Invoice": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})"],
+    "PackingList": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})"],
+}
+
+# The doc_types Smart Upload will group/split by invoice number at all - every other type (BL,
+# Custom, Freight, ...) keeps its existing one-claim-one-document behavior untouched.
+GROUPABLE_DOC_TYPES = frozenset(_INVOICE_NUMBER_PATTERNS)
+
+
+def extract_invoice_number_from_text(doc_type: str, text: str) -> str | None:
+    """The invoice number a claim's own pages carry, read directly off their raw OCR text -
+    used to decide whether two claims (from the same file or different ones) belong in the
+    SAME Invoice/PackingList document or different ones. Never written anywhere as the job's
+    own real extracted value - that still comes from the ordinary field-extraction pipeline,
+    same prompts and same accuracy as today, untouched by this. Returns None (never groups/
+    splits) when nothing matches - a Smart Upload that cannot read a number off the page falls
+    back to today's one-claim-one-document behavior rather than guessing."""
+    for pattern in _INVOICE_NUMBER_PATTERNS.get(doc_type or "", []):
+        m = re.search(pattern, text or "", re.IGNORECASE)
+        if m:
+            key = normalise_key(m.group(1))
+            if len(key) >= MIN_KEY_LEN:
+                return key
+    return None
+
+
+def same_number(a: str, b: str) -> bool:
     """Exact match, or one number printed in full and the other abbreviated.
 
     A packing list often prints 'INV NO: 505' where the invoice itself says 'E26000505'.
@@ -134,7 +167,7 @@ def assign_sets(files: list[dict]) -> dict[str, int | None]:
     numbers: list[str] = []
 
     def _add(f):
-        if not any(_same_number(f["key"], n) for n in numbers):
+        if not any(same_number(f["key"], n) for n in numbers):
             numbers.append(f["key"])
 
     for f in sorted((x for x in keyed if x.get("template_document_id") == primary),
@@ -153,7 +186,7 @@ def assign_sets(files: list[dict]) -> dict[str, int | None]:
         if not key:
             out[f["id"]] = None
             continue
-        hits = [i for i, n in enumerate(numbers, start=1) if _same_number(key, n)]
+        hits = [i for i, n in enumerate(numbers, start=1) if same_number(key, n)]
         # Ambiguous is unpaired. Better to say "this one needs a look" than to guess.
         out[f["id"]] = hits[0] if len(hits) == 1 else None
 

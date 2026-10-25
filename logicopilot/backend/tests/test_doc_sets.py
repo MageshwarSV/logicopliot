@@ -5,7 +5,10 @@ No dedicated test file existed for this module before - added while root-causing
 a single-invoice job's own Invoice and Packing List got split into two FAKE sets because their
 own "Invoice No"-captioned fields read two different strings, even though there was only ever
 one file in each slot and so nothing to actually pair."""
-from app.core.doc_sets import assign_sets, describe_sets, normalise_key, pairing_key
+from app.core.doc_sets import (
+    assign_sets, describe_sets, extract_invoice_number_from_text, normalise_key, pairing_key,
+    same_number,
+)
 
 
 def _file(fid, tid, file_index=0, key=None, name=None):
@@ -180,3 +183,38 @@ def test_describe_sets_reports_a_whole_job_document_separately():
     lines = describe_sets(files, sets)
     assert any("whole job" in line for line in lines)
     assert any("set 1" in line for line in lines)
+
+
+# ---- extract_invoice_number_from_text (Smart Upload's own grouping/splitting pass) ---------
+
+def test_extract_invoice_number_reads_it_straight_off_raw_page_text():
+    text = "COMMERCIAL INVOICE\nInvoice No: INV-0505\nSupplier: Acme Corp"
+    assert extract_invoice_number_from_text("Invoice", text) == "INV0505"
+
+
+def test_extract_invoice_number_works_for_packing_list_too():
+    # A packing list names the invoice it belongs to, not a packing-list number of its own -
+    # same pattern as Invoice, deliberately.
+    text = "PACKING LIST\nInvoice No: INV-0505\n3 cartons"
+    assert extract_invoice_number_from_text("PackingList", text) == "INV0505"
+
+
+def test_extract_invoice_number_none_when_doc_type_not_groupable():
+    text = "BILL OF LADING\nInvoice No: INV-0505"
+    assert extract_invoice_number_from_text("BL", text) is None
+
+
+def test_extract_invoice_number_none_when_nothing_matches():
+    assert extract_invoice_number_from_text("Invoice", "no reference printed anywhere here") is None
+
+
+def test_extract_invoice_number_none_for_too_short_a_number():
+    assert extract_invoice_number_from_text("Invoice", "Invoice No: 12") is None
+
+
+def test_same_number_matches_short_form_against_full_form():
+    assert same_number(normalise_key("0505"), normalise_key("INV-000505"))
+
+
+def test_same_number_rejects_unrelated_numbers():
+    assert not same_number(normalise_key("INV-0505"), normalise_key("INV-0777"))

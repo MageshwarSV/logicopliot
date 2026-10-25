@@ -32,7 +32,7 @@ from app.core.deps import (
 from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
-from app.core.page_filter import extract_pdf_pages, kept_page_to_original
+from app.core.page_filter import kept_page_to_original, merge_pdf_pages
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import get_extraction_engine, is_extraction_paused
 from app.core.extraction import (
@@ -5816,7 +5816,7 @@ def smart_upload(
 
     import fitz  # PyMuPDF
 
-    from app.core import office_convert
+    from app.core import doc_sets, office_convert
 
     job = _load_job(db, job_id, scope, user)
     if is_extraction_paused(db):
@@ -6017,8 +6017,16 @@ def smart_upload(
             )
             if prepared else []
         )
+        # First pass, per uploaded file: drop the weak ai_second claims, prune now-claimed
+        # unmatched-page staging rows, and work out whether this file's strong claims need
+        # splitting apart at all (more than one, and it's a real PDF to carve pages from).
+        # None of this changes with the cross-file grouping pass below - it is still a
+        # per-file question.
+        pending: list[dict] = []  # one entry per (item, strong claim), across every file
+        split_by_item_id: dict[int, bool] = {}
+        result_by_item_id: dict[int, dict] = {}
+        key_doc_type = {c["key"]: c["doc_type"] for c in candidates}
         for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
-            matched_names: list[str] = []
             # The AI second-opinion pathway (_ai_verify_second_type, source "ai_second") is
             # the weakest signal assign_documents_detailed produces - a narrow, loosely-worded
             # "does this ALSO contain Y" call with no regex anchor, consulted only because
@@ -6047,39 +6055,107 @@ def smart_upload(
                 if row is not None and i in claimed_pages:
                     db.delete(row)
             # A combined file (one PDF carrying both the Invoice and the Packing List) must
-            # give each slot only ITS pages, not the whole thing - see extract_pdf_pages.
-            split = len(strong_claims) > 1 and item["ext"] == ".pdf"
-            kept_original = item["kept_original"] if split else []
-            for claim in strong_claims:
-                key = claim["key"]
-                # A new row per file, so a ZIP of three invoices lands as three invoices
-                # instead of three writes over the same slot leaving only the last.
-                jd = _slot_for_new_file(db, job, key)
-                if jd is None:
-                    continue
-                jd.original_name = item["name"][:255] or None
-                ddir = _job_doc_dir(jd.id)
-                ddir.mkdir(parents=True, exist_ok=True)
-                dorig = ddir / f"original{item['ext']}"
-                if split:
-                    orig_pages = sorted({
-                        kept_original[p - 1] for p in claim["pages"]
-                        if 1 <= p <= len(kept_original)
-                    }) or kept_original
-                    dorig.write_bytes(extract_pdf_pages(item["blob"], orig_pages))
-                    jd.page_count = _render_pages(dorig, ddir / "pages")
-                else:
-                    dorig.write_bytes(item["blob"])
-                    jd.page_count = _render_pages(dorig, ddir / "pages",
-                                                  skip=item.get("drop_pages"))
-                jd.file_path = str(dorig)
-                record_billable_pages(db, job, jd.page_count)
-                matched_names.append(next(c["name"] for c in candidates if c["key"] == key))
-            result_row = {"filename": item["name"], "matched": matched_names or None}
+            # give each slot only ITS pages, not the whole thing - see merge_pdf_pages below.
+            split_by_item_id[id(item)] = len(strong_claims) > 1 and item["ext"] == ".pdf"
+            result_by_item_id[id(item)] = {"filename": item["name"], "matched": []}
             if debug:
-                result_row["debug_text"] = item["text"][:6000]
-                result_row["debug_claims"] = claims
-            results.append(result_row)
+                result_by_item_id[id(item)]["debug_text"] = item["text"][:6000]
+                result_by_item_id[id(item)]["debug_claims"] = claims
+            for claim in strong_claims:
+                doc_type = key_doc_type.get(claim["key"])
+                number = None
+                # Read straight off THIS claim's own pages - never the whole file's text, which
+                # may carry several invoices at once (that is exactly the case being split).
+                if doc_type in doc_sets.GROUPABLE_DOC_TYPES:
+                    page_text = "\n".join(
+                        item["kept_pages"][p - 1] for p in claim["pages"]
+                        if 1 <= p <= len(item["kept_pages"]))
+                    number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
+                pending.append({"item": item, "claim": claim, "key": claim["key"], "number": number})
+
+        # Group claims that share an invoice number (same slot, matching number - see
+        # doc_sets.same_number) into ONE document, whether they came from the same file (a
+        # combined scan already split by page above) or from SEPARATELY uploaded files (three
+        # files, same invoice number, must land as one multi-page document, not three) - the
+        # actual feature this whole pass exists for. A claim with no number at all (not a
+        # groupable doc_type, or none could be read off the page) keeps today's exact
+        # behavior: its own document, independent of every other claim.
+        clusters: list[list[dict]] = []
+        numbered_by_key: dict[str, list[tuple[str, int]]] = {}
+        for p in pending:
+            if p["number"] is None:
+                clusters.append([p])
+                continue
+            bucket = numbered_by_key.setdefault(p["key"], [])
+            match = next((ci for n, ci in bucket if doc_sets.same_number(n, p["number"])), None)
+            if match is None:
+                bucket.append((p["number"], len(clusters)))
+                clusters.append([p])
+            else:
+                clusters[match].append(p)
+        # A cluster spanning more than one file where any of them isn't a real PDF cannot be
+        # merged (merge_pdf_pages only ever reads real PDF pages) - split back into one
+        # document per claim rather than guess at a cross-format merge. This never applies to
+        # a same-file split (gated on item["ext"] == ".pdf" already above).
+        safe_clusters: list[list[dict]] = []
+        for c in clusters:
+            spans_multiple_files = len({id(x["item"]) for x in c}) > 1
+            has_non_pdf = any(x["item"]["ext"] != ".pdf" for x in c)
+            if spans_multiple_files and has_non_pdf:
+                safe_clusters.extend([p] for p in c)
+            else:
+                safe_clusters.append(c)
+        clusters = safe_clusters
+
+        for cluster in clusters:
+            key = cluster[0]["key"]
+            # A new row per cluster, so a ZIP of three invoices lands as three invoices
+            # instead of three writes over the same slot leaving only the last.
+            jd = _slot_for_new_file(db, job, key)
+            if jd is None:
+                continue
+            ddir = _job_doc_dir(jd.id)
+            ddir.mkdir(parents=True, exist_ok=True)
+            solo_item = cluster[0]["item"]
+            if len(cluster) == 1 and not split_by_item_id[id(solo_item)]:
+                # The common case, byte for byte identical to before this feature existed: one
+                # claim, the only one in its file, kept exactly as uploaded.
+                dorig = ddir / f"original{solo_item['ext']}"
+                dorig.write_bytes(solo_item["blob"])
+                jd.original_name = solo_item["name"][:255] or None
+                jd.page_count = _render_pages(dorig, ddir / "pages",
+                                              skip=solo_item.get("drop_pages"))
+            else:
+                # Either one claim carved out of a combined file (today's existing "split"
+                # case, now just a one-source merge), or several claims from different files
+                # sharing an invoice number, genuinely merged into one document.
+                sources: list[tuple[bytes, list[int]]] = []
+                names: list[str] = []
+                for p in cluster:
+                    item, claim = p["item"], p["claim"]
+                    kept_original = item["kept_original"]
+                    orig_pages = sorted({
+                        kept_original[pg - 1] for pg in claim["pages"]
+                        if 1 <= pg <= len(kept_original)
+                    }) or kept_original
+                    sources.append((item["blob"], orig_pages))
+                    names.append(item["name"])
+                dorig = ddir / "original.pdf"
+                dorig.write_bytes(merge_pdf_pages(sources))
+                jd.original_name = (
+                    names[0] if len(names) == 1 else f"{names[0]} +{len(names) - 1} more"
+                )[:255] or None
+                jd.page_count = _render_pages(dorig, ddir / "pages")
+            jd.file_path = str(dorig)
+            record_billable_pages(db, job, jd.page_count)
+            slot_name = next(c["name"] for c in candidates if c["key"] == key)
+            for p in cluster:
+                result_by_item_id[id(p["item"])]["matched"].append(slot_name)
+
+        for item in prepared:
+            row = result_by_item_id[id(item)]
+            row["matched"] = row["matched"] or None
+            results.append(row)
         db.commit()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

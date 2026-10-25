@@ -175,3 +175,20 @@ def extract_pdf_pages(blob: bytes, original_pages: list[int]) -> bytes:
             if 1 <= p <= src.page_count:
                 out.insert_pdf(src, from_page=p - 1, to_page=p - 1)
         return out.tobytes()
+
+
+def merge_pdf_pages(sources: list[tuple[bytes, list[int]]]) -> bytes:
+    """A new, standalone PDF combining pages pulled from SEVERAL different original PDFs, in
+    the order given - each source's own 1-based ORIGINAL page numbers, same convention as
+    extract_pdf_pages above. Built for Smart Upload: several separately-uploaded files that
+    turn out to carry the same invoice number land as one multi-page document instead of one
+    document per file (see app.core.doc_sets)."""
+    import fitz  # PyMuPDF
+
+    with fitz.open() as out:
+        for blob, original_pages in sources:
+            with fitz.open(stream=blob, filetype="pdf") as src:
+                for p in original_pages:
+                    if 1 <= p <= src.page_count:
+                        out.insert_pdf(src, from_page=p - 1, to_page=p - 1)
+        return out.tobytes()
