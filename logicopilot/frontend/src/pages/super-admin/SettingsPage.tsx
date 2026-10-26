@@ -66,6 +66,26 @@ export function SettingsPage() {
   const [billingError, setBillingError] = useState<string | null>(null);
   const [billingSaved, setBillingSaved] = useState(false);
 
+  // Per-tenant AI processing (extraction pause + OpenAI key routing) - independent of every
+  // other tenant and of the global switches above. "aiTenantId" is its own picker, separate
+  // from billingTenantId, so pricing and AI settings can be looked at for different tenants
+  // at once without one overwriting the other's selection.
+  const [aiTenantId, setAiTenantId] = useState("");
+  const [aiConfig, setAiConfig] = useState<tenantsApi.TenantExtractionConfig | null>(null);
+  const [loadingAiConfig, setLoadingAiConfig] = useState(false);
+  const [busyAiPause, setBusyAiPause] = useState(false);
+  const [aiPauseError, setAiPauseError] = useState<string | null>(null);
+  const [aiKeyMode, setAiKeyMode] = useState<"shared" | "own">("shared");
+  const [busyAiKeyMode, setBusyAiKeyMode] = useState(false);
+  const [aiKeyModeError, setAiKeyModeError] = useState<string | null>(null);
+  const [aiKeyModeSaved, setAiKeyModeSaved] = useState(false);
+  const [aiKeyPool, setAiKeyPool] = useState<tenantsApi.TenantOpenAIKey[] | null>(null);
+  const [aiPoolLabelInput, setAiPoolLabelInput] = useState("");
+  const [aiPoolKeyInput, setAiPoolKeyInput] = useState("");
+  const [busyAiPool, setBusyAiPool] = useState(false);
+  const [aiPoolError, setAiPoolError] = useState<string | null>(null);
+  const [busyAiPoolKeyId, setBusyAiPoolKeyId] = useState<string | null>(null);
+
   async function load() {
     try {
       const s = await systemSettingsApi.getSystemSettings();
@@ -132,6 +152,123 @@ export function SettingsPage() {
       );
     } finally {
       setBusyBilling(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!aiTenantId) {
+      setAiConfig(null);
+      setAiKeyPool(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingAiConfig(true);
+    setAiPauseError(null);
+    setAiKeyModeError(null);
+    setAiKeyModeSaved(false);
+    setAiPoolError(null);
+    Promise.all([
+      tenantsApi.getTenantExtractionConfig(aiTenantId),
+      tenantsApi.listTenantOpenAIKeys(aiTenantId),
+    ])
+      .then(([config, keys]) => {
+        if (cancelled) return;
+        setAiConfig(config);
+        setAiKeyMode(config.openai_key_mode);
+        setAiKeyPool(keys);
+      })
+      .catch(() => {
+        if (!cancelled) setAiKeyModeError("Could not load this tenant's AI settings.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAiConfig(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aiTenantId]);
+
+  async function toggleAiPause() {
+    if (!aiTenantId || !aiConfig) return;
+    setBusyAiPause(true);
+    setAiPauseError(null);
+    try {
+      const result = await tenantsApi.updateTenantExtractionConfig(aiTenantId, {
+        extraction_paused: !aiConfig.extraction_paused,
+      });
+      setAiConfig(result);
+    } catch {
+      setAiPauseError("Could not update extraction for this tenant.");
+    } finally {
+      setBusyAiPause(false);
+    }
+  }
+
+  async function saveAiKeyMode() {
+    if (!aiTenantId) return;
+    setBusyAiKeyMode(true);
+    setAiKeyModeError(null);
+    setAiKeyModeSaved(false);
+    try {
+      const result = await tenantsApi.updateTenantExtractionConfig(aiTenantId, {
+        openai_key_mode: aiKeyMode,
+      });
+      setAiConfig(result);
+      setAiKeyModeSaved(true);
+    } catch (err) {
+      setAiKeyModeError(
+        axios.isAxiosError(err)
+          ? err.response?.data?.detail ?? "Could not update this tenant's key mode."
+          : "Could not update this tenant's key mode.",
+      );
+    } finally {
+      setBusyAiKeyMode(false);
+    }
+  }
+
+  async function addAiPoolKey() {
+    if (!aiTenantId || !aiPoolLabelInput.trim() || !aiPoolKeyInput.trim()) return;
+    setBusyAiPool(true);
+    setAiPoolError(null);
+    try {
+      const row = await tenantsApi.addTenantOpenAIKey(aiTenantId, aiPoolLabelInput.trim(), aiPoolKeyInput.trim());
+      setAiKeyPool((prev) => [...(prev ?? []), row]);
+      setAiPoolLabelInput("");
+      setAiPoolKeyInput("");
+    } catch (err) {
+      setAiPoolError(
+        axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not verify that key." : "Could not verify that key.",
+      );
+    } finally {
+      setBusyAiPool(false);
+    }
+  }
+
+  async function toggleAiPoolKeyActive(row: tenantsApi.TenantOpenAIKey) {
+    if (!aiTenantId) return;
+    setBusyAiPoolKeyId(row.id);
+    setAiPoolError(null);
+    try {
+      const updated = await tenantsApi.setTenantOpenAIKeyActive(aiTenantId, row.id, !row.is_active);
+      setAiKeyPool((prev) => (prev ?? []).map((k) => (k.id === updated.id ? updated : k)));
+    } catch {
+      setAiPoolError("Could not update that key.");
+    } finally {
+      setBusyAiPoolKeyId(null);
+    }
+  }
+
+  async function removeAiPoolKey(row: tenantsApi.TenantOpenAIKey) {
+    if (!aiTenantId) return;
+    setBusyAiPoolKeyId(row.id);
+    setAiPoolError(null);
+    try {
+      await tenantsApi.deleteTenantOpenAIKey(aiTenantId, row.id);
+      setAiKeyPool((prev) => (prev ?? []).filter((k) => k.id !== row.id));
+    } catch {
+      setAiPoolError("Could not remove that key.");
+    } finally {
+      setBusyAiPoolKeyId(null);
     }
   }
 
@@ -703,6 +840,176 @@ export function SettingsPage() {
                 <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
                   {billingError}
                 </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Per-tenant AI processing</h3>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Pause extraction, or route OpenAI calls to a dedicated key or pool, for ONE tenant
+            only — independent of every other tenant and of the global switches above. A
+            tenant with nothing set here behaves exactly as before this existed (not paused,
+            shared pool).
+          </p>
+
+          <div className="mt-3 sm:max-w-xs">
+            <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Tenant</label>
+            <select
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              value={aiTenantId}
+              onChange={(e) => setAiTenantId(e.target.value)}
+            >
+              <option value="">Choose a tenant…</option>
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {loadingAiConfig && <p className="mt-3 text-xs text-slate-400">Loading…</p>}
+
+          {aiConfig && !loadingAiConfig && (
+            <div className="mt-4 flex flex-col gap-5">
+              <div>
+                <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Extraction</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {aiConfig.extraction_paused
+                        ? "Paused for this tenant only — Extract and Smart Upload are refused for their jobs."
+                        : "Running — this tenant's documents are read as normal."}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={aiConfig.extraction_paused ? "primary" : "danger"}
+                    onClick={toggleAiPause}
+                    disabled={busyAiPause}
+                  >
+                    {aiConfig.extraction_paused ? "Resume Extraction" : "Stop Extraction"}
+                  </Button>
+                </div>
+                {aiPauseError && (
+                  <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                    {aiPauseError}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                  OpenAI key
+                </label>
+                <div className="flex flex-col gap-2 sm:max-w-md sm:flex-row sm:items-end">
+                  <select
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    value={aiKeyMode}
+                    onChange={(e) => setAiKeyMode(e.target.value as "shared" | "own")}
+                  >
+                    <option value="shared">Use the shared pool</option>
+                    <option value="own">Use this tenant's own key(s)</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    onClick={saveAiKeyMode}
+                    disabled={busyAiKeyMode || aiKeyMode === aiConfig.openai_key_mode}
+                  >
+                    {busyAiKeyMode ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+                {aiKeyModeSaved && (
+                  <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                    Saved — takes effect on this tenant's very next call.
+                  </p>
+                )}
+                {aiKeyModeError && (
+                  <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                    {aiKeyModeError}
+                  </p>
+                )}
+              </div>
+
+              {aiKeyMode === "own" && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    This tenant's keys
+                  </p>
+                  <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                    One key here is a dedicated key for this tenant alone. Several are
+                    round-robinned across, the same pooling the global pool below does — just
+                    scoped to this one tenant. Write-only, never shown back once saved. With
+                    none added, this tenant falls back to the key configured below.
+                  </p>
+                  {aiKeyPool && aiKeyPool.length > 0 && (
+                    <ul className="mb-3 flex flex-col gap-2">
+                      {aiKeyPool.map((row) => (
+                        <li
+                          key={row.id}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
+                        >
+                          <span className="truncate text-slate-800 dark:text-slate-200">{row.label}</span>
+                          <span className="flex items-center gap-2">
+                            {row.is_active ? (
+                              <span className="text-xs text-emerald-600 dark:text-emerald-400">Active</span>
+                            ) : (
+                              <span className="text-xs text-slate-400">Paused</span>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleAiPoolKeyActive(row)}
+                              disabled={busyAiPoolKeyId === row.id}
+                            >
+                              {row.is_active ? "Pause" : "Resume"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => removeAiPoolKey(row)}
+                              disabled={busyAiPoolKeyId === row.id}
+                            >
+                              Remove
+                            </Button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="w-full sm:w-40">
+                      <Input
+                        label="Label"
+                        value={aiPoolLabelInput}
+                        onChange={(e) => setAiPoolLabelInput(e.target.value)}
+                        placeholder="Project A"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <Input
+                        label="API key"
+                        type="password"
+                        autoComplete="off"
+                        value={aiPoolKeyInput}
+                        onChange={(e) => setAiPoolKeyInput(e.target.value)}
+                        placeholder="sk-..."
+                      />
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={addAiPoolKey}
+                      disabled={busyAiPool || !aiPoolLabelInput.trim() || !aiPoolKeyInput.trim()}
+                    >
+                      {busyAiPool ? "Verifying…" : "Add Key"}
+                    </Button>
+                  </div>
+                  {aiPoolError && (
+                    <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                      {aiPoolError}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}

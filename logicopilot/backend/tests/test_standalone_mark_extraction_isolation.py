@@ -72,7 +72,7 @@ def test_standalone_marks_are_never_batched_with_each_other_or_the_line_item_fam
 
     calls: list[list[str]] = []
 
-    def fake_extract_document_rows(ocr_text, row_specs, detected_row_count=None):
+    def fake_extract_document_rows(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = sorted(f["label"] for f in row_specs)
         calls.append(labels)
         if labels == ["item_material_code", "product_description"]:

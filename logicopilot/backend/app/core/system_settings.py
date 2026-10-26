@@ -41,8 +41,21 @@ def is_email_pull_paused(db: Session) -> bool:
     return get_system_settings(db).email_pull_paused
 
 
-def is_extraction_paused(db: Session) -> bool:
-    return get_system_settings(db).extraction_paused
+def is_extraction_paused(db: Session, tenant_id: str | None = None) -> bool:
+    """The existing global switch stops extraction for EVERY tenant unconditionally - a
+    platform-wide emergency stop, kept exactly as before. A tenant with its own
+    TenantExtractionConfig.extraction_paused set is ALSO paused, independent of every other
+    tenant and of this global switch - see that model's own docstring. No row (not yet
+    configured) means "not paused" for that tenant, same as today's only behavior."""
+    if get_system_settings(db).extraction_paused:
+        return True
+    if tenant_id:
+        from app.models.tenant_extraction_config import TenantExtractionConfig
+
+        config = db.get(TenantExtractionConfig, tenant_id)
+        if config is not None and config.extraction_paused:
+            return True
+    return False
 
 
 def has_custom_openai_key(db: Session) -> bool:

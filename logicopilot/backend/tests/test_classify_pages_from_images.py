@@ -220,7 +220,7 @@ def test_consecutive_pages_with_the_same_key_merge_into_one_entry(tmp_path):
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
 
-    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key, **_kwargs):
         return {"key": "bl", "confidence": 0.95, "evidence": f"BL evidence page {page_no}"}
 
     with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
@@ -238,7 +238,7 @@ def test_a_key_change_starts_a_new_entry(tmp_path):
         pages.append((i, p))
     by_page = {1: "bl", 2: "bl", 3: "inv"}
 
-    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key, **_kwargs):
         return {"key": by_page[page_no], "confidence": 0.95, "evidence": f"evidence {page_no}"}
 
     with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
@@ -254,7 +254,7 @@ def test_an_unmatched_page_between_two_matches_breaks_the_group(tmp_path):
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
 
-    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key, **_kwargs):
         if page_no == 2:
             return None
         return {"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}
@@ -281,7 +281,7 @@ def test_previous_key_is_threaded_through_between_calls(tmp_path):
         pages.append((i, p))
     seen_prev_keys = []
 
-    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key, **_kwargs):
         seen_prev_keys.append(prev_key)
         return {"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}
 

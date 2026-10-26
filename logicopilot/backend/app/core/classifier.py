@@ -150,7 +150,8 @@ def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
 
 
 def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
-                           candidate: dict, already_types: list[str]) -> dict | None:
+                           candidate: dict, already_types: list[str],
+                           tenant_id: str | None = None) -> dict | None:
     """The regex backstop's fallback for wording it does not recognise: ask the model itself,
     narrowly, whether this ONE remaining type is ALSO present - separate from the regex word
     list, so a customer whose document never uses the words "invoice" or "packing list" at all
@@ -219,6 +220,7 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
+            tenant_id=tenant_id,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         if not data.get("present"):
@@ -235,7 +237,8 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
 
 
 def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
-                                      claims: list[list[dict]]) -> None:
+                                      claims: list[list[dict]],
+                                      tenant_id: str | None = None) -> None:
     """Mutates `claims` in place: for each file, checks whether its own text carries a
     strong, specific signature of a type this template has a slot for, that the model's own
     call did not already claim for it. Runs for a file with at least one existing claim (a
@@ -314,7 +317,8 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 continue
             verified = _ai_verify_second_type(
                 item.get("name") or "", text, item.get("image"),
-                cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t))
+                cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t),
+                tenant_id=tenant_id)
             if verified is None:
                 continue
             claims[i].append({
@@ -475,7 +479,7 @@ def customer_fingerprints(groups: list[dict]) -> list[dict]:
 
 
 def identify_customer(mail_subject: str, mail_body: str, doc_texts: list[tuple[str, str]],
-                      groups: list[dict]) -> dict:
+                      groups: list[dict], tenant_id: str | None = None) -> dict:
     """Which customer do these documents belong to?
 
     Returns {"keys": [...], "reason": str, "evidence": str}. `keys` may be:
@@ -687,7 +691,7 @@ def _classification_instruction(filename: str, candidates: list[dict]) -> str:
 
 
 def classify_document(filename: str, ocr_text: str | None, image_path: Path | None,
-                      candidates: list[dict]) -> list[dict]:
+                      candidates: list[dict], tenant_id: str | None = None) -> list[dict]:
     """Which document types are PRESENT in this file, with the evidence for each.
 
     Returns [{"key", "pages": [int], "evidence": str}]. A match the model cannot back with
@@ -730,6 +734,7 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
+            tenant_id=tenant_id,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         valid = {c["key"] for c in candidates}
@@ -762,7 +767,8 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
 
 
 def classify_document_from_image(filename: str, image_path: Path | None,
-                                 candidates: list[dict], model: str) -> list[dict]:
+                                 candidates: list[dict], model: str,
+                                 tenant_id: str | None = None) -> list[dict]:
     """Vision-engine counterpart to classify_document - decides which document types are
     PRESENT in this file from its PAGE-1 IMAGE ALONE, never OCR text. Used only when the
     `extraction_engine` system setting is "gpt5_mini_vision" (see
@@ -805,6 +811,7 @@ def classify_document_from_image(filename: str, image_path: Path | None,
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
+            tenant_id=tenant_id,
             **reasoning_safe_chat_params(model, temperature=0, max_tokens=1200),
         )
         data = json.loads(resp.choices[0].message.content or "{}")
@@ -834,7 +841,8 @@ def classify_document_from_image(filename: str, image_path: Path | None,
 
 
 def classify_page_image(filename: str, page_no: int, image_path: Path, candidates: list[dict],
-                        model: str, prev_key: str | None) -> dict | None:
+                        model: str, prev_key: str | None,
+                        tenant_id: str | None = None) -> dict | None:
     """Decide which ONE of this template's own candidates (whatever document labels were
     declared in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to,
     independent of every other page in the file. Smart-Upload-only building block for
@@ -911,6 +919,7 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
+            tenant_id=tenant_id,
             **reasoning_safe_chat_params(model, temperature=0, max_tokens=500),
         )
         data = json.loads(resp.choices[0].message.content or "{}")
@@ -947,7 +956,8 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
 
 
 def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
-                               candidates: list[dict], model: str) -> list[dict]:
+                               candidates: list[dict], model: str,
+                               tenant_id: str | None = None) -> list[dict]:
     """Smart-Upload-only counterpart to classify_document_from_image: classifies EVERY kept
     page of a file independently from its own image (not just page 1) - the fix for a
     combined/multi-page file's classification, done once over the whole file's OCR text,
@@ -970,7 +980,8 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
     current: dict | None = None
     prev_key: str | None = None
     for page_no, image_path in page_images:
-        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key)
+        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key,
+                                     tenant_id=tenant_id)
         if result is None:
             prev_key = None
             if current is not None:
@@ -997,7 +1008,7 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
 def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
-    per_page_vision: bool = False,
+    per_page_vision: bool = False, tenant_id: str | None = None,
 ) -> list[list[dict]]:
     """Same as assign_documents, but keeps each match's page numbers instead of collapsing
     to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
@@ -1022,24 +1033,25 @@ def assign_documents_detailed(
     if engine == "gpt5_mini_vision" and per_page_vision:
         claims: list[list[dict]] = [
             classify_pages_from_images(f.get("name") or "", f.get("page_images") or [],
-                                       candidates, vision_model)
+                                       candidates, vision_model, tenant_id=tenant_id)
             for f in files
         ]
     elif engine == "gpt5_mini_vision":
         claims = [
             classify_document_from_image(f.get("name") or "", f.get("image"), candidates,
-                                         vision_model)
+                                         vision_model, tenant_id=tenant_id)
             for f in files
         ]
     else:
         claims = [
-            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates)
+            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates,
+                              tenant_id=tenant_id)
             for f in files
         ]
 
     # A deterministic backstop, run BEFORE the reconciliation below so an added claim is
     # reconciled exactly like one the model found itself. See _augment_combined_document_claims.
-    _augment_combined_document_claims(files, candidates, claims)
+    _augment_combined_document_claims(files, candidates, claims, tenant_id=tenant_id)
 
     # 1. The SAME key may never claim a page twice - a file can genuinely hold several
     #    invoices, and each is its own document with its own, non-overlapping pages, so only

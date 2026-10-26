@@ -8,10 +8,20 @@ from sqlalchemy.orm import Session
 from app.core.billing import calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.modes import MODES
+from app.core.openai_pool import (
+    add_api_key,
+    delete_api_key,
+    list_api_keys,
+    refresh_tenant_modes,
+    set_api_key_active,
+)
 from app.core.security import hash_password
+from app.core.system_settings import InvalidOpenAIKey
 from app.models.invoice import Invoice
+from app.models.openai_api_key import OpenAIApiKey
 from app.models.tenant import Tenant
 from app.models.tenant_billing_config import TenantBillingConfig
+from app.models.tenant_extraction_config import TenantExtractionConfig
 from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
@@ -22,9 +32,16 @@ from app.schemas.tenant import (
     TenantBillingConfigOut,
     TenantBillingConfigUpdate,
     TenantCreate,
+    TenantExtractionConfigOut,
+    TenantExtractionConfigUpdate,
+    TenantOpenAIKeyActiveIn,
+    TenantOpenAIKeyIn,
+    TenantOpenAIKeyOut,
     TenantOut,
     TenantUpdate,
 )
+
+VALID_OPENAI_KEY_MODES = ("shared", "own")
 
 WRITE_TOGGLE_ROLES = (OPERATOR, GK2)
 
@@ -238,6 +255,124 @@ def update_tenant_billing_config(
     db.commit()
     db.refresh(config)
     return TenantBillingConfigOut.model_validate(config)
+
+
+@router.get("/{tenant_id}/extraction-config", response_model=TenantExtractionConfigOut)
+def get_tenant_extraction_config(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantExtractionConfigOut:
+    """This tenant's own extraction pause + OpenAI key routing, independent of every other
+    tenant and of the platform-wide switches on Settings. Returns the built-in defaults
+    (not paused, shared pool) when nothing has been saved for this tenant yet - no row is
+    not an error, see TenantExtractionConfig's own docstring."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    config = db.get(TenantExtractionConfig, tenant_id)
+    if config is not None:
+        return TenantExtractionConfigOut.model_validate(config)
+    return TenantExtractionConfigOut(extraction_paused=False, openai_key_mode="shared")
+
+
+@router.put("/{tenant_id}/extraction-config", response_model=TenantExtractionConfigOut)
+def update_tenant_extraction_config(
+    tenant_id: str,
+    payload: TenantExtractionConfigUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantExtractionConfigOut:
+    """Creates the row on first save, same lazy-create contract as billing-config. Pausing or
+    resuming here, or switching key mode, takes effect on this tenant's very next job - no
+    restart needed."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if payload.openai_key_mode is not None and payload.openai_key_mode not in VALID_OPENAI_KEY_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"openai_key_mode must be one of {VALID_OPENAI_KEY_MODES}",
+        )
+    config = db.get(TenantExtractionConfig, tenant_id)
+    if config is None:
+        config = TenantExtractionConfig(tenant_id=tenant_id)
+        db.add(config)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(config, field, value)
+    db.commit()
+    db.refresh(config)
+    if payload.openai_key_mode is not None:
+        refresh_tenant_modes(db)
+    return TenantExtractionConfigOut.model_validate(config)
+
+
+def _tenant_pool_key_out(k) -> TenantOpenAIKeyOut:
+    return TenantOpenAIKeyOut(id=k.id, label=k.label, is_active=k.is_active, sort_order=k.sort_order)
+
+
+@router.get("/{tenant_id}/openai-key-pool", response_model=list[TenantOpenAIKeyOut])
+def list_tenant_openai_key_pool(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> list[TenantOpenAIKeyOut]:
+    """This tenant's own pooled keys only - never the global pool's, and never any other
+    tenant's. Used only while that tenant's openai_key_mode is "own" (see
+    app/core/openai_pool.py); the rows may still exist and simply go unused while on
+    "shared" mode, same as the global pool's own empty-pool fallback."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return [_tenant_pool_key_out(k) for k in list_api_keys(db, tenant_id=tenant_id)]
+
+
+@router.post("/{tenant_id}/openai-key-pool", status_code=status.HTTP_201_CREATED,
+             response_model=TenantOpenAIKeyOut)
+def add_tenant_openai_key_pool_key(
+    tenant_id: str,
+    payload: TenantOpenAIKeyIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantOpenAIKeyOut:
+    """Verified live against OpenAI itself before saving, same as the global pool. Takes
+    effect immediately once this tenant is in "own" key mode."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    try:
+        row = add_api_key(db, payload.label, payload.api_key, tenant_id=tenant_id)
+    except InvalidOpenAIKey as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"OpenAI rejected this key: {exc}")
+    return _tenant_pool_key_out(row)
+
+
+@router.patch("/{tenant_id}/openai-key-pool/{key_id}", response_model=TenantOpenAIKeyOut)
+def set_tenant_openai_key_pool_key_active(
+    tenant_id: str,
+    key_id: str,
+    payload: TenantOpenAIKeyActiveIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantOpenAIKeyOut:
+    row = set_api_key_active(db, key_id, payload.is_active)
+    if row is None or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such key")
+    return _tenant_pool_key_out(row)
+
+
+@router.delete("/{tenant_id}/openai-key-pool/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tenant_openai_key_pool_key(
+    tenant_id: str,
+    key_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> None:
+    row = db.get(__import__("app.models.openai_api_key", fromlist=["OpenAIApiKey"]).OpenAIApiKey, key_id)
+    if row is None or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such key")
+    delete_api_key(db, key_id)
 
 
 def _require_billing_read_access(user: User, tenant_id: str) -> None:

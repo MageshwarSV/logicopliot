@@ -75,10 +75,10 @@ def test_a_product_keyed_field_gets_one_slot_per_product_not_per_container(db_se
     def _ocr_for(job_doc_dir, page):
         return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
 
-    def _fields_for(ocr_text, fields, image_paths=None):
+    def _fields_for(ocr_text, fields, image_paths=None, **_kwargs):
         return {}
 
-    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+    def _rows_for(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = [spec["label"] for spec in row_specs]
         if "product_description" in labels:
             return [{"product_description": "WIDGET"}]  # one real product
@@ -120,10 +120,10 @@ def test_a_container_keyed_field_gets_one_slot_per_container_not_per_product(db_
     def _ocr_for(job_doc_dir, page):
         return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
 
-    def _fields_for(ocr_text, fields, image_paths=None):
+    def _fields_for(ocr_text, fields, image_paths=None, **_kwargs):
         return {}
 
-    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+    def _rows_for(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = [spec["label"] for spec in row_specs]
         if "product_description" in labels:
             return [{"product_description": f"WIDGET {i}"} for i in range(5)]  # five products
@@ -165,10 +165,10 @@ def test_container_fields_are_blanked_for_anything_other_than_fcl(db_session):
     def _ocr_for(job_doc_dir, page):
         return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
 
-    def _fields_for(ocr_text, fields, image_paths=None):
+    def _fields_for(ocr_text, fields, image_paths=None, **_kwargs):
         return {"Consignment Type": "LCL"}
 
-    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+    def _rows_for(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = [spec["label"] for spec in row_specs]
         if "product_description" in labels:
             return [{"product_description": "WIDGET"}]
@@ -207,10 +207,10 @@ def test_container_fields_are_kept_for_an_fcl_shipment(db_session):
     def _ocr_for(job_doc_dir, page):
         return {"layout_text": "Invoice", "text": "Invoice", "tokens": []}
 
-    def _fields_for(ocr_text, fields, image_paths=None):
+    def _fields_for(ocr_text, fields, image_paths=None, **_kwargs):
         return {"Consignment Type": "FCL"}
 
-    def _rows_for(ocr_text, row_specs, detected_row_count=None):
+    def _rows_for(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = [spec["label"] for spec in row_specs]
         if "product_description" in labels:
             return [{"product_description": "WIDGET"}]

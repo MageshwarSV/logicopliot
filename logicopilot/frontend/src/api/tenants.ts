@@ -70,6 +70,70 @@ export async function updateTenantBillingConfig(
   return response.data;
 }
 
+/** This tenant's own extraction pause + OpenAI key routing, independent of every other
+ *  tenant and of the platform-wide switches on Settings. "shared" = use the global OpenAI
+ *  key pool (today's only behavior); "own" = use only this tenant's own keys below. */
+export interface TenantExtractionConfig {
+  extraction_paused: boolean;
+  openai_key_mode: "shared" | "own";
+}
+
+export async function getTenantExtractionConfig(tenantId: string): Promise<TenantExtractionConfig> {
+  const response = await apiClient.get<TenantExtractionConfig>(`/tenants/${tenantId}/extraction-config`);
+  return response.data;
+}
+
+export async function updateTenantExtractionConfig(
+  tenantId: string,
+  payload: Partial<TenantExtractionConfig>,
+): Promise<TenantExtractionConfig> {
+  const response = await apiClient.put<TenantExtractionConfig>(
+    `/tenants/${tenantId}/extraction-config`,
+    payload,
+  );
+  return response.data;
+}
+
+export interface TenantOpenAIKey {
+  id: string;
+  label: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export async function listTenantOpenAIKeys(tenantId: string): Promise<TenantOpenAIKey[]> {
+  const response = await apiClient.get<TenantOpenAIKey[]>(`/tenants/${tenantId}/openai-key-pool`);
+  return response.data;
+}
+
+export async function addTenantOpenAIKey(
+  tenantId: string,
+  label: string,
+  apiKey: string,
+): Promise<TenantOpenAIKey> {
+  const response = await apiClient.post<TenantOpenAIKey>(`/tenants/${tenantId}/openai-key-pool`, {
+    label,
+    api_key: apiKey,
+  });
+  return response.data;
+}
+
+export async function setTenantOpenAIKeyActive(
+  tenantId: string,
+  keyId: string,
+  isActive: boolean,
+): Promise<TenantOpenAIKey> {
+  const response = await apiClient.patch<TenantOpenAIKey>(
+    `/tenants/${tenantId}/openai-key-pool/${keyId}`,
+    { is_active: isActive },
+  );
+  return response.data;
+}
+
+export async function deleteTenantOpenAIKey(tenantId: string, keyId: string): Promise<void> {
+  await apiClient.delete(`/tenants/${tenantId}/openai-key-pool/${keyId}`);
+}
+
 export interface ShipmentTypeUsage {
   shipment_type: string;
   jobs: number;

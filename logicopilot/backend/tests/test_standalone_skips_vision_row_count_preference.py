@@ -105,7 +105,7 @@ def test_row_aligned_marks_on_the_same_document_still_prefer_vision_when_it_find
     db_session.commit()
     job = _make_job_with_page(db_session, tenant, group, bl, "JOB-MIXEDGROUPS")
 
-    def fake_text(ocr_text, row_specs, detected_row_count=None):
+    def fake_text(ocr_text, row_specs, detected_row_count=None, **_kwargs):
         labels = sorted(f["label"] for f in row_specs)
         if labels == ["container_number"]:
             return [{"container_number": "WHSU8379514"}]
@@ -113,7 +113,7 @@ def test_row_aligned_marks_on_the_same_document_still_prefer_vision_when_it_find
             return [{"cth_code": "1001"}, {"cth_code": "1002"}]
         raise AssertionError(f"unexpected batch: {labels}")
 
-    def fake_vision(image_paths, row_specs, detected_row_count=None):
+    def fake_vision(image_paths, row_specs, detected_row_count=None, **_kwargs):
         labels = sorted(f["label"] for f in row_specs)
         if labels == ["container_number"]:
             raise AssertionError("vision must never be called for a standalone group")

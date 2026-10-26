@@ -125,3 +125,59 @@ def test_rows_from_images_respects_an_override_model(tmp_path):
     assert kwargs["model"] == "gpt-5-mini"
     assert "temperature" not in kwargs
     assert kwargs["max_completion_tokens"] == 3000 * 6
+
+
+# --- tenant_id routing: the same additive-parameter contract as `model` above -------------
+#
+# Each of the four readers threads an optional tenant_id through to get_openai_client, so a
+# per-tenant OpenAI key (TenantExtractionConfig.openai_key_mode == "own") is actually used.
+# Omitted entirely (every Template Wizard demo_extract/test-extract call site) must stay None -
+# the exact same "stays on the global pool unconditionally" guarantee `model` already has.
+
+def test_extract_document_fields_passes_tenant_id_through_to_the_pool():
+    client = _fake_fields_client()
+    with patch("app.core.extraction.get_settings", return_value=_settings()), \
+         patch("openai.OpenAI", return_value=client), \
+         patch("app.core.openai_pool.get_openai_client", return_value=(client, "default")) as mock_pool:
+        extract_document_fields("INVOICE NO: INV123", _FIELDS, tenant_id="tenant-xyz")
+    assert mock_pool.call_args.kwargs["tenant_id"] == "tenant-xyz"
+
+
+def test_extract_document_fields_tenant_id_defaults_to_none_when_omitted():
+    client = _fake_fields_client()
+    with patch("app.core.extraction.get_settings", return_value=_settings()), \
+         patch("openai.OpenAI", return_value=client), \
+         patch("app.core.openai_pool.get_openai_client", return_value=(client, "default")) as mock_pool:
+        extract_document_fields("INVOICE NO: INV123", _FIELDS)
+    assert mock_pool.call_args.kwargs["tenant_id"] is None
+
+
+def test_extract_document_rows_passes_tenant_id_through_to_the_pool():
+    client = _fake_rows_client()
+    with patch("app.core.extraction.get_settings", return_value=_settings()), \
+         patch("openai.OpenAI", return_value=client), \
+         patch("app.core.openai_pool.get_openai_client", return_value=(client, "default")) as mock_pool:
+        extract_document_rows("INVOICE NO: INV123", _FIELDS, tenant_id="tenant-xyz")
+    assert mock_pool.call_args.kwargs["tenant_id"] == "tenant-xyz"
+
+
+def test_fields_from_images_passes_tenant_id_through_to_the_pool(tmp_path):
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _fake_fields_client()
+    with patch("app.core.extraction.get_settings", return_value=_settings()), \
+         patch("openai.OpenAI", return_value=client), \
+         patch("app.core.openai_pool.get_openai_client", return_value=(client, "default")) as mock_pool:
+        extract_document_fields_from_images([img], _FIELDS, tenant_id="tenant-xyz")
+    assert mock_pool.call_args.kwargs["tenant_id"] == "tenant-xyz"
+
+
+def test_rows_from_images_passes_tenant_id_through_to_the_pool(tmp_path):
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _fake_rows_client()
+    with patch("app.core.extraction.get_settings", return_value=_settings()), \
+         patch("openai.OpenAI", return_value=client), \
+         patch("app.core.openai_pool.get_openai_client", return_value=(client, "default")) as mock_pool:
+        extract_document_rows_from_images([img], _FIELDS, tenant_id="tenant-xyz")
+    assert mock_pool.call_args.kwargs["tenant_id"] == "tenant-xyz"

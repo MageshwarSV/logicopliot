@@ -123,12 +123,13 @@ def create_app() -> FastAPI:
         """The pooled keys (if any) a Super Admin has added from Settings - loaded into this
         process's own memory once up front, the same reason the single key above is applied
         at startup rather than read fresh per call. See app/core/openai_pool.py."""
-        from app.core.openai_pool import refresh_pool
+        from app.core.openai_pool import refresh_pool, refresh_tenant_modes
         from app.db.session import SessionLocal
 
         db = SessionLocal()
         try:
             refresh_pool(db)
+            refresh_tenant_modes(db)
         except Exception:  # noqa: BLE001
             logging.getLogger(__name__).exception("could not load the OpenAI key pool")
         finally:

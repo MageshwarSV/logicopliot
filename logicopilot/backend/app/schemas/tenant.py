@@ -85,6 +85,34 @@ class TenantBillingConfigUpdate(BaseModel):
     billing_start_date: str | None = None
 
 
+class TenantExtractionConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    extraction_paused: bool
+    openai_key_mode: str
+
+
+class TenantExtractionConfigUpdate(BaseModel):
+    extraction_paused: bool | None = None
+    openai_key_mode: str | None = None
+
+
+class TenantOpenAIKeyOut(BaseModel):
+    id: str
+    label: str
+    is_active: bool
+    sort_order: int
+
+
+class TenantOpenAIKeyIn(BaseModel):
+    label: str
+    api_key: str
+
+
+class TenantOpenAIKeyActiveIn(BaseModel):
+    is_active: bool
+
+
 class ShipmentTypeUsageOut(BaseModel):
     shipment_type: str
     jobs: int

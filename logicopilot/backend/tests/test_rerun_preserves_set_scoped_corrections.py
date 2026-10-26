@@ -65,10 +65,10 @@ def _run(db_session, job, jd1, jd2):
         text = INV1_TEXT if str(jd1.id) in str(job_doc_dir) else INV2_TEXT
         return {"layout_text": text, "text": text, "tokens": []}
 
-    def _fields_for(ocr_text, fields, image_paths=None):
+    def _fields_for(ocr_text, fields, image_paths=None, **_kwargs):
         return {"Invoice No": "INV-001" if "INV-001" in ocr_text else "INV-002"}
 
-    def _rows_for(ocr_text, fields, expected_row_count=None, image_paths=None):
+    def _rows_for(ocr_text, fields, expected_row_count=None, image_paths=None, **_kwargs):
         return [{"product_description": "Widget A" if "INV-001" in ocr_text else "Widget B"}]
 
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \

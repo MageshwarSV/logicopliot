@@ -459,7 +459,7 @@ def _chunks(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) ->
 
 
 def extract_document_fields(
-    ocr_text: str, fields: list[dict], model: str | None = None,
+    ocr_text: str, fields: list[dict], model: str | None = None, tenant_id: str | None = None,
 ) -> dict[str, str | None]:
     """fields: [{"label": str, "prompt": str, "variations": [str], "description": str}]
     Returns {label: value_or_None}. Falls back to all-None if OpenAI is unavailable.
@@ -471,6 +471,10 @@ def extract_document_fields(
     existing caller omits it and is therefore completely unaffected by passing it; it exists
     so a caller can route a specific document through a different model (e.g. the
     vision-engine toggle) without changing the default for everyone else.
+
+    `tenant_id` routes this call through that tenant's own OpenAI key/pool instead of the
+    global one (see app/core/openai_pool.py) - same omit-to-stay-unaffected convention, and
+    the Template Wizard's own demo/test-extract calls must never pass it.
     """
     settings = get_settings()
     effective_model = model or settings.openai_model
@@ -486,7 +490,7 @@ def extract_document_fields(
         logger.info("Extraction: reading %d chars in %d passes", len(ocr_text or ""), len(pieces))
         merged: dict[str, str | None] = {label: None for label in labels}
         for piece in pieces:
-            part = extract_document_fields(piece, fields, model=model)
+            part = extract_document_fields(piece, fields, model=model, tenant_id=tenant_id)
             for label in labels:
                 if merged[label] in (None, "") and part.get(label) not in (None, ""):
                     merged[label] = part[label]
@@ -506,6 +510,7 @@ def extract_document_fields(
     try:
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -713,7 +718,7 @@ def _row_count_hint(expected_row_count: int | None) -> str:
 
 def extract_document_rows(
     ocr_text: str, fields: list[dict], expected_row_count: int | None = None,
-    model: str | None = None,
+    model: str | None = None, tenant_id: str | None = None,
 ) -> list[dict[str, str | None]]:
     """Pull a REPEATING table out of a document: one dict per row, aligned across fields.
 
@@ -756,7 +761,7 @@ def extract_document_rows(
         collected: list[dict[str, str | None]] = []
         seen: set[tuple] = set()
         for piece in pieces:
-            for row in extract_document_rows(piece, fields, model=model):
+            for row in extract_document_rows(piece, fields, model=model, tenant_id=tenant_id):
                 key = tuple((label, (row.get(label) or "").strip()) for label in labels)
                 if key in seen:
                     continue
@@ -767,6 +772,7 @@ def extract_document_rows(
     try:
         resp = create_chat_completion_with_retry(
             timeout=90,
+            tenant_id=tenant_id,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -878,6 +884,7 @@ def _field_lines(fields: list[dict]) -> list[str]:
 
 def extract_document_fields_from_images(
     image_paths: list[Path], fields: list[dict], model: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, str | None]:
     """Vision fallback — read the field values straight from the page images with OpenAI
     when OCR (Document AI) is unavailable, or the vision engine was chosen deliberately.
@@ -920,6 +927,7 @@ def extract_document_fields_from_images(
 
         resp = create_chat_completion_with_retry(
             timeout=90,
+            tenant_id=tenant_id,
             model=effective_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -943,7 +951,7 @@ def extract_document_fields_from_images(
 
 def extract_document_rows_from_images(
     image_paths: list[Path], fields: list[dict], expected_row_count: int | None = None,
-    model: str | None = None,
+    model: str | None = None, tenant_id: str | None = None,
 ) -> list[dict[str, str | None]]:
     """Vision fallback for a LINE-ITEM TABLE. Same contract as extract_document_rows, including
     expected_row_count (see its docstring there) - None reproduces the exact prompt this
@@ -992,6 +1000,7 @@ def extract_document_rows_from_images(
 
         resp = create_chat_completion_with_retry(
             timeout=120,
+            tenant_id=tenant_id,
             model=effective_model,
             # On a reasoning-family model this pin is translated/dropped - see
             # reasoning_safe_chat_params.

@@ -5819,7 +5819,7 @@ def smart_upload(
     from app.core import doc_sets, office_convert
 
     job = _load_job(db, job_id, scope, user)
-    if is_extraction_paused(db):
+    if is_extraction_paused(db, tenant_id=job.tenant_id):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
     # Read ONCE, up front, before any tentative row below is ever flushed - the first-ever
@@ -6014,6 +6014,7 @@ def smart_upload(
                 # combined/multi-page file sometimes assigning the wrong page to the wrong
                 # slot - email_puller's own call to this same function does the same.
                 per_page_vision=True,
+                tenant_id=job.tenant_id,
             )
             if prepared else []
         )
@@ -6450,7 +6451,7 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
 def run_extraction(db: Session, job: Job) -> None:
     """Extract every marked field for a job's uploaded documents and set status to
     'extracted'. Reusable by the operator's Extract button AND the email auto-pull."""
-    if is_extraction_paused(db):
+    if is_extraction_paused(db, tenant_id=job.tenant_id):
         # A Super Admin turned extraction off (see app/api/v1/system_settings.py) - before
         # any OCR or AI call, not after one fails. The two existing callers already handle
         # this cleanly: the background thread reverts a job stuck "extracting" back to
@@ -6677,9 +6678,10 @@ def run_extraction(db: Session, job: Job) -> None:
             )
 
         if not used_vision:
-            extracted = extract_document_fields(ocr_text, fields)
+            extracted = extract_document_fields(ocr_text, fields, tenant_id=job.tenant_id)
         else:
-            extracted = extract_document_fields_from_images(image_paths, fields, model=model_override)
+            extracted = extract_document_fields_from_images(
+                image_paths, fields, model=model_override, tenant_id=job.tenant_id)
 
         for mark in single_marks:
             val = extracted.get(mark.label_name)
@@ -6885,7 +6887,8 @@ def run_extraction(db: Session, job: Job) -> None:
             # there really" - the two LLM reads otherwise only ever argue with each other.
             detected_row_count = doc_table_row_count_cache.get(jd.id, 0)
             if not used_vision:
-                rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None)
+                rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None,
+                                             tenant_id=job.tenant_id)
                 # Line-item tables are the highest-error part of extraction: a table whose OCR
                 # text doesn't preserve visual column order can make the model silently drop or
                 # merge rows (see ROW_IS_A_PRODUCT in extraction.py) no matter how the prompt is
@@ -6897,7 +6900,8 @@ def run_extraction(db: Session, job: Job) -> None:
                 # broken just because it has a higher row count.
                 if image_paths and not is_standalone_group:
                     vision_rows = extract_document_rows_from_images(
-                        image_paths, row_specs, detected_row_count or None)
+                        image_paths, row_specs, detected_row_count or None,
+                        tenant_id=job.tenant_id)
                     vision_broken = _row_read_looks_broken(vision_rows, row_labels)
                     text_broken = _row_read_looks_broken(rows, row_labels)
                     # Row counts can agree while the VALUES don't - see _row_sums_disagree for
@@ -7031,7 +7035,8 @@ def run_extraction(db: Session, job: Job) -> None:
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
                 rows = extract_document_rows_from_images(
-                    image_paths, row_specs, detected_row_count or None, model=model_override)
+                    image_paths, row_specs, detected_row_count or None, model=model_override,
+                    tenant_id=job.tenant_id)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
                 before = len(rows)
                 rows = [r for r in rows if _is_valid_container_number(r.get("container_number"))]
@@ -7612,7 +7617,7 @@ def extract_job(
     pressing it does not sit the operator's browser on OCR + model calls — the response comes
     back at once with status "extracting", and the screen polls until it settles."""
     job = _load_job(db, job_id, scope, user)
-    if is_extraction_paused(db):
+    if is_extraction_paused(db, tenant_id=job.tenant_id):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Extraction is currently paused by an administrator.")
     # Only on a job's FIRST pass (still "draft") - the automatic trigger (_maybe_auto_extract)
@@ -8524,12 +8529,12 @@ def recompute_mark(
         used_vision = engine_forces_vision or not ocr_text.strip()
         model_override = vision_engine_model if engine_forces_vision else None
         if not used_vision:
-            extracted = extract_document_fields(ocr_text, [field_spec(mark)])
+            extracted = extract_document_fields(ocr_text, [field_spec(mark)], tenant_id=job.tenant_id)
         else:
             image_paths = [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
             image_paths = [p for p in image_paths if p.exists()]
             extracted = extract_document_fields_from_images(
-                image_paths, [field_spec(mark)], model=model_override)
+                image_paths, [field_spec(mark)], model=model_override, tenant_id=job.tenant_id)
         val = extracted.get(mark.label_name)
         raw_val = val
         if mark.is_target_value and val:

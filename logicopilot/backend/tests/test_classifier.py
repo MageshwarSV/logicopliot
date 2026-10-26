@@ -225,7 +225,7 @@ def test_keyword_backstop_adds_invoice_on_a_real_combined_challan_the_model_only
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
 
 
-def _only_packinglist_verified(filename, text, image_path, candidate, already_types):
+def _only_packinglist_verified(filename, text, image_path, candidate, already_types, **_kwargs):
     # CANDIDATES now also has a Freight slot ("frt"), so a file matching neither PackingList
     # nor Freight by regex triggers an AI check for BOTH remaining types - a real fixture must
     # distinguish which one it is verifying, not return the same verdict for either.

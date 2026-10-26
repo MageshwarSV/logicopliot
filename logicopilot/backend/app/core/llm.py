@@ -47,7 +47,7 @@ def _rate_limit_wait_seconds(exc: Exception) -> float | None:
     return float(value) / 1000.0 if unit == "ms" else float(value)
 
 
-def create_chat_completion_with_retry(client=None, *, timeout: float = 30, **kwargs):
+def create_chat_completion_with_retry(client=None, *, timeout: float = 30, tenant_id: str | None = None, **kwargs):
     """The one place every OpenAI chat-completion call in this codebase goes through, instead
     of calling `client.chat.completions.create(**kwargs)` directly. Every caller here used to
     catch ANY exception from that bare call and silently degrade to an empty/default value,
@@ -72,7 +72,12 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, **kwa
 
     `client` may still be passed for an existing caller that built its own (back-compat);
     a NEW caller should omit it and pass `timeout=` instead, letting this function pull a
-    client from the pool itself so a failover has another key to build a fresh client from."""
+    client from the pool itself so a failover has another key to build a fresh client from.
+
+    `tenant_id`, when given, routes this call through THAT tenant's own OpenAI key/pool
+    instead of the global one - see app/core/openai_pool.py's own module docstring. Omitted
+    (the default) means the global pool, unchanged - including every Template Wizard demo/
+    test-extract call site, which must never be tenant-scoped."""
     from openai import AuthenticationError, RateLimitError
 
     from app.core.openai_pool import get_openai_client, get_pool_size, mark_key_cooldown
@@ -82,11 +87,11 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, **kwa
     # at once, get_openai_client() hands back the soonest-to-clear one on more than one pass,
     # and counting only unique ids would loop forever on a key that fails the same way every
     # time (insufficient_quota, say). A fixed number of passes always terminates regardless.
-    max_passes = get_pool_size() if own_client else 1
+    max_passes = get_pool_size(tenant_id) if own_client else 1
     last_exc: Exception | None = None
     for _pass in range(max_passes):
         if own_client:
-            client, key_id = get_openai_client(timeout=timeout)
+            client, key_id = get_openai_client(timeout=timeout, tenant_id=tenant_id)
         else:
             key_id = "default"  # a caller-supplied client has no pool id to cool down
         # The SAME document read twice must answer the SAME way twice - found live, two jobs
@@ -196,6 +201,7 @@ def evaluate_ruling(
     all_document_names: list[str],
     documents_text: str,
     operator_answer: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Decide which of a template's documents are required for THIS job, per the Super
     Admin's ruling (e.g. incoterm-based document requirements). Returns JSON:
@@ -209,6 +215,7 @@ def evaluate_ruling(
     try:
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -268,7 +275,9 @@ def evaluate_ruling(
                 "question": "", "options": [], "reason": f"ruling evaluation error: {exc}"}
 
 
-def describe_failure_screen(screenshot_b64: str, log_tail: list[str] | None = None) -> str:
+def describe_failure_screen(
+    screenshot_b64: str, log_tail: list[str] | None = None, tenant_id: str | None = None,
+) -> str:
     """Look at the screen where the run stopped and say, in plain words, what happened.
 
     When a script fails on a screen it does not recognise, the log only says which selector
@@ -285,6 +294,7 @@ def describe_failure_screen(screenshot_b64: str, log_tail: list[str] | None = No
         tail = "\n".join((log_tail or [])[-6:])
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=220,
@@ -310,7 +320,9 @@ def describe_failure_screen(screenshot_b64: str, log_tail: list[str] | None = No
         return ""
 
 
-def ai_classify_outcome(page_text: str, field_stats: dict | None = None) -> dict:
+def ai_classify_outcome(
+    page_text: str, field_stats: dict | None = None, tenant_id: str | None = None,
+) -> dict:
     """When an ERP form locks all its fields after a value is entered, decide WHAT the
     situation is by reading the page (no hardcoded field names or messages). Returns
     {"outcome": "duplicate" | "blocked" | "error" | "unknown", "reason": <short>}.
@@ -322,6 +334,7 @@ def ai_classify_outcome(page_text: str, field_stats: dict | None = None) -> dict
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -360,7 +373,7 @@ def ai_classify_outcome(page_text: str, field_stats: dict | None = None) -> dict
 
 
 def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str] | None = None,
-                         records: list[dict] | None = None) -> str:
+                         records: list[dict] | None = None, tenant_id: str | None = None) -> str:
     """Compute a custom field's value from the selected documents, following the Super Admin's
     instruction (e.g. a calculation across documents).
 
@@ -385,6 +398,7 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
     try:
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -431,6 +445,7 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
 
 def resolve_fuzzy_candidate_with_ai(
     query_value: str, candidates: list[tuple[str, str]], *, field_description: str = "a value",
+    tenant_id: str | None = None,
 ) -> str:
     """Given a SHORT list of (name, code) candidates already narrowed from a much larger
     reference sheet (exact-filtered on every other key, then ranked by string similarity - see
@@ -451,6 +466,7 @@ def resolve_fuzzy_candidate_with_ai(
         listing = "\n".join(f'- {name!r} -> {code}' for name, code in candidates)
         resp = create_chat_completion_with_retry(
             timeout=30,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=100,
@@ -488,7 +504,9 @@ def resolve_fuzzy_candidate_with_ai(
         return ""
 
 
-def normalize_place_name_with_ai(name: str, *, field_description: str = "a place name") -> str:
+def normalize_place_name_with_ai(
+    name: str, *, field_description: str = "a place name", tenant_id: str | None = None,
+) -> str:
     """Asks the model for the current, standard English name of a possibly old, colonial-era,
     or differently-romanised place name - e.g. "Peking" -> "Beijing", "Saigon" -> "Ho Chi Minh
     City", "Bombay" -> "Mumbai". Pure world-knowledge translation, with no candidate list
@@ -507,6 +525,7 @@ def normalize_place_name_with_ai(name: str, *, field_description: str = "a place
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=60,
@@ -570,7 +589,7 @@ _CONTAINER_TYPE_CODE_OPTIONS = """
 """.strip()
 
 
-def classify_container_type_code(raw_value: str) -> str:
+def classify_container_type_code(raw_value: str, tenant_id: str | None = None) -> str:
     """"40HC" -> "45G0", "20'GP" -> "22G0", "40 Reefer High-Cube" -> "45R1" - whatever a
     document's own container-type text actually says, translated to the ISO 6346 size/type
     code ICEGATE expects. Constrained to _CONTAINER_TYPE_CODE_OPTIONS above (one of those
@@ -585,6 +604,7 @@ def classify_container_type_code(raw_value: str) -> str:
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=20,
@@ -629,7 +649,8 @@ CUSTOM_FIELD_ROWS_LIMIT = 200
 
 
 def compute_custom_field_rows(prompt: str, documents_text: str,
-                               records: list[dict] | None = None) -> list[str]:
+                               records: list[dict] | None = None,
+                               tenant_id: str | None = None) -> list[str]:
     """Like compute_custom_field, but for a field ticked "multiple values from document" —
     the instruction describes ONE item (a container number, a line on a packing list with no
     mark of its own) and this returns every instance actually found, instead of one value for
@@ -641,6 +662,7 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
     try:
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=1500,
@@ -682,7 +704,8 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
 
 
 def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: list[dict],
-                                  records: list[dict] | None = None) -> list[str]:
+                                  records: list[dict] | None = None,
+                                  tenant_id: str | None = None) -> list[str]:
     """Like compute_custom_field_rows, but for a per-row field whose ROWS are already known -
     this job's own product lines, each already carrying whatever OTHER per-row fields (a part
     code, a description, a quantity) extraction already found for it. Returns exactly
@@ -708,6 +731,7 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
     try:
         resp = create_chat_completion_with_retry(
             timeout=45,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
             max_tokens=1500,
@@ -770,6 +794,7 @@ def suggest_field_mapping(
     element_label: str,
     element_options: list[str] | None,
     candidate_fields: list[str],
+    tenant_id: str | None = None,
 ) -> dict:
     """When the Super Admin touches an ERP input, guess which template data field
     belongs in it (and, for a dropdown, which option matches). Returns:
@@ -807,6 +832,7 @@ def suggest_field_mapping(
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -852,7 +878,10 @@ def suggest_field_mapping(
         return _heuristic()
 
 
-def ai_choose_action(goal: str, elements: list[dict], values: dict[str, str] | None = None) -> dict:
+def ai_choose_action(
+    goal: str, elements: list[dict], values: dict[str, str] | None = None,
+    tenant_id: str | None = None,
+) -> dict:
     """Pick which on-screen element to click to achieve a goal. Given a natural-language
     goal (e.g. "an 'already logged in — continue?' dialog appeared; continue the flow")
     and the page's clickable elements, return {"index": int|None, "reason": str}. Used for
@@ -882,6 +911,7 @@ def ai_choose_action(goal: str, elements: list[dict], values: dict[str, str] | N
         )
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
@@ -921,7 +951,10 @@ def ai_choose_action(goal: str, elements: list[dict], values: dict[str, str] | N
         return _heuristic()
 
 
-def resolve_ai_value(prompt: str, values: dict[str, str], options: list[str] | None = None) -> str:
+def resolve_ai_value(
+    prompt: str, values: dict[str, str], options: list[str] | None = None,
+    tenant_id: str | None = None,
+) -> str:
     """Evaluate an AI rule at ERP-entry time. The Super Admin wrote a natural-language
     condition (e.g. "if the mode of transport is sea put SEA, otherwise AIR"); given the
     job's extracted field values, return the single value to type/select. For a dropdown,
@@ -942,6 +975,7 @@ def resolve_ai_value(prompt: str, values: dict[str, str], options: list[str] | N
         )
         resp = create_chat_completion_with_retry(
             timeout=20,
+            tenant_id=tenant_id,
             model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as

@@ -22,13 +22,15 @@ def _reset_openai_key_pool():
     single test, regardless of whether that test touches the pool at all."""
     import app.core.openai_pool as _pool_module
 
-    _pool_module._pool = None
+    _pool_module._pools = {}
     _pool_module._cooldowns.clear()
-    _pool_module._rr_index = 0
+    _pool_module._rr_indices = {}
+    _pool_module._tenant_modes = {}
     yield
-    _pool_module._pool = None
+    _pool_module._pools = {}
     _pool_module._cooldowns.clear()
-    _pool_module._rr_index = 0
+    _pool_module._rr_indices = {}
+    _pool_module._tenant_modes = {}
 
 
 @pytest.fixture()

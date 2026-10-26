@@ -1422,6 +1422,7 @@ def _process_one_message(
             # fix as Smart Upload - a combined/multi-page attachment can mis-route a
             # page just as easily arriving by mail as uploaded by hand.
             per_page_vision=True,
+            tenant_id=job.tenant_id,
         )
         for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
             # The AI second-opinion pathway (_ai_verify_second_type, source

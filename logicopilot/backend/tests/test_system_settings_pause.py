@@ -162,6 +162,55 @@ def test_pausing_email_pull_clears_stuck_working_claims_and_reports_the_count(cl
     assert {r.message_id for r in remaining} == {"<done@example.com>"}
 
 
+def test_a_tenant_specific_pause_does_not_affect_another_tenant(db_session):
+    from app.models.tenant_extraction_config import TenantExtractionConfig
+
+    tenant_a = make_tenant(db_session, name="Tenant A")
+    tenant_b = make_tenant(db_session, name="Tenant B")
+    db_session.add(TenantExtractionConfig(tenant_id=tenant_a.id, extraction_paused=True))
+    db_session.commit()
+
+    assert is_extraction_paused(db_session, tenant_id=tenant_a.id) is True
+    assert is_extraction_paused(db_session, tenant_id=tenant_b.id) is False
+    assert is_extraction_paused(db_session) is False  # no tenant given, no global switch either
+
+
+def test_the_global_pause_still_stops_every_tenant_regardless_of_its_own_setting(db_session):
+    from app.models.tenant_extraction_config import TenantExtractionConfig
+
+    tenant = make_tenant(db_session)
+    db_session.add(TenantExtractionConfig(tenant_id=tenant.id, extraction_paused=False))
+    row = get_system_settings(db_session)
+    row.extraction_paused = True
+    db_session.commit()
+
+    assert is_extraction_paused(db_session, tenant_id=tenant.id) is True
+
+
+def test_an_unconfigured_tenant_is_not_paused(db_session):
+    tenant = make_tenant(db_session)
+    assert is_extraction_paused(db_session, tenant_id=tenant.id) is False
+
+
+def test_run_extraction_raises_for_a_tenant_specific_pause_even_with_the_global_switch_off(db_session):
+    from app.api.v1.jobs import run_extraction
+    from app.core.classifier import AIServiceUnavailable
+    from app.models.tenant_extraction_config import TenantExtractionConfig
+
+    tenant = make_tenant(db_session)
+    db_session.add(TenantExtractionConfig(tenant_id=tenant.id, extraction_paused=True))
+    db_session.commit()
+
+    fake_job = MagicMock()
+    fake_job.id = "job-1"
+    fake_job.tenant_id = tenant.id
+    try:
+        run_extraction(db_session, fake_job)
+        assert False, "expected AIServiceUnavailable"
+    except AIServiceUnavailable as exc:
+        assert "paused" in str(exc).lower()
+
+
 def test_pausing_extraction_does_not_touch_email_seen_rows(client, db_session):
     db_session.add(EmailSeen(message_id="<untouched@example.com>", sender="a@x.com",
                              subject="working", verdict="working"))
