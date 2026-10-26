@@ -622,6 +622,34 @@ def test_signature_match_freight_still_fires_without_an_fob_cif_breakdown_nearby
     assert hits >= 2
 
 
+def test_signature_match_packing_list_excludes_a_do_not_remove_packing_slip_remark():
+    # Found live: a plain Shipping Invoice with no packing-list content anywhere in it (two
+    # invoice pages, each followed by a Terms & Conditions page) duplicated itself into the
+    # Packing List slot, because its own boilerplate remark ("do not remove packing slip from
+    # carton/pallet" - a warning about a physical label taped to the carton, not the document
+    # calling itself a packing list) satisfied the required phrase, and the invoice's own
+    # routine "Total Gross Weight"/"Total Net Weight" summary satisfied 2 supporting markers.
+    text = (
+        "SHIPPING INVOICE\nInvoice No: 8667395\n"
+        "Total Gross Weight : 267.00 KG\nTotal Net Weight : 238.00 KG\n"
+        "Cargo not to be depalletized and do not remove packing slip from carton/pallet.\n"
+    )
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is False
+
+
+def test_signature_match_packing_list_still_fires_when_actually_titled_packing_list():
+    # The exclusion is narrow: a document that is ACTUALLY titled "PACKING LIST" still fires
+    # exactly as before, even if it also happens to carry the same remark somewhere.
+    text = (
+        "PACKING LIST\nNet Weight: 238.00 KG\nGross Weight: 267.00 KG\n"
+        "Do not remove packing slip from carton/pallet.\n"
+    )
+    is_match, hits = _keyword_signature_match(text, "PackingList")
+    assert is_match is True
+    assert hits >= 2
+
+
 def test_signature_match_none_and_empty_text_do_not_crash():
     assert _keyword_signature_match("", "PackingList") == (False, 0)
     assert _keyword_signature_match(None, "PackingList") == (False, 0)

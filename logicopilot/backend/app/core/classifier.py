@@ -137,6 +137,18 @@ _TYPE_SIGNATURES: dict[str, dict] = {
 }
 
 
+# A plain shipping invoice's own boilerplate remark ("Cargo not to be depalletized and do
+# not remove packing slip from carton/pallet") is a warning about a physical label taped to
+# the carton - it is not the document itself calling itself a packing list. Found live: this
+# remark alone satisfied PackingList's "packing slip" required phrase, and the SAME invoice's
+# own routine "Total Gross Weight" / "Total Net Weight" summary lines satisfied 2 supporting
+# markers, duplicating a plain Shipping Invoice (with no packing-list content anywhere in it)
+# into the Packing List slot.
+_PACKING_SLIP_REMARK_RE = re.compile(
+    r"(do\s*not|don'?t|without)\s*(remov|detach)\w*\s*(the\s*)?packing\s*slip", re.IGNORECASE
+)
+
+
 def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
     """(is_match, how many supporting markers hit) - is_match requires the type's REQUIRED
     phrase plus at least min_supporting of its supporting markers, both independently.
@@ -151,7 +163,12 @@ def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
     enough on its own to duplicate the whole invoice into the Freight/"Fright Certificate"
     slot. Found live on a real job. A genuine freight certificate/arrival notice has no
     reason to also state an "FOB value" (that's the commercial invoice's own term, not a
-    forwarder's), so this exclusion only fires on exactly the false-positive shape."""
+    forwarder's), so this exclusion only fires on exactly the false-positive shape.
+
+    PackingList gets the equivalent check for its own "packing slip" required phrase - see
+    _PACKING_SLIP_REMARK_RE above. Only fires when "packing slip" is the ONLY required hit (a
+    document actually titled "PACKING LIST" or whose table is headed "PACKING DETAILS" still
+    matches regardless of this remark)."""
     sig = _TYPE_SIGNATURES.get(doc_type)
     if not sig or not text:
         return False, 0
@@ -159,6 +176,10 @@ def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
         return False, 0
     if (doc_type == "Freight" and re.search(r"fob\s*value", text, re.IGNORECASE)
             and re.search(r"\binsurance\b", text, re.IGNORECASE)):
+        return False, 0
+    if (doc_type == "PackingList"
+            and not re.search(r"packing\s*list|packing\s*detail", text, re.IGNORECASE)
+            and _PACKING_SLIP_REMARK_RE.search(text)):
         return False, 0
     hits = sum(1 for p in sig["supporting"] if re.search(p, text, re.IGNORECASE))
     return hits >= sig["min_supporting"], hits
