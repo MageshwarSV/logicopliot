@@ -33,7 +33,7 @@ def _safe_stem(name: str) -> str:
     return base or "sheet"
 
 
-def _run_soffice(args: list[str], profile_dir: Path, timeout: int = 90) -> None:
+def _run_soffice(args: list[str], profile_dir: Path, timeout: int = 180) -> None:
     # Each call gets its own LibreOffice user profile (-env:UserInstallation) - without this,
     # two Smart Upload requests converting a file at the same moment race for the same default
     # profile lock and one of them fails outright ("Fatal Error: file could not be locked").
@@ -64,13 +64,26 @@ def _run_soffice(args: list[str], profile_dir: Path, timeout: int = 90) -> None:
 
 def convert_to_pdf(src: Path, out_dir: Path, work_dir: Path) -> Path:
     """Convert a single Office file (Word or a single-sheet Excel copy) to PDF. Returns the
-    produced PDF's path, under `out_dir`."""
+    produced PDF's path, under `out_dir`.
+
+    A timeout gets ONE retry with a brand-new LibreOffice profile - found live, a Word file
+    that should convert in seconds instead hit the 90s(-> now 180s) ceiling, almost certainly
+    several Smart Upload requests' own soffice processes competing for the same box's CPU at
+    that moment rather than anything wrong with the file itself; a second attempt a few
+    seconds later, once that contention has cleared, is cheap and often succeeds outright.
+    Never retried for any OTHER failure (a genuinely corrupt/unsupported file, soffice
+    missing) - those will not fix themselves on a second try."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    profile_dir = work_dir / f"profile_{uuid.uuid4().hex}"
-    try:
-        _run_soffice(["--convert-to", "pdf", "--outdir", str(out_dir), str(src)], profile_dir)
-    finally:
-        shutil.rmtree(profile_dir, ignore_errors=True)
+    for attempt in range(2):
+        profile_dir = work_dir / f"profile_{uuid.uuid4().hex}"
+        try:
+            _run_soffice(["--convert-to", "pdf", "--outdir", str(out_dir), str(src)], profile_dir)
+            break
+        except OfficeConversionFailed as exc:
+            if attempt == 1 or "took too long" not in str(exc):
+                raise
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
     out = out_dir / f"{src.stem}.pdf"
     if not out.exists():
         raise OfficeConversionFailed(f"LibreOffice did not produce a PDF for {src.name!r}.")
