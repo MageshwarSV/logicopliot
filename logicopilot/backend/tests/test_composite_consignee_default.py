@@ -9,6 +9,7 @@ deliberate admin action through this screen, not an incidental edit made while w
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
@@ -104,6 +105,7 @@ def test_a_new_job_for_the_same_consignee_computes_with_their_saved_format(clien
     job, jd = _make_job(db_session, tenant, group, tdoc, "JOB-CONS2", consignee="ACME CORP",
                         status="extracting")
     text_rows = [{"Customer Part code": "MC2", "product_description": "WIDGET 2"}]
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "x", "text": "x", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \

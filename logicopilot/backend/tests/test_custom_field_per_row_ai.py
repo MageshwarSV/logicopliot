@@ -12,6 +12,7 @@ customs-classification-style field."""
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
@@ -100,6 +101,7 @@ def test_run_extraction_writes_one_row_per_existing_line_preserving_blanks(db_se
 
     text_rows = [{"product_description": f"WIDGET {i}"} for i in (1, 2, 3)]
     p1, p2 = _empty_ocr_patches()
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     # Line 2 has nothing printed - its blank must stay line 2's answer, not collapse the
     # list down to two entries and shift line 3's real answer onto line 2.
     with p1, p2, \

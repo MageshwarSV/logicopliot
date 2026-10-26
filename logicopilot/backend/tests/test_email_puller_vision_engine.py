@@ -59,6 +59,7 @@ def test_email_pull_reaches_assign_documents_detailed_with_per_page_vision(db_se
 
     raw = _fake_message("<vis-1@example.com>")
     conn = _mock_conn_with_one_message(raw)
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "bill of lading", "tokens": []}), \

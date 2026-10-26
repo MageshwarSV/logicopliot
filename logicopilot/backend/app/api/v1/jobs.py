@@ -6171,6 +6171,10 @@ class UnclassifiedPageOut(BaseModel):
     original_filename: str
     page_number: int
     preview_url: str
+    # Lets a Super Admin see WHY this page wasn't placed anywhere (garbled OCR vs. genuinely
+    # no slot for it) without needing direct database access - same reasoning the page image
+    # itself is already exposed for.
+    ocr_text: str | None = None
 
 
 @router.get("/jobs/{job_id}/unclassified-pages", response_model=list[UnclassifiedPageOut])
@@ -6195,6 +6199,7 @@ def list_unclassified_pages(
         UnclassifiedPageOut(
             id=r.id, original_filename=r.original_filename, page_number=r.page_number,
             preview_url=f"/api/v1/jobs/{job.id}/unclassified-pages/{r.id}/image",
+            ocr_text=r.ocr_text,
         )
         for r in rows
     ]

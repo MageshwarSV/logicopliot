@@ -3,6 +3,7 @@ already-extracted job after its prompt was tightened, without re-running extract
 would rewrite every other field and reset every approval)."""
 from unittest.mock import patch
 
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -59,6 +60,7 @@ def test_backfills_a_mark_from_its_own_uploaded_document(client, db_session):
     make_user(db_session, role=SUPER_ADMIN, email="sa@example.com")
     login(client, "sa@example.com")
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with _ocr_patch(), patch("app.api.v1.jobs.extract_document_fields",
                              return_value={"EXPORTER": "Real Exporter Co"}):
         resp = client.post(f"/api/v1/jobs/{job.id}/marks/{mark.id}/recompute")
@@ -96,6 +98,7 @@ def test_second_call_updates_the_same_row(client, db_session):
     make_user(db_session, role=SUPER_ADMIN, email="sa3@example.com")
     login(client, "sa3@example.com")
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with _ocr_patch(), patch("app.api.v1.jobs.extract_document_fields", return_value={"EXPORTER": "First"}):
         client.post(f"/api/v1/jobs/{job.id}/marks/{mark.id}/recompute")
     with _ocr_patch(), patch("app.api.v1.jobs.extract_document_fields", return_value={"EXPORTER": "Second"}):

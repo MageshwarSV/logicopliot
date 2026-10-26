@@ -8,6 +8,7 @@ the checksum, the duplicate lookup, the status write) runs for real, against a r
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument
 from app.models.template_document import TemplateDocument
@@ -48,6 +49,7 @@ def _make_job_with_document(db_session, tenant, group, tdoc, reference):
 
 
 def _run_with_mocked_ai(db_session, job, invoice_no: str):
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
                return_value={"layout_text": f"Invoice No: {invoice_no}", "text": f"Invoice No: {invoice_no}"}), \
          patch("app.api.v1.jobs.extract_document_fields",

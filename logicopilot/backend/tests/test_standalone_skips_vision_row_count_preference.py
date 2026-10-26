@@ -12,6 +12,7 @@ no page image existed at all. Row-aligned (product-line) marks must be completel
 from unittest.mock import patch
 
 from app.api.v1.jobs import _job_doc_dir, run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -72,6 +73,7 @@ def test_standalone_field_keeps_the_text_read_even_when_vision_finds_more_rows(d
         "WHSU8379514", "REGU5094361", "SHA2602854", "1234567890", "ABCD1234567",
     )]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some bl text", "text": "some bl text", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \
@@ -121,6 +123,7 @@ def test_row_aligned_marks_on_the_same_document_still_prefer_vision_when_it_find
             return [{"cth_code": "1001"}, {"cth_code": "1002"}, {"cth_code": "1003"}]
         raise AssertionError(f"unexpected batch: {labels}")
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some bl text", "text": "some bl text", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \

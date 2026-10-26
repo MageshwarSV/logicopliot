@@ -33,6 +33,7 @@ from unittest.mock import patch
 
 from app.api.v1.custom_filter_pages import _sweep_old_jobs_for_reference
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
@@ -110,6 +111,7 @@ def _run_with_fake_ocr(db_session, job, jd_bl):
         text = REFERENCE_TEXT if str(jd_bl.id) in str(job_doc_dir) else NON_MATCHING_TEXT
         return {"layout_text": text, "text": text, "tokens": []}
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields",
                return_value={"Port of delivery": "Singapore"}):
@@ -253,6 +255,7 @@ def test_rerunning_extraction_leaves_a_newly_added_documents_fields_uncorrected(
             text = NON_MATCHING_TEXT
         return {"layout_text": text, "text": text, "tokens": []}
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields",
                return_value={"Port of delivery": "Singapore"}):

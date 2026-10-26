@@ -18,6 +18,7 @@ ORIGINAL failure this function was built to catch) still trips it.
 from unittest.mock import patch
 
 from app.api.v1.jobs import _job_doc_dir, run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -90,6 +91,7 @@ def test_identical_description_and_price_do_not_block_the_total_cross_check(db_s
         for v in ("299", "3000", "1927")
     ]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some invoice text", "text": "some invoice text", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={"total_quantity": "5226"}), \

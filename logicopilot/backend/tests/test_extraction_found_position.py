@@ -4,6 +4,7 @@ FieldMark's static template-drawn position."""
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -64,6 +65,7 @@ def test_found_position_comes_from_the_real_document_not_the_template_mark(db_se
         {"text": "Chicago,", "x0": 0.29, "y0": 0.35, "x1": 0.36, "y1": 0.37},
         {"text": "USA", "x0": 0.37, "y0": 0.35, "x1": 0.40, "y1": 0.37},
     ]
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch(
         "app.api.v1.jobs.get_page_ocr",
         return_value={
@@ -93,6 +95,7 @@ def test_no_confident_match_leaves_found_position_null(db_session):
     job = _make_job_with_document(db_session, tenant, group, tdoc, "JOB-FOUNDPOS2")
 
     tokens = [{"text": "Nothing", "x0": 0.1, "y0": 0.1, "x1": 0.2, "y1": 0.12}]
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch(
         "app.api.v1.jobs.get_page_ocr",
         return_value={"layout_text": "Nothing", "text": "Nothing", "tokens": tokens},

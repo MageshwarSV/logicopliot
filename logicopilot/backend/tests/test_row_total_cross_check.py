@@ -13,6 +13,7 @@ that total settles which candidate actually adds up, ahead of row count entirely
 from unittest.mock import patch
 
 from app.api.v1.jobs import _job_doc_dir, _numeric_total_field, run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -92,6 +93,7 @@ def test_keeps_the_text_read_when_only_its_sum_matches_the_printed_total(db_sess
     text_rows = [{"item_quantity": v} for v in ("299", "3000", "1927")]
     vision_rows = [{"item_quantity": v} for v in ("1", "299", "3000", "4")]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some invoice text", "text": "some invoice text", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={"total_quantity": "5226"}), \
@@ -164,6 +166,7 @@ def test_detected_row_count_settles_a_disagreement_with_no_printed_total_to_chec
     text_rows = [{"item_quantity": v} for v in ("10", "20")]
     vision_rows = [{"item_quantity": v} for v in ("10", "20", "30")]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some invoice text", "text": "some invoice text",
                             "tokens": [], "table_row_counts": [2]}), \
@@ -236,6 +239,7 @@ def test_both_reads_agreeing_on_a_wrong_count_is_logged_not_silently_kept(db_ses
 
     same_rows = [{"item_quantity": v} for v in ("10", "20")]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with caplog.at_level(logging.WARNING, logger="app.api.v1.jobs"), \
          patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some invoice text", "text": "some invoice text",

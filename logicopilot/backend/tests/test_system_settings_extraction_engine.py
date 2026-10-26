@@ -1,8 +1,10 @@
 """Which engine production document classification/extraction use - a live, database-backed
-Super Admin setting (Settings page), defaulting to "ocr_gpt4o_mini" (today's behavior) so
-nothing changes until it is deliberately flipped. Never affects the Template Wizard's own
-training flow (demo_extract/test-extract/build_field_profile), which always stays on OCR
-text + gpt-4o-mini regardless of this setting."""
+Super Admin setting (Settings page). Defaults to "gpt5_mini_vision": real-traffic testing
+this session found it both cheaper and more accurate per page than the older OCR-text path,
+and separately found a real classification bug (a keyword-signature false positive) in that
+older path's own backstop that the vision path doesn't share. Never affects the Template
+Wizard's own training flow (demo_extract/test-extract/build_field_profile), which always
+stays on OCR text + gpt-4o-mini regardless of this setting."""
 import pytest
 
 from app.core.system_settings import (
@@ -14,8 +16,8 @@ from app.core.system_settings import (
 from tests.conftest import login, make_tenant, make_user
 
 
-def test_defaults_to_ocr_gpt4o_mini(db_session):
-    assert get_extraction_engine(db_session) == "ocr_gpt4o_mini"
+def test_defaults_to_gpt5_mini_vision(db_session):
+    assert get_extraction_engine(db_session) == "gpt5_mini_vision"
 
 
 def test_setting_the_vision_engine(db_session):
@@ -23,17 +25,18 @@ def test_setting_the_vision_engine(db_session):
     assert get_extraction_engine(db_session) == "gpt5_mini_vision"
 
 
-def test_switching_back_to_the_old_engine(db_session):
-    set_extraction_engine(db_session, "gpt5_mini_vision")
+def test_switching_to_the_older_ocr_text_engine(db_session):
     set_extraction_engine(db_session, "ocr_gpt4o_mini")
     assert get_extraction_engine(db_session) == "ocr_gpt4o_mini"
+    set_extraction_engine(db_session, "gpt5_mini_vision")
+    assert get_extraction_engine(db_session) == "gpt5_mini_vision"
 
 
 def test_an_unrecognized_engine_is_refused_not_silently_coerced(db_session):
     with pytest.raises(InvalidExtractionEngine):
         set_extraction_engine(db_session, "some_typo")
     # Refused means untouched - still at the default.
-    assert get_extraction_engine(db_session) == "ocr_gpt4o_mini"
+    assert get_extraction_engine(db_session) == "gpt5_mini_vision"
 
 
 def test_valid_engines_tuple_matches_what_the_setter_accepts(db_session):
@@ -73,4 +76,4 @@ def test_get_system_settings_reports_the_default_before_anything_is_set(client, 
     admin = make_user(db_session, role="super_admin", email="sa-engine3@example.com")
     login(client, admin.email)
     resp = client.get("/api/v1/system-settings")
-    assert resp.json()["extraction_engine"] == "ocr_gpt4o_mini"
+    assert resp.json()["extraction_engine"] == "gpt5_mini_vision"

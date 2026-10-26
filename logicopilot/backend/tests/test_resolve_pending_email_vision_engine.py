@@ -58,6 +58,7 @@ def test_default_engine_reaches_assign_documents_detailed_unchanged(client, db_s
     row = _make_pending_email_with_attachment(db_session)
     admin = make_user(db_session, role="super_admin", email="pm-op1@example.com")
     login(client, admin.email)
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
 
     with patch("app.api.v1.pending_mail.assign_documents_detailed",
               return_value=[[{"key": doc.id, "pages": [1], "evidence": "e"}]]) as mock_assign, \

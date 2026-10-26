@@ -1,6 +1,6 @@
-"""run_extraction's extraction_engine wiring - the default ("ocr_gpt4o_mini") must behave
-exactly as before this setting existed (OCR text used whenever present), and
-"gpt5_mini_vision" must force every document through the image readers with
+"""run_extraction's extraction_engine wiring - "ocr_gpt4o_mini" must behave exactly as before
+this setting existed (OCR text used whenever present), and "gpt5_mini_vision" (now the
+platform default) must force every document through the image readers with
 settings.vision_engine_model, regardless of whether OCR text is also available - unlike the
 pre-existing "OCR genuinely found nothing" fallback, which only ever uses the default model."""
 from unittest.mock import patch
@@ -61,6 +61,7 @@ def test_default_engine_uses_text_reader_when_ocr_text_is_present(db_session):
     db_session.add(mark)
     db_session.commit()
     job = _make_job_with_page(db_session, tenant, group, tdoc, "JOB-ENGINE-DEFAULT")
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
 
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some real text", "text": "some real text", "tokens": []}), \

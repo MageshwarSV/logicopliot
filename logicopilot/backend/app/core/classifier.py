@@ -139,11 +139,26 @@ _TYPE_SIGNATURES: dict[str, dict] = {
 
 def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
     """(is_match, how many supporting markers hit) - is_match requires the type's REQUIRED
-    phrase plus at least min_supporting of its supporting markers, both independently."""
+    phrase plus at least min_supporting of its supporting markers, both independently.
+
+    Freight gets one more check: an ordinary commercial invoice quoted under an FOB/CIF
+    Incoterm routinely states its own "FOB VALUE" / "FREIGHT CHARGES" / "INSURANCE" cost
+    breakdown - that is NOT evidence of a separate, dedicated freight document, it's just
+    the invoice doing the arithmetic its own Incoterm requires. _ai_verify_second_type's own
+    freight_caveat already tells the AI path not to be fooled by this; this regex path had no
+    equivalent guard at all, so a real invoice's incidental "Freight Charges: USD 6,000.00"
+    line - needing nothing more than ANY dollar figure to satisfy min_supporting=1 - was
+    enough on its own to duplicate the whole invoice into the Freight/"Fright Certificate"
+    slot. Found live on a real job. A genuine freight certificate/arrival notice has no
+    reason to also state an "FOB value" (that's the commercial invoice's own term, not a
+    forwarder's), so this exclusion only fires on exactly the false-positive shape."""
     sig = _TYPE_SIGNATURES.get(doc_type)
     if not sig or not text:
         return False, 0
     if not any(re.search(p, text, re.IGNORECASE) for p in sig["required"]):
+        return False, 0
+    if (doc_type == "Freight" and re.search(r"fob\s*value", text, re.IGNORECASE)
+            and re.search(r"\binsurance\b", text, re.IGNORECASE)):
         return False, 0
     hits = sum(1 for p in sig["supporting"] if re.search(p, text, re.IGNORECASE))
     return hits >= sig["min_supporting"], hits
@@ -841,29 +856,33 @@ def classify_document_from_image(filename: str, image_path: Path | None,
 
 
 def classify_page_image(filename: str, page_no: int, image_path: Path, candidates: list[dict],
-                        model: str, prev_key: str | None,
-                        tenant_id: str | None = None) -> dict | None:
-    """Decide which ONE of this template's own candidates (whatever document labels were
-    declared in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to,
-    independent of every other page in the file. Smart-Upload-only building block for
+                        model: str, prev_keys: list[str] | None,
+                        tenant_id: str | None = None) -> list[dict]:
+    """Decide which of this template's own candidates (whatever document labels were declared
+    in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to, independent
+    of every other page in the file. Smart-Upload-only building block for
     classify_pages_from_images, below.
 
-    Returns {"key", "confidence", "evidence"}, or None if nothing matches or the model's own
-    confidence is below `vision_classification_confidence_threshold` - a low-confidence or
-    unmatched page is simply left out, so it falls through to the existing Unclassified Pages
-    tray exactly like any other page nothing could place. No new "LOW_CONFIDENCE" status is
-    introduced; that tray already is one.
+    Returns [{"key", "confidence", "evidence"}] - usually zero or one entry, but a page can
+    genuinely, physically combine more than one document type at once (a "Shipping Invoice cum
+    Packing List" page is both an Invoice and a Packing List on the SAME page) - this returns
+    every type the page clears the bar for, not just its single best guess. A type whose
+    confidence is below `vision_classification_confidence_threshold` is simply left out of the
+    list, so it falls through to the existing Unclassified Pages tray exactly like any other
+    page nothing could place. No new "LOW_CONFIDENCE" status is introduced; that tray already
+    is one.
 
-    EXCEPTION: a page that agrees it CONTINUES `prev_key`'s document (same key returned, with
-    real evidence) is trusted on that reasoning alone, regardless of its own raw confidence -
-    see the comment at that check for why a continuation page can honestly self-rate near
-    zero while still being the right answer.
+    EXCEPTION, per key: a key that was already open on the page immediately before this one
+    (`prev_keys`) and is returned again here is trusted as a continuation regardless of its own
+    raw confidence - see the comment at that check for why a continuation page can honestly
+    self-rate near zero while still being the right answer. A FRESH key (not in `prev_keys`)
+    still has to clear the confidence bar on its own.
     """
     settings = get_settings()
     if not settings.openai_api_key or not candidates:
-        return None
+        return []
     if not image_path.exists():
-        return None
+        return []
 
     # Deliberately plain: this template's own document labels (never a fixed BL/PL/INVOICE/
     # FREIGHT list) and the image, nothing else - no written heuristics describing what each
@@ -890,19 +909,25 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
     instruction = (
         f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
         "paperwork. Based on what you actually see on the page - its title, layout, and the "
-        "fields or tables it contains - decide which ONE of the following document types it "
-        f"is, if any:\n\n{lines}\n\n"
+        "fields or tables it contains - decide which of the following document types this "
+        f"page matches:\n\n{lines}\n\n"
+        "Usually exactly one type fits. Return MORE THAN ONE only when this single page "
+        "genuinely, physically combines two document types at once (for example, a "
+        "'Shipping Invoice cum Packing List' page that is both an invoice AND a packing list "
+        "on the same page) - not merely because the page mentions something in passing.\n\n"
     )
-    if prev_key:
-        prev_name = next((c["name"] for c in candidates if c["key"] == prev_key), prev_key)
+    if prev_keys:
+        prev_names = ", ".join(
+            repr(next((c["name"] for c in candidates if c["key"] == k), k)) for k in prev_keys
+        )
         instruction += (
-            f"The page immediately before this one was classified as {prev_name!r}. If this "
-            "page is simply the next page of that same document, say so.\n\n"
+            f"The page immediately before this one was classified as: {prev_names}. If this "
+            "page simply continues any of those same documents, say so for that type.\n\n"
         )
     instruction += (
-        'Return JSON: {"key": "..." or null, "confidence": 0.00, '
-        '"evidence": "what on the page tells you this"}. Use null for key if none of the '
-        "types fit this page."
+        'Return JSON: {"matches": [{"key": "...", "confidence": 0.00, '
+        '"evidence": "what on the page tells you this"}]}. Empty list if none of the types '
+        "fit this page."
     )
     try:
         from openai import APIError
@@ -920,39 +945,43 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
             tenant_id=tenant_id,
-            **reasoning_safe_chat_params(model, temperature=0, max_tokens=500),
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=800),
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         valid = {c["key"] for c in candidates}
-        key = data.get("key")
-        ev = str(data.get("evidence") or "").strip()
-        try:
-            confidence = float(data.get("confidence"))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        if not key or key not in valid or len(ev) < 8:
-            return None
-        # A page agreeing it CONTINUES the previous page's document (same key, per the
-        # continuation hint above) is trusted on that reasoning alone, not on its own raw
-        # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
-        # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
-        # self-rate near zero even while correctly following the continuation instruction.
-        # Gating that away is what regressed a page that classified correctly before this
-        # per-page engine existed. Only a FRESH match (no continuation claim) needs to clear
-        # the confidence bar.
-        is_continuation = prev_key is not None and key == prev_key
-        if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
-            logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
-                        filename, page_no, key, confidence,
-                        settings.vision_classification_confidence_threshold)
-            return None
-        return {"key": key, "confidence": confidence, "evidence": ev[:300]}
+        prev_set = set(prev_keys or [])
+        out: list[dict] = []
+        for m in data.get("matches") or []:
+            key = m.get("key")
+            ev = str(m.get("evidence") or "").strip()
+            if not key or key not in valid or len(ev) < 8:
+                continue
+            try:
+                confidence = float(m.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            # A page agreeing it CONTINUES an already-open document (same key, per the
+            # continuation hint above) is trusted on that reasoning alone, not on its own raw
+            # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
+            # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
+            # self-rate near zero even while correctly following the continuation instruction.
+            # Gating that away is what regressed a page that classified correctly before this
+            # per-page engine existed. Only a FRESH key (not already open) needs to clear the
+            # confidence bar.
+            is_continuation = key in prev_set
+            if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
+                logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
+                            filename, page_no, key, confidence,
+                            settings.vision_classification_confidence_threshold)
+                continue
+            out.append({"key": key, "confidence": confidence, "evidence": ev[:300]})
+        return out
     except APIError as exc:
         raise AIServiceUnavailable(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("Per-page vision classification failed for %s page %s: %s",
                        filename, page_no, exc)
-        return None
+        return []
 
 
 def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
@@ -973,32 +1002,35 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
     reliably keeping each page in the right slot, which is the bug this exists to fix. The
     manual Unclassified Pages tray remains the fallback either way.
 
+    A page may belong to SEVERAL open groups at once (a genuinely combined page, e.g. an
+    Invoice/Packing-List-in-one) - each key this function tracks is its own independent open
+    group, extended or closed per page on its own key's own matches, so one combined page
+    correctly ends up attached under both keys rather than forcing a single choice.
+
     Returns the same shape as classify_document/classify_document_from_image:
-    [{"key", "pages": [int], "evidence": str}].
+    [{"key", "pages": [int], "evidence": str}] - a key may appear more than once if the same
+    type reopens later in the file after a gap (treated as a separate instance, same as the
+    text classifier already allows).
     """
     out: list[dict] = []
-    current: dict | None = None
-    prev_key: str | None = None
+    open_groups: dict[str, dict] = {}  # key -> {"key", "pages", "evidence", "source"}
     for page_no, image_path in page_images:
-        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key,
-                                     tenant_id=tenant_id)
-        if result is None:
-            prev_key = None
-            if current is not None:
-                out.append(current)
-                current = None
-            continue
-        key = result["key"]
-        if current is not None and current["key"] == key:
-            current["pages"].append(page_no)
-        else:
-            if current is not None:
-                out.append(current)
-            current = {"key": key, "pages": [page_no], "evidence": result["evidence"],
-                      "source": "model"}
-        prev_key = key
-    if current is not None:
-        out.append(current)
+        matches = classify_page_image(filename, page_no, image_path, candidates, model,
+                                      list(open_groups.keys()), tenant_id=tenant_id)
+        matched_keys = {m["key"] for m in matches}
+        # Close out (flush to `out`) any group NOT continued on this page - a gap in a key's
+        # own pages ends that document instance, exactly as before.
+        for key in list(open_groups.keys()):
+            if key not in matched_keys:
+                out.append(open_groups.pop(key))
+        for m in matches:
+            key = m["key"]
+            if key in open_groups:
+                open_groups[key]["pages"].append(page_no)
+            else:
+                open_groups[key] = {"key": key, "pages": [page_no], "evidence": m["evidence"],
+                                    "source": "model"}
+    out.extend(open_groups.values())
     if not out:
         logger.info("classify %s: no slot's document is present on any page (per-page "
                     "vision engine, %s slots offered)", filename, len(candidates))

@@ -10,6 +10,7 @@ Each standalone mark must be its own, fully independent extract_document_rows ca
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -91,6 +92,7 @@ def test_standalone_marks_are_never_batched_with_each_other_or_the_line_item_fam
         raise AssertionError(f"unexpected batch: {labels}")
 
     p1, p2 = _empty_ocr_patches()
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with p1, p2, patch("app.api.v1.jobs.extract_document_rows", side_effect=fake_extract_document_rows):
         run_extraction(db_session, job)
 

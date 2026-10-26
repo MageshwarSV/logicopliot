@@ -14,6 +14,7 @@ from app.api.v1.jobs import (
     _job_doc_dir,
     run_extraction,
 )
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -84,6 +85,7 @@ def test_the_exact_live_shape_end_to_end(db_session):
     )
     text_rows = [{"container_number": "GAOU7433235"}, {"container_number": "OOLU2172231"}]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": page_text, "text": page_text, "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \

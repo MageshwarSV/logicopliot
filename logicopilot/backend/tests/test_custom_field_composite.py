@@ -9,6 +9,7 @@ replace a hardcoded "(PART CODE) DESCRIPTION" prompt with a configurable, reusab
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
@@ -82,6 +83,7 @@ def test_run_extraction_composite_joins_pieces_in_order_skipping_blanks(db_sessi
         {"item_material_code": "9Z00X", "product_description": ""},
     ]
     p1, p2 = _empty_ocr_patches()
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with p1, p2, patch("app.api.v1.jobs.extract_document_rows", return_value=text_rows):
         run_extraction(db_session, job)
 
@@ -112,6 +114,7 @@ def test_run_extraction_composite_runs_after_its_own_ingredients(db_session):
 
     text_rows = [{"item_material_code": "MC1", "product_description": "WIDGET"}]
     p1, p2 = _empty_ocr_patches()
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with p1, p2, \
          patch("app.api.v1.jobs.extract_document_rows", return_value=text_rows), \
          patch("app.core.llm.compute_custom_field_per_row", return_value=["8483109090"]):

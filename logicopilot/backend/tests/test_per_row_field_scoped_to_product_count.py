@@ -8,6 +8,7 @@ a genuinely container-keyed field (ContainerTypeCode) correctly needs one slot p
 from unittest.mock import patch
 
 from app.api.v1.jobs import run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.custom_field import CustomField
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
@@ -86,6 +87,7 @@ def test_a_product_keyed_field_gets_one_slot_per_product_not_per_container(db_se
             return [{"container_type": "40 HC"}, {"container_type": "40 RHC"}]  # two containers
         return []
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
          patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
@@ -131,6 +133,7 @@ def test_a_container_keyed_field_gets_one_slot_per_container_not_per_product(db_
             return [{"container_type": "40 HC"}]  # one container
         return []
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
          patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
@@ -176,6 +179,7 @@ def test_container_fields_are_blanked_for_anything_other_than_fcl(db_session):
             return [{"container_type": "40 HC"}]
         return []
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
          patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):
@@ -218,6 +222,7 @@ def test_container_fields_are_kept_for_an_fcl_shipment(db_session):
             return [{"container_type": "40 HC"}]
         return []
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr", side_effect=_ocr_for), \
          patch("app.api.v1.jobs.extract_document_fields", side_effect=_fields_for), \
          patch("app.api.v1.jobs.extract_document_rows", side_effect=_rows_for):

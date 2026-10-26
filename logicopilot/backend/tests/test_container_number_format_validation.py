@@ -7,6 +7,7 @@ isn't genuinely 4 letters + 7 digits (ISO 6346) is dropped outright, never trust
 from unittest.mock import patch
 
 from app.api.v1.jobs import _is_valid_container_number, _job_doc_dir, run_extraction
+from app.core.system_settings import set_extraction_engine
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.template_document import TemplateDocument
@@ -79,6 +80,7 @@ def test_seal_numbers_interleaved_with_real_containers_are_dropped_not_stored(db
         "WHA3170470", "WHSU6789947", "WHA3170599", "WHSU8125443", "WHA3168473",
     )]
 
+    set_extraction_engine(db_session, "ocr_gpt4o_mini")
     with patch("app.api.v1.jobs.get_page_ocr",
               return_value={"layout_text": "some bl text", "text": "some bl text", "tokens": []}), \
          patch("app.api.v1.jobs.extract_document_fields", return_value={}), \

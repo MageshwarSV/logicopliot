@@ -80,4 +80,11 @@ class SystemSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # demo-extract/prompt-generation flow, which always uses OCR text + gpt-4o-mini - those
     # call sites never read this setting at all, by construction (see app/core/llm.py's
     # build_field_profile and app/api/v1/field_marks.py's demo_extract/test-extract).
-    extraction_engine: Mapped[str] = mapped_column(Text, nullable=False, default="ocr_gpt4o_mini")
+    # Default changed from "ocr_gpt4o_mini" to "gpt5_mini_vision" once real-traffic testing
+    # (this session) showed the vision engine both cheaper and more accurate per page, AND a
+    # real classification bug was found in the OCR-text path's keyword-signature backstop
+    # (see classifier.py's _keyword_signature_match) that the vision path doesn't share. Only
+    # affects a FRESH install's first-ever row - an already-running server's existing row
+    # keeps whatever a Super Admin has it set to; flip it from Settings if you want the new
+    # default applied there too.
+    extraction_engine: Mapped[str] = mapped_column(Text, nullable=False, default="gpt5_mini_vision")
