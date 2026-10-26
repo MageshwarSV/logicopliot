@@ -294,6 +294,13 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
 const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
+// Consignee / ERP Consignee Name / ERP Consignee Branch sat two-per-row in the shared grid,
+// which split each box's width in half - the document's own long company names (e.g.
+// "FLEXTRONICS INTERNATIONAL MANAGEMENT SERVICES LIMITED") were getting cut off mid-word.
+// Each of these three now spans the full row on its own, by request.
+const FULL_WIDTH_FIELD_LABELS = new Set([
+  "Consignee", "ERP Consignee Name", "ERP Importer Address / Branch Code",
+]);
 // ReferenceSearchPicker's own placeholder, per field - found live: it was hardcoded to the
 // Shipment Port Code wording ("Search by city or country...") even while showing up under ERP
 // Consignee Name, which searches company names, not places. A label added to
@@ -5824,7 +5831,11 @@ function ExtractionReview({
                     : undefined;
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   return (
-                    <div key={fv.id} id={`field-${fv.id}`}>
+                    <div
+                      key={fv.id}
+                      id={`field-${fv.id}`}
+                      className={FULL_WIDTH_FIELD_LABELS.has(fv.label_name) ? "sm:col-span-2" : undefined}
+                    >
                       <ExtractedField
                         fv={fv}
                         readOnly={readOnly}
