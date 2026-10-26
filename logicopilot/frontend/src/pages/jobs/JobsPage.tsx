@@ -60,10 +60,25 @@ const CATEGORY_TITLES: Record<string, string> = {
   completed: "ERP Verified Jobs",
 };
 
-function readStoredJobsFilters(): Partial<StoredJobsFilters> {
+// Which screen a set of filters belongs to. The five sidebar screens each keep their
+// own; a plain /jobs visit and a dashboard box click share the "all" bucket, since
+// neither narrows to a category.
+function filtersScope(category: string | undefined): string {
+  return category ?? "all";
+}
+
+function readStoredJobsFilters(category?: string): Partial<StoredJobsFilters> {
   try {
     const raw = window.sessionStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Partial<StoredJobsFilters>) : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, Partial<StoredJobsFilters>>;
+    // Written by an older build as one flat object shared by every screen. Reading it as
+    // this screen's own is the closest honest answer, and the next write replaces it with
+    // the per-screen shape anyway.
+    if (parsed && typeof parsed === "object" && "quick" in parsed) {
+      return parsed as Partial<StoredJobsFilters>;
+    }
+    return parsed?.[filtersScope(category)] ?? {};
   } catch {
     // A private window, blocked storage, or a malformed stored value - fall through to the
     // same defaults as before this existed rather than breaking the page over a convenience.
@@ -162,7 +177,7 @@ export function JobsPage() {
   // counted", server-side, for whatever bucket was pressed (This Week/Month/Overall
   // included). Stacking a client-side "today" filter on top of an "Overall" bucket click
   // would have hidden almost everything the box just promised to show.
-  const storedFilters = readStoredJobsFilters();
+  const storedFilters = readStoredJobsFilters(categoryParam ?? undefined);
   // Set by the operator's own login redirect (see ROLE_HOME in LoginPage.tsx) - takes priority
   // over whatever was previously stored, the same way `group` already does, so every fresh
   // sign-in lands on the same default view regardless of what was left over from last time.
@@ -183,19 +198,41 @@ export function JobsPage() {
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   useEffect(() => {
     // EVERY client-side refinement (quick date range, customer, status, assignee, shipment
-    // type) is shared across every screen on this one page (sessionStorage has no idea which
-    // category it was last set on), so e.g. a "Status: Duplicate" left over from New Jobs
-    // silently hid EVERY job on, say, ERP Verified Jobs (none of which are ever "Duplicate")
-    // until the operator noticed and pressed Reset by hand - found live, the exact same class
-    // of bug the "quick"-only reset below used to fix for the date range alone. A fresh
-    // category or group/bucket always resets customer/status/shipment type/dates, instead of
-    // inheriting whatever was last picked somewhere else entirely.
+    // type) used to be stored in ONE set shared by all five screens, with no idea which it
+    // was last set on - so a "Status: Duplicate" left over from New Jobs silently hid EVERY
+    // job on, say, ERP Verified Jobs (none of which are ever "Duplicate") until the operator
+    // noticed and pressed Reset by hand. Found live.
+    //
+    // Clearing them on every screen change fixed that, but at the cost of discarding a
+    // filter the operator had deliberately set, every time they looked at another screen
+    // and came back. They are now stored per screen instead, which settles both: see the
+    // restore just below, and filtersScope() for the key each screen writes under.
     if (group || category) {
-      setCustomer(QUICK_ALL);
-      setStatusFilter(QUICK_ALL);
-      setShipmentType(QUICK_ALL);
-      setDateFrom("");
-      setDateTo("");
+      // Restore what was last set ON THIS SCREEN, rather than clearing everything.
+      //
+      // Clearing was right while all five screens shared one stored set: a "Status:
+      // Duplicate" picked on New Jobs then hid every job on ERP Verified Jobs, which has
+      // none, and the screen looked empty for no visible reason. But it also discarded a
+      // filter the operator had deliberately set, every time they glanced at another
+      // screen and came back.
+      //
+      // Storing per screen settles both: nothing leaks between them, so that bug cannot
+      // return, and nothing is lost either. A screen never visited before has nothing
+      // stored and falls back to the same blank defaults clearing used to produce.
+      const own = readStoredJobsFilters(category ?? undefined);
+      setCustomer(own.customer ?? QUICK_ALL);
+      setStatusFilter(own.statusFilter ?? QUICK_ALL);
+      setShipmentType(own.shipmentType ?? QUICK_ALL);
+      setDateFrom(own.dateFrom ?? "");
+      setDateTo(own.dateTo ?? "");
+      // A screen that has been filtered before keeps exactly what was set there, date
+      // range and assignee included. One opened for the first time has nothing stored and
+      // falls through to the defaults below, the same ones clearing used to produce.
+      if (category && own.quick && own.assignedTo) {
+        setQuick(own.quick);
+        setAssignedTo(own.assignedTo);
+        return;
+      }
     }
     // A dashboard box click means "show me exactly what this box counted" - "all time", every
     // assignee, no narrowing beyond what the box itself already applied server-side.
@@ -245,15 +282,27 @@ export function JobsPage() {
   // this page mounts (coming back from Dashboard, a job, anywhere) it restores exactly this.
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(
-        JOBS_FILTERS_STORAGE_KEY,
-        JSON.stringify({ quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo }),
-      );
+      // Under THIS screen's own key, merged into whatever the other screens have
+      // stored, so saving New Jobs' filters never overwrites ERP Verified's.
+      const raw = window.sessionStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
+      let all: Record<string, unknown> = {};
+      try {
+        const parsed = raw ? JSON.parse(raw) : {};
+        // An older build's flat object is dropped rather than merged - its values belong
+        // to no particular screen, and keeping them would reintroduce the leak.
+        all = parsed && typeof parsed === "object" && !("quick" in parsed) ? parsed : {};
+      } catch {
+        all = {};
+      }
+      all[filtersScope(category)] = {
+        quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo,
+      };
+      window.sessionStorage.setItem(JOBS_FILTERS_STORAGE_KEY, JSON.stringify(all));
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
     }
-  }, [quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
+  }, [category, quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
 
   async function loadFirstPage() {
     setLoading(true);
