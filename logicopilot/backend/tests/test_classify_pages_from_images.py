@@ -145,6 +145,42 @@ def test_a_custom_typed_slot_still_gets_a_hint_from_its_own_name(tmp_path):
     assert "freight charges" in text.lower()
 
 
+def test_a_bl_candidate_gets_the_arrival_notice_disambiguation_warning(tmp_path):
+    # Found live: a forwarder's Arrival Notice (shipper/consignee/vessel/port fields, same as
+    # a real BL) got misread as a Bill of Lading by the per-page vision engine - it has no
+    # anti-confusion guidance at all unlike the older text classifier's own prompt. This one
+    # targeted warning must be present whenever a BL-typed slot is among the candidates.
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client = _single_response(key="bl")
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI", return_value=client):
+        classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
+
+    text = next(
+        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        if part.get("type") == "text"
+    )
+    assert "ARRIVAL NOTICE" in text
+    assert "NOT a Bill of Lading" in text
+
+
+def test_the_arrival_notice_warning_is_omitted_when_no_bl_candidate_exists(tmp_path):
+    img = tmp_path / "page_1.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    no_bl_candidates = [c for c in CANDIDATES if c["key"] != "bl"]
+    client = _single_response(key="inv")
+    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+         patch("openai.OpenAI", return_value=client):
+        classify_page_image("file.pdf", 1, img, no_bl_candidates, "gpt-5-mini", None)
+
+    text = next(
+        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        if part.get("type") == "text"
+    )
+    assert "ARRIVAL NOTICE" not in text
+
+
 def test_includes_the_previous_page_s_classification_as_context(tmp_path):
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")

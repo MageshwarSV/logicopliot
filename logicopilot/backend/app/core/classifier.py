@@ -916,6 +916,25 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         "'Shipping Invoice cum Packing List' page that is both an invoice AND a packing list "
         "on the same page) - not merely because the page mentions something in passing.\n\n"
     )
+    def _is_bl_candidate(c: dict) -> bool:
+        return (c.get("doc_type") or "") == "BL" or _key_from_name(c.get("name") or "") == "BL"
+
+    if any(_is_bl_candidate(c) for c in candidates):
+        # Found live: a forwarder's own ARRIVAL NOTICE was misread as a Bill of Lading - it
+        # legitimately repeats the SAME consignee/shipper/vessel/port fields a BL has, because
+        # it is describing the same shipment, not because it IS one. This one narrow warning
+        # is the per-page vision engine's own version of the older text classifier's much
+        # longer "trap" paragraphs (_classification_instruction) - kept to a single targeted
+        # sentence rather than reproduced in full, since this is the only confusion actually
+        # seen in practice for THIS engine so far.
+        instruction += (
+            "One specific trap: a BILL OF LADING is the CARRIER's own contract of carriage - "
+            "look for a document actually titled Bill of Lading, Sea Waybill or Waybill, with "
+            "the carrier's own terms/clauses of carriage. A forwarder's ARRIVAL NOTICE repeats "
+            "the same consignee, shipper, vessel and port fields (it describes the same "
+            "shipment) but is NOT a Bill of Lading - do not call it one just because those "
+            "fields are present.\n\n"
+        )
     if prev_keys:
         prev_names = ", ".join(
             repr(next((c["name"] for c in candidates if c["key"] == k), k)) for k in prev_keys
