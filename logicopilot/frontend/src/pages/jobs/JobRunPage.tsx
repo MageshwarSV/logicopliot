@@ -902,8 +902,12 @@ export function JobRunPage() {
   ) {
     const files = !picked ? [] : picked instanceof File ? [picked] : Array.from(picked);
     if (!files.length) return;
-    if (files.some((f) => !/\.(pdf|png|jpe?g)$/i.test(f.name))) {
-      setError("Only PDF, PNG, or JPG files are allowed.");
+    // Word/Excel are accepted here too (converted to PDF server-side - see office_convert) -
+    // a multi-sheet Excel workbook still gets rejected, but only once the server tries to
+    // convert it and finds more than one sheet, since there's no way to tell sheet count from
+    // the file alone on this side.
+    if (files.some((f) => !/\.(pdf|png|jpe?g|docx?|xlsx?)$/i.test(f.name))) {
+      setError("Only PDF, PNG, JPG, Word, or Excel files are allowed.");
       return;
     }
     setError(null);
@@ -2507,12 +2511,12 @@ export function JobRunPage() {
                       ) : (
                         <span className="text-slate-500">
                           {uploaded.length === 0
-                            ? "Click or drag a file (PDF, PNG, JPG)"
+                            ? "Click or drag a file (PDF, PNG, JPG, Word, Excel)"
                             : `Add another ${name.toLowerCase()}`}
                         </span>
                       )}
                       {/* `multiple`: three invoices are picked in one go, not one at a time. */}
-                      <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg" className="hidden" disabled={isUploading} onChange={(e) => handleUpload(tdocId, e.target.files)} />
+                      <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx" className="hidden" disabled={isUploading} onChange={(e) => handleUpload(tdocId, e.target.files)} />
                     </label>
                   )}
                 </div>
@@ -5899,7 +5903,7 @@ function ExtractionReview({
                 <input
                   ref={reuploadInputRef}
                   type="file"
-                  accept=".pdf,.png,.jpg,.jpeg"
+                  accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];

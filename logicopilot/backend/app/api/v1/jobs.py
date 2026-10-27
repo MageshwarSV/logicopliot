@@ -5053,6 +5053,10 @@ def upload_job_document(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
 ) -> JobDetailOut:
+    import uuid
+
+    from app.core import office_convert
+
     job = _load_job(db, job_id, scope, user)
     if job.status == "extracting":
         # run_extraction snapshots this job's documents ONCE, at the top, and never
@@ -5067,8 +5071,11 @@ def upload_job_document(
             detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
         )
     ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=422, detail=f"File type not allowed — use one of {sorted(ALLOWED_EXTENSIONS)}")
+    if ext not in ALLOWED_EXTENSIONS and ext not in office_convert.OFFICE_EXTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"File type not allowed — use one of {sorted(ALLOWED_EXTENSIONS | office_convert.OFFICE_EXTS)}",
+        )
     if file.size is not None and file.size > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
     content = file.file.read(MAX_FILE_BYTES + 1)
@@ -5077,7 +5084,42 @@ def upload_job_document(
     if not content:
         raise HTTPException(status_code=422, detail="Uploaded file is empty.")
 
-    _land_file_in_slot(db, job, template_document_id, ext, content, file.filename)
+    original_name = file.filename
+    if ext in office_convert.OFFICE_EXTS:
+        # Converted BEFORE landing, same as Smart Upload's own pre-conversion pass (see
+        # smart_upload) - this endpoint always lands exactly ONE file into ONE chosen slot, so
+        # a multi-sheet Excel workbook (which would become several PDFs, one per sheet) has
+        # nowhere single to go; only a single-sheet workbook or a Word file can land here at
+        # all. A multi-sheet workbook is pointed at Smart Upload instead, which already knows
+        # how to route each sheet to its own slot.
+        work_dir = Path(get_settings().uploads_dir) / "_office_manual" / job_id / uuid.uuid4().hex
+        work_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            src = work_dir / f"upload{ext}"
+            src.write_bytes(content)
+            if ext in office_convert.WORD_EXTS:
+                pdf = office_convert.convert_word_to_pdf(src, work_dir, work_dir)
+            else:
+                sheets = office_convert.convert_excel_sheets_to_pdfs(src, work_dir, work_dir)
+                if len(sheets) != 1:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"This Excel file has {len(sheets)} sheets - a single upload slot can "
+                            "only take one document. Use Smart Upload instead so each sheet can be "
+                            "routed to its own slot."
+                        ),
+                    )
+                _, pdf = sheets[0]
+            content = pdf.read_bytes()
+            ext = ".pdf"
+            original_name = f"{Path(original_name or 'upload').stem}.pdf"
+        except office_convert.OfficeConversionFailed as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    _land_file_in_slot(db, job, template_document_id, ext, content, original_name)
 
     db.commit()
     _maybe_auto_extract(db, job)
