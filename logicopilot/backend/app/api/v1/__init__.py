@@ -18,6 +18,7 @@ from app.api.v1.system_settings import router as system_settings_router
 from app.api.v1.custom_filter_pages import router as custom_filter_pages_router
 from app.api.v1.public_irn import router as public_irn_router
 from app.api.v1.saas_finance import router as saas_finance_router
+from app.api.v1.classifier_test import router as classifier_test_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -38,3 +39,4 @@ api_router.include_router(system_settings_router)
 api_router.include_router(custom_filter_pages_router)
 api_router.include_router(public_irn_router)
 api_router.include_router(saas_finance_router)
+api_router.include_router(classifier_test_router)
