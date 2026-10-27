@@ -5,9 +5,10 @@ already-configured OpenAI key pool (tenant_id=None, the same global-pool fallbac
 untenanted call already uses), so it works on UAT/production out of the box with no separate
 setup.
 
-Takes file_1..file_5 (individual optional fields), not a single `files` array - see
-classifier_test.py's own comment on why: Swagger UI does not render a file picker for an array
-of files under this app's OpenAPI 3.1 output, only for individual file fields."""
+A real HTTP client (curl, fetch, the /classifier-test/ui page) attaches several files under
+"files" with no trouble - only Swagger's own "Try it out" widget can't render that as a
+multi-select picker under this app's OpenAPI 3.1 output, which is why /classifier-test/ui
+exists as a real picker for interactive use."""
 from unittest.mock import patch
 
 import fitz
@@ -23,7 +24,7 @@ def _tiny_pdf_bytes() -> bytes:
 def test_rejects_an_unauthenticated_request(client):
     resp = client.post(
         "/api/v1/classifier-test",
-        files={"file_1": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
+        files={"files": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
     )
     assert resp.status_code == 401
 
@@ -34,7 +35,7 @@ def test_rejects_a_non_super_admin(client, db_session):
     login(client, op.email)
     resp = client.post(
         "/api/v1/classifier-test",
-        files={"file_1": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
+        files={"files": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
     )
     assert resp.status_code == 403
 
@@ -47,7 +48,7 @@ def test_classifies_a_pdf_against_the_default_candidates(client, db_session):
     with patch("app.api.v1.classifier_test.classify_page_image", return_value=fake_match):
         resp = client.post(
             "/api/v1/classifier-test",
-            files={"file_1": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
+            files={"files": ("invoice.pdf", _tiny_pdf_bytes(), "application/pdf")},
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -67,10 +68,10 @@ def test_classifies_several_uploaded_files_independently(client, db_session):
     with patch("app.api.v1.classifier_test.classify_page_image", return_value=fake_match):
         resp = client.post(
             "/api/v1/classifier-test",
-            files={
-                "file_1": ("invoice1.pdf", _tiny_pdf_bytes(), "application/pdf"),
-                "file_2": ("invoice2.pdf", _tiny_pdf_bytes(), "application/pdf"),
-            },
+            files=[
+                ("files", ("invoice1.pdf", _tiny_pdf_bytes(), "application/pdf")),
+                ("files", ("invoice2.pdf", _tiny_pdf_bytes(), "application/pdf")),
+            ],
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -84,7 +85,7 @@ def test_a_page_with_no_match_reports_matches_as_null(client, db_session):
     with patch("app.api.v1.classifier_test.classify_page_image", return_value=[]):
         resp = client.post(
             "/api/v1/classifier-test",
-            files={"file_1": ("mystery.pdf", _tiny_pdf_bytes(), "application/pdf")},
+            files={"files": ("mystery.pdf", _tiny_pdf_bytes(), "application/pdf")},
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["results"][0]["pages"][0]["matches"] is None
@@ -97,7 +98,7 @@ def test_custom_candidates_override_the_default(client, db_session):
     with patch("app.api.v1.classifier_test.classify_page_image", return_value=[]) as mock_classify:
         resp = client.post(
             "/api/v1/classifier-test",
-            files={"file_1": ("doc.pdf", _tiny_pdf_bytes(), "application/pdf")},
+            files={"files": ("doc.pdf", _tiny_pdf_bytes(), "application/pdf")},
             data={"candidates_json": '[{"key": "X", "name": "Custom Type", "doc_type": "Custom"}]'},
         )
     assert resp.status_code == 200, resp.text
@@ -112,7 +113,7 @@ def test_invalid_candidates_json_is_rejected(client, db_session):
 
     resp = client.post(
         "/api/v1/classifier-test",
-        files={"file_1": ("doc.pdf", _tiny_pdf_bytes(), "application/pdf")},
+        files={"files": ("doc.pdf", _tiny_pdf_bytes(), "application/pdf")},
         data={"candidates_json": "not json"},
     )
     assert resp.status_code == 422
@@ -126,7 +127,7 @@ def test_an_empty_file_is_reported_as_a_per_file_error_not_a_hard_failure(client
 
     resp = client.post(
         "/api/v1/classifier-test",
-        files={"file_1": ("doc.pdf", b"", "application/pdf")},
+        files={"files": ("doc.pdf", b"", "application/pdf")},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["results"] == [{"file": "doc.pdf", "error": "Uploaded file is empty."}]
@@ -140,10 +141,10 @@ def test_one_bad_file_does_not_block_the_others_in_the_batch(client, db_session)
     with patch("app.api.v1.classifier_test.classify_page_image", return_value=fake_match):
         resp = client.post(
             "/api/v1/classifier-test",
-            files={
-                "file_1": ("empty.pdf", b"", "application/pdf"),
-                "file_2": ("good.pdf", _tiny_pdf_bytes(), "application/pdf"),
-            },
+            files=[
+                ("files", ("empty.pdf", b"", "application/pdf")),
+                ("files", ("good.pdf", _tiny_pdf_bytes(), "application/pdf")),
+            ],
         )
     assert resp.status_code == 200, resp.text
     results = resp.json()["results"]
@@ -157,3 +158,17 @@ def test_rejects_an_upload_with_no_files_at_all(client, db_session):
 
     resp = client.post("/api/v1/classifier-test", files={})
     assert resp.status_code == 422
+
+
+def test_ui_page_requires_login(client):
+    resp = client.get("/api/v1/classifier-test/ui")
+    assert resp.status_code == 401
+
+
+def test_ui_page_renders_for_a_super_admin(client, db_session):
+    admin = make_user(db_session, role="super_admin", email="sa-classify-ui@example.com")
+    login(client, admin.email)
+    resp = client.get("/api/v1/classifier-test/ui")
+    assert resp.status_code == 200, resp.text
+    assert "text/html" in resp.headers["content-type"]
+    assert "multiple" in resp.text

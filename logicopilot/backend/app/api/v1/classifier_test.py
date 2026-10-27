@@ -19,10 +19,10 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse
 
 from app.core import office_convert
 from app.core.classifier import classify_page_image
@@ -42,7 +42,6 @@ DEFAULT_CANDIDATES = [
     {"key": "Freight", "name": "Fright Certificate", "doc_type": "Custom"},
 ]
 MAX_PAGES = 10  # same ballpark cap Smart Upload itself uses for classification
-MAX_TEST_FILES = 5  # see the file_1..file_5 params below for why this is fixed, not a list
 
 
 def _simple_classify_page(image_path: Path, candidates: list[dict], model: str) -> list[dict]:
@@ -96,22 +95,118 @@ def _simple_classify_page(image_path: Path, candidates: list[dict], model: str) 
     }]
 
 
+_UI_PAGE_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Classifier Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  textarea { width: 100%; font-family: monospace; font-size: 12px; }
+  label { display: block; margin-top: 1rem; font-weight: 600; }
+  button { margin-top: 1rem; padding: 0.5rem 1.2rem; font-size: 14px; cursor: pointer; }
+  pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  #status { margin-top: 1rem; font-weight: 600; }
+  ul#queue { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<h1>Classifier Test</h1>
+<p>Pick several files at once - each is sent to the real classifier, one at a time, and every
+result is shown together at the end.</p>
+
+<label for="files">Files</label>
+<input type="file" id="files" multiple>
+<ul id="queue"></ul>
+
+<label for="candidates">Candidates JSON</label>
+<textarea id="candidates" rows="6">__DEFAULT_CANDIDATES__</textarea>
+
+<label for="mode">Prompt mode</label>
+<select id="mode">
+  <option value="simple" selected>simple - bare-minimum question, no hints/traps</option>
+  <option value="production">production - the real Smart Upload prompt</option>
+</select>
+
+<button id="run">Run</button>
+<div id="status"></div>
+<pre id="result"></pre>
+
+<script>
+const filesInput = document.getElementById('files');
+const queueList = document.getElementById('queue');
+filesInput.addEventListener('change', () => {
+  queueList.innerHTML = '';
+  for (const f of filesInput.files) {
+    const li = document.createElement('li');
+    li.textContent = f.name;
+    queueList.appendChild(li);
+  }
+});
+
+document.getElementById('run').addEventListener('click', async () => {
+  const statusEl = document.getElementById('status');
+  const resultEl = document.getElementById('result');
+  const files = filesInput.files;
+  if (!files.length) {
+    statusEl.textContent = 'Pick at least one file first.';
+    return;
+  }
+  statusEl.textContent = `Classifying ${files.length} file(s)...`;
+  resultEl.textContent = '';
+
+  const form = new FormData();
+  for (const f of files) form.append('files', f);
+  form.append('candidates_json', document.getElementById('candidates').value);
+  form.append('prompt_mode', document.getElementById('mode').value);
+
+  try {
+    const resp = await fetch('/api/v1/classifier-test', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      statusEl.textContent = `Error (${resp.status})`;
+      resultEl.textContent = JSON.stringify(body, null, 2);
+      return;
+    }
+    statusEl.textContent = 'Done.';
+    resultEl.textContent = JSON.stringify(body, null, 2);
+  } catch (err) {
+    statusEl.textContent = 'Request failed.';
+    resultEl.textContent = String(err);
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
+@router.get("/ui", response_class=HTMLResponse)
+def classifier_test_ui(_user=Depends(require_role(SUPER_ADMIN))) -> str:
+    """A real multi-select file picker, since Swagger's own "Try it out" form can't render one
+    for this endpoint (see classify_one_file's own comment) - a plain page, same backend, same
+    session cookie, no separate login. Each selected file is sent to classify_one_file in ONE
+    request (the server already classifies them one at a time internally - see its own loop);
+    all results come back together and are shown as raw JSON once the request completes."""
+    return _UI_PAGE_HTML.replace("__DEFAULT_CANDIDATES__", json.dumps(DEFAULT_CANDIDATES, indent=2))
+
+
 @router.post("")
 def classify_one_file(
-    # Individual optional slots, not a `list[UploadFile]` array field: FastAPI/Pydantic here
-    # emit OpenAPI 3.1, which marks a file as {"type": "string", "contentMediaType":
-    # "application/octet-stream"} - Swagger UI renders that correctly as a file picker for a
-    # SINGLE field (every other upload endpoint in this app proves that), but not for an ARRAY
-    # of them - it falls back to plain text boxes for each array item. Found live: switching
-    # between `list[UploadFile]` and `typing.List[UploadFile]` made no difference at all, since
-    # both produce the identical array schema Swagger can't render file pickers for. Five
-    # separate optional fields each get their own real file picker, matching how the original
-    # single-file version already worked, at the cost of a fixed (not arbitrary) upload count.
-    file_1: Optional[UploadFile] = File(default=None, description="File 1 (required)."),
-    file_2: Optional[UploadFile] = File(default=None, description="File 2 (optional)."),
-    file_3: Optional[UploadFile] = File(default=None, description="File 3 (optional)."),
-    file_4: Optional[UploadFile] = File(default=None, description="File 4 (optional)."),
-    file_5: Optional[UploadFile] = File(default=None, description="File 5 (optional)."),
+    # A plain array field - this is the right shape for a real HTTP client (curl, fetch, the
+    # dedicated /classifier-test/ui page below), which can attach several files under "files"
+    # with no trouble at all. Swagger's own "Try it out" widget can't render an ARRAY of files
+    # as a multi-select picker under this app's OpenAPI 3.1 output (confirmed against the live
+    # schema: a single file field renders fine, an array of the same type falls back to plain
+    # text boxes per item) - that is a Swagger-UI rendering limitation, not a problem with this
+    # endpoint, so use /classifier-test/ui for a real multi-select picker instead of Swagger's
+    # own form for this one.
+    files: list[UploadFile] = File(..., description="One or more files - each is classified independently."),
     candidates_json: str = Form(
         default=json.dumps(DEFAULT_CANDIDATES),
         description=(
@@ -155,9 +250,8 @@ def classify_one_file(
         ) from exc
     if prompt_mode not in ("simple", "production"):
         raise HTTPException(status_code=422, detail='prompt_mode must be "simple" or "production".')
-    files = [f for f in (file_1, file_2, file_3, file_4, file_5) if f is not None]
     if not files:
-        raise HTTPException(status_code=422, detail="Upload at least one file (file_1).")
+        raise HTTPException(status_code=422, detail="Upload at least one file.")
 
     model = get_settings().vision_engine_model
     key_to_name = {c["key"]: c["name"] for c in candidates}
