@@ -19,6 +19,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
+from typing import List
 
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
@@ -96,7 +97,7 @@ def _simple_classify_page(image_path: Path, candidates: list[dict], model: str) 
 
 @router.post("")
 def classify_one_file(
-    files: list[UploadFile] = File(..., description="One or more files - each is classified independently."),
+    files: List[UploadFile] = File(..., description="One or more files - each is classified independently."),
     candidates_json: str = Form(
         default=json.dumps(DEFAULT_CANDIDATES),
         description=(
