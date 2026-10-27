@@ -926,12 +926,25 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         suffix = f" (typically: {hint})" if hint else ""
         return f'- key="{c["key"]}" name="{c["name"]}"{suffix}'
 
-    lines = "\n".join(_candidate_line(c) for c in candidates)
+    def _is_invoice_or_freight_candidate(c: dict) -> bool:
+        doc_type = c.get("doc_type") or ""
+        if doc_type in ("Invoice", "Freight"):
+            return True
+        return _key_from_name(c.get("name") or "") in ("Invoice", "Freight")
+
+    # By EXPLICIT request/confirmation: Second Clarification below only ever lists Invoice and
+    # Freight candidates - Bill of Lading and Packing List are deliberately left out of it,
+    # even though that means the model is never shown their own key="..." id anywhere in this
+    # prompt and so can never return a valid match for them (every BL/Packing List page falls
+    # through to Unclassified regardless of content). Confirmed understood and wanted anyway -
+    # do not "fix" this back to the full candidate list without the user asking for that.
+    second_stage_candidates = [c for c in candidates if _is_invoice_or_freight_candidate(c)]
+    lines = "\n".join(_candidate_line(c) for c in second_stage_candidates)
     # Two-stage framing, by request: ask the plain question first (the same bare-minimum
     # question the classifier-test tool's own "simple" mode asks, built from this template's
     # OWN candidate names - never a fixed BL/Invoice/PackingList/Freight list), then have the
-    # model re-apply the full candidate list + rules below as a second pass over its own first
-    # answer, rather than asking only once.
+    # model re-apply the (deliberately narrowed, see above) candidate list + rules below as a
+    # second pass over its own first answer, rather than asking only once.
     simple_names = ", ".join(c["name"] for c in candidates)
     instruction = (
         f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
