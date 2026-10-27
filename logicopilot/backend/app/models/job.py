@@ -156,6 +156,27 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # WHEN this job finished - the date it is reported on, as opposed to created_at (the date
+    # it arrived). Those are routinely different days: of the first four completed jobs in
+    # production, TWO finished on a later day than they were created, so a list keyed on
+    # created_at reported half of them on the wrong day.
+    #
+    # Not derivable from the columns above. ai_submitted_at only exists for jobs that went
+    # through the AI/GK2 path - three of those same four had it NULL - and updated_at moves on
+    # any edit at all (three jobs share one updated_at to the microsecond, from a bulk update).
+    # The one honest source was the job_events history, and this column is that answer stored
+    # on the row so it can be filtered, grouped and indexed by date.
+    #
+    # Written by the before_flush listener in app/db/job_history.py, for the same reason the
+    # history rows themselves are: `status` is assigned in thirteen different places, and
+    # anything that must be remembered at thirteen call sites will be forgotten at the
+    # fourteenth. OVERWRITTEN on each re-completion on purpose - a job that bounced back for a
+    # retry and finished again belongs to the day it FINALLY finished, which also stops one job
+    # being counted on two different days.
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     # Deleting a job deletes its history. The column's ondelete="CASCADE" only fires where the
     # database enforces foreign keys, which SQLite does not by default - so a deleted job left
     # its history behind as orphan rows. Say it at the ORM too, and it holds everywhere.

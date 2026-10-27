@@ -15,6 +15,11 @@ from sqlalchemy.orm.attributes import get_history
 
 from app.models.job import Job
 from app.models.job_event import JobEvent
+from app.models.mixins import utcnow
+
+# The one status that means a job is finished. Kept as a name so the listener below and
+# anything that reads Job.completed_at are visibly talking about the same thing.
+COMPLETED = "completed"
 
 # What to call each status in the popup, so an operator is not reading the database's words.
 # These are the ONLY words for a status: the API sends them with every event, because the
@@ -85,6 +90,10 @@ def _write_job_history(session: Session, _flush_context, _instances) -> None:
             obj.events.append(JobEvent(tenant_id=obj.tenant_id,
                                        status=obj.status or "draft", stage=None,
                                        note=describe(obj.status or "draft")))
+            # A job that is somehow born finished still needs its date, and would otherwise
+            # never get one: the dirty-object loop below only ever sees a status that CHANGED.
+            if obj.status == COMPLETED and obj.completed_at is None:
+                obj.completed_at = utcnow()
 
     for obj in list(session.dirty):
         if not isinstance(obj, Job) or not session.is_modified(obj, include_collections=False):
@@ -97,3 +106,13 @@ def _write_job_history(session: Session, _flush_context, _instances) -> None:
             note = f"{describe(was)} -> {describe(obj.status)}"
         session.add(JobEvent(tenant_id=obj.tenant_id, job_id=obj.id,
                              status=obj.status, stage=None, note=note))
+        # Stamp the finish date here, in the one place that already sees every status change,
+        # rather than at the thirteen places that assign the status. See Job.completed_at for
+        # why created_at/updated_at/ai_submitted_at could not answer this.
+        #
+        # Deliberately NOT cleared when a job moves back OUT of "completed": a job that
+        # reopened and never finished again keeps a stale date, but it also stops matching the
+        # completed filter, so nothing reports it - and if it does finish again, the line below
+        # overwrites the date with the real one.
+        if obj.status == COMPLETED:
+            obj.completed_at = utcnow()

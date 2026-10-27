@@ -26,6 +26,12 @@ export interface Job {
   pulled_from_sender?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  /** When the job actually FINISHED, shown under the status badge. A different day from
+   *  created_at more often than not, so it is NOT interchangeable with it: of the first four
+   *  completed jobs in production, two finished on a later day than they were created.
+   *  Null until the job completes. See Job.completed_at in the backend for why neither
+   *  created_at nor updated_at could answer this. */
+  completed_at?: string | null;
   /** Set when status is "possible_duplicate" - the job this one's extracted data matched.
    *  duplicate_of_reference is the Job No to show in the popup; the id alone means nothing
    *  to an operator. */

@@ -53,6 +53,11 @@ class JobOut(BaseModel):
     # exist on the row already - they simply were never returned.
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # When the job actually FINISHED, which is a different day from created_at more often than
+    # not. Shown under the "AI - ERP Submitted"/"Completed" badge on the Jobs list, and the
+    # date the Manager app counts a completed job against. See Job.completed_at for why
+    # neither created_at nor updated_at could be used for this.
+    completed_at: datetime | None = None
     # Set when status is "possible_duplicate" - the job whose extracted data this one's
     # checksum matched. duplicate_of_reference is the human-readable Job No for the popup
     # ("this looks like JOB-1E928B") - the id alone means nothing to an operator.

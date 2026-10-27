@@ -525,8 +525,15 @@ export function JobsPage() {
     "Document Classifying",
   ]);
 
-  function stageBadge(stage?: string | null, missingDocuments?: string[] | null) {
+  function stageBadge(
+    stage?: string | null,
+    missingDocuments?: string[] | null,
+    completedAt?: string | null,
+  ) {
     const s = stage ?? "Document Capture";
+    // The two words that mean the job is finished - the same pair the emerald styling below
+    // keys off, so the date can never appear under a badge that is not actually a finish.
+    const finished = s === "Completed" || s === "AI - ERP Submitted";
     const cls =
       s === "Completed" || s === "AI - ERP Submitted"
         ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
@@ -566,6 +573,20 @@ export function JobsPage() {
         {missingDocuments && missingDocuments.length > 0 && (
           <span className="max-w-[220px] truncate text-[11px] text-amber-700 dark:text-amber-400">
             {missingDocuments.join(", ")}
+          </span>
+        )}
+        {/* WHEN it finished, under the badge that says it did. Not the same as the Date
+            column, which is when the job was created - those fall on different days more
+            often than not, and this is the one that answers "did this go to the ERP today?".
+            Only rendered for a finished job, and only once the date exists: a job completed
+            before the column did (and whose history was too old to backfill from) shows the
+            badge alone, exactly as it did before. */}
+        {finished && completedAt && (
+          <span
+            className="text-[11px] text-emerald-700 dark:text-emerald-400"
+            title="When this job was submitted to the ERP"
+          >
+            {when(completedAt)}
           </span>
         )}
       </div>
@@ -756,7 +777,10 @@ export function JobsPage() {
         />
       ),
     },
-    { header: "Status", render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents) },
+    {
+      header: "Status",
+      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at),
+    },
     // Who this job is assigned to. Editable for operator/super_admin/admin — the candidate
     // list is narrowed to operators scoped to THIS job's own mode (a Sea Import job only
     // offers Sea Import operators), same idea as the mode tabs above but per-row instead of
