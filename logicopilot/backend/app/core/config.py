@@ -44,13 +44,6 @@ class Settings(BaseSettings):
     # Lowered from 0.85 after JOB-901CC7 showed several genuine-looking pages landing just
     # under that bar (0.78-0.83) - still well above a coin flip, so still a real gate.
     vision_classification_confidence_threshold: float = 0.75
-    # Off by default everywhere, including UAT and production - turns on a standalone, no-job-
-    # required classifier test endpoint (see app/api/v1/classifier_test.py), meant to be flipped
-    # on ONLY in a local .env for trying the real classifier against an arbitrary file from the
-    # command line/Swagger UI. Checked inside the endpoint itself (not by conditionally skipping
-    # router registration), so accidentally deploying this file change anywhere this flag is
-    # left off is harmless - the route exists but always 404s.
-    enable_local_classifier_test: bool = False
     docai_project_id: str = ""
     docai_location: str = "us"
     docai_processor_id: str = ""
