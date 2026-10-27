@@ -927,12 +927,24 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         return f'- key="{c["key"]}" name="{c["name"]}"{suffix}'
 
     lines = "\n".join(_candidate_line(c) for c in candidates)
+    # Two-stage framing, by request: ask the plain question first (the same bare-minimum
+    # question the classifier-test tool's own "simple" mode asks, built from this template's
+    # OWN candidate names - never a fixed BL/Invoice/PackingList/Freight list), then have the
+    # model re-apply the full candidate list + rules below as a second pass over its own first
+    # answer, rather than asking only once.
+    simple_names = ", ".join(c["name"] for c in candidates)
     instruction = (
         f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
         "paperwork. Based on what you actually see on the page - its title, layout, and the "
         "fields or tables it contains - decide which of the following document types this "
-        f"page matches:\n\n{lines}\n\n"
-        "Usually exactly one type fits. Return MORE THAN ONE only when this single page "
+        "page matches.\n\n"
+        "**First General Clarification:**\n\n"
+        f"Simple: Please clarify the document type. Is it a {simple_names}, or any other "
+        "document?\n\n"
+        "**Second Clarification:**\n\n"
+        "Based on the result of the first clarification, now apply the rule below to "
+        f"classify the document again and provide the final result.\n\n{lines}\n\n"
+        "Usually, exactly one type fits. Return MORE THAN ONE only when this single page "
         "genuinely, physically combines two document types at once (for example, a "
         "'Shipping Invoice cum Packing List' page that is both an invoice AND a packing list "
         "on the same page) - not merely because the page mentions something in passing.\n\n"
