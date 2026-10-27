@@ -945,6 +945,9 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
     def _is_bl_candidate(c: dict) -> bool:
         return (c.get("doc_type") or "") == "BL" or _key_from_name(c.get("name") or "") == "BL"
 
+    def _is_freight_candidate(c: dict) -> bool:
+        return (c.get("doc_type") or "") == "Freight" or _key_from_name(c.get("name") or "") == "Freight"
+
     if any(_is_bl_candidate(c) for c in candidates):
         # Found live: a forwarder's own ARRIVAL NOTICE was misread as a Bill of Lading - it
         # legitimately repeats the SAME consignee/shipper/vessel/port fields a BL has, because
@@ -960,6 +963,28 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
             "the same consignee, shipper, vessel and port fields (it describes the same "
             "shipment) but is NOT a Bill of Lading - do not call it one just because those "
             "fields are present.\n\n"
+        )
+    if any(_is_freight_candidate(c) for c in candidates):
+        # Found live (JOB-10FF16): a freight forwarder's OWN invoice for their shipping/
+        # handling charges - titled "Invoice" or "Invoice Draft", with a normal-looking
+        # charges table, unit prices and a total payable - confidently scored as "Invoice"
+        # (0.95) at the exact same time the SHIPMENT's real commercial invoice also scored
+        # "Invoice", so the two files tied for one slot and both landed in Unclassified
+        # Pages instead of either one being placed. The older OCR-text classifier already
+        # carries this exact distinction (see _ai_verify_second_type's freight_caveat and
+        # _keyword_signature_match's FOB/insurance exclusion); this per-page vision engine
+        # never had its own version of it until now.
+        instruction += (
+            "Another specific trap: a FREIGHT CERTIFICATE / freight invoice is issued by the "
+            "CARRIER or FREIGHT FORWARDER (a logistics company) billing for shipping/handling "
+            "SERVICES - ocean freight, THC, BAF, origin/destination charges, documentation or "
+            "customs clearance fees. It is very often itself titled \"Invoice\" or \"Invoice "
+            "Draft\" and looks exactly like one (a charges table, unit prices, a total payable, "
+            "payment terms) - that resemblance alone does NOT make it the commercial Invoice. "
+            "A commercial Invoice is issued by the SUPPLIER/SHIPPER of the GOODS, billing for "
+            "the GOODS themselves (item descriptions, HS codes, product quantities and unit "
+            "prices) - never freight/handling charges. Decide by WHO issued the document and "
+            "WHAT it bills for, not by the word \"Invoice\" appearing on it.\n\n"
         )
     if prev_keys:
         prev_names = ", ".join(
