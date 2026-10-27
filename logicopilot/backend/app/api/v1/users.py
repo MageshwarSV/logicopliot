@@ -10,7 +10,7 @@ from app.core.mail_crypto import encrypt_secret
 from app.core.security import hash_password
 from app.models.tenant import Tenant
 from app.models.user import (
-    ADMIN, GK2, MANAGER, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User,
+    ADMIN, APP_MANAGER, GK2, MANAGER, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User,
 )
 from app.models.user_type import UserType
 from app.schemas.user import UserCreate, UserOut, UserUpdate
@@ -132,10 +132,29 @@ def create_user(
         # accepted even if one was sent (the check constraint would reject it anyway).
         tenant_id = None
     elif creator.role == SUPER_ADMIN:
-        if payload.role != TENANT_ADMIN:
+        if payload.role not in (TENANT_ADMIN, APP_MANAGER):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Super admins may only create tenant_admin, admin, or saas_finance accounts here",
+                detail="Super admins may only create tenant_admin, app_manager, admin, or "
+                       "saas_finance accounts here",
+            )
+        # The mobile app's logins are issued per customer company by us, not by the customer
+        # to their own staff - which is why this one sits with the Super Admin alongside
+        # tenant_admin rather than with the Tenant Admin's operator/gk2/manager.
+        #
+        # Modes are REQUIRED, and for the same reason gk2's are: assigned_modes is the only
+        # thing scoping this login, and null/empty means it would see nothing at all. A login
+        # meant to watch everything is given every mode explicitly, so that is a decision
+        # somebody made rather than a field somebody forgot.
+        if payload.role == APP_MANAGER and not payload.modes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Pick at least one shipment mode for this app login to watch.",
+            )
+        if payload.role == APP_MANAGER and payload.template_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="App logins do not use template assignments - they are scoped by mode.",
             )
         if not payload.tenant_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tenant_id is required")
@@ -232,7 +251,13 @@ def create_user(
         tenant_id=tenant_id,
         created_by_id=creator.id,
         user_type_id=user_type.id if user_type else None,
-        assigned_modes=sorted(set(payload.modes)) if effective_role in (GK2, OPERATOR) and payload.modes else None,
+        # APP_MANAGER belongs in this list for the same reason GK2 does: for both, this column
+        # IS the access control, so a login created without it saved would see nothing at all.
+        assigned_modes=(
+            sorted(set(payload.modes))
+            if effective_role in (GK2, OPERATOR, APP_MANAGER) and payload.modes
+            else None
+        ),
         assigned_operator_ids=operator_ids,
         # The creator chose this password, not the account's own owner - forces the one-time
         # "set a permanent password" popup on first login (see User.must_change_password).
@@ -379,11 +404,18 @@ def update_user(
         user.mail_host = host
         user.mail_email = email
 
-    if payload.modes is not None and user.role in (GK2, OPERATOR):
+    if payload.modes is not None and user.role in (GK2, OPERATOR, APP_MANAGER):
         if user.role == GK2 and not payload.modes:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A GK2 user needs at least one shipment mode to review.",
+            )
+        if user.role == APP_MANAGER and not payload.modes:
+            # Same reasoning as GK2 above, and as the create path: emptying this would leave
+            # the login able to open the app and see nothing, with no error explaining why.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An app login needs at least one shipment mode to watch.",
             )
         user.assigned_modes = sorted(set(payload.modes)) if payload.modes else None
     elif payload.modes is not None and user.role == MANAGER and payload.modes:
@@ -443,7 +475,9 @@ def delete_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if user.id == actor.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own account")
-    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE):
+    if actor.role == SUPER_ADMIN and user.role not in (
+        TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete this account")
     if actor.role == TENANT_ADMIN and user.role not in (OPERATOR, GK2, MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant admins may only delete operator, GK2, or manager accounts")

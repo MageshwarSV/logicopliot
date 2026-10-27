@@ -29,7 +29,23 @@ MANAGER = "manager"
 # paid). Created by Super Admin alone, same as Admin. Never manages tenants or users, never
 # sees a single tenant's own operational job data.
 SAAS_FINANCE = "saas_finance"
-ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE)
+# The native Manager MOBILE app's login, and nothing else — it reaches no web screen and no
+# write endpoint anywhere, only the read-only /manager-app/* routes the app itself calls.
+#
+# A separate role from MANAGER above, deliberately, rather than reusing it: a Manager is
+# defined as seeing their tenant's WHOLE operation unrestricted by mode, and these logins are
+# the opposite - one company takes several of them, each limited to the shipment types that
+# login is meant to watch (one for Sea Import, another for Air Import). Widening Manager to
+# carry that restriction would have changed what every existing Manager account can see.
+#
+# Created by the SUPER ADMIN (not the Tenant Admin, who creates operator/gk2/manager), since
+# these are issued per customer company as part of selling the app rather than by the
+# customer to their own staff. Tenant-scoped like any other in-tenant role, and its
+# assigned_modes are a HARD server-side limit - see require_app_modes in
+# app/api/v1/manager_app.py. What the phone's own multi-select picks is only ever a narrowing
+# WITHIN that, never a way out of it.
+APP_MANAGER = "app_manager"
+ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER)
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -88,6 +104,11 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # UserTemplateAssignment, untouched by this field. Meaningless for every other role
     # (tenant_admin, super_admin, admin, manager — manager sees every job in-tenant
     # unrestricted, on purpose). Mirrors Tenant.allowed_modes.
+    #
+    # For app_manager it is an access-control gate exactly as it is for gk2, with the same
+    # null/empty meaning (nothing at all), and it is the ONLY thing keeping one mobile login
+    # to the shipment types it was issued for. The phone stores its own chosen subset
+    # separately; that choice narrows what this already allows and can never widen it.
     assigned_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Which GK1/operator users' jobs a gk2 user is allowed to see/act on, by user id - an
