@@ -4639,9 +4639,16 @@ function ExtractedField({
                 clipRule="evenodd"
               />
             </svg>
-            {searchOpen && searchQuery.trim().length >= 2 && (
+            {/* Opens as soon as the box is clicked/focused, not only once 2+ characters are
+                typed - clicking the box must visibly show SOMETHING (a panel to type into),
+                never silently do nothing. The actual server search still only fires once the
+                operator has typed enough to search against - this panel just makes clicking
+                in the first place look like it did something. */}
+            {searchOpen && (
               <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
-                {searchLoading ? (
+                {searchQuery.trim().length < 2 ? (
+                  <p className="px-3 py-2 text-slate-400">Type at least 2 characters to search…</p>
+                ) : searchLoading ? (
                   <p className="px-3 py-2 text-slate-400">Searching…</p>
                 ) : searchResults.length === 0 ? (
                   <p className="px-3 py-2 text-slate-400">No matches.</p>
