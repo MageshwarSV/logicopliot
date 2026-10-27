@@ -17,7 +17,14 @@ from app.core.security import (
 )
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
-from app.schemas.auth import ChangePasswordRequest, LoginRequest, LoginResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    LoginResponse,
+    LogoutRequest,
+    RefreshRequest,
+    TokenPair,
+)
 from app.schemas.user import UserOut
 
 # Every response here must carry the SAME derived/renamed fields the user list endpoint
@@ -62,7 +69,25 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(REFRESH_TOKEN_COOKIE, path=AUTH_COOKIE_PATH)
 
 
-def _issue_tokens(db: Session, user: User, response: Response) -> None:
+def _token_pair(access_token: str, raw_refresh: str) -> TokenPair:
+    """The same two tokens the cookies carry, handed to a client that cannot store cookies.
+
+    Nothing new is minted here and nothing extra is granted: a Bearer access token is the
+    identical JWT, checked by the identical code path (decode_token in get_current_user), and
+    it expires on the identical clock. The only difference is where the client keeps it.
+    """
+    return TokenPair(
+        access_token=access_token,
+        refresh_token=raw_refresh,
+        expires_in=settings.access_token_expire_minutes * 60,
+        refresh_expires_in=settings.refresh_token_expire_minutes * 60,
+    )
+
+
+def _issue_tokens(db: Session, user: User, response: Response) -> tuple[str, str]:
+    """Mints a token pair, persists the refresh token, sets the cookies, and returns the raw
+    pair so a caller can ALSO hand it back in the body. Cookies are still set either way -
+    they cost a native client nothing (it ignores them) and leave the web untouched."""
     access_token = create_access_token(user_id=user.id, role=user.role, tenant_id=user.tenant_id)
     raw_refresh, jti, expires_at = create_refresh_token(user_id=user.id)
     db.add(
@@ -75,6 +100,7 @@ def _issue_tokens(db: Session, user: User, response: Response) -> None:
     )
     db.commit()
     _set_auth_cookies(response, access_token, raw_refresh)
+    return access_token, raw_refresh
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -87,9 +113,12 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
 
     user.last_login_at = datetime.now(timezone.utc)
     db.add(user)
-    _issue_tokens(db, user, response)
+    access_token, raw_refresh = _issue_tokens(db, user, response)
 
-    return LoginResponse(user=_user_out(user))
+    return LoginResponse(
+        user=_user_out(user),
+        tokens=_token_pair(access_token, raw_refresh) if payload.token_response else None,
+    )
 
 
 def _revoke_token_family(db: Session, user_id: str) -> None:
@@ -102,8 +131,19 @@ def _revoke_token_family(db: Session, user_id: str) -> None:
 
 
 @router.post("/refresh", response_model=LoginResponse)
-def refresh(request: Request, response: Response, db: Session = Depends(get_db)) -> LoginResponse:
-    raw_token = request.cookies.get(REFRESH_TOKEN_COOKIE)
+def refresh(
+    request: Request,
+    response: Response,
+    # NOT named `payload`: the decoded JWT below already owns that name in this function, and
+    # shadowing it here made `payload.token_response` read a dict that has no such key.
+    body: RefreshRequest | None = None,
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    # Cookie first, body second - the web keeps posting no body at all and is unaffected. The
+    # app has no cookie, so it sends the token it was given at login. Rotation, reuse
+    # detection and family revocation below are shared by both: a stolen app token is killed
+    # by exactly the same check that kills a stolen browser one.
+    raw_token = request.cookies.get(REFRESH_TOKEN_COOKIE) or (body.refresh_token if body else None)
     if not raw_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
@@ -149,12 +189,27 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     db.commit()
 
     _set_auth_cookies(response, new_access_token, new_raw_refresh)
-    return LoginResponse(user=_user_out(user))
+    return LoginResponse(
+        user=_user_out(user),
+        tokens=(
+            _token_pair(new_access_token, new_raw_refresh)
+            if body is not None and body.token_response
+            else None
+        ),
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(request: Request, response: Response, db: Session = Depends(get_db)) -> None:
-    raw_token = request.cookies.get(REFRESH_TOKEN_COOKIE)
+def logout(
+    request: Request,
+    response: Response,
+    # `body`, not `payload`, for the same shadowing reason as refresh above.
+    body: LogoutRequest | None = None,
+    db: Session = Depends(get_db),
+) -> None:
+    # Same cookie-then-body order as refresh. Without this the app could only forget its token
+    # locally, leaving the refresh token valid server-side until it expired on its own.
+    raw_token = request.cookies.get(REFRESH_TOKEN_COOKIE) or (body.refresh_token if body else None)
     if raw_token:
         try:
             payload = decode_token(raw_token)

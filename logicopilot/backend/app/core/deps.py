@@ -23,8 +23,30 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _bearer_token(request: Request) -> str | None:
+    """`Authorization: Bearer <jwt>`, or None if the header is absent or malformed.
+
+    The native Manager app's only way in. React Native has no cookie jar that survives the
+    app being closed, so the app keeps its own token and presents it here instead.
+
+    Read only AFTER the cookie (see get_current_user), never instead of it: every browser
+    request keeps behaving exactly as it did, because the web app does not send this header
+    and its httpOnly cookie still wins where both somehow appear. A malformed header returns
+    None rather than raising, so a client that sends rubbish gets the same plain "Not
+    authenticated" as one that sends nothing - there is no way to tell, from the outside,
+    whether a token was rejected for its shape or its contents.
+    """
+    header = request.headers.get("authorization")
+    if not header:
+        return None
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    return value.strip() or None
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    token = request.cookies.get(ACCESS_TOKEN_COOKIE)
+    token = request.cookies.get(ACCESS_TOKEN_COOKIE) or _bearer_token(request)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
