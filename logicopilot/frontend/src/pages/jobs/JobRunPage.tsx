@@ -3387,6 +3387,14 @@ export function JobRunPage() {
                               defaultValue={defaultValue}
                               hideBlankOption={NO_BLANK_DROPDOWN_OPTION_LABELS.has(fv.label_name)}
                               comboOptions={comboOptions}
+                              // By request: the quotation name/branch match must come from the
+                              // reference list, not free-typed text that happens to disagree
+                              // with it - typing still filters the dropdown below, but only
+                              // clicking a result saves anything; blurring with unpicked typed
+                              // text reverts to the last saved value instead of saving it.
+                              comboPickOnly={
+                                fv.label_name === "Erp Entry Name" || fv.label_name === "branch_name"
+                              }
                               onDraftChange={
                                 fv.label_name === "Erp Entry Name"
                                   ? setLiveErpEntryName
@@ -4305,6 +4313,8 @@ function ExtractedField({
   flagNote,
   hint,
   comboOptions,
+  comboPickOnly,
+  asyncSearchPicker,
   onBeforeSave,
   onDraftChange,
   transformBeforeSave,
@@ -4354,8 +4364,27 @@ function ExtractedField({
    *  this job's own data the way `note`/`flagNote` are. */
   hint?: string;
   /** Previously-typed values offered alongside free text (see COMBOBOX_REFERENCE_FIELD_LABELS) -
-   *  unlike `options`, picking one of these never closes off typing something new. */
+   *  unlike `options`, picking one of these never closes off typing something new, UNLESS
+   *  `comboPickOnly` is also set. */
   comboOptions?: string[];
+  /** Only meaningful alongside `comboOptions`. By request (ERP Quotation Name/Branch): the
+   *  value must come from the list, not free-typed text that happens to disagree with it.
+   *  Typing still filters the dropdown exactly as before; clicking a result still saves
+   *  immediately; but blurring with typed-and-unpicked text reverts to the last saved value
+   *  instead of saving it. */
+  comboPickOnly?: boolean;
+  /** A single merged search-and-pick box for a reference-backed field too large to ever offer
+   *  as a plain dropdown (ERP Consignee Name's ~25,000 organizations) - replaces the box +
+   *  separate ReferenceSearchPicker underneath it that used to render for this one field (by
+   *  request: one box, not two, and no free-typed value can ever disagree with the matched
+   *  reference row - only a picked search result ever saves). Mutually exclusive with
+   *  `options`/`comboOptions`. */
+  asyncSearchPicker?: {
+    jobId: string;
+    customFieldId: string;
+    placeholder?: string;
+    onPick: (value: string) => Promise<void>;
+  };
   /** Runs before a save reaches the server - resolve false to cancel the save outright (the
    *  draft stays as typed, nothing is sent). Insurance Rate (%) uses this to require an
    *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
@@ -4380,6 +4409,13 @@ function ExtractedField({
   const [failed, setFailed] = useState(false);
   const [comboOpen, setComboOpen] = useState(false);
   const [comboQuery, setComboQuery] = useState("");
+  // asyncSearchPicker's own state - a debounced server-side search, same mechanism
+  // ReferenceSearchPicker already used as a separate component, now inlined into this same
+  // box instead of rendered as a second box underneath it.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<jobsApi.CustomFieldReferenceSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // The job reloads after every save, so props change under us; re-sync unless the operator
   // is mid-edit on this very box.
@@ -4390,20 +4426,66 @@ function ExtractedField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, defaultValue]);
 
+  useEffect(() => {
+    if (!asyncSearchPicker) return;
+    if (searchQuery.trim().length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    const handle = setTimeout(() => {
+      jobsApi
+        .searchCustomFieldReferenceValues(asyncSearchPicker.jobId, asyncSearchPicker.customFieldId, searchQuery.trim())
+        .then((found) => {
+          if (!cancelled) setSearchResults(found);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearchLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, asyncSearchPicker?.jobId, asyncSearchPicker?.customFieldId]);
+
   const dirty = draft !== current;
 
-  const commit = async () => {
-    if (!dirty || readOnly) return;
-    const value = transformBeforeSave ? transformBeforeSave(draft) : draft;
+  const saveValue = async (value: string) => {
+    if (readOnly) return;
+    const transformed = transformBeforeSave ? transformBeforeSave(value) : value;
     if (onBeforeSave) {
-      const proceed = await onBeforeSave(value);
+      const proceed = await onBeforeSave(transformed);
       if (!proceed) return;
     }
     setSaving(true);
     setFailed(false);
     try {
-      await jobsApi.correctFieldValue(fv.id, value);
+      await jobsApi.correctFieldValue(fv.id, transformed);
       await reload();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!dirty || readOnly) return;
+    await saveValue(draft);
+  };
+
+  const pickFromSearch = async (value: string) => {
+    setSaving(true);
+    setFailed(false);
+    try {
+      await asyncSearchPicker!.onPick(value);
     } catch {
       setFailed(true);
     } finally {
@@ -4517,6 +4599,55 @@ function ExtractedField({
             placeholder="not found"
             className={`${boxClassName} resize-y`}
           />
+        ) : asyncSearchPicker ? (
+          <>
+            <input
+              type="text"
+              // While searching, the box shows what's being TYPED to search, not the saved
+              // value underneath it - exactly like ReferenceSearchPicker's own separate box
+              // used to, just inlined into this one instead of rendered as a second box below.
+              value={searchOpen ? searchQuery : draft}
+              readOnly={readOnly}
+              onFocus={() => {
+                onFocusField?.(fv);
+                setSearchQuery("");
+                setSearchOpen(true);
+              }}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              // A short delay so a click on a result (below) lands before the blur closes the
+              // list. No commit here on purpose - only a clicked result ever saves (see
+              // asyncSearchPicker's own docstring); typed-and-unpicked text is simply dropped.
+              onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+              placeholder={asyncSearchPicker.placeholder ?? "not found"}
+              className={boxClassName}
+            />
+            {searchOpen && searchQuery.trim().length >= 2 && (
+              <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                {searchLoading ? (
+                  <p className="px-3 py-2 text-slate-400">Searching…</p>
+                ) : searchResults.length === 0 ? (
+                  <p className="px-3 py-2 text-slate-400">No matches.</p>
+                ) : (
+                  searchResults.map((r) => (
+                    <button
+                      key={r.value}
+                      type="button"
+                      disabled={saving}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={async () => {
+                        setSearchOpen(false);
+                        setSearchQuery("");
+                        await pickFromSearch(r.value);
+                      }}
+                      className="block w-full whitespace-normal break-words px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
+                    >
+                      {r.label}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </>
         ) : (
           <>
             <input
@@ -4536,7 +4667,16 @@ function ExtractedField({
               // Blur still saves, as a safety net for anyone who types and tabs away - closing
               // the combo dropdown itself is handled by the wrapping div above, not here, so a
               // click into the panel's own search box (below) doesn't count as leaving the box.
-              onBlur={commit}
+              // comboPickOnly fields are the exception: only a clicked result ever saves (see
+              // the button below), so typed-and-unpicked text just reverts instead of saving.
+              onBlur={() => {
+                if (comboOptions && comboPickOnly) {
+                  setDraft(current);
+                  onDraftChange?.(current);
+                  return;
+                }
+                void commit();
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
@@ -4571,6 +4711,7 @@ function ExtractedField({
                           setDraft(opt);
                           onDraftChange?.(opt);
                           setComboOpen(false);
+                          if (comboPickOnly) void saveValue(opt);
                         }}
                         className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
                       >
@@ -5824,7 +5965,13 @@ function ExtractionReview({
                   // Always offered, not just while blank - the operator can look up or correct
                   // Shipment Port Code at any time, the same way every other reference-backed
                   // field's own dropdown is always available regardless of its current value.
+                  // ERP Consignee Name is NOT included here any more - it used to render as this
+                  // separate dashed box below its own plain, freely-editable value box; it now
+                  // renders as ONE merged search box via asyncSearchPicker below instead (by
+                  // request - two stacked boxes for one field, with the top one a free-text box
+                  // that could silently disagree with whatever the search below had found).
                   const showSearchFallback =
+                    fv.label_name !== "ERP Consignee Name" &&
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
                   const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
                     ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
@@ -5845,6 +5992,19 @@ function ExtractionReview({
                         labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                         options={options}
                         comboOptions={comboOptions}
+                        asyncSearchPicker={
+                          fv.label_name === "ERP Consignee Name" && fv.custom_field_id
+                            ? {
+                                jobId,
+                                customFieldId: fv.custom_field_id,
+                                placeholder: REFERENCE_SEARCH_PLACEHOLDERS[fv.label_name],
+                                onPick: async (value: string) => {
+                                  await jobsApi.correctFieldValue(fv.id, value);
+                                  await reload();
+                                },
+                              }
+                            : undefined
+                        }
                         defaultValue={suggestedDefault ?? undefined}
                         onBeforeSave={
                           fv.label_name === "insurance_percentage" && fv.custom_field_id
