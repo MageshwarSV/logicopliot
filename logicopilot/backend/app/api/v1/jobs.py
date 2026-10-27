@@ -6793,6 +6793,34 @@ def run_extraction(db: Session, job: Job) -> None:
             extracted = extract_document_fields_from_images(
                 image_paths, fields, model=model_override, tenant_id=job.tenant_id)
 
+        # By request: a document whose EVERY single-value field came back blank in one pass is
+        # far more likely a transient AI-call hiccup (a rate limit severe enough to exhaust
+        # create_chat_completion_with_retry's own pool-wide retry, a dropped connection) than
+        # genuinely empty paperwork - a real document marked up with fields almost never has
+        # NONE of them readable. Retrying the exact same call once more, after a short pause,
+        # catches that without ever touching the document's own slot or its uploaded file.
+        # Replaces the old "bounce a document with a blank mandatory field out to Unclassified
+        # Pages" behavior entirely - that had no way to tell "really blank" apart from "got
+        # rate-limited" and sent the operator chasing phantom misclassifications. A document
+        # that is genuinely wrong for its slot is now left exactly where it is, exactly as
+        # blank as it reads - the operator deletes it themselves if it's really the wrong one.
+        if single_marks and not any((extracted.get(m.label_name) or "").strip() for m in single_marks):
+            import time as _time
+
+            logger.warning(
+                "job doc %s (%s): every field came back blank on the first pass - retrying "
+                "once in case this was a transient AI-call failure, not genuinely empty "
+                "paperwork", jd.id, tdoc.name,
+            )
+            _time.sleep(2)
+            if not used_vision:
+                retried = extract_document_fields(ocr_text, fields, tenant_id=job.tenant_id)
+            else:
+                retried = extract_document_fields_from_images(
+                    image_paths, fields, model=model_override, tenant_id=job.tenant_id)
+            if any((retried.get(m.label_name) or "").strip() for m in single_marks):
+                extracted = retried
+
         for mark in single_marks:
             val = extracted.get(mark.label_name)
             # is_target_value: the raw extraction is never shown as-is. It is looked up in
@@ -6856,69 +6884,13 @@ def run_extraction(db: Session, job: Job) -> None:
                 db.add(fv)
             written.append(fv)
 
-        # Cargo Change Request List item 2 ("Document Validation"): on a document's very first
-        # pass through extraction (JobDocument.extraction_attempted - set True below
-        # unconditionally, and never reset by the bounce itself, so a slot reused via
-        # assign_unclassified_page after being bounced is recognised as "already seen" even
-        # though its file_path/page_count were cleared), a blank ask_operator_required field
-        # means this document should never have been accepted into its slot as-is - bounce it
-        # back out exactly like a smart-upload page the classifier itself couldn't place (same
-        # UnmatchedUploadPage table, same "Unclassified pages" drag-to-assign UI the operator
-        # already knows). The slot is left EMPTY, not filled with an incomplete read, so
-        # nothing downstream (pairing, the line-item table, ERP submission) ever sees this
-        # document as done. Only the FIRST pass bounces, though - confirmed with the user: a
-        # slot reassigned after being bounced is let through even if still blank, so the
-        # operator always has a way to accept the document and fill the field in by hand
-        # rather than being stuck in an unbreakable loop.
-        if not jd.extraction_attempted:
-            missing_required = [
-                m.label_name for m in single_marks
-                if m.ask_operator_required and m.label_name not in per_file.get(jd.id, {})
-            ]
-            jd.extraction_attempted = True
-            if missing_required:
-                pages = (jd.extracted_json or {}).get("pages", [])
-                pages_dir = _job_doc_dir(jd.id) / "pages"
-                # A COPY, not a reference to the original document's own "pages" folder - that
-                # folder belongs to this JobDocument slot, which is about to be freed
-                # (file_path cleared below) and handed straight back out to the next upload
-                # into the same slot (_slot_for_new_file prefers a free row over making a new
-                # one). That next upload re-renders its own pages into this exact same
-                # directory, silently overwriting the very files this bounce was about to
-                # point an UnmatchedUploadPage at - found live: dragging the bounced page back
-                # onto a slot then failed with a 500 (FileNotFoundError), because the page
-                # image it pointed to no longer existed. Same unmatched_dir/copy pattern the
-                # smart-upload classifier's own bounce path already uses correctly, just below.
-                import uuid
-
-                unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
-                unmatched_dir.mkdir(parents=True, exist_ok=True)
-                for p in range(1, jd.page_count + 1):
-                    img = pages_dir / f"page_{p}.png"
-                    if not img.exists():
-                        continue
-                    dest = unmatched_dir / f"{uuid.uuid4()}.png"
-                    shutil.copy(img, dest)
-                    db.add(UnmatchedUploadPage(
-                        tenant_id=job.tenant_id, job_id=job.id,
-                        original_filename=(jd.original_name or tdoc.name)[:255],
-                        page_number=p, image_path=str(dest),
-                        ocr_text=pages[p - 1] if p - 1 < len(pages) else "",
-                    ))
-                db.flush()  # the just-written rows must be persisted before they can be deleted
-                for w in [w for w in written if w.job_document_id == jd.id]:
-                    db.delete(w)
-                written = [w for w in written if w.job_document_id != jd.id]
-                jd.file_path = None
-                jd.page_count = 0
-                jd.original_name = None
-                db.flush()
-                logger.info(
-                    "job %s: document %s missing required field(s) %s on first pass - "
-                    "bounced to Unclassified Pages instead of being accepted",
-                    job.reference, tdoc.name, missing_required,
-                )
-                continue
+        # Document Validation's own "bounce a document with a blank mandatory field out to
+        # Unclassified Pages" behavior has been removed entirely, by request - see the
+        # all-fields-blank retry above instead. A document is never auto-removed from its slot
+        # any more, no matter what its fields read; if one genuinely belongs somewhere else,
+        # the operator deletes it themselves (DELETE .../documents/{id}/file) rather than the
+        # system guessing. jd.extraction_attempted is no longer read here (nothing else in the
+        # codebase reads it either) - left as existing, inert state rather than migrated away.
 
         # One JobFieldValue per table row, tagged with row_index so the columns line up:
         # row 3's description, quantity and price all carry row_index 3.
