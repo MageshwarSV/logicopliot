@@ -45,6 +45,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.email_seen import EmailSeen
 from app.models.job import Job, JobDocument, UnmatchedUploadPage
+from app.models.job_event import JobEvent
 from app.models.pending_email import PendingEmail
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
@@ -1607,7 +1608,27 @@ def _process_one_message(
     try:
         run_extraction(db, job)
     except Exception:  # noqa: BLE001
+        # Confirmed root cause of jobs sitting silently in "draft" forever with their pulled
+        # email marked "matched" below as if nothing went wrong: logging and moving on left
+        # NOTHING for an operator to ever notice - this job looked identical to one that
+        # simply hadn't been picked up for extraction yet, with no event, no status change,
+        # nothing in any dashboard bucket a person actually watches. run_extraction commits
+        # as it goes (per-document flushes, see its own body) and may have died mid-write, so
+        # this session's pending transaction must be rolled back before any further write.
         logger.exception("auto-extract failed for email job %s", job.id)
+        db.rollback()
+        job = db.get(Job, job.id)
+        if job is not None and job.status not in (
+            "extracted", "possible_duplicate", "processing", "completed",
+        ):
+            job.status = "failed"
+            db.add(JobEvent(
+                tenant_id=job.tenant_id, job_id=job.id, status="failed",
+                stage="Data Validation",
+                note="Automatic extraction failed right after this email was pulled in - "
+                     "use Rerun extraction to try again.",
+            ))
+            db.commit()
     # Left UNREAD on purpose, even on success - that is how the inbox itself shows "this
     # one was turned into a job" to a person glancing at it. Processed mail is never
     # re-picked-up by mistake anyway, regardless of this flag: _claim() already recorded
