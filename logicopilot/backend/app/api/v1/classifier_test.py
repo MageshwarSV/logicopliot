@@ -19,7 +19,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import List
+from typing import Optional
 
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
@@ -42,6 +42,7 @@ DEFAULT_CANDIDATES = [
     {"key": "Freight", "name": "Fright Certificate", "doc_type": "Custom"},
 ]
 MAX_PAGES = 10  # same ballpark cap Smart Upload itself uses for classification
+MAX_TEST_FILES = 5  # see the file_1..file_5 params below for why this is fixed, not a list
 
 
 def _simple_classify_page(image_path: Path, candidates: list[dict], model: str) -> list[dict]:
@@ -97,7 +98,20 @@ def _simple_classify_page(image_path: Path, candidates: list[dict], model: str) 
 
 @router.post("")
 def classify_one_file(
-    files: List[UploadFile] = File(..., description="One or more files - each is classified independently."),
+    # Individual optional slots, not a `list[UploadFile]` array field: FastAPI/Pydantic here
+    # emit OpenAPI 3.1, which marks a file as {"type": "string", "contentMediaType":
+    # "application/octet-stream"} - Swagger UI renders that correctly as a file picker for a
+    # SINGLE field (every other upload endpoint in this app proves that), but not for an ARRAY
+    # of them - it falls back to plain text boxes for each array item. Found live: switching
+    # between `list[UploadFile]` and `typing.List[UploadFile]` made no difference at all, since
+    # both produce the identical array schema Swagger can't render file pickers for. Five
+    # separate optional fields each get their own real file picker, matching how the original
+    # single-file version already worked, at the cost of a fixed (not arbitrary) upload count.
+    file_1: Optional[UploadFile] = File(default=None, description="File 1 (required)."),
+    file_2: Optional[UploadFile] = File(default=None, description="File 2 (optional)."),
+    file_3: Optional[UploadFile] = File(default=None, description="File 3 (optional)."),
+    file_4: Optional[UploadFile] = File(default=None, description="File 4 (optional)."),
+    file_5: Optional[UploadFile] = File(default=None, description="File 5 (optional)."),
     candidates_json: str = Form(
         default=json.dumps(DEFAULT_CANDIDATES),
         description=(
@@ -141,8 +155,9 @@ def classify_one_file(
         ) from exc
     if prompt_mode not in ("simple", "production"):
         raise HTTPException(status_code=422, detail='prompt_mode must be "simple" or "production".')
+    files = [f for f in (file_1, file_2, file_3, file_4, file_5) if f is not None]
     if not files:
-        raise HTTPException(status_code=422, detail="Upload at least one file.")
+        raise HTTPException(status_code=422, detail="Upload at least one file (file_1).")
 
     model = get_settings().vision_engine_model
     key_to_name = {c["key"]: c["name"] for c in candidates}
