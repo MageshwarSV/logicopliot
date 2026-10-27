@@ -68,9 +68,11 @@ export function CreateAppLoginModal({
       setFullName("");
       setEmail("");
       setPassword("");
-      // Nothing pre-ticked: which shipments this login watches is the whole point of the
-      // screen, and a sensible-looking default is how every login ends up seeing everything.
-      setModes([]);
+      // Everything ticked. The usual case is ONE login for the company that several
+      // managers share, each then choosing their own default on their own phone - so the
+      // ceiling starts wide and is narrowed only when somebody deliberately wants a login
+      // that can never see a particular desk.
+      setModes([...available]);
     }
     setError(null);
   }, [open, editUser, available]);
@@ -137,6 +139,11 @@ export function CreateAppLoginModal({
           A sign-in for the Cargora Manager mobile app. It is view-only — it cannot approve,
           edit or submit anything — and it never signs in to this website.
         </p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          One login is normally enough for a whole company. Several managers can share it,
+          and each one chooses what to watch on their own phone — that choice becomes their
+          default on that phone and does not affect anyone else.
+        </p>
 
         {error && <Alert>{error}</Alert>}
 
@@ -169,7 +176,7 @@ export function CreateAppLoginModal({
         <div>
           <div className="mb-2 flex items-center justify-between">
             <label className="text-sm font-medium text-slate-700 dark:text-slate-200">
-              Shipment types this login may watch
+              Shipment types available to this login
             </label>
             {available.length > 1 && (
               <button
@@ -211,9 +218,10 @@ export function CreateAppLoginModal({
           )}
 
           <p className="mt-2 text-xs text-slate-400">
-            This is a hard limit, checked on every request. The person holding the phone can
-            narrow it further in the app, but never widen it — so give one company a separate
-            login per desk (Sea Import, Air Import) rather than one that sees everything.
+            Leave them all ticked unless you have a reason not to — each manager picks which
+            of these they actually want on their own phone. Unticking one here puts it out of
+            reach for everybody using this login, which is only worth doing when a login must
+            never be able to see that desk at all.
           </p>
         </div>
 
