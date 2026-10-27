@@ -4619,8 +4619,26 @@ function ExtractedField({
               // asyncSearchPicker's own docstring); typed-and-unpicked text is simply dropped.
               onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
               placeholder={asyncSearchPicker.placeholder ?? "not found"}
-              className={boxClassName}
+              // Same right-side padding a native <select> gets automatically, so the typed/
+              // shown text never runs under the dropdown chevron drawn on top of it below.
+              className={`${boxClassName} pr-9`}
             />
+            {/* A plain <input> draws no dropdown arrow on its own, unlike the <select> branch
+                above (ERP Consignee Branch) - drawn here by hand so this box reads the same way
+                as a dropdown at a glance, even though it opens a search panel, not a fixed list,
+                because the underlying reference table is far too large for a real <select>. */}
+            <svg
+              className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                clipRule="evenodd"
+              />
+            </svg>
             {searchOpen && searchQuery.trim().length >= 2 && (
               <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
                 {searchLoading ? (
