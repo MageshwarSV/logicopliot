@@ -28,7 +28,7 @@ const FEATURES = [
 ];
 
 export function LoginPage() {
-  const { user, login } = useAuth();
+  const { user, login, logout } = useAuth();
   const location = useLocation();
   const rememberedEmail = readRememberedEmail();
   const [email, setEmail] = useState(rememberedEmail);
@@ -50,7 +50,18 @@ export function LoginPage() {
     setError(null);
     setIsSubmitting(true);
     try {
-      await login(email, password);
+      const signedIn = await login(email, password);
+      // A mobile app login has no page in this portal - every route here refuses it
+      // server-side - so it is turned away with the reason rather than let through to a
+      // screen full of "insufficient permissions". The mobile app does the mirror image of
+      // this, refusing an operator or GK2 and pointing them back at this website.
+      if (signedIn.role === "app_manager") {
+        await logout();
+        setError(
+          "This login is for the Cargora Manager mobile app. Open the app on your phone to sign in.",
+        );
+        return;
+      }
       // Only the email is ever persisted, and only on an explicit opt-in - never the
       // password, never saved automatically.
       try {

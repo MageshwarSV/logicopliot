@@ -5,7 +5,10 @@ export type Role =
   | "admin"
   | "gk2"
   | "manager"
-  | "saas_finance";
+  | "saas_finance"
+  // The native Manager mobile app's own login. Issued per company by a Super Admin,
+  // scoped to the shipment types it watches, and never signs in to this web portal.
+  | "app_manager";
 
 export interface User {
   id: string;

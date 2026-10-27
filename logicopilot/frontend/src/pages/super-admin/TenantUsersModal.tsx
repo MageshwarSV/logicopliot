@@ -4,6 +4,7 @@ import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
 import { RoleBadge, StatusBadge } from "../../components/ui/Badge";
 import { CreateTenantAdminModal } from "./CreateTenantAdminModal";
+import { CreateAppLoginModal } from "./CreateAppLoginModal";
 import * as usersApi from "../../api/users";
 import type { User } from "../../types/auth";
 import type { Tenant } from "../../types/tenant";
@@ -26,6 +27,11 @@ export function TenantUsersModal({
   // generic top-level button on the Super Admin dashboard unaffiliated with any one tenant.
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [editAdmin, setEditAdmin] = useState<User | null>(null);
+  // Mobile app logins are issued here too, for the same reason tenant admins are: they
+  // belong to one company, so they are created from inside it rather than from a
+  // top-level button that would then have to ask which company it meant.
+  const [appModalOpen, setAppModalOpen] = useState(false);
+  const [editAppLogin, setEditAppLogin] = useState<User | null>(null);
 
   const tenantUsers = tenant ? users.filter((u) => u.tenant_id === tenant.id) : [];
 
@@ -50,7 +56,10 @@ export function TenantUsersModal({
           {error}
         </div>
       )}
-      <div className="mb-3 flex justify-end">
+      <div className="mb-3 flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={() => { setEditAppLogin(null); setAppModalOpen(true); }}>
+          + New App Login
+        </Button>
         <Button size="sm" onClick={() => { setEditAdmin(null); setAdminModalOpen(true); }}>
           + New Tenant Admin
         </Button>
@@ -71,6 +80,11 @@ export function TenantUsersModal({
                   Edit
                 </Button>
               )}
+              {u.role === "app_manager" && (
+                <Button size="sm" variant="ghost" onClick={() => { setEditAppLogin(u); setAppModalOpen(true); }}>
+                  Edit
+                </Button>
+              )}
               {confirmId === u.id ? (
                 <>
                   <span className="text-xs text-rose-600">Delete + all their jobs?</span>
@@ -87,6 +101,23 @@ export function TenantUsersModal({
       <p className="mt-3 text-xs text-slate-400">
         Deleting a tenant admin also removes the operators they created and all related jobs.
       </p>
+
+      {tenant && (
+        <CreateAppLoginModal
+          open={appModalOpen}
+          onClose={() => {
+            setAppModalOpen(false);
+            setEditAppLogin(null);
+          }}
+          tenant={tenant}
+          editUser={editAppLogin}
+          onCreated={() => {
+            setAppModalOpen(false);
+            setEditAppLogin(null);
+            onChanged();
+          }}
+        />
+      )}
 
       {tenant && (
         <CreateTenantAdminModal
