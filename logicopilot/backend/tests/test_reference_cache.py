@@ -373,6 +373,43 @@ def test_delete_reference_value(client, db_session):
     assert db_session.query(CustomFieldReferenceValue).count() == 0
 
 
+def test_clear_reference_values_wipes_every_row_for_this_field_only(client, db_session):
+    """Bulk-clear, for a full re-upload that reshapes what the table's rows mean (e.g. adding a
+    Country column) - must only ever touch ITS OWN field's rows, never another field's."""
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = _make_lookup_field(db_session, tenant, group)
+    other_cf = _make_lookup_field(db_session, tenant, group, label_name="Other Lookup")
+    remember_reference(db_session, cf.id, ["839599A", "X"], "85177990")
+    remember_reference(db_session, cf.id, ["839599B", "X"], "85177991")
+    remember_reference(db_session, other_cf.id, ["KEEP ME"], "KEPT")
+    db_session.commit()
+
+    admin = make_user(db_session, role="super_admin", email="sa-clear@example.com")
+    login(client, admin.email)
+
+    resp = client.delete(f"/api/v1/custom-fields/{cf.id}/reference-values")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 2}
+    assert db_session.query(CustomFieldReferenceValue).filter_by(custom_field_id=cf.id).count() == 0
+    assert db_session.query(CustomFieldReferenceValue).filter_by(custom_field_id=other_cf.id).count() == 1
+
+
+def test_clear_reference_values_rejects_a_non_lookup_field(client, db_session):
+    tenant = make_tenant(db_session)
+    group = _make_group(db_session, tenant)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Plain Field", kind="ai")
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+
+    admin = make_user(db_session, role="super_admin", email="sa-clear-reject@example.com")
+    login(client, admin.email)
+
+    resp = client.delete(f"/api/v1/custom-fields/{cf.id}/reference-values")
+    assert resp.status_code == 400, resp.text
+
+
 def test_list_reference_values_accepts_a_target_value_custom_field(client, db_session):
     """kind="ai" is not "lookup", but is_target_value=True must still be let through - the
     gate was broadened for exactly this case (Target Value feature, Phase 2)."""

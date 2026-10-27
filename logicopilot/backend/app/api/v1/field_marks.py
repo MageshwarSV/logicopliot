@@ -1016,6 +1016,31 @@ def delete_reference_value(
     _delete_reference_value_row(db, value_id, custom_field_id=field_id)
 
 
+@router.delete("/custom-fields/{field_id}/reference-values")
+def clear_reference_values(
+    field_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Wipe every row of this field's reference table outright, before a full re-upload that
+    reshapes what the table's own rows mean (e.g. adding a Country column to ERP Consignee
+    Name's ~25,000-row table, which turns one previously-unique org-name key into several rows
+    - one per country). The ordinary upload endpoint is deliberately ADD-only (see
+    _upload_reference_values's own docstring) and has no way to express "this replaces
+    everything" - this is that explicit, separate action instead, used right before such a
+    re-upload rather than as a routine operation."""
+    from app.models.custom_field_reference import CustomFieldReferenceValue
+
+    _get_lookup_custom_field(db, field_id)
+    deleted = (
+        db.query(CustomFieldReferenceValue)
+        .filter(CustomFieldReferenceValue.custom_field_id == field_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {"deleted": deleted}
+
+
 # --- The same five operations, for a mark instead of a custom field - see FieldMark.is_target_value.
 @router.get("/marks/{mark_id}/reference-values")
 def list_mark_reference_values(

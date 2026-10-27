@@ -65,7 +65,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   ],
   Invoice: [
     "Currency_type", "Product Value", "Consignee", "Shipper Address",
-    "ERP Consignee Name", "ERP Importer Address / Branch Code",
+    "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
   ],
   Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage", "insurance_amount"],
 };
@@ -359,7 +359,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Party Details",
       labels: [
         "shipper", "Shipper Address", "Consignee",
-        "ERP Consignee Name", "ERP Importer Address / Branch Code",
+        "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
       ],
     },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
@@ -4383,6 +4383,11 @@ function ExtractedField({
     jobId: string;
     customFieldId: string;
     placeholder?: string;
+    /** Scopes the search to one country (ERP Consignee Country's own current value) - passed
+     *  through to searchCustomFieldReferenceValues AS-IS, including "" (no country picked yet,
+     *  which the backend deliberately returns zero results for rather than searching every
+     *  country at once). `undefined` here means this field has no country concept at all. */
+    country?: string;
     onPick: (value: string) => Promise<void>;
   };
   /** Runs before a save reaches the server - resolve false to cancel the save outright (the
@@ -4428,7 +4433,11 @@ function ExtractedField({
 
   useEffect(() => {
     if (!asyncSearchPicker) return;
-    if (searchQuery.trim().length < 2) {
+    // A country-scoped field (asyncSearchPicker.country !== undefined) with no country picked
+    // yet never even calls the server - it would only come back empty anyway (see the backend's
+    // own country-required rule), and skipping the call entirely lets the "pick a country
+    // first" message below show instantly instead of after a round trip.
+    if (searchQuery.trim().length < 2 || (asyncSearchPicker.country !== undefined && !asyncSearchPicker.country.trim())) {
       setSearchResults([]);
       setSearchLoading(false);
       return;
@@ -4437,7 +4446,9 @@ function ExtractedField({
     setSearchLoading(true);
     const handle = setTimeout(() => {
       jobsApi
-        .searchCustomFieldReferenceValues(asyncSearchPicker.jobId, asyncSearchPicker.customFieldId, searchQuery.trim())
+        .searchCustomFieldReferenceValues(
+          asyncSearchPicker.jobId, asyncSearchPicker.customFieldId, searchQuery.trim(), asyncSearchPicker.country,
+        )
         .then((found) => {
           if (!cancelled) setSearchResults(found);
         })
@@ -4453,7 +4464,7 @@ function ExtractedField({
       clearTimeout(handle);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, asyncSearchPicker?.jobId, asyncSearchPicker?.customFieldId]);
+  }, [searchQuery, asyncSearchPicker?.jobId, asyncSearchPicker?.customFieldId, asyncSearchPicker?.country]);
 
   const dirty = draft !== current;
 
@@ -4646,7 +4657,9 @@ function ExtractedField({
                 in the first place look like it did something. */}
             {searchOpen && (
               <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
-                {searchQuery.trim().length < 2 ? (
+                {asyncSearchPicker.country !== undefined && !asyncSearchPicker.country.trim() ? (
+                  <p className="px-3 py-2 text-slate-400">Pick a country first.</p>
+                ) : searchQuery.trim().length < 2 ? (
                   <p className="px-3 py-2 text-slate-400">Type at least 2 characters to search…</p>
                 ) : searchLoading ? (
                   <p className="px-3 py-2 text-slate-400">Searching…</p>
@@ -5656,6 +5669,47 @@ function ExtractionReview({
     };
   }, [savedConsigneeName, consigneeBranchFieldId, jobId]);
 
+  // ERP Consignee Country drives which country ERP Consignee Name's own search is scoped to
+  // (see asyncSearchPicker.country) - read LIVE (not-yet-saved draft), same reasoning as
+  // liveErpEntryName above: narrowing the Name search the instant the operator picks a
+  // country, not only after that pick is itself saved.
+  const consigneeNameFieldId = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === "ERP Consignee Name",
+  )?.custom_field_id;
+  const savedConsigneeCountry = (
+    job.field_values.find((fv) => fv.row_index == null && fv.label_name === "ERP Consignee Country")
+      ?.corrected_value ??
+    job.field_values.find((fv) => fv.row_index == null && fv.label_name === "ERP Consignee Country")
+      ?.extracted_value ??
+    ""
+  ).trim();
+  const [liveConsigneeCountry, setLiveConsigneeCountry] = useState(savedConsigneeCountry);
+  useEffect(() => {
+    setLiveConsigneeCountry(savedConsigneeCountry);
+  }, [savedConsigneeCountry]);
+  // The dropdown's own option list - every country ERP Consignee Name's reference table
+  // actually has rows for, fetched once per field rather than hand-maintained separately (see
+  // listCustomFieldReferenceCountries's own docstring).
+  const [consigneeCountryOptions, setConsigneeCountryOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!consigneeNameFieldId) {
+      setConsigneeCountryOptions([]);
+      return;
+    }
+    let cancelled = false;
+    jobsApi
+      .listCustomFieldReferenceCountries(jobId, consigneeNameFieldId)
+      .then((countries) => {
+        if (!cancelled) setConsigneeCountryOptions(countries);
+      })
+      .catch(() => {
+        if (!cancelled) setConsigneeCountryOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [consigneeNameFieldId, jobId]);
+
   // Insurance Rate (%)'s own save-gate: ExtractedField's onBeforeSave resolves this promise
   // once InsuranceCertificatePopup is answered (a file uploaded, a reason typed, or cancelled).
   const [insurancePopup, setInsurancePopup] =
@@ -5987,6 +6041,13 @@ function ExtractionReview({
                         }))
                       : undefined;
                   }
+                  // ERP Consignee Country - a plain, hand-picked dropdown (not reference-backed
+                  // itself), but its OWN option list is read off ERP Consignee Name's reference
+                  // table (every country that table actually has rows for) rather than a
+                  // separately hand-maintained list that could drift out of sync with it.
+                  if (fv.label_name === "ERP Consignee Country") {
+                    options = consigneeCountryOptions.map((v) => ({ value: v, label: v }));
+                  }
                   // Always offered, not just while blank - the operator can look up or correct
                   // Shipment Port Code at any time, the same way every other reference-backed
                   // field's own dropdown is always available regardless of its current value.
@@ -6023,6 +6084,7 @@ function ExtractionReview({
                                 jobId,
                                 customFieldId: fv.custom_field_id,
                                 placeholder: REFERENCE_SEARCH_PLACEHOLDERS[fv.label_name],
+                                country: liveConsigneeCountry,
                                 onPick: async (value: string) => {
                                   await jobsApi.correctFieldValue(fv.id, value);
                                   await reload();
@@ -6060,6 +6122,9 @@ function ExtractionReview({
                         hint={FIELD_HINTS[fv.label_name]}
                         flagged={missingRequiredIds.has(fv.id)}
                         flagNote={missingRequiredIds.has(fv.id) ? "Mandatory — needs a value before this document can be approved." : undefined}
+                        onDraftChange={
+                          fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
+                        }
                       />
                       {showSearchFallback && (
                         <ReferenceSearchPicker

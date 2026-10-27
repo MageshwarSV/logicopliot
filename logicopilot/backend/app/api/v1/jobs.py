@@ -3613,6 +3613,7 @@ def search_custom_field_reference_values(
     job_id: str,
     custom_field_id: str,
     q: str = "",
+    country: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
@@ -3625,7 +3626,20 @@ def search_custom_field_reference_values(
     - whichever key the operator actually recognises from the page in front of them. Capped at
     REFERENCE_SEARCH_RESULT_LIMIT results; a query under 2 characters returns none at all,
     since e.g. "a" alone would otherwise match a large fraction of the whole table.
+
+    `country`, when the caller passes it AT ALL (an empty string counts as "passed" - this is
+    deliberately different from omitting the param entirely), scopes this field to a SINGLE
+    country instead of free-text matching match_value_2: built for ERP Consignee Name, whose
+    table now carries one row per (organization, country) pair rather than one per organization
+    - the same organization name can legitimately appear under more than one country (a
+    multinational with offices in several), so without this, picking a name could silently
+    return the wrong country's row. An empty `country` (no country chosen yet on the job's own
+    ERP Consignee Country field) returns no results at all rather than falling back to every
+    country at once - a specific country is required, never assumed. Every OTHER caller
+    (Shipment Port Code today) never sends this param, so its own match_value_2 keeps meaning
+    whatever that field's own second key is (a city name), exactly as before.
     """
+    from app.core.reference_cache import normalize_key
     from app.models.custom_field import CustomField
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
@@ -3639,15 +3653,27 @@ def search_custom_field_reference_values(
     query = (q or "").strip()
     if len(query) < 2:
         return {"results": []}
+    country_scoped = country is not None
+    if country_scoped:
+        country_norm = normalize_key(country.strip())
+        if not country_norm:
+            return {"results": []}
     needle = f"%{query}%"
+    filters = [
+        CustomFieldReferenceValue.custom_field_id == custom_field_id,
+        CustomFieldReferenceValue.resolved_value != "",
+    ]
+    if country_scoped:
+        filters.append(CustomFieldReferenceValue.match_value_1.ilike(needle))
+        filters.append(CustomFieldReferenceValue.match_value_2 == country_norm)
+    else:
+        filters.append(
+            CustomFieldReferenceValue.match_value_1.ilike(needle)
+            | CustomFieldReferenceValue.match_value_2.ilike(needle)
+        )
     rows = (
         db.query(CustomFieldReferenceValue)
-        .filter(
-            CustomFieldReferenceValue.custom_field_id == custom_field_id,
-            CustomFieldReferenceValue.resolved_value != "",
-            (CustomFieldReferenceValue.match_value_1.ilike(needle)
-             | CustomFieldReferenceValue.match_value_2.ilike(needle)),
-        )
+        .filter(*filters)
         .order_by(CustomFieldReferenceValue.match_value_1, CustomFieldReferenceValue.match_value_2)
         .limit(REFERENCE_SEARCH_RESULT_LIMIT)
         .all()
@@ -3664,16 +3690,53 @@ def search_custom_field_reference_values(
                 # parentheses - match_value_1 and resolved_value are the same name, just
                 # normalized differently, so showing both read as a redundant "ACME CORP (Acme
                 # Corp)". Plain resolved_value alone for that shape instead - it carries the
-                # original casing, match_value_1 does not.
+                # original casing, match_value_1 does not. A country-scoped search also always
+                # shows resolved_value alone - the country is already known from the dropdown
+                # that picked it, so showing it again in every result would be noise.
                 "label": (
-                    f"{r.match_value_1} {r.match_value_2}({r.resolved_value})"
-                    if r.match_value_2
-                    else r.resolved_value
+                    r.resolved_value
+                    if country_scoped or not r.match_value_2
+                    else f"{r.match_value_1} {r.match_value_2}({r.resolved_value})"
                 ),
             }
             for r in rows
         ]
     }
+
+
+@router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-countries")
+def list_custom_field_reference_countries(
+    job_id: str,
+    custom_field_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """Every distinct country this field's reference table carries (ERP Consignee Name's
+    match_value_2, once it holds a country rather than being blank) - drives the ERP Consignee
+    Country dropdown from the same uploaded data instead of a separately hand-maintained country
+    list that could drift out of sync with what the reference table actually has rows for."""
+    from app.models.custom_field import CustomField
+    from app.models.custom_field_reference import CustomFieldReferenceValue
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, custom_field_id)
+    if cf is None or cf.group_id != job.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Custom field not found on this job's template.",
+        )
+    rows = (
+        db.query(CustomFieldReferenceValue.match_value_2)
+        .filter(
+            CustomFieldReferenceValue.custom_field_id == custom_field_id,
+            CustomFieldReferenceValue.match_value_2 != "",
+        )
+        .distinct()
+        .order_by(CustomFieldReferenceValue.match_value_2)
+        .all()
+    )
+    return {"countries": [r[0] for r in rows]}
 
 
 @router.get("/jobs/{job_id}/documents/{job_document_id}/pages/{page_number}")

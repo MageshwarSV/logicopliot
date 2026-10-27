@@ -584,15 +584,33 @@ export interface CustomFieldReferenceSearchResult {
 /** The manual fallback for a reference-backed field too large to ever offer as a plain
  * dropdown (e.g. Shipment Port Code's ~72,000-row world port table) - searches it server-side
  * by a substring of the country or place name, for when the automatic lookup finds nothing and
- * the operator has to pick the right row themselves by inspecting the document. */
+ * the operator has to pick the right row themselves by inspecting the document.
+ *
+ * `country`, when passed AT ALL (including ""), scopes the search to one country instead of
+ * free-text matching match_value_2 - built for ERP Consignee Name, whose table now carries one
+ * row per (organization, country) pair, since the same organization name can legitimately
+ * appear under more than one country. Leave this argument out entirely for every other field
+ * (Shipment Port Code), whose own match_value_2 keeps its current meaning unchanged. */
 export async function searchCustomFieldReferenceValues(
-  jobId: string, customFieldId: string, query: string,
+  jobId: string, customFieldId: string, query: string, country?: string,
 ): Promise<CustomFieldReferenceSearchResult[]> {
   const { data } = await apiClient.get<{ results: CustomFieldReferenceSearchResult[] }>(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-search`,
-    { params: { q: query } },
+    { params: country === undefined ? { q: query } : { q: query, country } },
   );
   return data.results;
+}
+
+/** Every distinct country ERP Consignee Name's reference table carries (its match_value_2,
+ * once it holds a country rather than being blank) - drives the ERP Consignee Country dropdown
+ * from the same uploaded data instead of a separately hand-maintained country list. */
+export async function listCustomFieldReferenceCountries(
+  jobId: string, customFieldId: string,
+): Promise<string[]> {
+  const { data } = await apiClient.get<{ countries: string[] }>(
+    `/jobs/${jobId}/custom-fields/${customFieldId}/reference-countries`,
+  );
+  return data.countries;
 }
 
 /** One piece of a composite field's value: either another field's own label_name (a plain

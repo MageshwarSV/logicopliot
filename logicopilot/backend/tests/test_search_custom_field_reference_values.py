@@ -123,6 +123,86 @@ def test_results_are_capped(client, db_session, monkeypatch):
     assert len(resp.json()["results"]) == 1
 
 
+def _setup_consignee_with_countries(db_session):
+    """ERP Consignee Name's new shape: match_value_1 is the organization, match_value_2 is now
+    a COUNTRY rather than blank - and the same organization can legitimately repeat under more
+    than one country."""
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
+    db_session.add(group)
+    db_session.commit()
+    db_session.refresh(group)
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-REFSEARCH3", status="extracted")
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+    cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="ERP Consignee Name",
+                     kind="hardcoded", is_target_value=True)
+    db_session.add(cf)
+    db_session.commit()
+    db_session.refresh(cf)
+    db_session.add_all([
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="JABIL CIRCUIT",
+                                  match_value_2="CHINA", resolved_value="Jabil Circuit (China)"),
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="JABIL CIRCUIT",
+                                  match_value_2="HUNGARY", resolved_value="Jabil Circuit (Hungary)"),
+        CustomFieldReferenceValue(custom_field_id=cf.id, match_value_1="ACME CORP",
+                                  match_value_2="INDIA", resolved_value="Acme Corp"),
+    ])
+    db_session.commit()
+    operator = make_user(db_session, role="operator", tenant=tenant, email="op-refsearch3@example.com")
+    return tenant, group, job, cf, operator
+
+
+def test_no_country_param_at_all_behaves_exactly_as_before(client, db_session):
+    """Shipment Port Code (and any other caller that never sends `country`) must see zero
+    behavior change - the whole point of making this opt-in."""
+    tenant, group, job, cf, operator = _setup(db_session)
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=shang")
+    assert resp.status_code == 200, resp.text
+    values = {r["value"] for r in resp.json()["results"]}
+    assert values == {"CNSHA", "CNPDG"}
+
+
+def test_country_param_scopes_the_match_to_that_country_only(client, db_session):
+    tenant, group, job, cf, operator = _setup_consignee_with_countries(db_session)
+    login(client, operator.email)
+    resp = client.get(
+        f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=jabil&country=china"
+    )
+    assert resp.status_code == 200, resp.text
+    assert [r["value"] for r in resp.json()["results"]] == ["Jabil Circuit (China)"]
+
+
+def test_country_param_present_but_empty_returns_nothing_rather_than_every_country(client, db_session):
+    tenant, group, job, cf, operator = _setup_consignee_with_countries(db_session)
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=jabil&country=")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"results": []}
+
+
+def test_country_scoped_result_label_is_plain_resolved_value_even_with_a_second_key(client, db_session):
+    """Country-scoped results never show the country in the label (it's already known from the
+    dropdown that picked it) - unlike Shipment Port Code's own "Country City(CODE)" shape."""
+    tenant, group, job, cf, operator = _setup_consignee_with_countries(db_session)
+    login(client, operator.email)
+    resp = client.get(
+        f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=jabil&country=china"
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["results"] == [{"value": "Jabil Circuit (China)", "label": "Jabil Circuit (China)"}]
+
+
+def test_reference_countries_endpoint_lists_every_distinct_country(client, db_session):
+    tenant, group, job, cf, operator = _setup_consignee_with_countries(db_session)
+    login(client, operator.email)
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-countries")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["countries"] == ["CHINA", "HUNGARY", "INDIA"]
+
+
 def test_a_custom_field_from_a_different_template_group_is_not_found(client, db_session):
     tenant, group, job, cf, operator = _setup(db_session)
     other_group = TemplateGroup(tenant_id=tenant.id, name="Air Import", status="approved")
