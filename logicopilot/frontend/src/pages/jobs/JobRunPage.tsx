@@ -5130,6 +5130,29 @@ function DualSourcePicker({
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
 
+  // CTH layout only: follow a value written from ANOTHER product line's box.
+  //
+  // Typing a CTH on one line writes it to every other line and reloads, so this component
+  // re-renders with the new value in its props - but primaryDraft is local state seeded
+  // once, and ownPrimaryValueRef is captured once on purpose (see above), so nothing was
+  // telling the box to show it. The data was right and every other line still looked empty,
+  // which reads as the feature not working: reported four times on one job.
+  //
+  // Deliberately NOT applied to the checkbox pairing, which relies on that captured-once
+  // value to restore what the field held before anything was picked.
+  const incomingPrimary = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+  const isCthPairing = syncTargets.some(
+    (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
+  );
+  useEffect(() => {
+    if (!isCthPairing) return;
+    // Only when it genuinely changed underneath us. A reload that brings back what this box
+    // already committed must not reset what the operator has started typing since.
+    if (incomingPrimary === ownPrimaryValueRef.current) return;
+    ownPrimaryValueRef.current = incomingPrimary;
+    setPrimaryDraft(incomingPrimary);
+  }, [incomingPrimary, isCthPairing]);
+
   // `other` missing entirely (no such field on this row at all) is the only real bail-out -
   // guards the unconditional other.id/other.label_name reads below. A BLANK otherValue used
   // to bail out here too, which looked right (nothing to pick between) but actually broke
