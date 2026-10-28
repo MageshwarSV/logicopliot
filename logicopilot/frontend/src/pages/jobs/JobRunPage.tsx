@@ -5222,25 +5222,21 @@ function DualSourcePicker({
   if (cthTarget) {
     return (
       <div>
-        <p className="mb-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-          {/* Always marked required. A Bill of Entry cannot be filed without a CTH, so it is
-              not conditionally mandatory - the colour, not the asterisk, says whether it is
-              still blank. */}
-          CTH<span className={`ml-0.5 ${flagged ? "text-rose-500" : "text-slate-400"}`}>*</span>
-          {/* What the DOCUMENT read, in brackets beside the label rather than under the box.
-              Under it, it read like a second value for the same field; beside the label it
-              reads as what it is - a note about where the number came from, to check the
-              reference sheet against. */}
-          <span className="ml-1.5 font-normal text-slate-400 dark:text-slate-500">
-            (Document CTH :{" "}
-            {otherValue ? (
-              <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
-            ) : (
-              <span className="italic">Not Found</span>
-            )}
-            )
-          </span>
-        </p>
+        {/* Exactly the markup every other small field label uses (see ExtractedField) -
+            same size, weight and colour, and the same rose asterisk. It looked like a
+            different kind of thing sitting among them before, which is misleading: it is an
+            ordinary mandatory field and should read as one.
+
+            Always marked required: a Bill of Entry cannot be filed without a CTH. */}
+        <div className="mb-1 flex items-center gap-1.5">
+          <p className="truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            CTH
+            <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
+            <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
+              (8-Digit Code)
+            </span>
+          </p>
+        </div>
         <input
           type="text"
           value={primaryDraft}
@@ -5251,18 +5247,35 @@ function DualSourcePicker({
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
           // Blank when the reference sheet does not carry this part, on purpose - the
-          // document's own reading is on the card header to copy from, but nothing is filled
-          // in on the operator's behalf. A code nobody confirmed should not be able to reach
+          // document's own reading is shown underneath to copy from, but nothing is filled in
+          // on the operator's behalf. A code nobody confirmed should not be able to reach
           // customs just because somebody clicked past it.
-          placeholder="not found — type the CTH"
+          //
+          // "dump" names WHICH source came up empty. "not found" alone invited the reading
+          // that nothing anywhere has a CTH, when the document's own value may be sitting
+          // right below.
+          placeholder="dump not found — type the CTH"
           className={`w-full rounded-lg border px-2 py-1 text-xs placeholder:italic focus:outline-none ${
             flagged
               ? "border-rose-300 bg-rose-50 text-rose-900 placeholder:text-rose-400 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
               : "border-indigo-300 bg-indigo-50 text-indigo-900 placeholder:text-slate-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
           } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`}
         />
-        {/* What the document read is NOT repeated here - it lives on the card header now,
-            where it reads as a reference rather than as a second value for this same field. */}
+        {/* What the DOCUMENT read, under the box. Bracketed and muted so it reads as a note
+            about where a number could come from, not as a second value for this field - it
+            is there to check the reference sheet against, and to copy from when the sheet
+            has nothing. Always shown, including when the document gave nothing, because
+            "the document has none either" is the thing an operator needs to know before
+            typing one in by hand. */}
+        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+          (Document CTH :{" "}
+          {otherValue ? (
+            <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
+          ) : (
+            <span className="italic">Not Found</span>
+          )}
+          )
+        </p>
         {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
       </div>
     );
