@@ -5224,8 +5224,22 @@ function DualSourcePicker({
       <div>
         <p className="mb-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
           {/* Always marked required. A Bill of Entry cannot be filed without a CTH, so it is
-              not conditionally mandatory - the red only tells you whether it is still blank. */}
+              not conditionally mandatory - the colour, not the asterisk, says whether it is
+              still blank. */}
           CTH<span className={`ml-0.5 ${flagged ? "text-rose-500" : "text-slate-400"}`}>*</span>
+          {/* What the DOCUMENT read, in brackets beside the label rather than under the box.
+              Under it, it read like a second value for the same field; beside the label it
+              reads as what it is - a note about where the number came from, to check the
+              reference sheet against. */}
+          <span className="ml-1.5 font-normal text-slate-400 dark:text-slate-500">
+            (Document CTH :{" "}
+            {otherValue ? (
+              <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
+            ) : (
+              <span className="italic">Not Found</span>
+            )}
+            )
+          </span>
         </p>
         <input
           type="text"
@@ -6361,20 +6375,6 @@ function ExtractionReview({
                         );
                         if (cth) pairedIds.add(cth.id);
                       });
-                      // The document's own CTH reading for THIS product line, shown on the
-                      // card header. null means this template has no CTH pairing at all, so
-                      // the header shows nothing rather than an empty label; "" means there
-                      // IS one and the document gave nothing, which reads as "Not Found".
-                      const cthPair = pairs.find(
-                        ({ other, syncTargets }) =>
-                          other &&
-                          syncTargets.some(
-                            (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
-                          ),
-                      );
-                      const documentCth: string | null = cthPair?.other
-                        ? (cthPair.other.corrected_value ?? cthPair.other.extracted_value ?? "").trim()
-                        : null;
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       // Purely a backing flag for product_description/Combined Description's own
                       // red highlight below - never a field of its own on screen (see
@@ -6390,30 +6390,11 @@ function ExtractionReview({
                           key={n}
                           className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"
                         >
-                          {/* What the DOCUMENT read for the CTH, up here on the header rather
-                              than under the field. It is a reference to check the reference
-                              sheet against, not an answer - sitting directly beneath the box
-                              it read like a second value for the same field, and on a card
-                              with eight inputs the operator's eye goes to the top. */}
-                          <div className="mb-2 flex items-start justify-between gap-3">
-                            <p className="text-xs font-semibold text-slate-500">
-                              {docIsStandalone
-                                ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
-                                : `Product ${n}`}
-                            </p>
-                            {documentCth !== null && (
-                              <p className="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
-                                Document CTH :{" "}
-                                {documentCth ? (
-                                  <span className="font-mono text-slate-700 dark:text-slate-200">
-                                    {documentCth}
-                                  </span>
-                                ) : (
-                                  <span className="italic text-slate-400">Not Found</span>
-                                )}
-                              </p>
-                            )}
-                          </div>
+                          <p className="mb-2 text-xs font-semibold text-slate-500">
+                            {docIsStandalone
+                              ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
+                              : `Product ${n}`}
+                          </p>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                             {visibleCells.map((fv) => (
                               <ExtractedField
