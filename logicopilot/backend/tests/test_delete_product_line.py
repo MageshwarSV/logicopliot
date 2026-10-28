@@ -175,3 +175,122 @@ def test_it_is_refused_while_the_job_is_still_being_read(client, db_session):
     response = client.delete(f"/api/v1/jobs/{job.id}/documents/{jd.id}/rows/2")
     assert response.status_code == 409
     assert len(_rows(db_session, job, jd)) == 3
+
+
+# ---------------------------------------------------------------------------------------
+# The shape that actually ships, and that the tests above did NOT have.
+#
+# A product line is written in two shapes. Values read off the page carry a
+# job_document_id; per-row CUSTOM fields - the CTH, the Dump CTH Number, the Combined
+# Description, the duty notifications - carry none at all, and are keyed on
+# (set_index, row_index) instead.
+#
+# The first version of this endpoint scoped everything by job_document_id, so it matched
+# only the first shape. On JOB-FAA342 that was 0 of row 4's 13 values: the line's
+# description and its CTH stayed behind, still demanding a customs code for a product that
+# had disappeared from the screen. Every test above passed throughout, because every row
+# they build carries a job_document_id.
+# ---------------------------------------------------------------------------------------
+
+
+def _setup_real_shape(db_session, rows=3, set_index=1, job=None, tenant=None, operator=None):
+    """A document whose lines are the real mixture: marks WITH a job_document_id, custom
+    fields WITHOUT one."""
+    if job is None:
+        tenant = make_tenant(db_session)
+        operator = make_user(db_session, role="operator", tenant=tenant, email="op2@example.com")
+        group = TemplateGroup(tenant_id=tenant.id, name="Sea import", mode="Sea Import")
+        db_session.add(group)
+        db_session.commit()
+        job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-REAL",
+                  status="extracted", created_by_id=operator.id,
+                  assigned_operator_id=operator.id)
+        db_session.add(job)
+        db_session.commit()
+    else:
+        group = db_session.get(TemplateGroup, job.group_id)
+
+    tdoc = TemplateDocument(tenant_id=job.tenant_id, group_id=group.id,
+                            name=f"Invoice {set_index}", doc_type="Invoice")
+    db_session.add(tdoc)
+    db_session.commit()
+    jd = JobDocument(tenant_id=job.tenant_id, job_id=job.id, template_document_id=tdoc.id,
+                     file_path=f"/tmp/inv{set_index}.pdf", page_count=1, set_index=set_index)
+    db_session.add(jd)
+    db_session.commit()
+
+    for n in range(1, rows + 1):
+        db_session.add(JobFieldValue(
+            tenant_id=job.tenant_id, job_id=job.id, job_document_id=jd.id, row_index=n,
+            label_name="product_description", extracted_value=f"SET{set_index}-DESC-{n}",
+        ))
+        # No job_document_id, keyed on set_index - the real shape of a per-row custom field.
+        db_session.add(JobFieldValue(
+            tenant_id=job.tenant_id, job_id=job.id, job_document_id=None,
+            custom_field_id=f"cf-cth-{set_index}", set_index=set_index, row_index=n,
+            label_name="CTH", extracted_value=f"SET{set_index}-CTH-{n}",
+        ))
+    db_session.commit()
+    return tenant, operator, job, jd
+
+
+def _all_values(db_session, job):
+    return [
+        (fv.set_index, fv.row_index, fv.label_name, fv.extracted_value)
+        for fv in db_session.query(JobFieldValue)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None)).all()
+    ]
+
+
+def test_a_lines_custom_fields_go_too_even_with_no_job_document_id(client, db_session):
+    """The bug. The CTH has no job_document_id, so scoping by that alone left it behind."""
+    tenant, operator, job, jd = _setup_real_shape(db_session, rows=3)
+    login(client, operator.email)
+
+    response = client.delete(f"/api/v1/jobs/{job.id}/documents/{jd.id}/rows/2")
+    assert response.status_code == 200, response.text
+
+    values = _all_values(db_session, job)
+    assert not any(v == "SET1-CTH-2" for _, _, _, v in values), \
+        "the deleted line's CTH survived - it will keep demanding a code for a line nobody can see"
+    assert not any(v == "SET1-DESC-2" for _, _, _, v in values)
+
+
+def test_another_invoices_row_of_the_same_number_is_untouched(client, db_session):
+    """set 1's row 2 and set 2's row 2 are different products. Deleting one must not take
+    the other - the reason the scope is (set_index, row_index) and not row_index alone."""
+    tenant, operator, job, jd1 = _setup_real_shape(db_session, rows=3, set_index=1)
+    _, _, _, jd2 = _setup_real_shape(db_session, rows=3, set_index=2, job=job,
+                                     tenant=tenant, operator=operator)
+    login(client, operator.email)
+
+    client.delete(f"/api/v1/jobs/{job.id}/documents/{jd1.id}/rows/2")
+
+    values = _all_values(db_session, job)
+    # Set 2 is completely intact, all three lines and both shapes.
+    set2 = sorted(v for s, _, _, v in values if s == 2)
+    assert set2 == ["SET2-CTH-1", "SET2-CTH-2", "SET2-CTH-3"]
+    # ...and its marks, which carry set_index None but jd2's document id.
+    descs = sorted(v for _, _, lbl, v in values if lbl == "product_description")
+    assert "SET2-DESC-2" in descs
+
+
+def test_both_shapes_are_renumbered_together(client, db_session):
+    """If the marks renumber and the custom fields do not, line 3's description ends up
+    beside line 2's CTH - the two halves of one product pulled apart."""
+    tenant, operator, job, jd = _setup_real_shape(db_session, rows=4)
+    login(client, operator.email)
+
+    client.delete(f"/api/v1/jobs/{job.id}/documents/{jd.id}/rows/2")
+
+    by_row: dict[int, dict[str, str]] = {}
+    for fv in db_session.query(JobFieldValue).filter(
+        JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None)
+    ).all():
+        by_row.setdefault(fv.row_index, {})[fv.label_name] = fv.extracted_value
+
+    assert sorted(by_row) == [1, 2, 3]
+    for row, suffix in ((1, "1"), (2, "3"), (3, "4")):
+        assert by_row[row]["product_description"] == f"SET1-DESC-{suffix}"
+        assert by_row[row]["CTH"] == f"SET1-CTH-{suffix}", \
+            f"row {row}: description and CTH came from different original lines"

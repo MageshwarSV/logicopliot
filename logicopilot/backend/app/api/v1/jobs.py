@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.billing import record_billable_pages
@@ -5954,12 +5955,34 @@ def delete_job_document_row(
     if jd is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
+    # A product line is written in TWO shapes, and both have to go or the line only half
+    # disappears:
+    #
+    #   values read off the page   carry this document's job_document_id
+    #   per-row custom fields      carry NO job_document_id at all - the CTH, the Dump CTH
+    #                              Number, the Combined Description, the duty notifications.
+    #                              They are keyed on (set_index, row_index) instead.
+    #
+    # Scoping this by job_document_id alone, as it first did, matched only the first group.
+    # On JOB-FAA342 that was 0 of row 4's 13 values: the line's description and its CTH
+    # stayed behind, still demanding a customs code for a product that was gone from view.
+    #
+    # set_index is what keeps "row 1" unambiguous on a job carrying several invoices - set
+    # 1's row 1 and set 3's row 1 are different products. Blank normalises to 1, the same way
+    # the per-row write loop and the screen itself both normalise it.
+    set_index = jd.set_index or 1
     rows = (
         db.query(JobFieldValue)
         .filter(
             JobFieldValue.job_id == job.id,
-            JobFieldValue.job_document_id == jd.id,
             JobFieldValue.row_index.isnot(None),
+            or_(
+                JobFieldValue.job_document_id == jd.id,
+                and_(
+                    JobFieldValue.custom_field_id.isnot(None),
+                    func.coalesce(JobFieldValue.set_index, 1) == set_index,
+                ),
+            ),
         )
         .all()
     )
