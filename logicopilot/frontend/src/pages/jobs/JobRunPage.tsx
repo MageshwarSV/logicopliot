@@ -5229,7 +5229,14 @@ function DualSourcePicker({
 
             Always marked required: a Bill of Entry cannot be filed without a CTH. */}
         <div className="mb-1 flex items-center gap-1.5">
-          <p className="truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          {/* The class list is ExtractedField's own, copied verbatim rather than tidied.
+              It carries two conflicting pairs - font-semibold/font-medium and
+              text-slate-900/text-slate-500 - and Tailwind settles those by stylesheet order,
+              not by the order they appear here, so what actually renders is semibold and
+              slate-900. Writing out only the "tidy" half produced a visibly lighter label
+              sitting next to identical ones. Kept character-for-character so the two cannot
+              drift apart again if that conflict is ever cleaned up. */}
+          <p className="truncate font-semibold text-slate-900 dark:text-slate-100 text-[11px] font-medium text-slate-500 dark:text-slate-400">
             CTH
             <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
             <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
