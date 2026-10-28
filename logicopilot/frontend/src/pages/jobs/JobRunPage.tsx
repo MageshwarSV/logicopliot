@@ -5022,6 +5022,7 @@ function DualSourcePicker({
   readOnly,
   reload,
   applyToAllRows,
+  applyValueToAllRows,
   flagged,
 }: {
   primary: JobFieldValue;
@@ -5036,6 +5037,13 @@ function DualSourcePicker({
    *  pairing - see applyPairChoiceToAllRows. Undefined only if this field somehow carries no
    *  custom_field_id of its own (should not happen for a real pairing). */
   applyToAllRows?: (which: "primary" | "other") => Promise<void>;
+  /** CTH layout only: carries a typed value to every other product line that has not been
+   *  given its own (see commitCth). `previous` is what this box held before the edit, which
+   *  is how a line that merely followed the old value is told apart from one somebody
+   *  deliberately set to something different. */
+  applyValueToAllRows?: (
+    customFieldId: string, value: string, previous: string,
+  ) => Promise<void>;
 }) {
   const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
   const [saving, setSaving] = useState(false);
@@ -5180,25 +5188,57 @@ function DualSourcePicker({
     (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
   );
 
+  /** Saving a CTH, and carrying it to the other product lines.
+   *
+   * An invoice's lines are usually all the same commodity, so the CTH is usually the same
+   * eight digits on every one of them - typing it twelve times is twelve chances to fat-finger
+   * a customs code.
+   *
+   * It only fills lines that are EMPTY or still carry the value this box held before the
+   * edit. A line somebody has already given a different code keeps it, so the mixed-commodity
+   * invoice (where line 7 genuinely differs) is not quietly flattened by someone correcting
+   * line 1 afterwards. That is the whole reason it is not a blunt "set them all".
+   */
+  const commitCth = async () => {
+    if (readOnly || primaryDraft === primaryValue) return;
+    setSaving(true);
+    try {
+      const previous = primaryValue;
+      await jobsApi.correctFieldValue(primary.id, primaryDraft);
+      ownPrimaryValueRef.current = primaryDraft;
+      for (const target of syncTargets) {
+        await jobsApi.correctFieldValue(target.id, primaryDraft);
+      }
+      if (applyValueToAllRows && primary.custom_field_id) {
+        await applyValueToAllRows(primary.custom_field_id, primaryDraft, previous);
+      } else {
+        await reload();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (cthTarget) {
     return (
       <div>
         <p className="mb-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-          CTH
-          {flagged && <span className="ml-0.5 text-rose-500">*</span>}
+          {/* Always marked required. A Bill of Entry cannot be filed without a CTH, so it is
+              not conditionally mandatory - the red only tells you whether it is still blank. */}
+          CTH<span className={`ml-0.5 ${flagged ? "text-rose-500" : "text-slate-400"}`}>*</span>
         </p>
         <input
           type="text"
           value={primaryDraft}
           readOnly={readOnly}
           onChange={(e) => setPrimaryDraft(e.target.value)}
-          onBlur={commitPrimary}
+          onBlur={commitCth}
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
           // Blank when the reference sheet does not carry this part, on purpose - the
-          // document's own reading is shown below to copy from, but nothing is filled in on
-          // the operator's behalf. A code nobody confirmed should not be able to reach
+          // document's own reading is on the card header to copy from, but nothing is filled
+          // in on the operator's behalf. A code nobody confirmed should not be able to reach
           // customs just because somebody clicked past it.
           placeholder="not found — type the CTH"
           className={`w-full rounded-lg border px-2 py-1 text-xs placeholder:italic focus:outline-none ${
@@ -5207,17 +5247,8 @@ function DualSourcePicker({
               : "border-indigo-300 bg-indigo-50 text-indigo-900 placeholder:text-slate-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
           } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`}
         />
-        {/* What the document itself said. Read-only and deliberately plain: it is there to
-            check the sheet against, and to copy from when the sheet has nothing. */}
-        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-          CTH (8-Digit Code)
-          {" · "}
-          {otherValue ? (
-            <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
-          ) : (
-            <span className="italic">nothing read from the document</span>
-          )}
-        </p>
+        {/* What the document read is NOT repeated here - it lives on the card header now,
+            where it reads as a reference rather than as a second value for this same field. */}
         {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
       </div>
     );
@@ -5917,6 +5948,39 @@ function ExtractionReview({
     await reload();
   };
 
+  // Typing a CTH on one product line fills every OTHER line that has not been given its own.
+  //
+  // An invoice's lines are usually all the same commodity, so the code is usually the same
+  // eight digits on every one - typing it twelve times is twelve chances to mistype a customs
+  // code, and the operator asked for exactly this.
+  //
+  // `previous` is what the edited box held BEFORE the edit, and it is what makes this safe to
+  // run on every edit rather than only the first. A line is only overwritten when it is empty
+  // or still carries that old value - i.e. when it was only ever following along. A line
+  // somebody deliberately set to a different code keeps it, so correcting line 1 on a
+  // mixed-commodity invoice does not quietly flatten line 7.
+  const applyCthValueToAllRows = async (
+    customFieldId: string, value: string, previous: string,
+  ) => {
+    for (const [n] of lineRows) {
+      const rowFields = lookedUpByRow.get(n) ?? [];
+      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
+      const primary = byCF.get(customFieldId);
+      if (!primary) continue;
+      const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+      if (current === value) continue;                     // already right, nothing to write
+      if (current !== "" && current !== previous.trim()) continue;  // its own, deliberate code
+      await jobsApi.correctFieldValue(primary.id, value);
+      const syncTargets = (primary.sync_field_ids ?? [])
+        .map((id) => byCF.get(id))
+        .filter((fv): fv is JobFieldValue => !!fv);
+      for (const target of syncTargets) {
+        await jobsApi.correctFieldValue(target.id, value);
+      }
+    }
+    await reload();
+  };
+
   // Combined Description Configuration - picking an ordered set of this template's own
   // per-line fields (Part No, Description, ...), each with its own separator, and joining them
   // into one "Combined Description"-style field for every product of a CONSIGNEE (not just
@@ -6297,6 +6361,20 @@ function ExtractionReview({
                         );
                         if (cth) pairedIds.add(cth.id);
                       });
+                      // The document's own CTH reading for THIS product line, shown on the
+                      // card header. null means this template has no CTH pairing at all, so
+                      // the header shows nothing rather than an empty label; "" means there
+                      // IS one and the document gave nothing, which reads as "Not Found".
+                      const cthPair = pairs.find(
+                        ({ other, syncTargets }) =>
+                          other &&
+                          syncTargets.some(
+                            (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
+                          ),
+                      );
+                      const documentCth: string | null = cthPair?.other
+                        ? (cthPair.other.corrected_value ?? cthPair.other.extracted_value ?? "").trim()
+                        : null;
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       // Purely a backing flag for product_description/Combined Description's own
                       // red highlight below - never a field of its own on screen (see
@@ -6312,11 +6390,30 @@ function ExtractionReview({
                           key={n}
                           className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"
                         >
-                          <p className="mb-2 text-xs font-semibold text-slate-500">
-                            {docIsStandalone
-                              ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
-                              : `Product ${n}`}
-                          </p>
+                          {/* What the DOCUMENT read for the CTH, up here on the header rather
+                              than under the field. It is a reference to check the reference
+                              sheet against, not an answer - sitting directly beneath the box
+                              it read like a second value for the same field, and on a card
+                              with eight inputs the operator's eye goes to the top. */}
+                          <div className="mb-2 flex items-start justify-between gap-3">
+                            <p className="text-xs font-semibold text-slate-500">
+                              {docIsStandalone
+                                ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
+                                : `Product ${n}`}
+                            </p>
+                            {documentCth !== null && (
+                              <p className="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                                Document CTH :{" "}
+                                {documentCth ? (
+                                  <span className="font-mono text-slate-700 dark:text-slate-200">
+                                    {documentCth}
+                                  </span>
+                                ) : (
+                                  <span className="italic text-slate-400">Not Found</span>
+                                )}
+                              </p>
+                            )}
+                          </div>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                             {visibleCells.map((fv) => (
                               <ExtractedField
@@ -6377,6 +6474,7 @@ function ExtractionReview({
                                       ? (which) => applyPairChoiceToAllRows(primary.custom_field_id!, which)
                                       : undefined
                                   }
+                                  applyValueToAllRows={applyCthValueToAllRows}
                                   // The CTH field is hidden above when this pairing feeds
                                   // one, so its "mandatory and still blank" state has to
                                   // travel with it - otherwise a job is blocked from
