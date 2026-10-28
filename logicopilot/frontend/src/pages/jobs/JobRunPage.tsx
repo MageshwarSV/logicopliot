@@ -5022,12 +5022,16 @@ function DualSourcePicker({
   readOnly,
   reload,
   applyToAllRows,
+  flagged,
 }: {
   primary: JobFieldValue;
   other: JobFieldValue | undefined;
   syncTargets: JobFieldValue[];
   readOnly: boolean;
   reload: () => Promise<void>;
+  /** The CTH layout only: the hidden CTH field's own "mandatory and still blank" state,
+   *  passed through so hiding that box does not also hide its warning. */
+  flagged?: boolean;
   /** Ripples the choice just made to every OTHER product line's own copy of this same
    *  pairing - see applyPairChoiceToAllRows. Undefined only if this field somehow carries no
    *  custom_field_id of its own (should not happen for a real pairing). */
@@ -5158,6 +5162,66 @@ function DualSourcePicker({
         ? "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
         : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
     } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`;
+
+  // A pairing that feeds a field actually called CTH gets a different, simpler shape: ONE
+  // box, which IS the CTH, with what the document read shown underneath as a reference.
+  //
+  // The two checkboxes made sense when neither source was privileged, but for the CTH they
+  // are not equal: the reference sheet is the customer's own declared code, the document's
+  // is whatever the supplier happened to print. Asking an operator to choose between them on
+  // every product line, when the answer is almost always the sheet, is a decision they have
+  // to make hundreds of times and get right every time.
+  //
+  // Only this case changes. A pairing that syncs somewhere else (Bhuvaneswari's, which feeds
+  // RITC No. and has no CTH field at all) keeps the picker exactly as it was - those two
+  // sources really are alternatives there, and silently picking one for them would be
+  // choosing a customs code on their behalf.
+  const cthTarget = syncTargets.find(
+    (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
+  );
+
+  if (cthTarget) {
+    return (
+      <div>
+        <p className="mb-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          CTH
+          {flagged && <span className="ml-0.5 text-rose-500">*</span>}
+        </p>
+        <input
+          type="text"
+          value={primaryDraft}
+          readOnly={readOnly}
+          onChange={(e) => setPrimaryDraft(e.target.value)}
+          onBlur={commitPrimary}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+          // Blank when the reference sheet does not carry this part, on purpose - the
+          // document's own reading is shown below to copy from, but nothing is filled in on
+          // the operator's behalf. A code nobody confirmed should not be able to reach
+          // customs just because somebody clicked past it.
+          placeholder="not found — type the CTH"
+          className={`w-full rounded-lg border px-2 py-1 text-xs placeholder:italic focus:outline-none ${
+            flagged
+              ? "border-rose-300 bg-rose-50 text-rose-900 placeholder:text-rose-400 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
+              : "border-indigo-300 bg-indigo-50 text-indigo-900 placeholder:text-slate-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
+          } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`}
+        />
+        {/* What the document itself said. Read-only and deliberately plain: it is there to
+            check the sheet against, and to copy from when the sheet has nothing. */}
+        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+          CTH (8-Digit Code)
+          {" · "}
+          {otherValue ? (
+            <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
+          ) : (
+            <span className="italic">nothing read from the document</span>
+          )}
+        </p>
+        {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -6220,10 +6284,18 @@ function ExtractionReview({
                       // (no such field on this row at all) is the one real case with nothing to
                       // pair against - that falls through to `rest` as an ordinary field.
                       const pairedIds = new Set<string>();
-                      pairs.forEach(({ primary, other }) => {
+                      pairs.forEach(({ primary, other, syncTargets }) => {
                         if (!other) return;
                         pairedIds.add(primary.id);
                         pairedIds.add(other.id);
+                        // A pairing that feeds a field called CTH draws ONE box, and that box
+                        // IS the CTH (see DualSourcePicker). Leaving the CTH field in `rest`
+                        // as well would put the same value in two boxes on the same card, and
+                        // only one of them would carry the sync when edited.
+                        const cth = syncTargets.find(
+                          (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
+                        );
+                        if (cth) pairedIds.add(cth.id);
                       });
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       // Purely a backing flag for product_description/Combined Description's own
@@ -6305,6 +6377,15 @@ function ExtractionReview({
                                       ? (which) => applyPairChoiceToAllRows(primary.custom_field_id!, which)
                                       : undefined
                                   }
+                                  // The CTH field is hidden above when this pairing feeds
+                                  // one, so its "mandatory and still blank" state has to
+                                  // travel with it - otherwise a job is blocked from
+                                  // approval by a red field nobody can see.
+                                  flagged={syncTargets.some(
+                                    (t) =>
+                                      (t.label_name ?? "").trim().toUpperCase() === "CTH" &&
+                                      missingRequiredIds.has(t.id),
+                                  )}
                                 />
                               ))}
                             </div>
