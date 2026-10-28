@@ -262,6 +262,26 @@ export async function deleteJobDocumentPage(
   return data;
 }
 
+/** Removes ONE product line from a document - every value read for it, and every
+ *  reference-sheet lookup hung off it (its CTH, RITC...).
+ *
+ *  For the rows an extraction finds that are not products at all: a subtotal band, a header
+ *  repeated on page 2, a note inside the goods table. Those demand a CTH and a quantity like
+ *  any real line and block submission over paperwork that does not exist.
+ *
+ *  The remaining lines are renumbered 1..N server-side, so "Product 3" on screen and
+ *  "(line 3)" in a validation message keep meaning the same row. */
+export async function deleteJobDocumentRow(
+  jobId: string,
+  jobDocumentId: string,
+  rowIndex: number,
+): Promise<JobDetail> {
+  const { data } = await apiClient.delete<JobDetail>(
+    `/jobs/${jobId}/documents/${jobDocumentId}/rows/${rowIndex}`,
+  );
+  return data;
+}
+
 /** Dropping a document directly onto an already-placed one means "this belongs WITH that one" -
  *  appends every page of sourceJobDocumentId onto the END of targetJobDocumentId's own PDF,
  *  instead of landing as its own separate entry (compare copyJobDocumentToSlot). The source is

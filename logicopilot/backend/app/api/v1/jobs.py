@@ -5913,6 +5913,94 @@ def delete_job_document_page(
     return _build_detail(db, job)
 
 
+@router.delete(
+    "/jobs/{job_id}/documents/{job_document_id}/rows/{row_index}",
+    response_model=JobDetailOut,
+)
+def delete_job_document_row(
+    job_id: str,
+    job_document_id: str,
+    row_index: int,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+) -> JobDetailOut:
+    """Removes ONE product line from a document - every value read for it, and every
+    reference-sheet lookup hung off it (its CTH, RITC and so on).
+
+    An invoice's line items are read off the page, and the reader sometimes finds rows that
+    are not products: a subtotal band, a repeated header on page 2, a note in the goods
+    table. Those then demand a CTH and a quantity like any other line and block submission
+    over paperwork that does not exist. Until now the only way out was to re-extract the
+    whole document and hope.
+
+    The remaining lines are RENUMBERED to stay 1..N. Nothing requires row_index to be
+    contiguous - it is used for grouping and ordering, never as an array index - but the
+    screen prints it as "Product 3", and so do the validation messages that name an
+    unanswered line ("CTH (line 3)"). Leaving a hole would mean a job showing Product 1, 3, 4
+    and an error quoting a line number that is not the one the operator is looking at.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish.",
+        )
+    jd = (
+        db.query(JobDocument)
+        .filter(JobDocument.id == job_document_id, JobDocument.job_id == job.id)
+        .first()
+    )
+    if jd is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    rows = (
+        db.query(JobFieldValue)
+        .filter(
+            JobFieldValue.job_id == job.id,
+            JobFieldValue.job_document_id == jd.id,
+            JobFieldValue.row_index.isnot(None),
+        )
+        .all()
+    )
+    doomed = [fv for fv in rows if fv.row_index == row_index]
+    if not doomed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="That product line does not exist on this document.",
+        )
+    # Refuse to empty the table. A document with no line items at all is not a state any
+    # other screen is built for, and "delete them one by one until none are left" is far
+    # more likely to be a mistake than an intention - removing the document itself is the
+    # real action there, and it already exists.
+    remaining_indexes = sorted({fv.row_index for fv in rows if fv.row_index != row_index})
+    if not remaining_indexes:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This is the only product line left. Remove the document itself instead.",
+        )
+
+    for fv in doomed:
+        db.delete(fv)
+    # Close the gap: 1..N in their existing order, so what the screen prints and what a
+    # validation message quotes keep agreeing.
+    renumber = {old: new for new, old in enumerate(remaining_indexes, start=1)}
+    for fv in rows:
+        if fv.row_index in renumber and renumber[fv.row_index] != fv.row_index:
+            fv.row_index = renumber[fv.row_index]
+
+    # The operator has changed what this document says, so an earlier approval of it no
+    # longer covers what is there now - the same reasoning delete_job_document_page uses.
+    jd.approved = False
+    jd.gk2_approved = False
+
+    db.commit()
+    db.refresh(job)
+    logger.info("job %s: deleted product line %s from %s (%s lines left)",
+                job.reference, row_index, jd.id, len(remaining_indexes))
+    return _build_detail(db, job)
+
+
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 # Word/Excel files are converted to PDF before classification ever sees them (see
 # app.core.office_convert) - accepted at the upload boundary alongside CLASSIFY_EXTS, but never

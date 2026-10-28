@@ -984,6 +984,23 @@ export function JobRunPage() {
     }
   }
 
+  /** "Delete page N" — cutting a page out without sending it anywhere first.
+   *
+   *  For a page that belongs in no slot at all: a blank scan, a duplicate the sender
+   *  included twice, a carrier's terms page the filter did not catch. The same cut "Move
+   *  page" already performs as its second half, just without the copy. */
+  async function handleDeleteDocumentPage(jobDocumentId: string, pageNumber: number) {
+    setError(null);
+    setDocActionBusyId(jobDocumentId);
+    try {
+      setJob(await jobsApi.deleteJobDocumentPage(jobId, jobDocumentId, pageNumber));
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not delete that page.");
+    } finally {
+      setDocActionBusyId(null);
+    }
+  }
+
   /** "Move page N to X" — the same per-page copy, immediately followed by cutting that page
    *  out of the source document (rebuilt from its remaining pages, or removed outright if it
    *  was the only one left). */
@@ -2594,6 +2611,37 @@ export function JobRunPage() {
                       {docMenu.pageNumber != null ? `Move page ${docMenu.pageNumber} to` : "Move to"}{" "}
                       <span className="text-slate-400">▸</span>
                     </button>
+                    {/* Only for a single page. Deleting the WHOLE document already has its
+                        own "Remove" on the document row, and putting a second way to do it
+                        in here would be two buttons for one action, one of them easy to hit
+                        by accident while aiming for a page. */}
+                    {docMenu.pageNumber != null && (
+                      <>
+                        <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Confirmed, not undoable: the page is cut out of the PDF and the
+                            // file rebuilt without it. Re-uploading the original is the only
+                            // way back, and on a mail-created job that means asking the
+                            // customer to send it again.
+                            if (
+                              !window.confirm(
+                                `Delete page ${docMenu.pageNumber} from this document?\n\n` +
+                                  "The page is removed from the file. This cannot be undone.",
+                              )
+                            ) {
+                              return;
+                            }
+                            handleDeleteDocumentPage(docMenu.docId, docMenu.pageNumber!);
+                            setDocMenu(null);
+                          }}
+                          className="flex w-full items-center px-3 py-2 text-left text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                        >
+                          Delete page {docMenu.pageNumber}
+                        </button>
+                      </>
+                    )}
                   </>
                 ) : docMenu.chosenTdocId === undefined ? (
                   <>
@@ -5982,6 +6030,38 @@ function ExtractionReview({
     await reload();
   };
 
+  // Removing a whole product line - every value read for it, plus its reference-sheet
+  // lookups (CTH, RITC). For the rows an extraction finds that are not products at all: a
+  // subtotal band, a header repeated on page 2, a note inside the goods table. Those demand
+  // a CTH and a quantity like any real line and block submission over paperwork that does
+  // not exist, and re-extracting the whole document was the only way out.
+  const [deletingRow, setDeletingRow] = useState<number | null>(null);
+  const handleDeleteRow = async (rowIndex: number) => {
+    if (!active) return;
+    if (
+      !window.confirm(
+        `Delete product ${rowIndex}?\n\n` +
+          "Everything read for this line goes with it, including its CTH. The remaining " +
+          "products are renumbered. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    setDeletingRow(rowIndex);
+    try {
+      await jobsApi.deleteJobDocumentRow(jobId, active.id, rowIndex);
+      await reload();
+    } catch (err) {
+      if (axios.isAxiosError(err)) {
+        // Surfaced rather than swallowed: the server refuses the LAST remaining line on
+        // purpose, and the operator needs to be told why rather than see nothing happen.
+        window.alert(err.response?.data?.detail ?? "Could not delete that product line.");
+      }
+    } finally {
+      setDeletingRow(null);
+    }
+  };
+
   // Typing a CTH on one product line fills every OTHER line that has not been given its own.
   //
   // An invoice's lines are usually all the same commodity, so the code is usually the same
@@ -6410,11 +6490,28 @@ function ExtractionReview({
                           key={n}
                           className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"
                         >
-                          <p className="mb-2 text-xs font-semibold text-slate-500">
-                            {docIsStandalone
-                              ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
-                              : `Product ${n}`}
-                          </p>
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <p className="text-xs font-semibold text-slate-500">
+                              {docIsStandalone
+                                ? `${standaloneHeading} ${n} — ${cells[0].value || "not found"}`
+                                : `Product ${n}`}
+                            </p>
+                            {/* Only while the job is still editable, and only when there is
+                                more than one line - the server refuses to empty the table,
+                                so offering the button on a single line would be a button
+                                that only ever produces an error. */}
+                            {!readOnly && lineRows.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteRow(n)}
+                                disabled={deletingRow !== null}
+                                title={`Delete ${docIsStandalone ? (standaloneHeading ?? "row").toLowerCase() : "product"} ${n}`}
+                                className="shrink-0 rounded-md px-2 py-0.5 text-xs font-medium text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                              >
+                                {deletingRow === n ? "Deleting…" : "Delete"}
+                              </button>
+                            )}
+                          </div>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                             {visibleCells.map((fv) => (
                               <ExtractedField
