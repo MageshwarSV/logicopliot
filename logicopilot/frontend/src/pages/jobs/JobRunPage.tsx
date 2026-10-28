@@ -5257,18 +5257,27 @@ function DualSourcePicker({
    * invoice (where line 7 genuinely differs) is not quietly flattened by someone correcting
    * line 1 afterwards. That is the whole reason it is not a blunt "set them all".
    */
-  const commitCth = async () => {
-    if (readOnly || primaryDraft === primaryValue) return;
+  const commitCth = async (valueOverride?: string) => {
+    // Takes the value explicitly when called from onChange: setPrimaryDraft has not landed
+    // in state yet on that same tick, so reading primaryDraft there would save the digit
+    // BEFORE the one just typed.
+    const value = valueOverride ?? primaryDraft;
+    if (readOnly || saving || value === primaryValue) return;
+    // Never save a half-typed heading. A CTH is eight digits; six is not a different code,
+    // it is an unfinished one - and an unfinished one reached five product lines on
+    // JOB-3151A3 before anybody noticed. The box keeps what was typed so the operator can
+    // finish it; nothing goes to the database until it is whole.
+    if (value !== "" && value.length !== CTH_LENGTH) return;
     setSaving(true);
     try {
       const previous = primaryValue;
-      await jobsApi.correctFieldValue(primary.id, primaryDraft);
-      ownPrimaryValueRef.current = primaryDraft;
+      await jobsApi.correctFieldValue(primary.id, value);
+      ownPrimaryValueRef.current = value;
       for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, primaryDraft);
+        await jobsApi.correctFieldValue(target.id, value);
       }
       if (applyValueToAllRows && primary.custom_field_id) {
-        await applyValueToAllRows(primary.custom_field_id, primaryDraft, previous);
+        await applyValueToAllRows(primary.custom_field_id, value, previous);
       } else {
         await reload();
       }
@@ -5315,10 +5324,20 @@ function DualSourcePicker({
           // keeping the digits is what the operator meant every time.
           inputMode="numeric"
           maxLength={CTH_LENGTH}
-          onChange={(e) =>
-            setPrimaryDraft(e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH))
-          }
-          onBlur={commitCth}
+          onChange={(e) => {
+            const next = e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH);
+            setPrimaryDraft(next);
+            // Saved and carried to the other product lines the moment it is whole, rather
+            // than waiting for the field to lose focus. A CTH is a fixed eight digits, so
+            // "eight entered" is a reliable finished signal - unlike an ordinary text field,
+            // where only leaving it says the typing is done.
+            //
+            // Without this an operator types the code, sees the line below still empty,
+            // and reasonably concludes it did not work: the save was waiting for a click
+            // they had no reason to make.
+            if (next.length === CTH_LENGTH) void commitCth(next);
+          }}
+          onBlur={() => void commitCth()}
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
@@ -5345,7 +5364,7 @@ function DualSourcePicker({
             typing one in by hand. */}
         {cthIncomplete && (
           <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-            {primaryDraft.length} of {CTH_LENGTH} digits — a CTH is {CTH_LENGTH} digits
+            {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
           </p>
         )}
         <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
