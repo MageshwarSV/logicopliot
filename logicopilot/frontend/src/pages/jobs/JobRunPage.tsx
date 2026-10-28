@@ -5269,6 +5269,18 @@ function DualSourcePicker({
   const cthIncomplete =
     primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
 
+  // "Only this line": the escape hatch from the carry-across.
+  //
+  // Carrying a typed code to every line is right for the common invoice, where every line is
+  // the same commodity. It is wrong for the one line that differs - and when all the lines
+  // already share a value, editing any one of them would take the other four with it, since
+  // they all look like lines that were merely following along.
+  //
+  // So it is a deliberate, per-line choice rather than a guess. Switched on, this box saves
+  // its own value and touches nothing else; every other line keeps what it has. It resets
+  // when the card is re-rendered from scratch, because it describes one edit, not a setting.
+  const [soloEdit, setSoloEdit] = useState(false);
+
   /** Saving a CTH, and carrying it to the other product lines.
    *
    * An invoice's lines are usually all the same commodity, so the CTH is usually the same
@@ -5299,7 +5311,7 @@ function DualSourcePicker({
       for (const target of syncTargets) {
         await jobsApi.correctFieldValue(target.id, value);
       }
-      if (applyValueToAllRows && primary.custom_field_id) {
+      if (applyValueToAllRows && primary.custom_field_id && !soloEdit) {
         await applyValueToAllRows(primary.custom_field_id, value, previous);
       } else {
         await reload();
@@ -5318,7 +5330,7 @@ function DualSourcePicker({
             ordinary mandatory field and should read as one.
 
             Always marked required: a Bill of Entry cannot be filed without a CTH. */}
-        <div className="mb-1 flex items-center gap-1.5">
+        <div className="mb-1 flex items-center justify-between gap-1.5">
           {/* The class list is ExtractedField's own, copied verbatim rather than tidied.
               It carries two conflicting pairs - font-semibold/font-medium and
               text-slate-900/text-slate-500 - and Tailwind settles those by stylesheet order,
@@ -5333,6 +5345,27 @@ function DualSourcePicker({
               (8-Digit Code)
             </span>
           </p>
+          {/* Only offered when there is something to protect - on a single-line invoice
+              there are no other lines to spare, and the button would be a choice with no
+              consequence either way. */}
+          {!readOnly && (applyValueToAllRows !== undefined) && (
+            <button
+              type="button"
+              onClick={() => setSoloEdit((v) => !v)}
+              title={
+                soloEdit
+                  ? "This line only — other products keep their own CTH"
+                  : "Normally, typing here fills every product. Press to change just this one."
+              }
+              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                soloEdit
+                  ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                  : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+              }`}
+            >
+              {soloEdit ? "✎ only this line" : "only this line"}
+            </button>
+          )}
         </div>
         <input
           type="text"
