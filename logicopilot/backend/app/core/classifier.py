@@ -998,6 +998,17 @@ def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
     per_page_vision: bool = False,
+    # Accepted and deliberately unused. Smart Upload and the email puller both pass it (see
+    # their own calls) because the newer classifier this file replaced used it to pick that
+    # tenant's own OpenAI key instead of the shared pool. This version has no per-tenant key
+    # routing at all, so classification uses the shared pool - which is what production has
+    # always done, and is the behaviour this file was restored to get back.
+    #
+    # It is taken rather than removed from the callers on purpose: dropping the argument
+    # there would silently undo the per-tenant routing for everything ELSE those code paths
+    # do, and refusing it crashes every harvested email with a TypeError - which is exactly
+    # what happened when this file was restored without it.
+    tenant_id: str | None = None,
 ) -> list[list[dict]]:
     """Same as assign_documents, but keeps each match's page numbers instead of collapsing
     to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
