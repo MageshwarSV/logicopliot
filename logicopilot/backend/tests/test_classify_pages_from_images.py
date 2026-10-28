@@ -4,12 +4,7 @@ classification sometimes assigning the wrong page to the wrong slot. Each page i
 from its OWN image, independent of the others; consecutive pages landing on the same slot
 are merged into one document instance; a page below the confidence threshold (or with no
 real evidence) is left out entirely, falling through to the existing Unclassified Pages
-tray exactly like today - no new status is introduced.
-
-classify_page_image returns a LIST of matches, not a single best guess: a page can
-genuinely, physically combine more than one document type at once (an Invoice/Packing-List-
-in-one page), and classify_pages_from_images tracks each key as its own independently
-open/closed group so a combined page lands under every key it matches."""
+tray exactly like today - no new status is introduced."""
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -34,26 +29,21 @@ def _settings_with_key(threshold=0.85):
     return s
 
 
-def _response(matches):
+def _response(key="inv", confidence=0.95, evidence="Invoice No: INV-123, Total Payable: 500"):
     fake_response = MagicMock()
     fake_response.choices = [MagicMock()]
-    parts = ",".join(
-        f'{{"key": "{m[0]}", "confidence": {m[1]}, "evidence": "{m[2]}"}}' for m in matches
+    fake_response.choices[0].message.content = (
+        f'{{"key": "{key}", "confidence": {confidence}, "evidence": "{evidence}"}}'
     )
-    fake_response.choices[0].message.content = f'{{"matches": [{parts}]}}'
     client = MagicMock()
     client.chat.completions.create.return_value = fake_response
     return client
 
 
-def _single_response(key="inv", confidence=0.95, evidence="Invoice No: INV-123, Total Payable: 500"):
-    return _response([(key, confidence, evidence)])
-
-
 def _empty_response():
     fake_response = MagicMock()
     fake_response.choices = [MagicMock()]
-    fake_response.choices[0].message.content = '{"matches": []}'
+    fake_response.choices[0].message.content = '{"key": null, "confidence": 0.0, "evidence": ""}'
     client = MagicMock()
     client.chat.completions.create.return_value = fake_response
     return client
@@ -63,45 +53,31 @@ def _empty_response():
 # classify_page_image
 # ---------------------------------------------------------------------------
 
-def test_returns_empty_list_when_the_image_file_does_not_exist():
+def test_returns_none_when_the_image_file_does_not_exist():
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         result = classify_page_image(
             "scan.png", 1, Path("/fake/page_1.png"), CANDIDATES, "gpt-5-mini", None)
-    assert result == []
+    assert result is None
     mock_openai_cls.assert_not_called()
 
 
 def test_calls_openai_with_the_page_image_and_returns_key_and_confidence(tmp_path):
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="bl", confidence=0.97)
+    client = _response(key="bl", confidence=0.97)
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", None)
 
-    assert result == [{"key": "bl", "confidence": 0.97,
-                       "evidence": "Invoice No: INV-123, Total Payable: 500"}]
+    assert result == {"key": "bl", "confidence": 0.97,
+                      "evidence": "Invoice No: INV-123, Total Payable: 500"}
     kwargs = client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "gpt-5-mini"
     content = kwargs["messages"][0]["content"]
     assert any(part.get("type") == "image_url" for part in content)
     text = next(part["text"] for part in content if part.get("type") == "text")
     assert "page 2" in text
-
-
-def test_a_genuinely_combined_page_returns_both_matches(tmp_path):
-    img = tmp_path / "page_1.png"
-    img.write_bytes(b"\x89PNG\r\n")
-    client = _response([
-        ("inv", 0.9, "Invoice No and unit prices present"),
-        ("pl", 0.88, "Per-package weight breakdown also on this same page"),
-    ])
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
-         patch("openai.OpenAI", return_value=client):
-        result = classify_page_image("combined.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
-
-    assert {m["key"] for m in result} == {"inv", "pl"}
 
 
 def test_the_prompt_includes_a_typical_content_hint_per_candidate(tmp_path):
@@ -112,7 +88,7 @@ def test_the_prompt_includes_a_typical_content_hint_per_candidate(tmp_path):
     # like "Fright Certificate" - this is the fix for exactly that regression.
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="bl")
+    client = _response(key="bl")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
@@ -133,7 +109,7 @@ def test_a_custom_typed_slot_still_gets_a_hint_from_its_own_name(tmp_path):
     ]
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="fright")
+    client = _response(key="fright")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         classify_page_image("file.pdf", 1, img, custom_candidates, "gpt-5-mini", None)
@@ -145,111 +121,75 @@ def test_a_custom_typed_slot_still_gets_a_hint_from_its_own_name(tmp_path):
     assert "freight charges" in text.lower()
 
 
-def test_a_bl_candidate_gets_the_arrival_notice_disambiguation_warning(tmp_path):
-    # Found live: a forwarder's Arrival Notice (shipper/consignee/vessel/port fields, same as
-    # a real BL) got misread as a Bill of Lading by the per-page vision engine - it has no
-    # anti-confusion guidance at all unlike the older text classifier's own prompt. This one
-    # targeted warning must be present whenever a BL-typed slot is among the candidates.
-    img = tmp_path / "page_1.png"
-    img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="bl")
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
-         patch("openai.OpenAI", return_value=client):
-        classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
-
-    text = next(
-        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        if part.get("type") == "text"
-    )
-    assert "ARRIVAL NOTICE" in text
-    assert "NOT a Bill of Lading" in text
-
-
-def test_the_arrival_notice_warning_is_omitted_when_no_bl_candidate_exists(tmp_path):
-    img = tmp_path / "page_1.png"
-    img.write_bytes(b"\x89PNG\r\n")
-    no_bl_candidates = [c for c in CANDIDATES if c["key"] != "bl"]
-    client = _single_response(key="inv")
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
-         patch("openai.OpenAI", return_value=client):
-        classify_page_image("file.pdf", 1, img, no_bl_candidates, "gpt-5-mini", None)
-
-    text = next(
-        part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        if part.get("type") == "text"
-    )
-    assert "ARRIVAL NOTICE" not in text
-
-
 def test_includes_the_previous_page_s_classification_as_context(tmp_path):
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="bl")
+    client = _response(key="bl")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
-        classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_keys=["bl"])
+        classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_key="bl")
 
     text = next(
         part["text"] for part in client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         if part.get("type") == "text"
     )
-    assert "classified as:" in text and "'BL'" in text
+    assert "classified as 'BL'" in text
 
 
 def test_below_threshold_confidence_is_rejected(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="inv", confidence=0.5)
+    client = _response(key="inv", confidence=0.5)
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
          patch("openai.OpenAI", return_value=client):
         result = classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
-    assert result == []
+    assert result is None
 
 
 def test_a_continuation_match_is_trusted_even_at_zero_confidence(tmp_path):
     # A carrier's own continuation/attachment page rarely looks like a Bill of Lading by
     # itself - no Shipper/Consignee box, no title - so the model can honestly self-rate near
-    # zero even while correctly agreeing this page continues an already-open document.
+    # zero even while correctly agreeing this page continues the previous one's document.
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="bl", confidence=0.0, evidence="Marks and numbers continued from page 1")
+    client = _response(key="bl", confidence=0.0, evidence="Marks and numbers continued from page 1")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
          patch("openai.OpenAI", return_value=client):
-        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_keys=["bl"])
-    assert result == [{"key": "bl", "confidence": 0.0,
-                       "evidence": "Marks and numbers continued from page 1"}]
+        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_key="bl")
+    assert result == {"key": "bl", "confidence": 0.0,
+                      "evidence": "Marks and numbers continued from page 1"}
 
 
-def test_a_fresh_match_not_in_prev_keys_still_needs_real_confidence(tmp_path):
-    # The continuation exception only applies to a key that was already open - a different
-    # key offered alongside a continuation hint is a fresh claim, not a continuation, and
-    # must still clear the confidence bar like any other fresh match.
+def test_a_fresh_match_not_matching_prev_key_still_needs_real_confidence(tmp_path):
+    # The continuation exception only applies when the page AGREES it continues prev_key -
+    # a different key offered alongside a continuation hint is a fresh claim, not a
+    # continuation, and must still clear the confidence bar like any other fresh match.
     img = tmp_path / "page_2.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(key="inv", confidence=0.5)
+    client = _response(key="inv", confidence=0.5)
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key(threshold=0.85)), \
          patch("openai.OpenAI", return_value=client):
-        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_keys=["bl"])
-    assert result == []
+        result = classify_page_image("file.pdf", 2, img, CANDIDATES, "gpt-5-mini", prev_key="bl")
+    assert result is None
 
 
 def test_a_match_with_no_real_evidence_is_rejected(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
-    client = _single_response(evidence="x")
+    client = _response(evidence="x")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         result = classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
-    assert result == []
+    assert result is None
 
 
-def test_no_matching_slot_returns_empty_list(tmp_path):
+def test_no_matching_slot_returns_none(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
     with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=_empty_response()):
         result = classify_page_image("file.pdf", 1, img, CANDIDATES, "gpt-5-mini", None)
-    assert result == []
+    assert result is None
 
 
 def test_an_api_error_raises_ai_service_unavailable(tmp_path):
@@ -273,13 +213,6 @@ def test_an_api_error_raises_ai_service_unavailable(tmp_path):
 # classify_pages_from_images - per-page grouping
 # ---------------------------------------------------------------------------
 
-def _fake_classify(by_page):
-    def fake(filename, page_no, image_path, candidates, model, prev_keys, **_kwargs):
-        keys = by_page.get(page_no, [])
-        return [{"key": k, "confidence": 0.95, "evidence": f"evidence {page_no} {k}"} for k in keys]
-    return fake
-
-
 def test_consecutive_pages_with_the_same_key_merge_into_one_entry(tmp_path):
     pages = []
     for i in (1, 2):
@@ -287,11 +220,13 @@ def test_consecutive_pages_with_the_same_key_merge_into_one_entry(tmp_path):
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
 
-    with patch("app.core.classifier.classify_page_image",
-              side_effect=_fake_classify({1: ["bl"], 2: ["bl"]})):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+        return {"key": "bl", "confidence": 0.95, "evidence": f"BL evidence page {page_no}"}
+
+    with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
         result = classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
 
-    assert result == [{"key": "bl", "pages": [1, 2], "evidence": "evidence 1 bl",
+    assert result == [{"key": "bl", "pages": [1, 2], "evidence": "BL evidence page 1",
                        "source": "model"}]
 
 
@@ -301,9 +236,12 @@ def test_a_key_change_starts_a_new_entry(tmp_path):
         p = tmp_path / f"page_{i}.png"
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
+    by_page = {1: "bl", 2: "bl", 3: "inv"}
 
-    with patch("app.core.classifier.classify_page_image",
-              side_effect=_fake_classify({1: ["bl"], 2: ["bl"], 3: ["inv"]})):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+        return {"key": by_page[page_no], "confidence": 0.95, "evidence": f"evidence {page_no}"}
+
+    with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
         result = classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
 
     assert [(m["key"], m["pages"]) for m in result] == [("bl", [1, 2]), ("inv", [3])]
@@ -316,8 +254,12 @@ def test_an_unmatched_page_between_two_matches_breaks_the_group(tmp_path):
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
 
-    with patch("app.core.classifier.classify_page_image",
-              side_effect=_fake_classify({1: ["bl"], 2: [], 3: ["bl"]})):
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+        if page_no == 2:
+            return None
+        return {"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}
+
+    with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
         result = classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
 
     assert [(m["key"], m["pages"]) for m in result] == [("bl", [1]), ("bl", [3])]
@@ -326,12 +268,12 @@ def test_an_unmatched_page_between_two_matches_breaks_the_group(tmp_path):
 def test_no_pages_matching_returns_empty_list(tmp_path):
     p = tmp_path / "page_1.png"
     p.write_bytes(b"\x89PNG\r\n")
-    with patch("app.core.classifier.classify_page_image", return_value=[]):
+    with patch("app.core.classifier.classify_page_image", return_value=None):
         result = classify_pages_from_images("file.pdf", [(1, p)], CANDIDATES, "gpt-5-mini")
     assert result == []
 
 
-def test_previous_keys_are_threaded_through_between_calls(tmp_path):
+def test_previous_key_is_threaded_through_between_calls(tmp_path):
     pages = []
     for i in (1, 2):
         p = tmp_path / f"page_{i}.png"
@@ -339,32 +281,14 @@ def test_previous_keys_are_threaded_through_between_calls(tmp_path):
         pages.append((i, p))
     seen_prev_keys = []
 
-    def fake_classify(filename, page_no, image_path, candidates, model, prev_keys, **_kwargs):
-        seen_prev_keys.append(list(prev_keys))
-        return [{"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}]
+    def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
+        seen_prev_keys.append(prev_key)
+        return {"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}
 
     with patch("app.core.classifier.classify_page_image", side_effect=fake_classify):
         classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
 
-    assert seen_prev_keys == [[], ["bl"]]
-
-
-def test_a_combined_page_opens_two_groups_that_can_close_independently(tmp_path):
-    # Page 1 is genuinely BOTH an invoice and a packing list; page 2 continues only the
-    # packing list (e.g. a second page of per-package rows) - the invoice group must close
-    # after page 1 while the packing-list group keeps extending.
-    pages = []
-    for i in (1, 2):
-        p = tmp_path / f"page_{i}.png"
-        p.write_bytes(b"\x89PNG\r\n")
-        pages.append((i, p))
-
-    with patch("app.core.classifier.classify_page_image",
-              side_effect=_fake_classify({1: ["inv", "pl"], 2: ["pl"]})):
-        result = classify_pages_from_images("combined.pdf", pages, CANDIDATES, "gpt-5-mini")
-
-    by_key = {m["key"]: m["pages"] for m in result}
-    assert by_key == {"inv": [1], "pl": [1, 2]}
+    assert seen_prev_keys == [None, "bl"]
 
 
 # ---------------------------------------------------------------------------

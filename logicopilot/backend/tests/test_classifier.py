@@ -225,7 +225,7 @@ def test_keyword_backstop_adds_invoice_on_a_real_combined_challan_the_model_only
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
 
 
-def _only_packinglist_verified(filename, text, image_path, candidate, already_types, **_kwargs):
+def _only_packinglist_verified(filename, text, image_path, candidate, already_types):
     # CANDIDATES now also has a Freight slot ("frt"), so a file matching neither PackingList
     # nor Freight by regex triggers an AI check for BOTH remaining types - a real fixture must
     # distinguish which one it is verifying, not return the same verdict for either.
@@ -596,58 +596,6 @@ def test_signature_match_freight_required_phrase_missing():
     text = "Freight Payable at Destination\nPort of Discharge: Chennai"
     is_match, _ = _keyword_signature_match(text, "Freight")
     assert is_match is False
-
-
-def test_signature_match_freight_excludes_an_ordinary_invoice_s_own_fob_cif_breakdown():
-    # Found live: a genuine commercial invoice quoted CIF duplicated itself into the Freight
-    # Certificate slot, because its own routine "FOB VALUE / FREIGHT CHARGES / INSURANCE"
-    # cost breakdown needed nothing more than ANY dollar figure to satisfy min_supporting=1.
-    text = (
-        "COMMERCIAL INVOICE\nINVOICE NO : 5970000523\n"
-        "FOB VALUE : USD 189,691.73\n"
-        "FREIGHT CHARGES : USD 6,000.00\n"
-        "INSURANCE : USD 9.69\n"
-    )
-    is_match, hits = _keyword_signature_match(text, "Freight")
-    assert is_match is False
-
-
-def test_signature_match_freight_still_fires_without_an_fob_cif_breakdown_nearby():
-    # The exclusion is narrow: a real freight charges line with NO "FOB value"/"insurance"
-    # anywhere nearby (nothing suggesting it's an invoice's own Incoterm arithmetic) still
-    # fires exactly as before - this is the real-arrival-notice case the signature exists for.
-    text = "ARRIVAL NOTICE\nFREIGHT CHARGES : USD 500.00\nCHARGEABLE WEIGHT: 1200 KGS\n"
-    is_match, hits = _keyword_signature_match(text, "Freight")
-    assert is_match is True
-    assert hits >= 2
-
-
-def test_signature_match_packing_list_excludes_a_do_not_remove_packing_slip_remark():
-    # Found live: a plain Shipping Invoice with no packing-list content anywhere in it (two
-    # invoice pages, each followed by a Terms & Conditions page) duplicated itself into the
-    # Packing List slot, because its own boilerplate remark ("do not remove packing slip from
-    # carton/pallet" - a warning about a physical label taped to the carton, not the document
-    # calling itself a packing list) satisfied the required phrase, and the invoice's own
-    # routine "Total Gross Weight"/"Total Net Weight" summary satisfied 2 supporting markers.
-    text = (
-        "SHIPPING INVOICE\nInvoice No: 8667395\n"
-        "Total Gross Weight : 267.00 KG\nTotal Net Weight : 238.00 KG\n"
-        "Cargo not to be depalletized and do not remove packing slip from carton/pallet.\n"
-    )
-    is_match, hits = _keyword_signature_match(text, "PackingList")
-    assert is_match is False
-
-
-def test_signature_match_packing_list_still_fires_when_actually_titled_packing_list():
-    # The exclusion is narrow: a document that is ACTUALLY titled "PACKING LIST" still fires
-    # exactly as before, even if it also happens to carry the same remark somewhere.
-    text = (
-        "PACKING LIST\nNet Weight: 238.00 KG\nGross Weight: 267.00 KG\n"
-        "Do not remove packing slip from carton/pallet.\n"
-    )
-    is_match, hits = _keyword_signature_match(text, "PackingList")
-    assert is_match is True
-    assert hits >= 2
 
 
 def test_signature_match_none_and_empty_text_do_not_crash():

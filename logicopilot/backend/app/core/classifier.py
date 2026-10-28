@@ -137,57 +137,20 @@ _TYPE_SIGNATURES: dict[str, dict] = {
 }
 
 
-# A plain shipping invoice's own boilerplate remark ("Cargo not to be depalletized and do
-# not remove packing slip from carton/pallet") is a warning about a physical label taped to
-# the carton - it is not the document itself calling itself a packing list. Found live: this
-# remark alone satisfied PackingList's "packing slip" required phrase, and the SAME invoice's
-# own routine "Total Gross Weight" / "Total Net Weight" summary lines satisfied 2 supporting
-# markers, duplicating a plain Shipping Invoice (with no packing-list content anywhere in it)
-# into the Packing List slot.
-_PACKING_SLIP_REMARK_RE = re.compile(
-    r"(do\s*not|don'?t|without)\s*(remov|detach)\w*\s*(the\s*)?packing\s*slip", re.IGNORECASE
-)
-
-
 def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
     """(is_match, how many supporting markers hit) - is_match requires the type's REQUIRED
-    phrase plus at least min_supporting of its supporting markers, both independently.
-
-    Freight gets one more check: an ordinary commercial invoice quoted under an FOB/CIF
-    Incoterm routinely states its own "FOB VALUE" / "FREIGHT CHARGES" / "INSURANCE" cost
-    breakdown - that is NOT evidence of a separate, dedicated freight document, it's just
-    the invoice doing the arithmetic its own Incoterm requires. _ai_verify_second_type's own
-    freight_caveat already tells the AI path not to be fooled by this; this regex path had no
-    equivalent guard at all, so a real invoice's incidental "Freight Charges: USD 6,000.00"
-    line - needing nothing more than ANY dollar figure to satisfy min_supporting=1 - was
-    enough on its own to duplicate the whole invoice into the Freight/"Fright Certificate"
-    slot. Found live on a real job. A genuine freight certificate/arrival notice has no
-    reason to also state an "FOB value" (that's the commercial invoice's own term, not a
-    forwarder's), so this exclusion only fires on exactly the false-positive shape.
-
-    PackingList gets the equivalent check for its own "packing slip" required phrase - see
-    _PACKING_SLIP_REMARK_RE above. Only fires when "packing slip" is the ONLY required hit (a
-    document actually titled "PACKING LIST" or whose table is headed "PACKING DETAILS" still
-    matches regardless of this remark)."""
+    phrase plus at least min_supporting of its supporting markers, both independently."""
     sig = _TYPE_SIGNATURES.get(doc_type)
     if not sig or not text:
         return False, 0
     if not any(re.search(p, text, re.IGNORECASE) for p in sig["required"]):
-        return False, 0
-    if (doc_type == "Freight" and re.search(r"fob\s*value", text, re.IGNORECASE)
-            and re.search(r"\binsurance\b", text, re.IGNORECASE)):
-        return False, 0
-    if (doc_type == "PackingList"
-            and not re.search(r"packing\s*list|packing\s*detail", text, re.IGNORECASE)
-            and _PACKING_SLIP_REMARK_RE.search(text)):
         return False, 0
     hits = sum(1 for p in sig["supporting"] if re.search(p, text, re.IGNORECASE))
     return hits >= sig["min_supporting"], hits
 
 
 def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
-                           candidate: dict, already_types: list[str],
-                           tenant_id: str | None = None) -> dict | None:
+                           candidate: dict, already_types: list[str]) -> dict | None:
     """The regex backstop's fallback for wording it does not recognise: ask the model itself,
     narrowly, whether this ONE remaining type is ALSO present - separate from the regex word
     list, so a customer whose document never uses the words "invoice" or "packing list" at all
@@ -256,7 +219,6 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
-            tenant_id=tenant_id,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         if not data.get("present"):
@@ -273,8 +235,7 @@ def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
 
 
 def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
-                                      claims: list[list[dict]],
-                                      tenant_id: str | None = None) -> None:
+                                      claims: list[list[dict]]) -> None:
     """Mutates `claims` in place: for each file, checks whether its own text carries a
     strong, specific signature of a type this template has a slot for, that the model's own
     call did not already claim for it. Runs for a file with at least one existing claim (a
@@ -353,8 +314,7 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 continue
             verified = _ai_verify_second_type(
                 item.get("name") or "", text, item.get("image"),
-                cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t),
-                tenant_id=tenant_id)
+                cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t))
             if verified is None:
                 continue
             claims[i].append({
@@ -515,7 +475,7 @@ def customer_fingerprints(groups: list[dict]) -> list[dict]:
 
 
 def identify_customer(mail_subject: str, mail_body: str, doc_texts: list[tuple[str, str]],
-                      groups: list[dict], tenant_id: str | None = None) -> dict:
+                      groups: list[dict]) -> dict:
     """Which customer do these documents belong to?
 
     Returns {"keys": [...], "reason": str, "evidence": str}. `keys` may be:
@@ -727,7 +687,7 @@ def _classification_instruction(filename: str, candidates: list[dict]) -> str:
 
 
 def classify_document(filename: str, ocr_text: str | None, image_path: Path | None,
-                      candidates: list[dict], tenant_id: str | None = None) -> list[dict]:
+                      candidates: list[dict]) -> list[dict]:
     """Which document types are PRESENT in this file, with the evidence for each.
 
     Returns [{"key", "pages": [int], "evidence": str}]. A match the model cannot back with
@@ -770,7 +730,6 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
-            tenant_id=tenant_id,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         valid = {c["key"] for c in candidates}
@@ -803,8 +762,7 @@ def classify_document(filename: str, ocr_text: str | None, image_path: Path | No
 
 
 def classify_document_from_image(filename: str, image_path: Path | None,
-                                 candidates: list[dict], model: str,
-                                 tenant_id: str | None = None) -> list[dict]:
+                                 candidates: list[dict], model: str) -> list[dict]:
     """Vision-engine counterpart to classify_document - decides which document types are
     PRESENT in this file from its PAGE-1 IMAGE ALONE, never OCR text. Used only when the
     `extraction_engine` system setting is "gpt5_mini_vision" (see
@@ -847,7 +805,6 @@ def classify_document_from_image(filename: str, image_path: Path | None,
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
-            tenant_id=tenant_id,
             **reasoning_safe_chat_params(model, temperature=0, max_tokens=1200),
         )
         data = json.loads(resp.choices[0].message.content or "{}")
@@ -877,33 +834,28 @@ def classify_document_from_image(filename: str, image_path: Path | None,
 
 
 def classify_page_image(filename: str, page_no: int, image_path: Path, candidates: list[dict],
-                        model: str, prev_keys: list[str] | None,
-                        tenant_id: str | None = None) -> list[dict]:
-    """Decide which of this template's own candidates (whatever document labels were declared
-    in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to, independent
-    of every other page in the file. Smart-Upload-only building block for
+                        model: str, prev_key: str | None) -> dict | None:
+    """Decide which ONE of this template's own candidates (whatever document labels were
+    declared in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to,
+    independent of every other page in the file. Smart-Upload-only building block for
     classify_pages_from_images, below.
 
-    Returns [{"key", "confidence", "evidence"}] - usually zero or one entry, but a page can
-    genuinely, physically combine more than one document type at once (a "Shipping Invoice cum
-    Packing List" page is both an Invoice and a Packing List on the SAME page) - this returns
-    every type the page clears the bar for, not just its single best guess. A type whose
-    confidence is below `vision_classification_confidence_threshold` is simply left out of the
-    list, so it falls through to the existing Unclassified Pages tray exactly like any other
-    page nothing could place. No new "LOW_CONFIDENCE" status is introduced; that tray already
-    is one.
+    Returns {"key", "confidence", "evidence"}, or None if nothing matches or the model's own
+    confidence is below `vision_classification_confidence_threshold` - a low-confidence or
+    unmatched page is simply left out, so it falls through to the existing Unclassified Pages
+    tray exactly like any other page nothing could place. No new "LOW_CONFIDENCE" status is
+    introduced; that tray already is one.
 
-    EXCEPTION, per key: a key that was already open on the page immediately before this one
-    (`prev_keys`) and is returned again here is trusted as a continuation regardless of its own
-    raw confidence - see the comment at that check for why a continuation page can honestly
-    self-rate near zero while still being the right answer. A FRESH key (not in `prev_keys`)
-    still has to clear the confidence bar on its own.
+    EXCEPTION: a page that agrees it CONTINUES `prev_key`'s document (same key returned, with
+    real evidence) is trusted on that reasoning alone, regardless of its own raw confidence -
+    see the comment at that check for why a continuation page can honestly self-rate near
+    zero while still being the right answer.
     """
     settings = get_settings()
     if not settings.openai_api_key or not candidates:
-        return []
+        return None
     if not image_path.exists():
-        return []
+        return None
 
     # Deliberately plain: this template's own document labels (never a fixed BL/PL/INVOICE/
     # FREIGHT list) and the image, nothing else - no written heuristics describing what each
@@ -926,78 +878,23 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         suffix = f" (typically: {hint})" if hint else ""
         return f'- key="{c["key"]}" name="{c["name"]}"{suffix}'
 
-    # Reverted back to the original single-stage form, by request - the "First/Second
-    # Clarification" two-step framing (and the narrowed-to-Freight-only second stage) is gone.
-    # All real candidates are listed directly, once, with their hints - this is the exact
-    # form the per-page vision engine shipped with before today's experiments, and every type
-    # can be validly classified again.
     lines = "\n".join(_candidate_line(c) for c in candidates)
     instruction = (
         f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
         "paperwork. Based on what you actually see on the page - its title, layout, and the "
-        "fields or tables it contains - decide which of the following document types this "
-        f"page matches:\n\n{lines}\n\n"
-        "Usually exactly one type fits. Return MORE THAN ONE only when this single page "
-        "genuinely, physically combines two document types at once (for example, a "
-        "'Shipping Invoice cum Packing List' page that is both an invoice AND a packing list "
-        "on the same page) - not merely because the page mentions something in passing.\n\n"
+        "fields or tables it contains - decide which ONE of the following document types it "
+        f"is, if any:\n\n{lines}\n\n"
     )
-    def _is_bl_candidate(c: dict) -> bool:
-        return (c.get("doc_type") or "") == "BL" or _key_from_name(c.get("name") or "") == "BL"
-
-    def _is_freight_candidate(c: dict) -> bool:
-        return (c.get("doc_type") or "") == "Freight" or _key_from_name(c.get("name") or "") == "Freight"
-
-    if any(_is_bl_candidate(c) for c in candidates):
-        # Found live: a forwarder's own ARRIVAL NOTICE was misread as a Bill of Lading - it
-        # legitimately repeats the SAME consignee/shipper/vessel/port fields a BL has, because
-        # it is describing the same shipment, not because it IS one. This one narrow warning
-        # is the per-page vision engine's own version of the older text classifier's much
-        # longer "trap" paragraphs (_classification_instruction) - kept to a single targeted
-        # sentence rather than reproduced in full, since this is the only confusion actually
-        # seen in practice for THIS engine so far.
+    if prev_key:
+        prev_name = next((c["name"] for c in candidates if c["key"] == prev_key), prev_key)
         instruction += (
-            "One specific trap: a BILL OF LADING is the CARRIER's own contract of carriage - "
-            "look for a document actually titled Bill of Lading, Sea Waybill or Waybill, with "
-            "the carrier's own terms/clauses of carriage. A forwarder's ARRIVAL NOTICE repeats "
-            "the same consignee, shipper, vessel and port fields (it describes the same "
-            "shipment) but is NOT a Bill of Lading - do not call it one just because those "
-            "fields are present.\n\n"
-        )
-    if any(_is_freight_candidate(c) for c in candidates):
-        # Found live (JOB-10FF16): a freight forwarder's OWN invoice for their shipping/
-        # handling charges - titled "Invoice" or "Invoice Draft", with a normal-looking
-        # charges table, unit prices and a total payable - confidently scored as "Invoice"
-        # (0.95) at the exact same time the SHIPMENT's real commercial invoice also scored
-        # "Invoice", so the two files tied for one slot and both landed in Unclassified
-        # Pages instead of either one being placed. The older OCR-text classifier already
-        # carries this exact distinction (see _ai_verify_second_type's freight_caveat and
-        # _keyword_signature_match's FOB/insurance exclusion); this per-page vision engine
-        # never had its own version of it until now.
-        instruction += (
-            "Another specific trap: a FREIGHT CERTIFICATE / freight invoice is issued by the "
-            "CARRIER or FREIGHT FORWARDER (a logistics company) billing for shipping/handling "
-            "SERVICES - ocean freight, THC, BAF, origin/destination charges, documentation or "
-            "customs clearance fees. It is very often itself titled \"Invoice\" or \"Invoice "
-            "Draft\" and looks exactly like one (a charges table, unit prices, a total payable, "
-            "payment terms) - that resemblance alone does NOT make it the commercial Invoice. "
-            "A commercial Invoice is issued by the SUPPLIER/SHIPPER of the GOODS, billing for "
-            "the GOODS themselves (item descriptions, HS codes, product quantities and unit "
-            "prices) - never freight/handling charges. Decide by WHO issued the document and "
-            "WHAT it bills for, not by the word \"Invoice\" appearing on it.\n\n"
-        )
-    if prev_keys:
-        prev_names = ", ".join(
-            repr(next((c["name"] for c in candidates if c["key"] == k), k)) for k in prev_keys
-        )
-        instruction += (
-            f"The page immediately before this one was classified as: {prev_names}. If this "
-            "page simply continues any of those same documents, say so for that type.\n\n"
+            f"The page immediately before this one was classified as {prev_name!r}. If this "
+            "page is simply the next page of that same document, say so.\n\n"
         )
     instruction += (
-        'Return JSON: {"matches": [{"key": "...", "confidence": 0.00, '
-        '"evidence": "what on the page tells you this"}]}. Empty list if none of the types '
-        "fit this page."
+        'Return JSON: {"key": "..." or null, "confidence": 0.00, '
+        '"evidence": "what on the page tells you this"}. Use null for key if none of the '
+        "types fit this page."
     )
     try:
         from openai import APIError
@@ -1014,49 +911,43 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
             model=model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
-            tenant_id=tenant_id,
-            **reasoning_safe_chat_params(model, temperature=0, max_tokens=800),
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=500),
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         valid = {c["key"] for c in candidates}
-        prev_set = set(prev_keys or [])
-        out: list[dict] = []
-        for m in data.get("matches") or []:
-            key = m.get("key")
-            ev = str(m.get("evidence") or "").strip()
-            if not key or key not in valid or len(ev) < 8:
-                continue
-            try:
-                confidence = float(m.get("confidence"))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            # A page agreeing it CONTINUES an already-open document (same key, per the
-            # continuation hint above) is trusted on that reasoning alone, not on its own raw
-            # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
-            # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
-            # self-rate near zero even while correctly following the continuation instruction.
-            # Gating that away is what regressed a page that classified correctly before this
-            # per-page engine existed. Only a FRESH key (not already open) needs to clear the
-            # confidence bar.
-            is_continuation = key in prev_set
-            if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
-                logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
-                            filename, page_no, key, confidence,
-                            settings.vision_classification_confidence_threshold)
-                continue
-            out.append({"key": key, "confidence": confidence, "evidence": ev[:300]})
-        return out
+        key = data.get("key")
+        ev = str(data.get("evidence") or "").strip()
+        try:
+            confidence = float(data.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not key or key not in valid or len(ev) < 8:
+            return None
+        # A page agreeing it CONTINUES the previous page's document (same key, per the
+        # continuation hint above) is trusted on that reasoning alone, not on its own raw
+        # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
+        # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
+        # self-rate near zero even while correctly following the continuation instruction.
+        # Gating that away is what regressed a page that classified correctly before this
+        # per-page engine existed. Only a FRESH match (no continuation claim) needs to clear
+        # the confidence bar.
+        is_continuation = prev_key is not None and key == prev_key
+        if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
+            logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
+                        filename, page_no, key, confidence,
+                        settings.vision_classification_confidence_threshold)
+            return None
+        return {"key": key, "confidence": confidence, "evidence": ev[:300]}
     except APIError as exc:
         raise AIServiceUnavailable(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("Per-page vision classification failed for %s page %s: %s",
                        filename, page_no, exc)
-        return []
+        return None
 
 
 def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
-                               candidates: list[dict], model: str,
-                               tenant_id: str | None = None) -> list[dict]:
+                               candidates: list[dict], model: str) -> list[dict]:
     """Smart-Upload-only counterpart to classify_document_from_image: classifies EVERY kept
     page of a file independently from its own image (not just page 1) - the fix for a
     combined/multi-page file's classification, done once over the whole file's OCR text,
@@ -1072,35 +963,31 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
     reliably keeping each page in the right slot, which is the bug this exists to fix. The
     manual Unclassified Pages tray remains the fallback either way.
 
-    A page may belong to SEVERAL open groups at once (a genuinely combined page, e.g. an
-    Invoice/Packing-List-in-one) - each key this function tracks is its own independent open
-    group, extended or closed per page on its own key's own matches, so one combined page
-    correctly ends up attached under both keys rather than forcing a single choice.
-
     Returns the same shape as classify_document/classify_document_from_image:
-    [{"key", "pages": [int], "evidence": str}] - a key may appear more than once if the same
-    type reopens later in the file after a gap (treated as a separate instance, same as the
-    text classifier already allows).
+    [{"key", "pages": [int], "evidence": str}].
     """
     out: list[dict] = []
-    open_groups: dict[str, dict] = {}  # key -> {"key", "pages", "evidence", "source"}
+    current: dict | None = None
+    prev_key: str | None = None
     for page_no, image_path in page_images:
-        matches = classify_page_image(filename, page_no, image_path, candidates, model,
-                                      list(open_groups.keys()), tenant_id=tenant_id)
-        matched_keys = {m["key"] for m in matches}
-        # Close out (flush to `out`) any group NOT continued on this page - a gap in a key's
-        # own pages ends that document instance, exactly as before.
-        for key in list(open_groups.keys()):
-            if key not in matched_keys:
-                out.append(open_groups.pop(key))
-        for m in matches:
-            key = m["key"]
-            if key in open_groups:
-                open_groups[key]["pages"].append(page_no)
-            else:
-                open_groups[key] = {"key": key, "pages": [page_no], "evidence": m["evidence"],
-                                    "source": "model"}
-    out.extend(open_groups.values())
+        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key)
+        if result is None:
+            prev_key = None
+            if current is not None:
+                out.append(current)
+                current = None
+            continue
+        key = result["key"]
+        if current is not None and current["key"] == key:
+            current["pages"].append(page_no)
+        else:
+            if current is not None:
+                out.append(current)
+            current = {"key": key, "pages": [page_no], "evidence": result["evidence"],
+                      "source": "model"}
+        prev_key = key
+    if current is not None:
+        out.append(current)
     if not out:
         logger.info("classify %s: no slot's document is present on any page (per-page "
                     "vision engine, %s slots offered)", filename, len(candidates))
@@ -1110,7 +997,7 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
 def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
-    per_page_vision: bool = False, tenant_id: str | None = None,
+    per_page_vision: bool = False,
 ) -> list[list[dict]]:
     """Same as assign_documents, but keeps each match's page numbers instead of collapsing
     to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
@@ -1135,25 +1022,24 @@ def assign_documents_detailed(
     if engine == "gpt5_mini_vision" and per_page_vision:
         claims: list[list[dict]] = [
             classify_pages_from_images(f.get("name") or "", f.get("page_images") or [],
-                                       candidates, vision_model, tenant_id=tenant_id)
+                                       candidates, vision_model)
             for f in files
         ]
     elif engine == "gpt5_mini_vision":
         claims = [
             classify_document_from_image(f.get("name") or "", f.get("image"), candidates,
-                                         vision_model, tenant_id=tenant_id)
+                                         vision_model)
             for f in files
         ]
     else:
         claims = [
-            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates,
-                              tenant_id=tenant_id)
+            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates)
             for f in files
         ]
 
     # A deterministic backstop, run BEFORE the reconciliation below so an added claim is
     # reconciled exactly like one the model found itself. See _augment_combined_document_claims.
-    _augment_combined_document_claims(files, candidates, claims, tenant_id=tenant_id)
+    _augment_combined_document_claims(files, candidates, claims)
 
     # 1. The SAME key may never claim a page twice - a file can genuinely hold several
     #    invoices, and each is its own document with its own, non-overlapping pages, so only

@@ -305,7 +305,20 @@ def classify_one_file(
                     if prompt_mode == "simple":
                         matches = [m for m in _simple_classify_page(image_path, candidates, model) if m["key"]]
                     else:
-                        matches = classify_page_image(pdf_name, page_no, image_path, candidates, model, prev_keys)
+                        # classify_page_image judges ONE page and returns that page's single
+                        # best slot, or None. This tool reports a list per page because the
+                        # "simple" mode above can legitimately return several, so the single
+                        # answer is wrapped to match - rather than this loop having to care
+                        # which mode produced its input.
+                        #
+                        # Only the most recent key is passed on: the classifier's continuation
+                        # rule asks "is this page more of the same document as the one before
+                        # it", which is a question about the previous page alone.
+                        match = classify_page_image(
+                            pdf_name, page_no, image_path, candidates, model,
+                            prev_keys[-1] if prev_keys else None,
+                        )
+                        matches = [match] if match else []
                     pages_out.append({
                         "page": page_no,
                         "matches": [
