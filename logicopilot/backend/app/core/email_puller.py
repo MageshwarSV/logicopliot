@@ -1044,7 +1044,7 @@ def _process_one_message(
     from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, identify_customer
     from app.core.custom_page_filter import filter_pages_with_custom
     from app.core.docai import ocr_page_image
-    from app.core.page_filter import extract_pdf_pages, kept_page_to_original
+    from app.core.page_filter import claim_fingerprint, extract_pdf_pages, kept_page_to_original
 
     single_group = ctx["single_group"]
     candidates = ctx["candidates"]
@@ -1368,6 +1368,12 @@ def _process_one_message(
         job.stage_override = "Document Classifying"
         db.commit()
         cand_slots = list(slot_meta.values())
+        # What has already gone into each slot, by content. Two attachments can carry
+        # the SAME document - a supplier sends Invoice.pdf holding the invoice and the
+        # packing list, then Packing List.pdf holding the same two - and the classifier
+        # correctly reports both types in both files. Without this, each slot ends up
+        # with two rows that are the same piece of paper (JOB-3DB0E9).
+        placed_fingerprints: dict[str, set[str]] = {}
 
         # Stage every kept page as a provisional "unresolved" row BEFORE classification
         # runs - the exact same UnmatchedUploadPage mechanism Smart Upload already uses
@@ -1479,6 +1485,25 @@ def _process_one_message(
                 jd = slots.get(key)
                 if jd is None:
                     continue
+                # The same document arriving twice, in two different attachments. Skipped
+                # rather than added as a second row: the operator would otherwise have to
+                # work out which of two identical invoices to keep, on every such mail.
+                #
+                # Only an exact content match is skipped. Three genuinely different invoices
+                # for one shipment read differently, so they fingerprint differently and all
+                # three are still kept - which is the behaviour the row-adding below exists
+                # for and must not lose. An empty fingerprint means "cannot tell" (too
+                # little readable text) and never counts as a match.
+                fingerprint = claim_fingerprint(item["text"] or "", claim.get("pages") or [])
+                already = placed_fingerprints.setdefault(key, set())
+                if fingerprint and fingerprint in already:
+                    logger.info(
+                        "email classify: %s - skipped %s, the same document already came "
+                        "in on another attachment in this mail",
+                        item["name"], slot_meta.get(key, {}).get("name", key))
+                    continue
+                if fingerprint:
+                    already.add(fingerprint)
                 if jd.file_path:
                     # The slot already holds a file, and this mail carries another one
                     # for it — three invoices for one shipment is ordinary. Add a row

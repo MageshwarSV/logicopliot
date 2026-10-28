@@ -26,6 +26,7 @@ Safety net: never drop every page. If a document looks entirely like boilerplate
 stands down and passes it through, because a wrongly dropped page silently loses real data.
 """
 
+import hashlib
 import logging
 import re
 from collections.abc import Callable
@@ -159,6 +160,60 @@ def kept_page_to_original(page_count: int, dropped_pages: list[int]) -> list[int
     """
     drop = set(dropped_pages)
     return [p for p in range(1, page_count + 1) if p not in drop]
+
+
+# The header filter_pages()' output is joined with, and the only thing separating one page's
+# text from the next once a file has been flattened into a single string.
+_PAGE_MARKER_RE = re.compile(r"^===\s*PAGE\s+(\d+)\s*===$")
+
+# Below this many letters-and-digits a page is not distinctive enough to match on: "page 1 of
+# 2" and a date are shared by half the paperwork in a shipment.
+_MIN_FINGERPRINT_CHARS = 40
+
+
+def claim_fingerprint(file_text: str, pages: list[int]) -> str:
+    """What the pages of ONE claim actually say, reduced to a comparable fingerprint.
+
+    Two different attachments can carry the same document. A supplier sends "Invoice.pdf"
+    holding the invoice and the packing list, then sends "Packing List.pdf" holding the same
+    two - and the classifier, correctly, says both files contain both types. The result was
+    the Invoice slot holding two invoices and the Packing List slot holding two packing
+    lists, all four being the same two pieces of paper (JOB-3DB0E9).
+
+    Comparing the files on disk does not catch it: each slot's pages are split out of their
+    own source, so the two Invoice PDFs came to 26,816 bytes each with DIFFERENT sha256s -
+    identical content, different PDF timestamps. The text is what is actually the same.
+
+    Normalised to survive the parts that differ without meaning anything: case, and the
+    whitespace and line breaks that shift when the same page is OCR'd out of two files.
+    Letters and digits are kept exactly, so two genuinely different invoices - which differ
+    in their numbers, dates and amounts - never collide. Three real invoices for one shipment
+    still produce three fingerprints and three rows, which is the behaviour this must not
+    break.
+
+    Returns "" when those pages carry no readable text at all, and a caller must treat that
+    as "cannot tell" rather than as a match - otherwise every unreadable scan would dedupe
+    itself against every other one.
+    """
+    if not file_text or not pages:
+        return ""
+    wanted = set(pages)
+    collected: list[str] = []
+    current: int | None = None
+    for line in file_text.splitlines():
+        marker = _PAGE_MARKER_RE.match(line.strip())
+        if marker:
+            current = int(marker.group(1))
+            continue
+        if current in wanted:
+            collected.append(line)
+    body = re.sub(r"[^a-z0-9]+", " ", "\n".join(collected).lower()).strip()
+    if len(body) < _MIN_FINGERPRINT_CHARS:
+        # Too little to be sure of. A handful of characters is shared by half the paperwork
+        # in a shipment ("page 1 of 2", a date), so matching on it would merge real
+        # documents.
+        return ""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def extract_pdf_pages(blob: bytes, original_pages: list[int]) -> bytes:

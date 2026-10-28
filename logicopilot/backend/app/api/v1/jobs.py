@@ -32,7 +32,7 @@ from app.core.deps import (
 from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
-from app.core.page_filter import kept_page_to_original, merge_pdf_pages
+from app.core.page_filter import claim_fingerprint, kept_page_to_original, merge_pdf_pages
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import get_extraction_engine, is_extraction_paused
 from app.core.extraction import (
@@ -6178,6 +6178,36 @@ def smart_upload(
                         if 1 <= p <= len(item["kept_pages"]))
                     number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
                 pending.append({"item": item, "claim": claim, "key": claim["key"], "number": number})
+
+        # Before grouping: drop a claim whose pages say exactly what another claim has
+        # already said for the SAME slot.
+        #
+        # Grouping below is by invoice NUMBER, which is the precise mechanism and handles
+        # most of this. It cannot help when no number can be read off the page - then every
+        # claim becomes its own document, and two attachments carrying the same paperwork
+        # (Invoice.pdf holding the invoice and the packing list, Packing List.pdf holding the
+        # same two) fill each slot twice with the same piece of paper. Found on JOB-3DB0E9:
+        # the Invoice slot held two invoices and the Packing List slot two packing lists,
+        # all four being two documents.
+        #
+        # Only an EXACT content match is dropped, so three genuinely different invoices still
+        # land as three. An unreadable page fingerprints to "" and is never treated as a
+        # duplicate of anything.
+        seen_by_key: dict[str, set[str]] = {}
+        deduped: list[dict] = []
+        for p in pending:
+            fp = claim_fingerprint(p["item"]["text"] or "", p["claim"].get("pages") or [])
+            already = seen_by_key.setdefault(p["key"], set())
+            if fp and fp in already:
+                logger.info(
+                    "smart-upload classify: %s - skipped a second copy of the same document "
+                    "for %s, already supplied by another file in this upload",
+                    p["item"]["name"], p["key"])
+                continue
+            if fp:
+                already.add(fp)
+            deduped.append(p)
+        pending = deduped
 
         # Group claims that share an invoice number (same slot, matching number - see
         # doc_sets.same_number) into ONE document, whether they came from the same file (a
