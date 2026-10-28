@@ -67,9 +67,39 @@ function filtersScope(category: string | undefined): string {
   return category ?? "all";
 }
 
+/** localStorage, NOT sessionStorage.
+ *
+ *  Opening a job opens a NEW TAB, and sessionStorage is per tab - the new tab starts with
+ *  nothing, so coming back through "All jobs" landed on an unfiltered list every time. The
+ *  filters survived navigating between screens and then silently reset on the one journey
+ *  an operator makes constantly: open a job, come back.
+ *
+ *  localStorage is shared across every tab of the same site, so the filter an operator set
+ *  is the filter they come back to, whichever tab they come back in.
+ *
+ *  Wrapped because every access can throw: a private window, blocked site data, or storage
+ *  that is simply full. A filter is a convenience, never a reason to fail to render a
+ *  screen - the same convention this file already uses for the remembered email address. */
+const filtersStore = {
+  read(): string | null {
+    try {
+      return window.localStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(value: string): void {
+    try {
+      window.localStorage.setItem(JOBS_FILTERS_STORAGE_KEY, value);
+    } catch {
+      /* best effort - worst case the filters reset, exactly as before this existed */
+    }
+  },
+};
+
 function readStoredJobsFilters(category?: string): Partial<StoredJobsFilters> {
   try {
-    const raw = window.sessionStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
+    const raw = filtersStore.read();
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, Partial<StoredJobsFilters>>;
     // Written by an older build as one flat object shared by every screen. Reading it as
@@ -284,7 +314,7 @@ export function JobsPage() {
     try {
       // Under THIS screen's own key, merged into whatever the other screens have
       // stored, so saving New Jobs' filters never overwrites ERP Verified's.
-      const raw = window.sessionStorage.getItem(JOBS_FILTERS_STORAGE_KEY);
+      const raw = filtersStore.read();
       let all: Record<string, unknown> = {};
       try {
         const parsed = raw ? JSON.parse(raw) : {};
@@ -297,7 +327,7 @@ export function JobsPage() {
       all[filtersScope(category)] = {
         quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo,
       };
-      window.sessionStorage.setItem(JOBS_FILTERS_STORAGE_KEY, JSON.stringify(all));
+      filtersStore.write(JSON.stringify(all));
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
