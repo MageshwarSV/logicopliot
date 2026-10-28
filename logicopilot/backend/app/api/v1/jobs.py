@@ -855,6 +855,12 @@ def _is_missing_documents(db: Session, job: Job) -> bool:
     """
     if job.gk2_status is not None:
         return False
+    # Still being filled - a mail-created job is committed before its attachments are
+    # classified into slots, and during those seconds it genuinely has no documents yet. See
+    # _outer_status's own version of this check; the two must agree, or the badge on a job
+    # and the list it is counted in say different things about the same job.
+    if job.stage_override is not None:
+        return False
     if job.status in _MISSING_DOCS_EXCLUDED_STATUSES:
         return False
     return bool(_missing_mandatory_documents(db, job))
@@ -866,7 +872,15 @@ def _missing_documents_sql_candidates(query, bucket: str | None = None):
     cannot be expressed as a single SQL predicate (it needs each job's own template's documents
     and its own uploaded files), so this only ever narrows the candidates that check then runs
     against in Python, rather than scanning the whole table."""
-    query = query.filter(Job.gk2_status.is_(None), Job.status.notin_(_MISSING_DOCS_EXCLUDED_STATUSES))
+    query = query.filter(
+        Job.gk2_status.is_(None),
+        # Same exclusion as _is_missing_documents' own stage_override check - a job still
+        # being filled from its email cannot be "missing" anything yet. Narrowing it here
+        # too keeps this cheap pass and the Python check from disagreeing about which jobs
+        # are even candidates.
+        Job.stage_override.is_(None),
+        Job.status.notin_(_MISSING_DOCS_EXCLUDED_STATUSES),
+    )
     if bucket:
         bounds = _bucket_bounds(bucket)
         if bounds:
@@ -918,7 +932,21 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     # or whatever its last real stage was, with nothing anywhere saying a required document was
     # actually gone. A job that is genuinely finished, failed, flagged a duplicate, or already
     # mid-GK2 keeps its own real word regardless - this never overrides those.
-    if job.gk2_status is None and job.status not in (
+    #
+    # ...and never while the job is still BEING filled. A mail-created job is committed
+    # before its attachments are classified into slots (the email puller needs the job to
+    # exist first, and OCR on a six-page pre-alert is not instant), so for those seconds it
+    # is a real, visible job with no documents on it yet. This check then called it "Missing
+    # Documents", and operators watched every freshly pulled job appear under Missing
+    # Documents and then move to New Jobs a moment later - which reads as the system losing
+    # paperwork and finding it again.
+    #
+    # stage_override is how the puller says so out loud ("Document Classifying"). An explicit
+    # statement about where a job IS outranks a verdict derived from slots that nobody has
+    # had the chance to fill. It is cleared the moment classification finishes, and this
+    # check applies normally from then on - including the case the comment above describes,
+    # a document removed after the fact, because nothing sets an override for that.
+    if job.gk2_status is None and job.stage_override is None and job.status not in (
         "processing", "possible_duplicate", "failed", "completed",
     ) and _missing_mandatory_documents(db, job):
         return "Missing Documents"
