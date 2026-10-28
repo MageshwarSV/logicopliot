@@ -5063,6 +5063,10 @@ function InsuranceModeField({
  *
  * When `other` has nothing for this line there is nothing to pick between, so the caller
  * renders `primary`'s own box alone and skips this entirely. */
+/** A CTH (Customs Tariff Heading) is an eight-digit code. Not "up to eight" - exactly
+ *  eight, which is why a shorter one is flagged rather than accepted as a different code. */
+const CTH_LENGTH = 8;
+
 function DualSourcePicker({
   primary,
   other,
@@ -5236,6 +5240,12 @@ function DualSourcePicker({
     (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
   );
 
+  // Eight digits, and only eight. A CTH shorter than that is an incomplete tariff heading,
+  // not a different one - found live on JOB-3151A3, where "1231342" (seven) had been typed
+  // and then carried onto a second product line before anything noticed.
+  const cthIncomplete =
+    primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
+
   /** Saving a CTH, and carrying it to the other product lines.
    *
    * An invoice's lines are usually all the same commodity, so the CTH is usually the same
@@ -5296,7 +5306,18 @@ function DualSourcePicker({
           type="text"
           value={primaryDraft}
           readOnly={readOnly}
-          onChange={(e) => setPrimaryDraft(e.target.value)}
+          // A CTH is exactly eight digits. Anything else is not a tariff heading, so the
+          // field refuses it rather than accepting it and failing later at the ERP - where
+          // the operator has moved on and no longer has the invoice in front of them.
+          //
+          // Filtered on the way IN rather than validated on the way out: a paste from a
+          // spreadsheet routinely carries "8482 4000 90" or "8482400090.0", and silently
+          // keeping the digits is what the operator meant every time.
+          inputMode="numeric"
+          maxLength={CTH_LENGTH}
+          onChange={(e) =>
+            setPrimaryDraft(e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH))
+          }
           onBlur={commitCth}
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -5322,6 +5343,11 @@ function DualSourcePicker({
             has nothing. Always shown, including when the document gave nothing, because
             "the document has none either" is the thing an operator needs to know before
             typing one in by hand. */}
+        {cthIncomplete && (
+          <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            {primaryDraft.length} of {CTH_LENGTH} digits — a CTH is {CTH_LENGTH} digits
+          </p>
+        )}
         <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
           (Document CTH :{" "}
           {otherValue ? (
