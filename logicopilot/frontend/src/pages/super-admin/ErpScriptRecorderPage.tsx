@@ -118,6 +118,7 @@ const ACTIONS = [
   "wait_for", "wait_gone", "wait_full_load",
   "hover", "send_keys", "check", "radio", "clear", "dialog",
   "pick_date", "upload", "row_action", "double_click", "scroll",
+  "manual_entry",
 ];
 
 /** One press of ▲ / ▼. Just under a screen, so a couple of rows stay visible across the
@@ -189,6 +190,15 @@ export function ErpScriptRecorderPage() {
   /** Raw textarea text for the dropdown choices, one per line or comma-separated - parsed in
    *  ensureManualField. Ignored when manualInputType is "text". */
   const [manualOptions, setManualOptions] = useState("");
+  // Same Manual Entry mini-form, for retroactively turning an ALREADY-recorded step's Action
+  // into "manual_entry" from the edit panel below - kept separate from the live-popup state
+  // above them, since the two can be open on different occasions and must never show stale
+  // values left over from the other.
+  const [editManualLabel, setEditManualLabel] = useState("");
+  const [editManualScreen, setEditManualScreen] = useState("Additional Details");
+  const [editManualInputType, setEditManualInputType] = useState<"text" | "dropdown">("text");
+  const [editManualOptions, setEditManualOptions] = useState("");
+  const [editManualExample, setEditManualExample] = useState("");
   // "Pick data": read a value/text/document OUT of the ERP and show it to the operator.
   const [pickLabel, setPickLabel] = useState("");
   const [pickKind, setPickKind] = useState<"value" | "text" | "document">("value");
@@ -1501,6 +1511,26 @@ export function ErpScriptRecorderPage() {
     setSteps((arr) => arr.map((st, j) => (j === index ? { ...st, ...patch } : st)));
   }
 
+  /** Editing an already-recorded step's Action to "manual_entry": creates (or reuses) the
+   *  named field exactly like the live-recording popup does, then binds this step to it -
+   *  the step's own already-recorded selector is left exactly as it was, only field_label
+   *  changes, so playback still targets the same real control it was recorded against. */
+  async function confirmEditManualEntry(index: number) {
+    const label = editManualLabel.trim();
+    if (!label) { setError("Name this field — it's what the operator will see."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      if (!(await ensureManualField(label, editManualExample, editManualScreen, editManualOptions))) return;
+      patchStep(index, { field_label: label });
+      setStatus(`"${label}" is now on ${editManualScreen} — bound to this step.`);
+      setEditManualLabel(""); setEditManualExample("");
+      setEditManualScreen("Additional Details"); setEditManualInputType("text"); setEditManualOptions("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** Move a step to a new position. Order is the script, so this is a real edit. */
   function moveStep(arr: ErpStep[], from: number, to: number): ErpStep[] {
     if (to < 0 || to >= arr.length) return arr;
@@ -2751,20 +2781,82 @@ export function ErpScriptRecorderPage() {
                     onChange={(e) => patchStep(i, { selector: e.target.value })}
                     placeholder="#txtInvoiceNo"
                   />
-                  <Input
-                    label={s.action === "get_text" ? "Pattern (regex, optional)" : "Value"}
-                    value={s.value ?? ""}
-                    onChange={(e) => patchStep(i, { value: e.target.value })}
-                    placeholder={s.action === "send_keys" ? "Tab+++Enter" : "text, or leave empty"}
-                  />
-                  <Select
-                    label="Or map a data field"
-                    value={s.field_label ?? ""}
-                    onChange={(e) => patchStep(i, { field_label: e.target.value || null })}
-                  >
-                    <option value="">— none (use Value) —</option>
-                    {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
-                  </Select>
+                  {s.action === "manual_entry" ? (
+                    <div className="sm:col-span-2 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/40 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/5">
+                      {s.field_label ? (
+                        <p className="text-xs text-emerald-800 dark:text-emerald-200">
+                          Bound to <span className="font-mono font-semibold">{s.field_label}</span>.
+                          Pick a different Action above to unbind, or fill this in again to bind a
+                          different (or new) field.
+                        </p>
+                      ) : null}
+                      <Input
+                        label="Name this field — what the operator sees"
+                        value={editManualLabel}
+                        onChange={(e) => setEditManualLabel(e.target.value)}
+                        placeholder="e.g. Sales Person Remarks"
+                      />
+                      <Select
+                        label="Screen — where the operator fills this in"
+                        value={editManualScreen}
+                        onChange={(e) => setEditManualScreen(e.target.value)}
+                      >
+                        <option value="Additional Details">Additional Details</option>
+                        {screenNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                      </Select>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <button
+                          type="button"
+                          onClick={() => setEditManualInputType("text")}
+                          className={`rounded-lg border px-2 py-2 text-xs font-medium ${editManualInputType === "text" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                        >
+                          Simple text box
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditManualInputType("dropdown")}
+                          className={`rounded-lg border px-2 py-2 text-xs font-medium ${editManualInputType === "dropdown" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                        >
+                          Dropdown with fixed values
+                        </button>
+                      </div>
+                      {editManualInputType === "dropdown" && (
+                        <textarea
+                          rows={3}
+                          value={editManualOptions}
+                          onChange={(e) => setEditManualOptions(e.target.value)}
+                          placeholder={"Transaction\nDeferred"}
+                          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                        />
+                      )}
+                      <Input
+                        label="Example value (optional — only used if you re-record this step later)"
+                        value={editManualExample}
+                        onChange={(e) => setEditManualExample(e.target.value)}
+                        placeholder="e.g. a realistic sample value"
+                      />
+                      <Button onClick={() => confirmEditManualEntry(i)} isLoading={busy}>
+                        {s.field_label ? "Save" : "Create & bind this field"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Input
+                        label={s.action === "get_text" ? "Pattern (regex, optional)" : "Value"}
+                        value={s.value ?? ""}
+                        onChange={(e) => patchStep(i, { value: e.target.value })}
+                        placeholder={s.action === "send_keys" ? "Tab+++Enter" : "text, or leave empty"}
+                      />
+                      <Select
+                        label="Or map a data field"
+                        value={s.field_label ?? ""}
+                        onChange={(e) => patchStep(i, { field_label: e.target.value || null })}
+                      >
+                        <option value="">— none (use Value) —</option>
+                        {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
+                      </Select>
+                    </>
+                  )}
                   {(s.action === "wait_for" || s.action === "wait_gone" || s.action === "wait_full_load") && (
                     <Input
                       label="Timeout (seconds)"

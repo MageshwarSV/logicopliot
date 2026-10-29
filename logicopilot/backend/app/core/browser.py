@@ -2742,7 +2742,7 @@ def _perform_step(page, step: dict, val: str) -> None:
         # reports "Timeout exceeded", which says nothing useful. For a dropdown we can still
         # find the right control by the option it offers; otherwise say plainly what is wrong.
         alt = (_select_by_option(page, frames, val)
-               if action in ("select", "autocomplete", "fill") else None)
+               if action in ("select", "autocomplete", "fill", "manual_entry") else None)
         if alt:
             raw = _scoped(page, frames, alt)
         else:
@@ -2832,7 +2832,13 @@ def _perform_step(page, step: dict, val: str) -> None:
                         loc.dblclick(timeout=8000, **_click_spot(loc, step))
                 except Exception:  # noqa: BLE001
                     pass
-    elif action == "fill":
+    elif action in ("fill", "manual_entry"):
+        # "manual_entry" (a field the operator typed in by hand, created straight from the ERP
+        # Script Recorder - see CustomField.fixed_options/display_document_id's own comment)
+        # drives whatever real control was recorded exactly like an ordinary "fill" - the ONLY
+        # difference is where the value came from (the operator typed it, not a document), and
+        # that is already fully resolved into `val` before this function is ever called.
+        #
         # Type per-key (not fill) so type-ahead widgets fire their keyup/AJAX and open the
         # suggestion list. If a list appears, commit the fuzzy-best from it (some "plain"
         # fields are really type-aheads that must be SELECTED, not just typed).
@@ -4364,7 +4370,7 @@ class RecorderSession:
             if _present(p, step.get("selector"), step.get("frames") or [], timeout=8000):
                 # If the recorded value field is present but DISABLED, the form has stopped
                 # accepting input — usually because the record already exists → Duplicated.
-                if action in ("fill", "autocomplete", "select") and _element_disabled(p, step.get("selector"), step.get("frames") or []):
+                if action in ("fill", "autocomplete", "select", "manual_entry") and _element_disabled(p, step.get("selector"), step.get("frames") or []):
                     blk = _detect_block(p) or {
                         "outcome": "duplicate",
                         "reason": "The form is locked (fields disabled) — the record already exists.",
@@ -5678,7 +5684,7 @@ def play_steps(
                         # If the recorded value field is present but DISABLED, the form has
                         # stopped accepting input — usually because the record already exists.
                         # Detect it up front (don't waste the budget filling a disabled field).
-                        if action in ("fill", "autocomplete", "select") and _element_disabled(page, sel, frames):
+                        if action in ("fill", "autocomplete", "select", "manual_entry") and _element_disabled(page, sel, frames):
                             blocked = _detect_block(page) or {
                                 "outcome": "duplicate",
                                 "reason": "The form is locked (fields disabled) — the record already exists.",
@@ -5836,7 +5842,7 @@ def play_steps(
                                          frames=step.get("frames") or [])
                         # Value fields: verify the value STAYS (lookups clear unrecognised
                         # values). Re-enter up to 3 times; if it still won't hold → error.
-                        if action in ("fill", "autocomplete", "select"):
+                        if action in ("fill", "autocomplete", "select", "manual_entry"):
                             attempts = 0
                             while not _value_present(page, step, val) and attempts < 3:
                                 perform(step, val)
@@ -5872,7 +5878,7 @@ def play_steps(
                         # recorded after a real save. That is exactly what stranded step 35/36
                         # of JOB-290770: Save logged "ok", nothing had actually been saved, and
                         # the two next recorded elements never appeared.
-                        if action in ("click", "fill", "select", "autocomplete", "submit"):
+                        if action in ("click", "fill", "select", "autocomplete", "submit", "manual_entry"):
                             blocked = check_blocked()
                             if blocked:
                                 log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
@@ -5917,7 +5923,7 @@ def play_steps(
                                 executed.add(i)
                                 if action in ("click", "submit"):
                                     last_click_step["step"] = step
-                                if action in ("click", "fill", "select", "autocomplete", "submit"):
+                                if action in ("click", "fill", "select", "autocomplete", "submit", "manual_entry"):
                                     blocked = check_blocked()
                                     if blocked:
                                         log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
@@ -5960,7 +5966,7 @@ def play_steps(
                                     executed.add(i)
                                     if action in ("click", "submit"):
                                         last_click_step["step"] = step
-                                    if action in ("click", "fill", "select", "autocomplete", "submit"):
+                                    if action in ("click", "fill", "select", "autocomplete", "submit", "manual_entry"):
                                         blocked = check_blocked()
                                         if blocked:
                                             log.append(f"Form locked after step {i + 1} — "
@@ -5990,7 +5996,7 @@ def play_steps(
                             executed.add(i)
                             if action in ("click", "submit"):
                                 last_click_step["step"] = step
-                            if action in ("click", "fill", "select", "autocomplete", "submit"):
+                            if action in ("click", "fill", "select", "autocomplete", "submit", "manual_entry"):
                                 blocked = check_blocked()
                                 if blocked:
                                     log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
