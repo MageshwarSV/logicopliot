@@ -1522,7 +1522,13 @@ export function ErpScriptRecorderPage() {
     setError(null);
     try {
       if (!(await ensureManualField(label, editManualExample, editManualScreen, editManualOptions))) return;
-      patchStep(index, { field_label: label });
+      // A step's own resolve() always prefers a literal `value` over `field_label` when both
+      // are set (see backend/app/core/browser.py) - if this step previously recorded a fixed
+      // literal (picked a real option directly, say), that stale literal would silently keep
+      // winning forever, with the binding below looking set but never actually taking effect.
+      // Found live on JOB-CAC61D's SOFTLINK step: "Destination" stayed bound in the editor,
+      // but the step kept sending "Chennai" (its own leftover literal) on every real run.
+      patchStep(index, { field_label: label, value: null });
       setStatus(`"${label}" is now on ${editManualScreen} — bound to this step.`);
       setEditManualLabel(""); setEditManualExample("");
       setEditManualScreen("Additional Details"); setEditManualInputType("text"); setEditManualOptions("");
@@ -2850,7 +2856,15 @@ export function ErpScriptRecorderPage() {
                       <Select
                         label="Or map a data field"
                         value={s.field_label ?? ""}
-                        onChange={(e) => patchStep(i, { field_label: e.target.value || null })}
+                        onChange={(e) => {
+                          const picked = e.target.value || null;
+                          // resolve() on a real run always prefers a literal `value` over
+                          // field_label when both are set - a step that already carries a
+                          // literal (recorded by picking a real option directly, say) would
+                          // keep sending that literal forever even after being bound to a
+                          // field here, with the binding looking set but never taking effect.
+                          patchStep(i, { field_label: picked, ...(picked ? { value: null } : {}) });
+                        }}
                       >
                         <option value="">— none (use Value) —</option>
                         {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
