@@ -8543,8 +8543,8 @@ def get_composite_field_config(
     from app.models.custom_field import CustomField
     from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
 
-    group = db.get(TemplateGroup, group_id)
-    if group is None or group.tenant_id != scope.tenant_id:
+    group = scoped_query(db, TemplateGroup, scope).filter(TemplateGroup.id == group_id).first()
+    if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     consignee_key = (consignee or "").strip()
     if not consignee_key:
@@ -8595,8 +8595,8 @@ def list_known_consignees(
 ) -> list[str]:
     """Every consignee the Combined Description Configuration screen's own picker can offer -
     every distinct consignee name a real job of this template has ever had."""
-    group = db.get(TemplateGroup, group_id)
-    if group is None or group.tenant_id != scope.tenant_id:
+    group = scoped_query(db, TemplateGroup, scope).filter(TemplateGroup.id == group_id).first()
+    if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     return _known_consignees(db, group_id)
 
@@ -8641,8 +8641,8 @@ def save_composite_field_config(
     from app.models.composite_consignee_default import CompositeFieldConsigneeDefault
     from app.models.custom_field import CustomField
 
-    group = db.get(TemplateGroup, group_id)
-    if group is None or group.tenant_id != scope.tenant_id:
+    group = scoped_query(db, TemplateGroup, scope).filter(TemplateGroup.id == group_id).first()
+    if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     consignee_key = payload.consignee.strip()
     if not consignee_key:
