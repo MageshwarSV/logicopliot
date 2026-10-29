@@ -1725,6 +1725,10 @@ export function JobRunPage() {
   const fixQueue = useMemo(() => {
     const out: { fv: JobFieldValue; where: string }[] = [];
     askFields.forEach((fv) => {
+      // Insurance Rate (%) / Insurance Amount are a pair - only whichever one the operator
+      // picked is ever meant to be filled in. Same exclusion as askPending/manualPending
+      // above; this queue builds its own list straight from askFields and needs it too.
+      if (fv.id === insuranceOtherId) return;
       if (!answered(fv) && fv.ask_operator_required !== false) {
         out.push({ fv, where: "This shipment" });
       }
