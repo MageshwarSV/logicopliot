@@ -4579,7 +4579,19 @@ function ExtractedField({
     }
   };
 
-  const corrected = fv.corrected_value != null && fv.corrected_value !== "";
+  // A hardcoded ERP-entry field (origin "fixed" - CustomField.kind == "hardcoded") is never
+  // read off a document, so there is no reading for the operator to have corrected: typing or
+  // picking its value IS the normal flow and must never be flagged "edited", however often it
+  // is changed. Found live on JOB-E7D0A0, where Bill of Entry Type (A), Duty Payment Method
+  // (T), Destination (Chennai), ERP Consignee Country (INDIA), ERP Quotation Name and
+  // Insurance Rate (1.125) each carried a corrected_value IDENTICAL to its extracted one -
+  // the operator had simply re-picked the value already showing in each dropdown, and all six
+  // lit up. Deliberately NOT "hide it whenever the value did not change": that would still
+  // flag these the moment someone genuinely edits one, which is exactly what must not happen.
+  // Every other field is untouched - a document mark the operator really did correct still
+  // shows the badge, and so does an AI or lookup field (origin "computed"/"reference").
+  const corrected =
+    fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
   return (
     <div id={id} className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
