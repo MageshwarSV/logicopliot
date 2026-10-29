@@ -5700,7 +5700,7 @@ function ExtractionReview({
       const relocated = job.field_values.filter(
         (fv) =>
           fv.row_index == null &&
-          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.id),
+          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id),
       );
       const pool = [...markFields, ...relocated];
       // fv.mandatory, not ask_operator_required - a document-read mark is never an
@@ -5859,7 +5859,8 @@ function ExtractionReview({
     return job.field_values.filter(
       (fv) =>
         fv.row_index == null &&
-        ((wanted && wanted.has(fv.label_name)) || fv.display_document_id === active.id),
+        ((wanted && wanted.has(fv.label_name)) ||
+          fv.display_document_id === active.template_document_id),
     );
   }, [job.field_values, active]);
 
