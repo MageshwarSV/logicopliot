@@ -126,6 +126,11 @@ class CustomFieldOut(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    # A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
+    # exactly these choices instead of free text, and which document's own tab it is grouped
+    # under instead of Additional Details. See CustomField.fixed_options/display_document_id.
+    fixed_options: list[str] | None = None
+    display_document_id: str | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -158,6 +163,10 @@ class CustomFieldCreate(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    # See CustomFieldOut's own comment - a "Manual Entry" field's closed dropdown choices and
+    # which document tab it renders under.
+    fixed_options: list[str] | None = None
+    display_document_id: str | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -194,6 +203,10 @@ class CustomFieldEdit(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    # See CustomFieldOut's own comment - a "Manual Entry" field's closed dropdown choices and
+    # which document tab it renders under.
+    fixed_options: list[str] | None = None
+    display_document_id: str | None = None
 
 
 class DocumentDetailOut(DocumentOut):

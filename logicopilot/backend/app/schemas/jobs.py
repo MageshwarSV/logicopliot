@@ -233,6 +233,13 @@ class JobFieldValueOut(BaseModel):
     # shown on the job screen (product card or Dump Data), only ever written for something
     # else to read later. True only for a custom field; a mark-sourced value is always False.
     hidden_from_capture: bool = False
+    # A "Manual Entry" field (see CustomField.fixed_options's own docstring) - a closed
+    # dropdown of exactly these choices instead of a free-text box. None = free text,
+    # unchanged for every field that predates this.
+    fixed_options: list[str] | None = None
+    # Which document's own tab to group this field under instead of Additional Details -
+    # None (every field that predates this) means Additional Details, today's only behavior.
+    display_document_id: str | None = None
 
 
 class VerificationRow(BaseModel):

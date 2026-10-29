@@ -131,6 +131,12 @@ export interface CustomField {
    *  field's label_name (a string) or a fixed literal value typed straight in
    *  ({"fixed": "<text>"}) - the same text on every line. */
   composite_source_labels?: CompositePiece[] | null;
+  /** A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
+   *  exactly these choices instead of a free-text box. null = free text. */
+  fixed_options?: string[] | null;
+  /** Which document's own tab this field is grouped under on the Job Run capture screen,
+   *  instead of Additional Details. null = Additional Details. */
+  display_document_id?: string | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

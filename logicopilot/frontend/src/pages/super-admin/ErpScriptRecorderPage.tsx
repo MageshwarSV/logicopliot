@@ -144,6 +144,13 @@ export function ErpScriptRecorderPage() {
    *  in a new one, which the recorder previously never saw. */
   const [tabs, setTabs] = useState<erpApi.BrowserTab[]>([]);
   const [multiFields, setMultiFields] = useState<Set<string>>(new Set());
+  /** group_id -> {document name -> document id}, for the "Manual Entry" field's own Screen
+   *  picker - a bound template's own documents, by name, so a new field can be grouped under
+   *  the right tab on EVERY template this script is bound to (see createManualEntryField). */
+  const [groupDocMaps, setGroupDocMaps] = useState<Record<string, Record<string, string>>>({});
+  /** Every bound template's own document names, deduplicated - the Screen dropdown's options,
+   *  alongside the literal "Additional Details" choice. */
+  const [screenNames, setScreenNames] = useState<string[]>([]);
   /** A multi-value field was dropped on an input; ask how its rows should be entered. */
   const [multiDrop, setMultiDrop] = useState<{ label: string; step: ErpStep } | null>(null);
   const [joinWith, setJoinWith] = useState(", ");
@@ -174,6 +181,14 @@ export function ErpScriptRecorderPage() {
    *  has no document to read a sample from, so without one the recorder would type the
    *  field's own name (not a valid value on any real ERP), and the box would never validate. */
   const [manualExample, setManualExample] = useState("");
+  /** Which document's own tab this Manual Entry field shows up under, instead of Additional
+   *  Details - "Additional Details" itself is a real choice here, not a lack of one. */
+  const [manualScreen, setManualScreen] = useState("Additional Details");
+  /** Free text, or a closed dropdown of admin-typed choices - see CustomField.fixed_options. */
+  const [manualInputType, setManualInputType] = useState<"text" | "dropdown">("text");
+  /** Raw textarea text for the dropdown choices, one per line or comma-separated - parsed in
+   *  ensureManualField. Ignored when manualInputType is "text". */
+  const [manualOptions, setManualOptions] = useState("");
   // "Pick data": read a value/text/document OUT of the ERP and show it to the operator.
   const [pickLabel, setPickLabel] = useState("");
   const [pickKind, setPickKind] = useState<"value" | "text" | "document">("value");
@@ -241,6 +256,9 @@ export function ErpScriptRecorderPage() {
   const [searchLiteral, setSearchLiteral] = useState("");
   const [searchManualLabel, setSearchManualLabel] = useState("");
   const [searchManualExample, setSearchManualExample] = useState("");
+  const [searchManualScreen, setSearchManualScreen] = useState("Additional Details");
+  const [searchManualInputType, setSearchManualInputType] = useState<"text" | "dropdown">("text");
+  const [searchManualOptions, setSearchManualOptions] = useState("");
   /** The click just recorded, so a second tap in the same spot can be promoted to a DOUBLE
    *  click. Recording the double directly is not possible: the first tap has already fired
    *  by the time the second arrives, so the step is upgraded in place instead. */
@@ -301,13 +319,20 @@ export function ErpScriptRecorderPage() {
         if (!groups) return;
         const labels = new Set<string>();
         const multi = new Set<string>();
+        const docMaps: Record<string, Record<string, string>> = {};
+        const screens = new Set<string>();
         for (const g of groups) {
           if (!g) continue;
-          for (const d of g.documents ?? [])
+          const docMap: Record<string, string> = {};
+          for (const d of g.documents ?? []) {
+            docMap[d.name] = d.id;
+            screens.add(d.name);
             for (const m of d.marks ?? []) {
               labels.add(m.label_name);
               if (m.is_multi_value) multi.add(m.label_name);
             }
+          }
+          docMaps[g.id] = docMap;
           // CUSTOM fields belong here too. They were left out, so a template could carry sixty
           // of them - Consignment Type, Container No, Cont Type, CustomsHouseCode - and none
           // could be mapped to an ERP input, because you cannot drag a field the panel never
@@ -323,6 +348,8 @@ export function ErpScriptRecorderPage() {
         }
         setFields([...labels]);
         setMultiFields(multi);
+        setGroupDocMaps(docMaps);
+        setScreenNames([...screens]);
         // An Excel-entry template does not type values into boxes - it hands over one file.
         const xl = groups.find((g) => g && (g.entry_mode ?? "fields") === "excel");
         setExcelBook(xl ? ((xl.excel_config?.file_name || "import.xlsx")) : null);
@@ -1078,9 +1105,22 @@ export function ErpScriptRecorderPage() {
 
   /** "Manual Entry": make sure a data field of this name exists (creating it as an ordinary
    *  ask-the-operator field if it doesn't), so the rest of the flow can map to it exactly like
-   *  any other field. Returns false (and sets an error) if it could not be created. */
-  async function ensureManualField(label: string, exampleValue: string): Promise<boolean> {
+   *  any other field. Returns false (and sets an error) if it could not be created.
+   *
+   *  `screen` is "Additional Details" (the only place this ever showed up before) or one of
+   *  this script's own bound templates' document names - resolved per-group below, since the
+   *  same name's own document id differs from one bound template to the next.
+   *
+   *  `optionsText` is the raw dropdown-choices textarea, one per line or comma-separated -
+   *  blank means a plain free-text box, unchanged from how Manual Entry always worked. */
+  async function ensureManualField(
+    label: string, exampleValue: string, screen: string, optionsText: string,
+  ): Promise<boolean> {
     if (fields.includes(label)) return true;
+    const fixedOptions = optionsText
+      .split(/[\n,]+/)
+      .map((o) => o.trim())
+      .filter(Boolean);
     try {
       await Promise.all(
         (script?.template_ids ?? []).map((gid) =>
@@ -1093,6 +1133,9 @@ export function ErpScriptRecorderPage() {
             per_row: false,
             ask_operator_hint: "Typed in for this ERP entry — not read off any document.",
             example_value: exampleValue.trim() || null,
+            fixed_options: fixedOptions.length ? fixedOptions : null,
+            display_document_id:
+              screen === "Additional Details" ? null : groupDocMaps[gid]?.[screen] ?? null,
           }),
         ),
       );
@@ -1180,7 +1223,7 @@ export function ErpScriptRecorderPage() {
           const fieldForDropdown = popMode === "manual" ? manualLabel.trim() : popField;
           if (popMode === "manual") {
             if (!fieldForDropdown) { setError("Name this field — it's what the operator will see."); setBusy(false); return; }
-            if (!(await ensureManualField(fieldForDropdown, manualExample))) { setBusy(false); return; }
+            if (!(await ensureManualField(fieldForDropdown, manualExample, manualScreen, manualOptions))) { setBusy(false); return; }
           } else if (!fieldForDropdown) {
             setError("Pick a data field, or choose a fixed option."); setBusy(false); return;
           }
@@ -1195,7 +1238,10 @@ export function ErpScriptRecorderPage() {
               ? `Mapped ${fieldForDropdown} and selected "${sr.value ?? ""}".`
               : `Mapped ${fieldForDropdown}, but the option could not be selected: ${sr.error ?? "unknown"}`,
           );
-          if (popMode === "manual") { setManualLabel(""); setManualExample(""); }
+          if (popMode === "manual") {
+            setManualLabel(""); setManualExample("");
+            setManualScreen("Additional Details"); setManualInputType("text"); setManualOptions("");
+          }
         }
       } else if (popMode === "literal") {
         const res = await erpApi.recorderType(scriptId, sid, x, y, popLiteral);
@@ -1205,14 +1251,17 @@ export function ErpScriptRecorderPage() {
       } else if (popMode === "manual") {
         const label = manualLabel.trim();
         if (!label) { setError("Name this field — it's what the operator will see."); setBusy(false); return; }
-        if (!(await ensureManualField(label, manualExample))) { setBusy(false); return; }
+        if (!(await ensureManualField(label, manualExample, manualScreen, manualOptions))) { setBusy(false); return; }
         const res = await erpApi.recorderType(scriptId, sid, x, y, label, label);
         absorbDialogs(res.dialogs);
         if (res.screenshot) setShot(res.screenshot);
         pushStep({ action: isTypeahead ? "autocomplete" : "fill", selector: sel, frames, field_label: label, description: desc });
-        setStatus(`"${label}" is now on Additional Details — the operator types it in there before Submit Entry.`);
+        setStatus(`"${label}" is now on ${manualScreen} — the operator types it in there before Submit Entry.`);
         setManualLabel("");
         setManualExample("");
+        setManualScreen("Additional Details");
+        setManualInputType("text");
+        setManualOptions("");
       } else {
         if (!popField) { setError("Pick a data field, or use a fixed value / AI rule."); setBusy(false); return; }
         const res = await erpApi.recorderType(scriptId, sid, x, y, popField, popField);
@@ -1242,7 +1291,7 @@ export function ErpScriptRecorderPage() {
     if (searchPopMode === "manual") {
       const label = searchManualLabel.trim();
       if (!label) { setError("Name this field — it's what the operator will see."); return; }
-      if (!(await ensureManualField(label, searchManualExample))) return;
+      if (!(await ensureManualField(label, searchManualExample, searchManualScreen, searchManualOptions))) return;
       fieldLabel = label;
     } else if (searchPopMode === "literal") {
       if (!searchLiteral.trim()) { setError("Enter the fixed value to search for."); return; }
@@ -1274,6 +1323,7 @@ export function ErpScriptRecorderPage() {
       setBusy(false);
       setSearchClickAction(null);
       setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
+      setSearchManualScreen("Additional Details"); setSearchManualInputType("text"); setSearchManualOptions("");
     }
   }
 
@@ -1884,6 +1934,7 @@ export function ErpScriptRecorderPage() {
                       setSearchClickAction("click");
                       setSearchPopMode(fields.length > 0 ? "field" : "literal");
                       setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
+      setSearchManualScreen("Additional Details"); setSearchManualInputType("text"); setSearchManualOptions("");
                     }}
                     disabled={busy}
                     title="Search & Click: pick which field's value to search for on screen, then click whatever row holds it — for the row a search returns"
@@ -1897,6 +1948,7 @@ export function ErpScriptRecorderPage() {
                       setSearchClickAction("double_click");
                       setSearchPopMode(fields.length > 0 ? "field" : "literal");
                       setSearchField(""); setSearchLiteral(""); setSearchManualLabel(""); setSearchManualExample("");
+      setSearchManualScreen("Additional Details"); setSearchManualInputType("text"); setSearchManualOptions("");
                     }}
                     disabled={busy}
                     title="Search & Double-click: same as Search & Click, but for a grid that only opens a row on a double click"
@@ -3241,6 +3293,44 @@ export function ErpScriptRecorderPage() {
                   placeholder="e.g. Sales Person Remarks"
                   autoFocus
                 />
+                <Select
+                  label="Screen — where the operator fills this in"
+                  value={manualScreen}
+                  onChange={(e) => setManualScreen(e.target.value)}
+                >
+                  <option value="Additional Details">Additional Details</option>
+                  {screenNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                </Select>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setManualInputType("text")}
+                    className={`rounded-lg border px-2 py-2 text-xs font-medium ${manualInputType === "text" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                  >
+                    Simple text box
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualInputType("dropdown")}
+                    className={`rounded-lg border px-2 py-2 text-xs font-medium ${manualInputType === "dropdown" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                  >
+                    Dropdown with fixed values
+                  </button>
+                </div>
+                {manualInputType === "dropdown" && (
+                  <div>
+                    <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Fixed values — one per line (or comma-separated)
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={manualOptions}
+                      onChange={(e) => setManualOptions(e.target.value)}
+                      placeholder={"Transaction\nDeferred"}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                    />
+                  </div>
+                )}
                 <Input
                   label="Example value — typed here now, so the ERP accepts it and recording can continue"
                   value={manualExample}
@@ -3249,10 +3339,14 @@ export function ErpScriptRecorderPage() {
                 />
                 <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
                   There is no data field for this yet — naming it here creates one. On every real
-                  job, the operator will see "{manualLabel.trim() || "…"}" on Additional Details
-                  and type a value in before Submit Entry — that real answer is what lands here,
-                  never the example above. The example is only so this box validates right now,
-                  while you're recording, so the steps after it can be recorded too.
+                  job, the operator will see "{manualLabel.trim() || "…"}" on {manualScreen}
+                  {manualInputType === "dropdown"
+                    ? " as a dropdown with exactly the fixed values above"
+                    : ""}, and{" "}
+                  {manualInputType === "dropdown" ? "pick" : "type"} a value in before Submit
+                  Entry — that real answer is what lands here, never the example above. The
+                  example is only so this box validates right now, while you're recording, so
+                  the steps after it can be recorded too.
                 </p>
               </div>
             ) : popMode === "ai" ? (
@@ -3435,6 +3529,44 @@ export function ErpScriptRecorderPage() {
                 placeholder="e.g. Sales Person Remarks"
                 autoFocus
               />
+              <Select
+                label="Screen — where the operator fills this in"
+                value={searchManualScreen}
+                onChange={(e) => setSearchManualScreen(e.target.value)}
+              >
+                <option value="Additional Details">Additional Details</option>
+                {screenNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </Select>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <button
+                  type="button"
+                  onClick={() => setSearchManualInputType("text")}
+                  className={`rounded-lg border px-2 py-2 text-xs font-medium ${searchManualInputType === "text" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                >
+                  Simple text box
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchManualInputType("dropdown")}
+                  className={`rounded-lg border px-2 py-2 text-xs font-medium ${searchManualInputType === "dropdown" ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+                >
+                  Dropdown with fixed values
+                </button>
+              </div>
+              {searchManualInputType === "dropdown" && (
+                <div>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Fixed values — one per line (or comma-separated)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={searchManualOptions}
+                    onChange={(e) => setSearchManualOptions(e.target.value)}
+                    placeholder={"Transaction\nDeferred"}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                  />
+                </div>
+              )}
               <Input
                 label="Example value — searched for here now, so a result actually shows up"
                 value={searchManualExample}
@@ -3443,8 +3575,9 @@ export function ErpScriptRecorderPage() {
               />
               <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
                 There is no data field for this yet — naming it here creates one. On every real
-                job, the operator types the real value in on Additional Details; that's what
-                gets searched for and clicked then.
+                job, the operator {searchManualInputType === "dropdown" ? "picks" : "types"} the
+                real value in on {searchManualScreen}; that's what gets searched for and clicked
+                then.
               </p>
             </div>
           )}

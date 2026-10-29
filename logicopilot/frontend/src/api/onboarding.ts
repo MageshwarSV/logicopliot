@@ -79,6 +79,10 @@ export async function createCustomField(
     picker_heading?: string | null;
     sync_field_ids?: string[] | null;
     composite_source_labels?: CompositePiece[] | null;
+    /** A "Manual Entry" field's own closed dropdown choices - omit/null for free text. */
+    fixed_options?: string[] | null;
+    /** Which document's own tab to group this field under - omit/null for Additional Details. */
+    display_document_id?: string | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);

@@ -3272,6 +3272,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         for c in cf_rows
     }
     cf_hidden = {c.id: c.hidden_from_capture for c in cf_rows}
+    # A "Manual Entry" field's own closed dropdown choices and which document tab it is
+    # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
+    cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
+    cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3360,6 +3364,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 ),
                 standalone_group_heading=mark_group_heading.get(fv.mark_id),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
+                fixed_options=cf_fixed_options.get(fv.custom_field_id),
+                display_document_id=cf_display_document_id.get(fv.custom_field_id),
             )
         )
 

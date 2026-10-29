@@ -575,6 +575,23 @@ def unlink_custom_field_from_mark(
     db.commit()
 
 
+def _check_display_document_id(db: Session, group_id: str, display_document_id: str | None) -> None:
+    """A Manual Entry field's "which tab does this show under" pick has to be one of THIS
+    group's own documents - a stray id from a different template (or one that's been deleted
+    since) would silently never match any tab the operator actually sees, with nothing saying
+    why the field looks like it vanished into Additional Details."""
+    if not display_document_id:
+        return
+    from app.models.template_document import TemplateDocument
+
+    doc = db.get(TemplateDocument, display_document_id)
+    if doc is None or doc.group_id != group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="That document does not belong to this template.",
+        )
+
+
 @router.post("/template-groups/{group_id}/custom-fields", status_code=status.HTTP_201_CREATED)
 def create_custom_field(
     group_id: str,
@@ -601,6 +618,7 @@ def create_custom_field(
             detail=(f"{payload.kind!r} is not a kind of field. Use one of: "
                     + ", ".join(sorted(CUSTOM_FIELD_KINDS))),
         )
+    _check_display_document_id(db, group_id, payload.display_document_id)
     cf = CustomField(
         tenant_id=group.tenant_id,
         group_id=group_id,
@@ -627,6 +645,8 @@ def create_custom_field(
         picker_heading=payload.picker_heading,
         sync_field_ids=payload.sync_field_ids,
         composite_source_labels=payload.composite_source_labels,
+        fixed_options=payload.fixed_options,
+        display_document_id=payload.display_document_id,
     )
     db.add(cf)
     db.commit()
@@ -679,6 +699,8 @@ def edit_custom_field(
             updates[flag] = flag == "ask_operator_required"
     if "source_document_ids" in updates and updates["source_document_ids"] is None:
         updates["source_document_ids"] = []
+    if "display_document_id" in updates:
+        _check_display_document_id(db, cf.group_id, updates["display_document_id"])
     for field, value in updates.items():
         setattr(cf, field, value)
     new_label = updates.get("label_name")

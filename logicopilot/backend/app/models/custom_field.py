@@ -158,3 +158,17 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # _join_composite_pieces's own docstring.
     composite_separators: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # A "Manual Entry" field created straight from the ERP Script Recorder (see
+    # example_value's own comment above) - the operator sees a closed dropdown of exactly
+    # these choices instead of a free-text box. None (every field before this existed, and
+    # every ordinary ask_operator field) means plain free text, unchanged.
+    fixed_options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Which document's own tab this field is grouped under on the Job Run capture screen,
+    # instead of Additional Details (None = Additional Details, today's only behavior for
+    # every field that predates this). Generalizes what JobRunPage.tsx's own
+    # RELOCATED_FIELD_LABELS_BY_DOC_TYPE constant used to require a code change for, into a
+    # plain per-field setting an admin sets once when creating the field.
+    display_document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("template_documents.id", ondelete="SET NULL"), nullable=True
+    )
+

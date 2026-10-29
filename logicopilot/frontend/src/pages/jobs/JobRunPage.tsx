@@ -3435,7 +3435,11 @@ export function JobRunPage() {
                               reload={load}
                               tone={fv.origin === "computed" ? "computed" : undefined}
                               labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
-                              options={FIELD_SELECT_OPTIONS[fv.label_name]}
+                              options={
+                                fv.fixed_options && fv.fixed_options.length
+                                  ? fv.fixed_options.map((v) => ({ value: v, label: v }))
+                                  : FIELD_SELECT_OPTIONS[fv.label_name]
+                              }
                               defaultValue={defaultValue}
                               hideBlankOption={NO_BLANK_DROPDOWN_OPTION_LABELS.has(fv.label_name)}
                               comboOptions={comboOptions}
@@ -5693,9 +5697,11 @@ function ExtractionReview({
           (!fv.job_document_id && fv.document_name === active.name);
       });
       const relocatedLabels = new Set(RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type] ?? []);
-      const relocated = relocatedLabels.size
-        ? job.field_values.filter((fv) => fv.row_index == null && relocatedLabels.has(fv.label_name))
-        : [];
+      const relocated = job.field_values.filter(
+        (fv) =>
+          fv.row_index == null &&
+          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.id),
+      );
       const pool = [...markFields, ...relocated];
       // fv.mandatory, not ask_operator_required - a document-read mark is never an
       // "ask_operator" item, which silently zeroed ask_operator_required for every one of
@@ -5841,12 +5847,20 @@ function ExtractionReview({
 
   // Custom fields (no mark_id, so `fields` above never picks them up) relocated here from
   // Additional Details for display purposes only - see RELOCATED_FIELD_LABELS_BY_DOC_TYPE.
+  // A field also lands here when its OWN display_document_id names this exact document (a
+  // "Manual Entry" field created with a Screen picked in the ERP Script Recorder) - a real,
+  // per-field, admin-set value rather than a hardcoded label list someone has to code for
+  // per customer. Both checks stay, side by side: the old hardcoded list for every field that
+  // predates this, the new column for every field created with it set.
   const relocatedFields = useMemo(() => {
     if (!active) return [];
     const labels = RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
-    if (!labels || !labels.length) return [];
-    const wanted = new Set(labels);
-    return job.field_values.filter((fv) => fv.row_index == null && wanted.has(fv.label_name));
+    const wanted = labels && labels.length ? new Set(labels) : null;
+    return job.field_values.filter(
+      (fv) =>
+        fv.row_index == null &&
+        ((wanted && wanted.has(fv.label_name)) || fv.display_document_id === active.id),
+    );
   }, [job.field_values, active]);
 
   // Dropdown options for a DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field (e.g. CustomsHouseCode)
@@ -6362,6 +6376,12 @@ function ExtractionReview({
                       ? dynamicReferenceOptions[fv.custom_field_id]
                       : undefined;
                   let options: FieldSelectOption[] | undefined = FIELD_SELECT_OPTIONS[fv.label_name];
+                  // A "Manual Entry" field created as a closed dropdown (see
+                  // CustomField.fixed_options) - a mandatory choice from exactly these values,
+                  // never a reference-backed/history combobox.
+                  if (fv.fixed_options && fv.fixed_options.length) {
+                    options = fv.fixed_options.map((v) => ({ value: v, label: v }));
+                  }
                   if (dynamicRows !== undefined) {
                     const filterFv = job.field_values.find(
                       (x) => x.row_index == null && x.label_name === filterByLabel,

@@ -173,6 +173,12 @@ export interface JobFieldValue {
    *  computed and written on every row exactly as normal, purely for something else to read
    *  later (e.g. an ERP script's own field mapping). See CustomField.hidden_from_capture. */
   hidden_from_capture?: boolean;
+  /** A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
+   *  exactly these choices instead of a free-text box. null = free text. */
+  fixed_options?: string[] | null;
+  /** Which document's own tab this field is grouped under instead of Additional Details.
+   *  null = Additional Details. */
+  display_document_id?: string | null;
 }
 
 export type VerificationStatus = "match" | "mismatch" | "missing" | "review";
