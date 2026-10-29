@@ -34,9 +34,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Tokens live only in httpOnly cookies, invisible to JS — this is the only way
     // the frontend can rehydrate identity after a page reload.
+    //
+    // Suppressed FIRST, for the duration of this one probe. Whether a session exists is a
+    // question only the server can answer, so simply not being logged in makes this 401 -
+    // and the interceptor then tries /auth/refresh, which also 401s, which reads as a
+    // genuine expiry and threw up "Your session has expired" on EVERY load of the login
+    // page by someone who was merely signed out. The refresh attempt itself must stay (that
+    // is what silently restores a session whose access token died while the tab was closed);
+    // only the announcement is wrong here. A real expiry still announces itself through the
+    // in-app 401 path, which is the only place it actually tells the user anything they did
+    // not already know from being sat on the login screen.
+    suppressSessionExpiredNotice();
     authApi
       .fetchMe()
-      .then(setUser)
+      .then((me) => {
+        setUser(me);
+        // There IS a live session, so a later failure is a real expiry worth announcing.
+        resetSessionExpiredNotice();
+      })
       .catch(() => setUser(null))
       .finally(() => setIsLoading(false));
   }, []);

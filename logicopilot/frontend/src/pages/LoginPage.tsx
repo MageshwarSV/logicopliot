@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { useEffect, useState, type FormEvent } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useAuth } from "../auth/useAuth";
 import { ROLE_HOME } from "../auth/roleHome";
@@ -30,6 +30,7 @@ const FEATURES = [
 export function LoginPage() {
   const { user, login, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const rememberedEmail = readRememberedEmail();
   const [email, setEmail] = useState(rememberedEmail);
   const [password, setPassword] = useState("");
@@ -38,7 +39,29 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const sessionExpired = (location.state as { expired?: boolean } | null)?.expired === true;
+  // Read ONCE into local state, because the flag itself is about to be thrown away below.
+  const [sessionExpired] = useState(
+    () => (location.state as { expired?: boolean } | null)?.expired === true,
+  );
+  // A browser restores history.state on a RELOAD, and router state lives there - so the
+  // "expired" flag AuthContext set when the session actually died came back on every F5 of
+  // the login page afterwards, re-announcing an expiry that had already happened once and
+  // been dealt with. Strip it from the history entry as soon as it has been read, keeping
+  // `from` (the page to return to after signing in), which still has to survive the reload.
+  useEffect(() => {
+    if (!sessionExpired) return;
+    const { expired: _read, ...rest } = (location.state ?? {}) as {
+      expired?: boolean;
+      from?: string;
+    };
+    navigate(location.pathname, {
+      replace: true,
+      state: Object.keys(rest).length > 0 ? rest : null,
+    });
+    // Once, on mount: `navigate` rewrites location.state, and re-running on that would
+    // simply undo its own work every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionExpired]);
 
   if (user) {
     const redirectTo = (location.state as { from?: string } | null)?.from ?? ROLE_HOME[user.role];
