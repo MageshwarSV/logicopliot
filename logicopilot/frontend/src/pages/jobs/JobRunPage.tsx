@@ -1672,11 +1672,19 @@ export function JobRunPage() {
   const answered = (fv: JobFieldValue) =>
     (fv.corrected_value ?? "").trim() !== "" ||
     (fv.self_filled === true && (fv.value ?? "").trim() !== "");
+  // Insurance Rate (%) / Insurance Amount are a pair - only whichever one the operator picked
+  // (InsuranceModeField) is ever meant to be filled in; the Submit Entry gate must not also
+  // demand an answer for the untouched other half. Before a mode is picked at all, both still
+  // count as pending (there is genuinely no value anywhere yet) - this only excludes the ONE
+  // the operator has explicitly ruled out by picking the other.
+  const insuranceOtherId = insuranceMode === "amount" ? insurancePercentageFv?.id
+    : insuranceMode === "percentage" ? insuranceAmountFv?.id
+    : undefined;
   const askPending = askFields.filter(
-    (fv) => !answered(fv) && fv.ask_operator_required !== false,
+    (fv) => fv.id !== insuranceOtherId && !answered(fv) && fv.ask_operator_required !== false,
   );
   const manualPending = manualFields.filter(
-    (fv) => !answered(fv) && fv.ask_operator_required !== false,
+    (fv) => fv.id !== insuranceOtherId && !answered(fv) && fv.ask_operator_required !== false,
   );
   // Fields asked once per LINE ITEM (the CTH on each product line). They must be shown
   // numbered and next to the product they belong to, or the operator cannot tell which
@@ -5702,7 +5710,16 @@ function ExtractionReview({
           fv.row_index == null &&
           (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id),
       );
-      const pool = [...markFields, ...relocated];
+      // Insurance Rate (%) / Insurance Amount are a pair - only whichever one the operator
+      // picked (see the check just above, which already returned early if nothing was picked
+      // yet) is ever meant to be filled in. Left in the pool, the OTHER one - still blank,
+      // still mandatory - got counted as a SECOND missing field right after the one actually
+      // being asked for was satisfied: picking a mode and filling it in still refused to
+      // progress, blaming the untouched other half.
+      const insuranceOtherId = insuranceMode === "amount" ? insurancePercentageFv?.id
+        : insuranceMode === "percentage" ? insuranceAmountFv?.id
+        : undefined;
+      const pool = [...markFields, ...relocated].filter((fv) => fv.id !== insuranceOtherId);
       // fv.mandatory, not ask_operator_required - a document-read mark is never an
       // "ask_operator" item, which silently zeroed ask_operator_required for every one of
       // them regardless of its own real mandatory setting (found live: every Bill of Lading

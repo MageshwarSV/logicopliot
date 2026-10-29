@@ -4547,6 +4547,30 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             if not answered:
                 unanswered_rows.append(f"{per_row_ids[fv.custom_field_id]} (line {fv.row_index})")
 
+    # Insurance Rate (%) / Insurance Amount are a pair (see InsuranceModeField in
+    # JobRunPage.tsx, and entry_values_and_rows's own identical exclusivity enforcement) -
+    # only whichever one "insurance_mode" names is ever meant to be filled in. Left
+    # unexcluded here, the untouched OTHER half - still ask_operator_required, never
+    # corrected - permanently blocked Submit Entry even after the operator picked a mode
+    # and filled in exactly the one field that mode calls for. Before a mode is picked at
+    # all (blank), both correctly stay required - there is genuinely no value anywhere yet.
+    insurance_mode_fv = (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.label_name == "insurance_mode",
+                JobFieldValue.row_index.is_(None))
+        .first()
+    )
+    insurance_mode = (
+        (insurance_mode_fv.corrected_value if insurance_mode_fv else None)
+        or (insurance_mode_fv.extracted_value if insurance_mode_fv else None)
+        or ""
+    ).strip()
+    if insurance_mode in ("percentage", "amount"):
+        other_label = "insurance_amount" if insurance_mode == "percentage" else "insurance_percentage"
+        other_id = next((cid for cid, label in asked_customs.items() if label == other_label), None)
+        if other_id is not None:
+            answered_customs.add(other_id)
+
     return (
         [label for mid, label in asked_marks.items() if mid not in answered_marks]
         + [label for cid, label in asked_customs.items() if cid not in answered_customs]
