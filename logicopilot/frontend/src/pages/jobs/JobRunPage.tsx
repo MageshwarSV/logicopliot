@@ -1744,8 +1744,15 @@ export function JobRunPage() {
       });
     });
     return out;
+    // insuranceOtherId has to be a real dependency, not just read from closure: insuranceMode
+    // (which it's derived from) is set by a SEPARATE useEffect that only fires one render
+    // AFTER job.field_values changes - so right after the operator picks a mode and the page
+    // reloads, this memo would otherwise recompute once using the previous, not-yet-updated
+    // insuranceMode, then never recompute again (nothing else changes job.field_values), stuck
+    // demanding the other field forever. Found live on JOB-CF6A66: picking percentage and
+    // saving it still asked for insurance_amount on every subsequent look at this exact queue.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job?.field_values]);
+  }, [job?.field_values, insuranceOtherId]);
 
   const unresolved = job?.verifications.filter((v) => v.status !== "match" && !v.accepted).length ?? 0;
 
