@@ -521,6 +521,43 @@ def _document_name(doc_type: str, slot_name: str, text: str, ext: str) -> str:
 # working day.
 CLAIM_STALE_MINUTES = 30
 
+# Well under CLAIM_STALE_MINUTES, so a message that is genuinely still being worked never
+# goes stale purely from taking a while. Found live: the SAME email turned into two separate
+# jobs 8.5 minutes apart - its classification ran into heavy OpenAI rate-limit retries (see
+# create_chat_completion_with_retry's own pool-wide retry/failover), which alone can push one
+# message's processing past 30 minutes with nothing actually wrong, and a second poll saw the
+# now-30-minutes-old claim, assumed the first run had crashed, and started a fresh one. Both
+# eventually finished and each wrote its own job.
+_CLAIM_HEARTBEAT_SECONDS = 180
+
+
+def _start_claim_heartbeat(message_id: str) -> None:
+    """Keeps a message's claim looking fresh for as long as _process_one_message is genuinely
+    still working it - self-terminating, not externally signalled: every beat re-reads this
+    message's own verdict, and stops the moment it is anything other than "working" (meaning
+    _record() already wrote the real outcome - success or failure, it no longer matters). A
+    run that actually crashes simply stops beating, and CLAIM_STALE_MINUTES of real silence
+    still recovers it exactly as before - this only protects a run that is slow, not dead."""
+    def _beat() -> None:
+        from app.db.session import SessionLocal
+
+        while True:
+            time.sleep(_CLAIM_HEARTBEAT_SECONDS)
+            own = SessionLocal()
+            try:
+                row = own.query(EmailSeen).filter(EmailSeen.message_id == message_id).one_or_none()
+                if row is None or row.verdict != "working":
+                    return
+                row.updated_at = datetime.now(timezone.utc)
+                own.commit()
+            except Exception:  # noqa: BLE001
+                return
+            finally:
+                own.close()
+
+    threading.Thread(target=_beat, daemon=True, name="claim-heartbeat").start()
+
+
 _pull_lock = threading.Lock()
 
 
@@ -1060,6 +1097,9 @@ def _process_one_message(
     if not claimed:
         return {"from": sender, "subject": subject, "matched": None,
                 "reason": why_not, "skipped_by_log": True}
+    # Keep this claim from looking stale to every OTHER worker/poll while this one is
+    # genuinely still working it - see _start_claim_heartbeat's own docstring.
+    _start_claim_heartbeat(mid)
 
     # ---- attachments, including whatever is inside a .zip
     import io
