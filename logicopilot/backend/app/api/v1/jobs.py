@@ -4045,6 +4045,12 @@ def evaluate_job_ruling(
 
     all_names, uploaded, docs_text = _ruling_context(db, job, group)
     result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, answer or job.ruling_answer)
+    # Retried once, fresh, before actually asking the operator a question - see
+    # _check_ruling_before_submit's identical retry for why (a transient AI-call hiccup, or
+    # simply re-reading a document correction the operator just saved).
+    if result.get("needs_input"):
+        all_names, uploaded, docs_text = _ruling_context(db, job, group)
+        result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, answer or job.ruling_answer)
     result["has_ruling"] = True
     result["all_documents"] = all_names
     result["uploaded_documents"] = uploaded
@@ -4078,6 +4084,18 @@ def _check_ruling_before_submit(db: Session, job: Job, group: TemplateGroup) -> 
     try:
         all_names, uploaded, docs_text = _ruling_context(db, job, group)
         result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, job.ruling_answer)
+        # A "no real incoterm found" is retried once, fresh, before actually blocking
+        # submission - two things this catches at once: a genuinely transient AI-call hiccup
+        # (found live: the exact same documents, re-evaluated moments later with nothing
+        # changed, correctly found the incoterm the first call missed), and an operator who
+        # corrected the Invoice's own incoterm field (TOI) and pressed Submit again without
+        # first pressing "Check required documents" separately - _ruling_context rebuilds its
+        # evidence from the CURRENT database state every time, so a fresh retry already sees
+        # that correction without needing to know which field name a given template's own
+        # ruling prompt happens to care about.
+        if result.get("needs_input"):
+            all_names, uploaded, docs_text = _ruling_context(db, job, group)
+            result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, job.ruling_answer)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ruling evaluation failed at submission for job %s", job.id)
         raise HTTPException(
