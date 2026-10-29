@@ -17,11 +17,21 @@ class Settings(BaseSettings):
     # one good for another refresh_token_expire_minutes from THAT moment - so the clock only
     # ever resets on real activity, never on a timer. Previously 15 minutes / 7 DAYS: the
     # refresh token's own week-long window (not the access token's) was the real idle cap, so a
-    # user who touched the app even once a week never got logged out at all. Both now share one
-    # number so "the session timeout" is one clear, consistent figure across the app, per
-    # request: log out after 60 minutes of no activity (raised from 30 by a later request), not
-    # a moment sooner while active.
-    access_token_expire_minutes: int = 60
+    # user who touched the app even once a week never got logged out at all. The figure that
+    # answers "what is the session timeout" is the REFRESH one, per request: log out after 60
+    # minutes of no activity (raised from 30 by a later request), not a moment sooner while
+    # active.
+    #
+    # These two MUST NOT be equal, and the access token must expire comfortably FIRST. A
+    # refresh is only ever ATTEMPTED once the access token has already expired (apiClient only
+    # calls /auth/refresh on a 401), so if the refresh token dies at the same instant there is
+    # never a live one left to rotate with: the sliding window cannot slide, and "60 minutes
+    # idle" silently becomes a hard 60-minute cap from login that no amount of activity
+    # extends. Setting both to 30 (529e422, 22 Oct) and then both to 60 (b176da7, 23 Oct) did
+    # exactly that - rotations across the whole UAT database fell from ~40/day to ZERO from
+    # 23 Oct onward, and 4S Logistics' operators were thrown back to the login screen on the
+    # hour, every hour, mid-job, with "Your session has expired".
+    access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 60
 
     cors_origins: str = "http://localhost:30300"

@@ -1,6 +1,21 @@
+from datetime import datetime, timedelta, timezone
+
+from app.api.v1.auth import _ROTATION_GRACE_SECONDS
 from app.core.config import get_settings
+from app.models.refresh_token import RefreshToken
 from app.models.user import OPERATOR, SUPER_ADMIN
 from tests.conftest import DEFAULT_PASSWORD, login, make_tenant, make_user
+
+
+def _age_revoked_tokens_past_the_grace_window(db_session) -> None:
+    """Make every already-revoked token look rotated LONG ago, so a replay of one reads as a
+    genuine replay rather than as two tabs refreshing at the same moment (see
+    _ROTATION_GRACE_SECONDS in app/api/v1/auth.py)."""
+    long_ago = datetime.now(timezone.utc) - timedelta(seconds=_ROTATION_GRACE_SECONDS + 5)
+    for row in db_session.query(RefreshToken).filter(RefreshToken.revoked_at.isnot(None)).all():
+        row.revoked_at = long_ago
+        db_session.add(row)
+    db_session.commit()
 
 
 def test_login_success(client, db_session):
@@ -76,6 +91,7 @@ def test_refresh_rotates_token_and_replayed_old_token_is_rejected(client, db_ses
 
     # Replay the OLD refresh token (simulating a stolen/reused token) — must be rejected,
     # and per the theft-detection design, the whole session family is now dead too.
+    _age_revoked_tokens_past_the_grace_window(db_session)
     client.cookies.set("refresh_token", old_refresh_cookie)
     replay_response = client.post("/api/v1/auth/refresh")
     assert replay_response.status_code == 401
@@ -86,26 +102,54 @@ def test_refresh_rotates_token_and_replayed_old_token_is_rejected(client, db_ses
     assert after_theft_response.status_code == 401
 
 
-def test_session_timeout_is_60_minutes_and_applied_to_both_cookies(client, db_session):
-    """The real inactivity timeout is the REFRESH token's own lifetime, not the access token's -
-    see config.py's own comment on access_token_expire_minutes/refresh_token_expire_minutes for
-    why (refresh rotates on every use, so only real activity ever resets the clock). Both must
-    carry the same 60-minute figure (raised from 30 by a later request) for "the session
-    timeout" to mean one consistent thing, and both cookies' own Max-Age must actually reflect
-    it - a config value nothing reads from would pass the settings assertion alone while the
-    real cookies stayed on the old numbers."""
+def test_two_tabs_refreshing_at_the_same_moment_does_not_kill_the_session(client, db_session):
+    """This app opens each job in its OWN TAB, so an operator normally has several open at
+    once. They share one cookie jar, so when the access token expires they all notice together
+    and each posts /auth/refresh with the SAME refresh token: the first rotates it, the rest
+    land milliseconds later to find it revoked. Reading that as theft revoked every session the
+    user had - 11 tokens killed in one instant on 15 Oct in the UAT table, 10 on 13 Oct - and
+    threw the operator out of every tab mid-job."""
+    make_user(db_session, role=SUPER_ADMIN, email="sa-tabs@example.com")
+    login(client, "sa-tabs@example.com")
+    in_flight_cookie = client.cookies.get("refresh_token")
+
+    first_tab = client.post("/api/v1/auth/refresh")
+    assert first_tab.status_code == 200
+    rotated_cookie = client.cookies.get("refresh_token")
+
+    # The second tab's request was already in flight carrying the pre-rotation cookie.
+    client.cookies.set("refresh_token", in_flight_cookie)
+    second_tab = client.post("/api/v1/auth/refresh")
+    assert second_tab.status_code == 200
+
+    # ...and the first tab's own freshly-rotated token is still alive: nothing was revoked
+    # behind its back, which is the part that used to log every other tab out.
+    client.cookies.set("refresh_token", rotated_cookie)
+    assert client.post("/api/v1/auth/refresh").status_code == 200
+
+
+def test_the_access_token_expires_first_so_the_idle_window_can_actually_slide(client, db_session):
+    """The inactivity timeout is the REFRESH token's lifetime, and it only resets when a
+    rotation happens. A rotation only happens when the ACCESS token has expired and the
+    interceptor calls /auth/refresh - so if both expired together there would never be a live
+    refresh token left to rotate with, and "60 minutes idle" would silently become a hard
+    60-minute cap from login. That is exactly what shipped on 22-23 Oct: rotations across the
+    whole UAT database fell to ZERO and operators were logged out on the hour, every hour.
+    The ordering, not either number on its own, is what makes the window slide."""
     settings = get_settings()
-    assert settings.access_token_expire_minutes == 60
     assert settings.refresh_token_expire_minutes == 60
+    assert settings.access_token_expire_minutes < settings.refresh_token_expire_minutes
 
     make_user(db_session, role=SUPER_ADMIN, email="sa-timeout@example.com")
     response = login(client, "sa-timeout@example.com")
     assert response.status_code == 200
 
+    # A config value nothing reads from would pass the assertions above while the real cookies
+    # stayed on the old numbers, so check what the browser is actually handed.
     set_cookie_headers = response.headers.get_list("set-cookie")
     access_header = next(h for h in set_cookie_headers if h.startswith("access_token="))
     refresh_header = next(h for h in set_cookie_headers if h.startswith("refresh_token="))
-    assert "Max-Age=3600" in access_header
+    assert f"Max-Age={settings.access_token_expire_minutes * 60}" in access_header
     assert "Max-Age=3600" in refresh_header
 
 
