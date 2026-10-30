@@ -180,6 +180,16 @@ def rerun_live(job_id: str, db: Session = Depends(get_db), _=Depends(require_rol
                 return
             persist_run_outcome(own, j, own.get(ErpScript, script_id_), result,
                                 operator_id=j.assigned_operator_id)
+            own.refresh(j)
+            if j.status == "failed":
+                # Same reasoning complete_job and _run_gk2_submission already apply to their
+                # own failures: found live (JOB-E7D0A0) via an Entry Browser rerun specifically -
+                # this left job.status at "failed" with gk2_status untouched (still null), so
+                # the operator's own page showed a disabled "Final Submit" with no working retry
+                # button anywhere. A Super-Admin-driven rerun must not strand the job in a worse
+                # state for the operator than before it was tried.
+                j.status = "extracted"
+                own.commit()
         finally:
             own.close()
 
@@ -392,7 +402,10 @@ def playback_stop(session_id: str, job_id: str | None = None,
     if job_id:
         job = db.get(Job, job_id)
         if job is not None and job.status == "processing":
-            job.status = "failed"
+            # "extracted", not "failed" - same reasoning as _record's own fix below: this must
+            # stay retryable from the operator's own page (Final Submit/Submit Entry), not a
+            # disabled dead end just because a Super Admin pressed Stop from the Entry Browser.
+            job.status = "extracted"
             job.erp_status = "stopped"
             job.erp_reason = ("Stopped by hand from the Entry Browser. Check the ERP before "
                               "re-running - the steps already done were really done.")
