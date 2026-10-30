@@ -5000,8 +5000,21 @@ def complete_job(
             db, job, script, result,
             operator_id=user.id if user.role == OPERATOR else job.assigned_operator_id,
         )
+        db.refresh(job)
+        if job.status == "failed":
+            # Not a dead end - same reasoning _run_gk2_submission already applies to its own
+            # failures: a run that can be fixed by correcting a value and pressing Submit again
+            # must not strand the job behind a disabled button. Found live (JOB-AF01C6): this
+            # endpoint left job.status at "failed" with gk2_status untouched (still null), so
+            # "Final Submit for Approval" rendered DISABLED (it requires status=="extracted")
+            # and "Retry & Proceed" never rendered at all (it requires gk2_status to be set) -
+            # no working button anywhere on the page. Standing it back on "extracted" is exactly
+            # what the operator-facing copy already promises ("fix it, then Run failed job
+            # again") and reuses that same button instead of needing a new one.
+            job.status = "extracted"
+            db.commit()
+            db.refresh(job)
 
-    db.refresh(job)
     detail = _build_detail(db, job)
     for k, v in erp.items():
         setattr(detail, k, v)

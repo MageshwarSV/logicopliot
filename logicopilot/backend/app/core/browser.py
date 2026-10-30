@@ -2513,6 +2513,12 @@ _VALIDATION_SELECTORS = (
     ".invalid-feedback", "[class*=Mui-error]", "[class*=MuiFormHelperText-root][class*=error]",
     ".ant-form-item-explain-error", "[class*=errorText]", "[class*=errorMessage]",
     "[class*=Toastify__toast--error]", "[data-testid*=error]", "[aria-invalid=true] ~ *",
+    # A rejected import/upload (SOFTLINK's own "Invalid Data Found: Sheet/Field/Description"
+    # popup is exactly this shape) is a modal dialog, not an inline validator - without these
+    # it reads to the engine as "the form just locked up" instead of a concrete, nameable
+    # problem the operator could fix in seconds.
+    "[role=dialog]", ".modal.show .modal-body", ".modal-dialog .modal-body",
+    ".ui-dialog-content", ".swal2-popup", ".swal2-html-container", ".sweet-alert",
 )
 
 
@@ -3047,7 +3053,9 @@ def _detect_block(page) -> dict | None:
             return None  # AI says the page is fine — not a duplicate/block
         return {
             "outcome": outcome,
-            "reason": verdict.get("reason") or "The form locked after entering data — the entry can't be submitted.",
+            "reason": verdict.get("reason")
+                      or "The ERP stopped accepting data on this screen. Check the details "
+                         "below against what's on the ERP, then press Retry.",
         }
     return None
 
@@ -5049,19 +5057,21 @@ def play_steps(
             from app.core.llm import ai_choose_action, ai_classify_outcome, resolve_ai_value
 
             def check_blocked() -> dict | None:
-                """Duplicate/blocked detection, plus ASP.NET-style validation messages.
+                """ASP.NET-style validation messages (and modal popups like SOFTLINK's own
+                "Invalid Data Found" dialog) first, generic AI duplicate/blocked guessing second.
 
-                A WebForms validator writes its complaint into the page rather than raising a
-                dialog, so without this a run carries on past a field the ERP just rejected and
-                only fails later, somewhere confusing."""
-                blk = _detect_block(page)
-                if blk:
-                    return blk
+                A WebForms validator - or a rejected-import popup - writes its complaint into
+                the page rather than raising a browser dialog, so without this a run carries on
+                past a field the ERP just rejected and only fails later, somewhere confusing.
+                Checked BEFORE the generic AI guess on purpose: a concrete message naming the
+                actual problem is always more useful - and more trustworthy - to show an
+                operator than an AI's guess that the record is a duplicate."""
                 errs = _validation_errors(page)
                 if errs:
                     return {"outcome": "validation",
-                            "reason": "The ERP rejected the entry: " + " | ".join(errs[:3])}
-                return None
+                            "reason": "The ERP didn't accept this entry: " + "; ".join(errs[:3])
+                                      + ". Fix that, then press Retry."}
+                return _detect_block(page)
 
             _ai_takeover_count: dict = {"n": 0}
 
@@ -6194,7 +6204,23 @@ def play_steps(
                     reason = ("Stopped by hand before it finished. Nothing after the last step "
                               "below was entered - check the ERP before re-running.")
                 elif aborted:
-                    reason = "The web-entry got stuck too long and could not be completed."
+                    # Before blaming a generic timeout, check whether the ERP is actually
+                    # showing a concrete problem right now - a validation popup (SOFTLINK's own
+                    # "Invalid Data Found: Sheet/Field/Description" dialog is exactly this
+                    # shape) is very often WHY the next recorded step never found what it was
+                    # looking for and the run sat there until the budget ran out. That is a
+                    # real, fixable cause - far more useful to an operator than "it got stuck."
+                    try:
+                        stuck_errors = _validation_errors(page)
+                    except Exception:  # noqa: BLE001
+                        stuck_errors = []
+                    if stuck_errors:
+                        reason = ("The ERP didn't accept this entry: " + "; ".join(stuck_errors[:3])
+                                  + ". Fix that, then press Retry.")
+                    else:
+                        reason = ("The web-entry got stuck and couldn't finish. Nothing on "
+                                  "screen said why - check the screenshot below against the "
+                                  "ERP, then press Retry.")
                 elif success_check_failed is not None:
                     name = (success_check_failed.get("description")
                             or success_check_failed.get("field_label")

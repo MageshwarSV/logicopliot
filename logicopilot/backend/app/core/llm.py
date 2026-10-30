@@ -326,11 +326,23 @@ def ai_classify_outcome(
     """When an ERP form locks all its fields after a value is entered, decide WHAT the
     situation is by reading the page (no hardcoded field names or messages). Returns
     {"outcome": "duplicate" | "blocked" | "error" | "unknown", "reason": <short>}.
-    'duplicate' = the record already exists; 'blocked' = the form is locked for another
-    reason; 'error' = an error is shown."""
+    'duplicate' = the page text itself says this record already exists/was already filed;
+    'error' = a validation/error popup or message is visible naming what's wrong; 'blocked' =
+    the form is locked for some other, unnamed reason.
+
+    The `reason` is shown to a customs-operations operator, not a developer: plain words, no
+    field IDs or stack traces, and it should name the ACTUAL specific thing on screen (which
+    field, which sheet, what it says is wrong) whenever the page text has one - never default
+    to "duplicate" just because fields locked. A locked form with no visible explanation is a
+    weaker, generic signal than an actual message on screen, and must not be dressed up as a
+    confident diagnosis."""
     settings = get_settings()
     if not settings.openai_api_key:
-        return {"outcome": "blocked", "reason": "Form fields became read-only after entry."}
+        return {
+            "outcome": "blocked",
+            "reason": "The ERP stopped accepting data on this screen. Check the details "
+                      "below against what's on the ERP, then press Retry.",
+        }
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
@@ -347,10 +359,25 @@ def ai_classify_outcome(
                     "role": "system",
                     "content": (
                         "An ERP data-entry form locked its fields right after a value was entered, so "
-                        "it can't be submitted. Read the page text and decide why. Most often this means "
-                        "the record ALREADY EXISTS (a duplicate) — the ERP recognised the value and "
-                        "blocked re-entry. Reply with JSON: {\"outcome\": one of "
-                        "\"duplicate\"|\"blocked\"|\"error\"|\"unknown\", \"reason\": <short human note>}."
+                        "it can't be submitted. Read the page text below and decide why.\n"
+                        "- If the text shows a validation/import-rejected popup or message naming a "
+                        "field, sheet, or value as wrong, missing, or mandatory (for example an "
+                        "'Invalid Data Found' table, or a field-level complaint) — this is 'error'. "
+                        "Say in plain words, for a customs-operations clerk (not a developer), exactly "
+                        "what it says is wrong — name the field(s)/value(s) it called out — and end "
+                        "with telling them to fix that and press Retry. Do not invent a field name "
+                        "that is not actually in the text.\n"
+                        "- If the text explicitly says this record/shipment/number already exists or "
+                        "was already filed — this is 'duplicate'. Say that plainly.\n"
+                        "- Only when NEITHER of those is visible — the fields simply locked with "
+                        "nothing on screen explaining why — reply 'blocked', and say plainly that "
+                        "nothing on screen explained why, pointing at the screenshot instead of "
+                        "guessing a cause.\n"
+                        "- If the page text instead shows an outright error message unrelated to the "
+                        "above, use 'error' and quote it in plain words.\n"
+                        "Reply with JSON: {\"outcome\": one of "
+                        "\"duplicate\"|\"blocked\"|\"error\"|\"unknown\", \"reason\": <short, plain, "
+                        "end-user-facing note - never a raw technical string>}."
                     ),
                 },
                 {
@@ -369,7 +396,11 @@ def ai_classify_outcome(
         return {"outcome": outcome, "reason": data.get("reason") or ""}
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_classify_outcome failed: %s", exc)
-        return {"outcome": "blocked", "reason": "Form fields became read-only after entry."}
+        return {
+            "outcome": "blocked",
+            "reason": "The ERP stopped accepting data on this screen. Check the details "
+                      "below against what's on the ERP, then press Retry.",
+        }
 
 
 def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str] | None = None,
