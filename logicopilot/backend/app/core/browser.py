@@ -5692,13 +5692,24 @@ def play_steps(
                     # REPAIRED since then needs asking again.
                     if here or present(sel, frames, timeout=4000):
                         # If the recorded value field is present but DISABLED, the form has
-                        # stopped accepting input — usually because the record already exists.
-                        # Detect it up front (don't waste the budget filling a disabled field).
+                        # stopped accepting input - could be a genuine duplicate, or (same as
+                        # check_blocked) a validation/import-rejected popup that locked it. Check
+                        # for a concrete, nameable message FIRST - don't waste the budget filling
+                        # a disabled field, and don't presume "duplicate" when we don't know that.
                         if action in ("fill", "autocomplete", "select", "manual_entry") and _element_disabled(page, sel, frames):
-                            blocked = _detect_block(page) or {
-                                "outcome": "duplicate",
-                                "reason": "The form is locked (fields disabled) — the record already exists.",
-                            }
+                            errs = _validation_errors(page)
+                            blocked = (
+                                {"outcome": "validation",
+                                 "reason": "The ERP didn't accept this entry: " + "; ".join(errs[:3])
+                                           + ". Fix that, then press Retry."}
+                                if errs else
+                                _detect_block(page) or {
+                                    "outcome": "blocked",
+                                    "reason": "A field stopped accepting input and nothing on "
+                                              "screen explained why. Check the screenshot below "
+                                              "against the ERP, then press Retry.",
+                                }
+                            )
                             log.append(f"step {i + 1} {action}: field disabled — {blocked['outcome']}: {blocked['reason']}")
                             break
                         # Before committing (submit), re-check EVERY value we already entered is

@@ -1430,6 +1430,14 @@ export function JobRunPage() {
   const erpJobNoCapture = job?.erp_captured?.["ERP_Job_No"];
   const erpJobNo = (typeof erpJobNoCapture === "object" ? erpJobNoCapture?.value : "")?.trim();
   const completedWithoutJobNo = !!job && job.status === "completed" && !erpJobNo;
+  /** Where a failed run actually stopped, persisted to disk by persist_run_outcome - unlike
+   *  job.erp_screenshot (only ever present in the single response from the run that just
+   *  fired), this survives a reload, re-opening the job later, and — the gap this fixes — the
+   *  GK2/skip-GK2 "Retry & Proceed" flow's own result banner, which never merges a fresh
+   *  job.erp_screenshot back into state the way Submit Entry's response does. */
+  const erpFailureShotCapture = job?.erp_captured?.erp_failure_screenshot;
+  const erpFailureShotFile =
+    typeof erpFailureShotCapture === "object" ? erpFailureShotCapture?.file : null;
   /**
    * The document slots, each with every file uploaded into it. A slot holds as many files as
    * the shipment has — three invoices is three files under one "Invoice" heading, not three
@@ -3234,6 +3242,34 @@ export function JobRunPage() {
                   </div>
                 </div>
               )}
+              {/* job.erp_screenshot above is ephemeral - it only arrives in the one response
+                  from the run that just fired, and Retry & Proceed's own flow (gk2ApproveAndProceed
+                  polling job.gk2_status) never merges a fresh one back into state the way Submit
+                  Entry's response does. This falls back to the PERSISTED copy (saved to disk by
+                  persist_run_outcome) so the picture of where a failed Retry actually stopped
+                  still shows, instead of this banner naming the problem with nothing to look at. */}
+              {!live && !job.erp_screenshot && erpFailureShotFile && (
+                <div className="mt-2">
+                  <div className="mb-1 flex items-center justify-between text-xs opacity-80">
+                    <span>The screen after the entry</span>
+                    <a
+                      href={jobsApi.capturedFileUrl(job.id, erpFailureShotFile)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                    >
+                      Open full size ↗
+                    </a>
+                  </div>
+                  <div className="max-h-[32rem] overflow-auto rounded border border-slate-300 dark:border-slate-700">
+                    <img
+                      src={jobsApi.capturedFileUrl(job.id, erpFailureShotFile)}
+                      alt="Where the ERP entry stopped"
+                      className="block w-full"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -3289,10 +3325,9 @@ export function JobRunPage() {
                     persist_run_outcome's own erp_failure_screenshot), so the picture an operator
                     needs to diagnose a failed Retry & Proceed survives exactly like the Entry
                     Browser's own view does. */}
-                {failed && (() => {
-                  const shot = job.erp_captured?.erp_failure_screenshot;
-                  const file = typeof shot === "object" && shot ? shot.file : null;
-                  return file ? (
+                {failed && erpFailureShotFile && (() => {
+                  const file = erpFailureShotFile;
+                  return (
                     <a
                       href={jobsApi.capturedFileUrl(job.id, file)}
                       target="_blank"
@@ -3306,7 +3341,7 @@ export function JobRunPage() {
                         className="w-full"
                       />
                     </a>
-                  ) : null;
+                  );
                 })()}
                 <Link to={backToJobsPath} className="text-sm text-indigo-600 hover:underline">← Back to all jobs</Link>
               </Card>
