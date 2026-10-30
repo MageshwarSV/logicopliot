@@ -2525,7 +2525,43 @@ export function JobRunPage() {
                     )}
                   </p>
                   {uploaded.map((d) => (
-                    <div key={d.id} className="mb-2">
+                    // The WHOLE block is the drop target - its header row AND its page
+                    // thumbnails. The handlers used to sit on the thin green row alone, which
+                    // is a few pixels of a card whose bulk is the thumbnails underneath it, so
+                    // a page dropped onto what obviously looks like that document fell through
+                    // to the slot behind it and landed as a SECOND document instead. That is
+                    // the whole bug this feature was meant to fix, reappearing as a hit-area
+                    // problem rather than a logic one.
+                    <div
+                      key={d.id}
+                      onDragOver={(e) => {
+                        if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragOverDocId(d.id);
+                      }}
+                      onDragLeave={() => { if (draggedDocId || draggedPageId) setDragOverDocId(null); }}
+                      onDrop={(e) => {
+                        if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
+                        e.preventDefault();
+                        // Stopped here so the slot's own onDrop cannot ALSO fire and land the
+                        // same thing a second time, as its own separate document.
+                        e.stopPropagation();
+                        setDragOverDocId(null);
+                        if (draggedPageId) {
+                          handleAssignUnclassifiedPage(draggedPageId, tdocId, d.id);
+                        } else if (draggedDocId) {
+                          handleMergeDocumentIntoDocument(draggedDocId, d.id);
+                        }
+                        setDraggedDocId(null);
+                        setDraggedDocFromTdocId(null);
+                      }}
+                      className={`mb-2 rounded-lg transition-colors ${
+                        dragOverDocId === d.id
+                          ? "bg-indigo-50 p-1 ring-2 ring-indigo-400 dark:bg-indigo-500/10"
+                          : ""
+                      }`}
+                    >
                       <div
                         draggable={!readOnly && docActionBusyId !== d.id}
                         onDragStart={(e) => {
@@ -2543,33 +2579,7 @@ export function JobRunPage() {
                         // stopped here before it can also bubble to the slot's own onDrop,
                         // which would otherwise ALSO fire and land it as a second, separate
                         // document instead.
-                        // An unclassified PAGE dropped here joins THIS document; a whole
-                        // document dropped here merges into it. Both are stopped before they
-                        // can bubble to the slot's own onDrop, which would otherwise also fire
-                        // and land the thing as a second, separate document instead - which is
-                        // all that used to be possible for a page, so two pages of the same
-                        // arrival notice became two one-page documents with no way to join
-                        // them afterwards.
-                        onDragOver={(e) => {
-                          if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setDragOverDocId(d.id);
-                        }}
-                        onDragLeave={() => { if (draggedDocId || draggedPageId) setDragOverDocId(null); }}
-                        onDrop={(e) => {
-                          if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setDragOverDocId(null);
-                          if (draggedPageId) {
-                            handleAssignUnclassifiedPage(draggedPageId, tdocId, d.id);
-                          } else if (draggedDocId) {
-                            handleMergeDocumentIntoDocument(draggedDocId, d.id);
-                          }
-                          setDraggedDocId(null);
-                          setDraggedDocFromTdocId(null);
-                        }}
+                        // Drop handling lives on the WRAPPER above, so the thumbnails count too.
                         title={readOnly ? undefined : "Drag onto another document type to move it there, or onto another document to merge into it. Drop an unclassified page here to add it to this document."}
                         className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors ${
                           dragOverDocId === d.id
@@ -2680,7 +2690,10 @@ export function JobRunPage() {
                     busy={assigningPageId === p.id}
                     readOnly={readOnly}
                     onDragStart={() => setDraggedPageId(p.id)}
-                    onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); }}
+                    // dragOverDocId too, now that a page can hover one specific document -
+                    // without it, cancelling a drag (Esc, or letting go over nothing) left
+                    // that document ringed as if it were still about to receive something.
+                    onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); setDragOverDocId(null); }}
                     onView={() => setViewingPageIndex(i)}
                   />
                 ))}
