@@ -250,6 +250,16 @@ const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
   // sheet (Organization -> branch code, one row per branch).
   branch_name: "Erp Entry Name",
 };
+// Of the fields above, these offer EVERY row their reference table holds instead of only the
+// rows matching the filter field's current value. The entry above is still what makes their
+// options get fetched at all - only the NARROWING is skipped.
+//
+// CustomsHouseCode by request. Its whole table is 21 rows (18 distinct codes), so there is no
+// readability argument for cutting it down, and narrowing to the port_of_entry read off the
+// document hid every other code - including the two cases that actually matter: the entry is
+// filed under a different customs house than the port on the paperwork, and nothing was read
+// at all, which left the dropdown completely empty with no way to pick anything.
+const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set(["CustomsHouseCode"]);
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
 // brand-new typed value - unlike that one, this never replaces free text with a closed
@@ -356,7 +366,12 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Port & Transport Details",
       labels: [
         "TransportModeCode", "Shipment Country", "CountryOfShipmentCode", "Shipment City",
-        "Shipment Port Code", "port_of_entry", "CustomsHouseCode",
+        // "Destination" sits on this tab because its own display_document_id names the Bill of
+        // Lading (a Manual Entry field - see CustomField.display_document_id). Listed here, it
+        // pairs off into the right-hand column beside CustomsHouseCode, which was otherwise
+        // alone on the last row of a 2-column grid; unlisted, it fell through to a near-empty
+        // "Other" section of its own at the very bottom of the card.
+        "Shipment Port Code", "port_of_entry", "CustomsHouseCode", "Destination",
       ],
     },
     {
@@ -3459,7 +3474,7 @@ export function JobRunPage() {
                           const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
                           comboOptions = dedupe(
                             (
-                              filterValue
+                              filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
                                 ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
                                 : rows
                             ).map((o) => o.value),
@@ -6451,9 +6466,10 @@ function ExtractionReview({
                     const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
                       .trim()
                       .toUpperCase();
-                    const rows = filterValue
-                      ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                      : dynamicRows;
+                    const rows =
+                      filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
+                        ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
+                        : dynamicRows;
                     options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
                   }
                   // "ERP Importer Address / Branch Code" - narrowed to the picked consignee's
