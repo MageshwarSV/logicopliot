@@ -3266,6 +3266,31 @@ export function JobRunPage() {
                     {job.erp_failed_value ? <> — value <span className="font-mono">{job.erp_failed_value}</span></> : null}
                   </p>
                 )}
+                {/* Where it actually stopped. job.erp_screenshot (below) only exists in the one
+                    response that fired this exact run - reload the page, or open the job later,
+                    and it's gone. This reads the PERSISTED copy instead (see
+                    persist_run_outcome's own erp_failure_screenshot), so the picture an operator
+                    needs to diagnose a failed Retry & Proceed survives exactly like the Entry
+                    Browser's own view does. */}
+                {failed && (() => {
+                  const shot = job.erp_captured?.erp_failure_screenshot;
+                  const file = typeof shot === "object" && shot ? shot.file : null;
+                  return file ? (
+                    <a
+                      href={jobsApi.capturedFileUrl(job.id, file)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open the full-size screenshot"
+                      className="mt-1 block w-full max-w-lg overflow-hidden rounded-xl border border-rose-200 hover:border-rose-400 dark:border-rose-500/30"
+                    >
+                      <img
+                        src={jobsApi.capturedFileUrl(job.id, file)}
+                        alt="Where the ERP entry stopped"
+                        className="w-full"
+                      />
+                    </a>
+                  ) : null;
+                })()}
                 <Link to={backToJobsPath} className="text-sm text-indigo-600 hover:underline">← Back to all jobs</Link>
               </Card>
             );
