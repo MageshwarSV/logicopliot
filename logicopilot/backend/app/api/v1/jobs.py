@@ -3300,6 +3300,66 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             backfilled = True
     if backfilled:
         db.commit()
+    # "Part Code" / "Description" beside a looked-up CTH - WHICH key of the customer's sheet
+    # actually produced it. An operator checking a code needs that: matched on the part number
+    # it is the precise answer, matched only on wording it is worth a second look, and on these
+    # invoices the part code is often blank so wording was the only thing that could have
+    # matched at all.
+    #
+    # Recomputed here rather than stored on the row: it then shows on every job already
+    # extracted before this existed, with no migration and nothing to backfill. The honesty
+    # guard is that it is only reported when it REPRODUCES the exact value on screen - a code
+    # the operator typed themselves, or one that came from the learned-reference tier rather
+    # than the sheet, says nothing at all instead of claiming a source it did not come from.
+    #
+    # cached_mapping, never load_master: this is a request handler, and parsing a not-yet-
+    # parsed workbook inline would hang it - see load_master's own docstring.
+    lookup_source_by_fv: dict[str, str] = {}
+    per_row_lookup_cfs = [
+        c for c in cf_rows
+        if (c.kind or "") == "lookup" and c.per_row and not getattr(c, "skip_material_master", False)
+    ]
+    if per_row_lookup_cfs:
+        from app.core.material_master import cached_mapping, lookup_cth_with_source, material_from
+
+        line_text: dict[tuple[int, int], dict[str, str]] = {}
+        for fv in fvs:
+            if fv.row_index is None:
+                continue
+            line_text.setdefault((fv.set_index or 1, fv.row_index), {})[fv.label_name] = (
+                fv.corrected_value or fv.extracted_value or ""
+            ).strip()
+        by_cf: dict[str, list] = {}
+        for fv in fvs:
+            if fv.custom_field_id and fv.row_index is not None:
+                by_cf.setdefault(fv.custom_field_id, []).append(fv)
+        for c in per_row_lookup_cfs:
+            rows_for_cf = by_cf.get(c.id)
+            if not rows_for_cf:
+                continue
+            master = cached_mapping(
+                group.id,
+                match_columns=getattr(c, "lookup_match_columns", None),
+                return_column=getattr(c, "lookup_return_column", None),
+            )
+            if not master:
+                continue
+            key_label = (getattr(c, "lookup_key_label", None) or "").strip()
+            for fv in rows_for_cf:
+                shown = (fv.corrected_value or fv.extracted_value or "").strip()
+                if not shown:
+                    continue
+                texts = line_text.get((fv.set_index or 1, fv.row_index), {})
+                desc = texts.get("product_description", "")
+                code = (texts.get(key_label, "") if key_label else "") or texts.get(
+                    "item_material_code", ""
+                )
+                found, source = lookup_cth_with_source(
+                    material_from(code, desc), master, description=desc,
+                )
+                if source and found and found == shown:
+                    lookup_source_by_fv[fv.id] = source
+
     field_values = []
     for fv in fvs:
         mp = mark_pos.get(fv.mark_id)
@@ -3366,6 +3426,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
                 fixed_options=cf_fixed_options.get(fv.custom_field_id),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
+                lookup_source=lookup_source_by_fv.get(fv.id),
             )
         )
 

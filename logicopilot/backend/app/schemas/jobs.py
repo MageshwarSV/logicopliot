@@ -240,6 +240,11 @@ class JobFieldValueOut(BaseModel):
     # Which document's own tab to group this field under instead of Additional Details -
     # None (every field that predates this) means Additional Details, today's only behavior.
     display_document_id: str | None = None
+    # For a looked-up per-line code (CTH): WHICH key of the customer's reference sheet
+    # produced the value on screen - "Part Code" or "Description". None whenever that cannot
+    # be said honestly: an operator's own typed value, a value learned from an earlier
+    # correction rather than read off the sheet, or a sheet not parsed into the cache yet.
+    lookup_source: str | None = None
 
 
 class VerificationRow(BaseModel):

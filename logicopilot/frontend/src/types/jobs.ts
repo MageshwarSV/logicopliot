@@ -132,6 +132,11 @@ export interface JobFieldValue {
   source_document_ids?: string[];
   /** What produced the value: document | reference | computed | fixed. */
   origin?: "document" | "reference" | "computed" | "fixed";
+  /** For a looked-up per-line code (CTH): WHICH key of the customer's reference sheet
+   *  produced this exact value - "Part Code" or "Description". Absent whenever that cannot be
+   *  said honestly: a value the operator typed, one learned from an earlier correction rather
+   *  than read off the sheet, or a sheet not parsed into the cache yet. */
+  lookup_source?: string | null;
   /** 1-based line-item row, when this field repeats. */
   row_index?: number | null;
   /** FieldMark's static, one-time-drawn template position — NOT used for the highlight

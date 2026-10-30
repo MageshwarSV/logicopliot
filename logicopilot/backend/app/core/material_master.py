@@ -499,8 +499,25 @@ def _fuzzy_description_match(desc_key: str, master: dict[str, str]) -> str:
     return codes.pop() if len(codes) == 1 else ""
 
 
+# What lookup_cth_with_source matched on, shown to the operator beside the code it produced
+# (see JobFieldValueOut.lookup_source). An operator checking a CTH needs to know WHICH key the
+# sheet answered on: a code matched on the part number is the precise answer, while one matched
+# only on wording is worth a second look - and when the part code is blank on the line (common
+# on these invoices) the description is the only thing that could have matched at all.
+CTH_SOURCE_PART_CODE = "Part Code"
+CTH_SOURCE_DESCRIPTION = "Description"
+
+
 def lookup_cth(material: str, master: dict[str, str], description: str = "") -> str:
-    """The CTH for this line, or "".
+    """The CTH for this line, or "". See lookup_cth_with_source - this is that, without the
+    second half of the answer, for the callers that only want the code."""
+    return lookup_cth_with_source(material, master, description)[0]
+
+
+def lookup_cth_with_source(
+    material: str, master: dict[str, str], description: str = "",
+) -> tuple[str, str]:
+    """(The CTH for this line, what it was matched on) - ("", "") when nothing matched.
 
     Tries the part number first and the description second - the part number is the more
     precise thing to match on, and a description is only worth using when there is no code.
@@ -509,17 +526,18 @@ def lookup_cth(material: str, master: dict[str, str], description: str = "") -> 
     different part with a different classification.
     """
     if not master:
-        return ""
-    for candidate in (material, description):
+        return "", ""
+    for candidate, source in ((material, CTH_SOURCE_PART_CODE),
+                              (description, CTH_SOURCE_DESCRIPTION)):
         key = _norm(candidate)
         if not key:
             continue
         if key in master:
-            return master[key]
+            return master[key], source
         squashed = key.replace(" ", "")
         for k, v in master.items():
             if k.replace(" ", "") == squashed:
-                return v
+                return v, source
         # VARIANT SUFFIXES. A material master lists a part once per variant - 094624A.101,
         # 094624A.102, 094624A.P01 - while the invoice prints the part itself, 094624A. Neither
         # side is wrong and they are the same part, but nothing above matches them, so every
@@ -536,10 +554,10 @@ def lookup_cth(material: str, master: dict[str, str], description: str = "") -> 
         stem = _stem(key) or key
         found = {v for k, v in master.items() if v and (_stem(k) or k) == stem}
         if len(found) == 1:
-            return found.pop()
+            return found.pop(), source
     desc_key = _norm(description)
     if desc_key:
         fuzzy = _fuzzy_description_match(desc_key, master)
         if fuzzy:
-            return fuzzy
-    return ""
+            return fuzzy, CTH_SOURCE_DESCRIPTION
+    return "", ""
