@@ -465,9 +465,17 @@ def test_refuses_merging_a_document_into_itself(client, db_session):
     assert resp.status_code == 422
 
 
-def test_refuses_merging_into_a_non_pdf_target(client, db_session):
-    """A single image is inherently one page - it cannot gain more pages without first being
-    converted to a PDF, deliberately out of scope."""
+def test_merging_into_an_image_target_promotes_it_to_a_pdf(client, db_session):
+    """This used to be refused with a 422 - "a single image is inherently one page", treated as
+    deliberately out of scope. That limitation was lifted, because it bit precisely where it
+    hurt most: every document assigned from the Unclassified pile IS an image (the page image
+    becomes the file), so the documents an operator creates by dragging were exactly the ones
+    nothing could ever be added to - two pages of the same arrival notice became two separate
+    single-page documents with no way to join them.
+
+    The target is converted to a one-page PDF first, in place, using the same conversion the
+    INSERT side of _append_to_pdf has always performed. See also
+    test_deleted_pages_go_to_unclassified.py, which covers the drag-and-drop route into this."""
     tenant = make_tenant(db_session)
     group, bl, freight = _make_template_two_slots(db_session, tenant)
     job = _make_job_with_slots(db_session, tenant, group, bl, freight)
@@ -477,9 +485,16 @@ def test_refuses_merging_into_a_non_pdf_target(client, db_session):
     _upload_png(client, job.id, freight.id)
     source = db_session.query(JobDocument).filter(JobDocument.template_document_id == bl.id).one()
     target = db_session.query(JobDocument).filter(JobDocument.template_document_id == freight.id).one()
+    pages_before = target.page_count
 
     resp = client.post(f"/api/v1/jobs/{job.id}/documents/{target.id}/merge-with/{source.id}")
-    assert resp.status_code == 422
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    target = db_session.query(JobDocument).filter(
+        JobDocument.template_document_id == freight.id).one()
+    assert target.file_path.endswith(".pdf")
+    assert target.page_count > pages_before
 
 
 def test_refuses_merge_when_target_has_no_file_yet(client, db_session):
