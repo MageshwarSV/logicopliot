@@ -67,7 +67,10 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
     "Currency_type", "Product Value", "Consignee", "Shipper Address",
     "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
   ],
-  Custom: ["Frt_Currency", "Misc_Charge_Currency", "insurance_percentage", "insurance_amount"],
+  Custom: [
+    "Frt_Currency", "Misc_Charge_Currency", "insurance_percentage", "insurance_amount",
+    "Ins_Currency",
+  ],
 };
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
@@ -284,6 +287,17 @@ const dedupe = (values: string[]): string[] => [...new Set(values)];
 // suggestCustomFieldValue. Different customers often carry a fixed, previously-quoted premium
 // rate, so a Nokia shipment should start pre-filled with Nokia's own known rate rather than a
 // blank box or yesterday's customer's rate.
+// A field whose empty box should START showing ANOTHER field's value from this same job, as a
+// plain suggestion typed over freely. Nothing is saved by showing it - and nothing needs to
+// be, because the ERP export resolves the very same chain server-side (see the Ins_Currency
+// column's own fallback_fields), so an operator who simply agrees with what they see gets the
+// identical value exported whether they commit the box or never touch it.
+//
+// The insurance is billed in the freight's currency far more often than not, and that currency
+// is already on screen two rows above - retyping it is work the screen can do.
+const DEFAULT_FROM_OTHER_FIELD_LABEL: Record<string, string> = {
+  Ins_Currency: "Frt_Currency",
+};
 const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
   insurance_percentage: "Consignee",
 };
@@ -408,7 +422,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       heading: "Charges",
       labels: [
         "Freight Amount", "Frt_Currency", "Misc Charge Amount", "Misc_Charge_Currency",
-        "insurance_percentage", "insurance_amount",
+        // One currency for the insurance pair, straight after them: the ERP sheet has exactly
+        // one Ins_Currency column, and insurance_mode already forces Rate OR Amount, never
+        // both, so a second currency would have nowhere to go.
+        "insurance_percentage", "insurance_amount", "Ins_Currency",
       ],
     },
     { heading: "Shipper Details", labels: ["Supplier Name", "Supplier Address"] },
@@ -6549,6 +6566,18 @@ function ExtractionReview({
                     ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
                     : undefined;
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
+                  // ...or, failing that, another field's own value on this same job - see
+                  // DEFAULT_FROM_OTHER_FIELD_LABEL. Job-level (row_index == null): these
+                  // describe the shipment, never one product line.
+                  const mirrorLabel = DEFAULT_FROM_OTHER_FIELD_LABEL[fv.label_name];
+                  const mirroredDefault = mirrorLabel
+                    ? (() => {
+                        const src = job.field_values.find(
+                          (x) => x.row_index == null && x.label_name === mirrorLabel,
+                        );
+                        return (src?.corrected_value ?? src?.extracted_value ?? "").trim() || undefined;
+                      })()
+                    : undefined;
                   return (
                     <div
                       key={fv.id}
@@ -6578,7 +6607,7 @@ function ExtractionReview({
                               }
                             : undefined
                         }
-                        defaultValue={suggestedDefault ?? undefined}
+                        defaultValue={suggestedDefault ?? mirroredDefault ?? undefined}
                         onBeforeSave={
                           fv.label_name === "insurance_percentage" && fv.custom_field_id
                             ? () => requireInsuranceCertificate(fv.custom_field_id!)

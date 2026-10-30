@@ -282,16 +282,47 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
         # On an invoice-scoped sheet, a job-level label takes THAT invoice's value.
         per_set = _set_values(rows)
         row_values = per_set[i] if plan["scope"] == "invoice" and i < len(per_set) else None
+        def _literal_value(lit_seq: list) -> str:
+            # One literal repeats down the sheet; a list gives each row its own value.
+            v = lit_seq[i] if i < len(lit_seq) else (lit_seq[0] if len(lit_seq) == 1 else "")
+            # A literal may name a field instead of holding a value, using the same
+            # [[field]] form the engine uses elsewhere. EXCHANGE_RATE needs it: row one is
+            # always the rupee at 1.000000, row two is the month's customs rate, which has
+            # to live in one editable place rather than inside the mapping.
+            if isinstance(v, str) and v.startswith("[[") and v.endswith("]]"):
+                v = str(values.get(v[2:-2], "") or "")
+            return v
+
+        def _field_value(lbl: str):
+            """This row's reading of one field label - per-invoice first, then per-line, then
+            job-level, exactly as the main branch below resolves its own label."""
+            if row_values is not None:
+                return row_values.get(lbl, values.get(lbl, ""))
+            seq_ = rows.get(lbl)
+            return seq_[i] if isinstance(seq_, list) and seq_ and i < len(seq_) else values.get(lbl, "")
+
         for col, label, lit in zip(cols, labels, lits):
-            if lit is not None:
-                # One literal repeats down the sheet; a list gives each row its own value.
-                val = lit[i] if i < len(lit) else (lit[0] if len(lit) == 1 else "")
-                # A literal may name a field instead of holding a value, using the same
-                # [[field]] form the engine uses elsewhere. EXCHANGE_RATE needs it: row one is
-                # always the rupee at 1.000000, row two is the month's customs rate, which has
-                # to live in one editable place rather than inside the mapping.
-                if val.startswith("[[") and val.endswith("]]"):
-                    val = str(values.get(val[2:-2], "") or "")
+            if label and (lit is not None or col.get("fallback_fields")):
+                # A column carrying BOTH a field and a literal (and/or fallback_fields) reads
+                # them as a CHAIN, not a choice: the field first, then each fallback field in
+                # turn, and the literal only as the last resort. Built for Ins_Currency, which
+                # was a bare hardcoded "INR" on every entry ever filed regardless of what the
+                # invoice said - it now takes the operator's own answer, falls back to the
+                # freight currency already read off the document, and only then to the "INR"
+                # that was always being written anyway. Nothing can come out worse than it
+                # does today, because today's value IS the last link in the chain.
+                #
+                # A column with a literal and NO field is untouched (the branch below) - that
+                # is every other literal column in every template.
+                val = _field_value(label)
+                for fb in (col.get("fallback_fields") or []):
+                    if str(val or "").strip():
+                        break
+                    val = _field_value(fb)
+                if not str(val or "").strip() and lit is not None:
+                    val = _literal_value(lit)
+            elif lit is not None:
+                val = _literal_value(lit)
             elif not label:
                 val = ""
             elif label == SERIAL_ROW:
