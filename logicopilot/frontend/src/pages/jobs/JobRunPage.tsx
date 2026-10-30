@@ -3129,7 +3129,7 @@ export function JobRunPage() {
                       `⚠ Entered and submitted, but some steps failed — check the entry in the ERP before relying on it.${job.erp_reason ? " " + job.erp_reason : ""}`
                   : job.erp_status === "no_script"
                       ? "No ERP script configured for this template — nothing was entered."
-                      : `✗ ERP entry failed — reported to the Super Admin inbox.${job.erp_reason ? " " + job.erp_reason : ""}`}
+                      : `✗ ERP entry failed.${job.erp_reason ? " " + job.erp_reason : ""}`}
               </p>
               {showsMachinery && job.erp_final_url && (
                 <p className="mt-0.5 text-xs opacity-80">Final page: {job.erp_final_url}</p>
