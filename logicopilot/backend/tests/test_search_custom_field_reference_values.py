@@ -93,7 +93,9 @@ def test_result_label_is_plain_resolved_value_when_there_is_only_one_key(client,
     resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=acme")
     assert resp.status_code == 200, resp.text
     results = resp.json()["results"]
-    assert results == [{"value": "Acme Corp", "label": "Acme Corp"}]
+    # value/label specifically, not whole-dict equality: a result also carries the two keys
+    # it was matched on (match_1/match_2), which this shape has nothing useful in.
+    assert [(r["value"], r["label"]) for r in results] == [("Acme Corp", "Acme Corp")]
 
 
 def test_matches_a_substring_of_the_country_too(client, db_session):
@@ -192,7 +194,10 @@ def test_country_scoped_result_label_is_plain_resolved_value_even_with_a_second_
         f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=jabil&country=china"
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["results"] == [{"value": "Jabil Circuit (China)", "label": "Jabil Circuit (China)"}]
+    # value/label specifically, not whole-dict equality - see the note on the one-key test.
+    assert [(r["value"], r["label"]) for r in resp.json()["results"]] == [
+        ("Jabil Circuit (China)", "Jabil Circuit (China)")
+    ]
 
 
 def test_reference_countries_endpoint_lists_every_distinct_country(client, db_session):
@@ -219,3 +224,39 @@ def test_a_custom_field_from_a_different_template_group_is_not_found(client, db_
     login(client, operator.email)
     resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{foreign_cf.id}/reference-search?q=shang")
     assert resp.status_code == 404
+
+
+def test_each_result_carries_the_two_keys_it_was_matched_on(client, db_session):
+    """Picking a port has already told the operator the country and the city - they are two
+    columns of the very row that produced the code. They come back with it so the screen can
+    fill Shipment Country / Shipment City from the same row (REFERENCE_PICK_FILLS_FIELDS in
+    JobRunPage.tsx) instead of making the operator retype both off the same document.
+
+    Raw and normalized (ALL CAPS), deliberately: what the two keys MEAN differs per field -
+    (country, place) here, (organization, country) on ERP Consignee Name - so the caller that
+    knows which field it searched owns both the naming and the casing."""
+    tenant, group, job, cf, operator = _setup(db_session)
+    login(client, operator.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=laem")
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    assert len(results) == 1
+    assert results[0]["value"] == "THLCH"
+    assert results[0]["match_1"] == "THAILAND"
+    assert results[0]["match_2"] == "LAEM CHABANG"
+
+
+def test_the_keys_come_from_the_picked_row_not_the_query(client, db_session):
+    """Two rows can match one query while describing DIFFERENT places - "shang" finds both
+    Shanghai and Pudong/Shanghai. Each result has to carry its own row's keys, or picking the
+    second would fill the city from the first."""
+    tenant, group, job, cf, operator = _setup(db_session)
+    login(client, operator.email)
+
+    resp = client.get(f"/api/v1/jobs/{job.id}/custom-fields/{cf.id}/reference-search?q=shang")
+    assert resp.status_code == 200, resp.text
+    by_value = {r["value"]: r for r in resp.json()["results"]}
+    assert by_value["CNSHA"]["match_2"] == "SHANGHAI"
+    assert by_value["CNPDG"]["match_2"] == "PUDONG/SHANGHAI"
+    assert by_value["CNSHA"]["match_1"] == by_value["CNPDG"]["match_1"] == "CHINA"

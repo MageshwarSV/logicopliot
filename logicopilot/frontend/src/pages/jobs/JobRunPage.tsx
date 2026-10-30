@@ -294,6 +294,25 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
 const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
+// Picking a row in one of those searches also ANSWERS other fields, straight off the same row.
+// A world-port row is (country, place, code) - so choosing "CHINA SHEKOU(CNSHK)" has already
+// told us the country and the city, and making the operator retype both from the same document
+// they just read the port off is pure duplicate work they can get wrong. Keyed by the searched
+// field's own label; the values are the labels of the job-level fields each matched key fills.
+// Only for a table whose two keys genuinely mean this - ERP Consignee Name's are (organization,
+// country), which answers nothing else on the job, so it is deliberately absent.
+const REFERENCE_PICK_FILLS_FIELDS: Record<string, { fromMatch1?: string; fromMatch2?: string }> = {
+  "Shipment Port Code": { fromMatch1: "Shipment Country", fromMatch2: "Shipment City" },
+};
+// The reference tables are normalized to ALL CAPS (normalize_key), but every value these target
+// fields already carry is Title Case - "China", "Shekou", "Shanghai", "Genova", "Antwerp" on
+// real jobs - so copying a key across raw would change how they read on every job that used the
+// picker. Apostrophes are left alone ("ST JOHN'S" -> "St John's", not "St John'S") and so is any
+// other separator ("HAITANG/SHEKOU" -> "Haitang/Shekou").
+const titleCasePlace = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/(^|[^a-z'])([a-z])/g, (_match, before: string, letter: string) => before + letter.toUpperCase());
 // Consignee / ERP Consignee Name / ERP Consignee Branch sat two-per-row in the shared grid,
 // which split each box's width in half - the document's own long company names (e.g.
 // "FLEXTRONICS INTERNATIONAL MANAGEMENT SERVICES LIMITED") were getting cut off mid-word.
@@ -4897,7 +4916,9 @@ function ReferenceSearchPicker({
    *  reference fields (a port code, a consignee name, ...). */
   label: string;
   readOnly: boolean;
-  onPick: (value: string) => Promise<void>;
+  /** The whole ROW, not just its value - the caller may fill other fields from the same row
+   *  it was picked from (see REFERENCE_PICK_FILLS_FIELDS). */
+  onPick: (picked: jobsApi.CustomFieldReferenceSearchResult) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<jobsApi.CustomFieldReferenceSearchResult[]>([]);
@@ -4972,7 +4993,7 @@ function ReferenceSearchPicker({
                 onClick={async () => {
                   setPicking(true);
                   try {
-                    await onPick(r.value);
+                    await onPick(r);
                     setQuery("");
                     setResults([]);
                     setOpen(false);
@@ -6540,8 +6561,28 @@ function ExtractionReview({
                           customFieldId={fv.custom_field_id!}
                           label={fv.label_name}
                           readOnly={readOnly}
-                          onPick={async (value) => {
-                            await jobsApi.correctFieldValue(fv.id, value);
+                          onPick={async (picked) => {
+                            await jobsApi.correctFieldValue(fv.id, picked.value);
+                            // The row that gave us the code also describes it - fill the
+                            // fields it answers rather than make the operator retype them off
+                            // the same document. See REFERENCE_PICK_FILLS_FIELDS.
+                            const fills = REFERENCE_PICK_FILLS_FIELDS[fv.label_name];
+                            if (fills) {
+                              const pairs: [string | undefined, string | undefined][] = [
+                                [picked.match_1, fills.fromMatch1],
+                                [picked.match_2, fills.fromMatch2],
+                              ];
+                              for (const [key, targetLabel] of pairs) {
+                                if (!key?.trim() || !targetLabel) continue;
+                                // Job-level only (row_index == null): these describe the
+                                // shipment, never a single product line.
+                                const target = job.field_values.find(
+                                  (x) => x.row_index == null && x.label_name === targetLabel,
+                                );
+                                if (!target) continue;
+                                await jobsApi.correctFieldValue(target.id, titleCasePlace(key));
+                              }
+                            }
                             await reload();
                           }}
                         />

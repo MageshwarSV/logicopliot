@@ -599,6 +599,12 @@ export interface CustomFieldReferenceSearchResult {
   value: string;
   /** Ready to show as-is, e.g. "Shanghai — China (CNSHA)". */
   label: string;
+  /** The two keys this row was matched on, raw and ALL CAPS - for filling OTHER fields from
+   *  the same row that was picked (see REFERENCE_PICK_FILLS_FIELDS in JobRunPage.tsx). What
+   *  they MEAN differs per field: (country, place) on Shipment Port Code's world port table,
+   *  (organization, country) on ERP Consignee Name - so only the caller can name them. */
+  match_1?: string;
+  match_2?: string;
 }
 
 /** The manual fallback for a reference-backed field too large to ever offer as a plain

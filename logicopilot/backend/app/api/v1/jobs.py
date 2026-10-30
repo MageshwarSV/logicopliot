@@ -3717,6 +3717,19 @@ def search_custom_field_reference_values(
         "results": [
             {
                 "value": r.resolved_value,
+                # The two keys this row was matched on, exposed raw so the caller can fill
+                # OTHER fields from the SAME row the operator just picked - picking a port
+                # answers Shipment Country and Shipment City too, which are written on the
+                # very document the port came off (see REFERENCE_PICK_FILLS_FIELDS in
+                # JobRunPage.tsx).
+                #
+                # Named after their COLUMNS, not "country"/"city", because what they mean
+                # differs per field and only the caller knows which field it searched: on the
+                # port table they are (country, place), on ERP Consignee Name they are
+                # (organization, country) - see the country-scoped branch above. Normalized
+                # ALL CAPS here (normalize_key); whoever consumes them owns the casing.
+                "match_1": r.match_value_1 or "",
+                "match_2": r.match_value_2 or "",
                 # "Country City(CODE)" - e.g. "China Shanghai(CNSHA)", so the operator can type
                 # either the country or the city they see on the document and immediately
                 # recognise the right row by its full name next to its code. A field with no
