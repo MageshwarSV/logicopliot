@@ -189,6 +189,12 @@ def rerun_live(job_id: str, db: Session = Depends(get_db), _=Depends(require_rol
                 # button anywhere. A Super-Admin-driven rerun must not strand the job in a worse
                 # state for the operator than before it was tried.
                 j.status = "extracted"
+                # A skip-GK2 job (GK2 "disabled" for its shipment type, not absent) must read
+                # the exact same way whether a Super Admin's test rerun failed or GK1's own
+                # Final Submit did: ONE "Retry & Proceed" button, not a different two-step
+                # recovery purely because of which tool happened to run it.
+                if j.gk2_skipped:
+                    j.gk2_status = "failed"
                 own.commit()
         finally:
             own.close()
@@ -406,6 +412,11 @@ def playback_stop(session_id: str, job_id: str | None = None,
             # stay retryable from the operator's own page (Final Submit/Submit Entry), not a
             # disabled dead end just because a Super Admin pressed Stop from the Entry Browser.
             job.status = "extracted"
+            # Same reasoning as _record's own fix: a skip-GK2 job must show ONE "Retry &
+            # Proceed" button, not a different two-step recovery, purely because a Super
+            # Admin's Entry Browser session was the one stopped.
+            if job.gk2_skipped:
+                job.gk2_status = "failed"
             job.erp_status = "stopped"
             job.erp_reason = ("Stopped by hand from the Entry Browser. Check the ERP before "
                               "re-running - the steps already done were really done.")

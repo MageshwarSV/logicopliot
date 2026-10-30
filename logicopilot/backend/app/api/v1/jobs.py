@@ -5073,6 +5073,15 @@ def complete_job(
             # what the operator-facing copy already promises ("fix it, then Run failed job
             # again") and reuses that same button instead of needing a new one.
             job.status = "extracted"
+            # A job whose shipment type skips GK2 review still uses the whole GK1/GK2 concept -
+            # GK2 is "disabled" for it, not absent - so a failure here must read the same way a
+            # failure through _run_gk2_submission already does: ONE "Retry & Proceed" button,
+            # not this endpoint's own, different two-step "Rerun job then Final Submit" recovery.
+            # Found live (JOB-E7D0A0): a job that had already been through the skip-GK2 flow once
+            # (gk2_skipped already true) showed the inconsistent, confusing two-step path purely
+            # because THIS particular attempt happened to run through this endpoint instead.
+            if job.gk2_skipped:
+                job.gk2_status = "failed"
             db.commit()
             db.refresh(job)
 
