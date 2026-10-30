@@ -167,6 +167,13 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
   Custom: {
     insurance_percentage: "Insurance Rate (%)",
     insurance_amount: "Insurance Amount",
+    // Display only. The underscored names are the ERP sheet's own column fields (see each
+    // group's excel_config) and the key the export resolves against, so they are spelt out
+    // here for the operator rather than renamed underneath, where a rename would silently
+    // blank the column it feeds.
+    Frt_Currency: "Freight Currency",
+    Misc_Charge_Currency: "Misc Charge Currency",
+    Ins_Currency: "Insurance Currency",
   },
 };
 // A static, informational caption under a field - background on a business rule applied to
@@ -466,6 +473,12 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   "MBL Date": "Master Bill of Lading Date",
   insurance_percentage: "Insurance Rate (%)",
   insurance_amount: "Insurance Amount",
+  // Same three as FIELD_LABEL_OVERRIDES_BY_DOC_TYPE.Custom, repeated so they read identically
+  // whether the operator meets them on the Freight Certificate tab or under Additional
+  // Details - the two cards are rendered by different code paths with their own maps.
+  Frt_Currency: "Freight Currency",
+  Misc_Charge_Currency: "Misc Charge Currency",
+  Ins_Currency: "Insurance Currency",
 };
 // These dropdowns' own options already cover every real possibility - no blank "not found"
 // choice to accidentally leave selected.
