@@ -718,6 +718,13 @@ export function JobRunPage() {
     } catch {
       setError("Failed to load the job.");
     }
+    // The pile can change as a side effect of an action on the SLOTS - deleting a page or
+    // removing a document parks what it took onto it (see _park_pages_as_unclassified). It was
+    // previously fetched only on mount and after a smart upload, so a parked page did not
+    // appear until the page was reloaded, which reads exactly like the page was destroyed -
+    // the thing parking exists to stop. Kept here rather than at each call site because
+    // `reload` is what the document viewer's own Delete (a child component) already calls.
+    await refreshUnclassifiedPages();
   }
 
   useEffect(() => {
@@ -991,7 +998,9 @@ export function JobRunPage() {
     setError(null);
     setUploadingId(jobDocumentId);
     try {
-      setJob(await jobsApi.deleteJobDocumentFile(jobId, jobDocumentId));
+      setJob(await jobsApi.deleteJobDocumentFile(jobId, jobDocumentId, true));
+      // Its pages were parked, not destroyed - show them on the pile straight away.
+      await refreshUnclassifiedPages();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not remove that file.");
     } finally {
@@ -1057,7 +1066,9 @@ export function JobRunPage() {
     setError(null);
     setDocActionBusyId(jobDocumentId);
     try {
-      setJob(await jobsApi.deleteJobDocumentPage(jobId, jobDocumentId, pageNumber));
+      setJob(await jobsApi.deleteJobDocumentPage(jobId, jobDocumentId, pageNumber, true));
+      // Parked, not destroyed - show it on the pile straight away.
+      await refreshUnclassifiedPages();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not delete that page.");
     } finally {
@@ -5747,7 +5758,7 @@ function ExtractionReview({
     setDocActionError(null);
     setDocActionBusy(true);
     try {
-      await jobsApi.deleteJobDocumentFile(jobId, active.id);
+      await jobsApi.deleteJobDocumentFile(jobId, active.id, true);
       await reload();
     } catch (err) {
       if (axios.isAxiosError(err)) setDocActionError(err.response?.data?.detail ?? "Could not delete that document.");

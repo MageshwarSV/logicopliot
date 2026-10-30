@@ -5902,6 +5902,54 @@ def _wipe_derived_field_values(db: Session, job: Job, jd: JobDocument) -> None:
         job.needs_reextraction = True
 
 
+def _park_pages_as_unclassified(
+    db: Session, job: Job, jd: JobDocument, page_numbers: list[int],
+) -> None:
+    """Put pages back on the Unclassified pile instead of destroying them.
+
+    Deleting a page used to be the one irreversible action on this screen: the rendered image
+    went with the document directory and the only way back was to re-upload the whole file and
+    redo every placement. A page an operator cuts out is usually one they are fairly sure
+    about, not certain - a scan they think is a duplicate, a page they think belongs to another
+    shipment - so it lands in the same pile an unrecognised upload lands in, where it can be
+    dragged straight back onto any slot (see assign_unclassified_page, which rebuilds a real
+    JobDocument from exactly this image).
+
+    Copies the image rather than moving it: the caller is about to delete or rebuild the
+    document directory, and a parked page must not be left pointing into something that no
+    longer exists.
+
+    `page_numbers` are in the document's CURRENT rendered numbering, which is what the operator
+    just clicked on. ocr_text is deliberately left empty - a JobDocument does not keep its
+    per-page text, and OCRing a page again purely to delete it would cost a call for something
+    nobody has asked for yet. That only costs the classifier a learning sample if the page is
+    later dragged back (document_samples.remember skips an empty excerpt), never the page
+    itself. Does not commit - the caller owns the transaction, like _remove_document_file.
+    """
+    import uuid as _uuid
+
+    pages_dir = _job_doc_dir(jd.id) / "pages"
+    unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
+    name = (jd.original_name or (Path(jd.file_path).name if jd.file_path else "page"))[:255]
+    for n in page_numbers:
+        src = pages_dir / f"page_{n}.png"
+        if not src.exists():
+            # Nothing rendered for it (a missing or never-rendered page). Better to lose the
+            # card than to leave a row pointing at a file that is not there, which the pile
+            # would then show as a broken thumbnail nobody can resolve.
+            continue
+        unmatched_dir.mkdir(parents=True, exist_ok=True)
+        dest = unmatched_dir / f"{_uuid.uuid4()}.png"
+        shutil.copy(src, dest)
+        db.add(
+            UnmatchedUploadPage(
+                tenant_id=job.tenant_id, job_id=job.id,
+                original_filename=name, page_number=n,
+                image_path=str(dest), ocr_text="",
+            )
+        )
+
+
 def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
     """Clear one uploaded file from a job document slot - the wrong invoice, uploaded by
     mistake, or (see custom_filter_pages.py's old-job sweep) a page content-matching an
@@ -5948,11 +5996,21 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
 def delete_job_document_file(
     job_id: str,
     job_document_id: str,
+    park: bool = False,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
 ) -> JobDetailOut:
-    """Remove ONE file from a slot — the wrong invoice, uploaded by mistake."""
+    """Remove ONE file from a slot — the wrong invoice, uploaded by mistake.
+
+    `park=true` keeps its pages on the Unclassified pile instead of destroying them, so the
+    operator can drag them back (see _park_pages_as_unclassified). OPT-IN, not the default,
+    because this same endpoint is also the second half of every MOVE and MERGE: the frontend
+    copies the document somewhere else first and then calls this on the source, and parking
+    there would leave a duplicate of a document that was never actually removed. Only the
+    genuine "Remove"/"Delete" actions ask for it; a reupload does not either, since its
+    replacement is already on the way and the superseded copy would just be clutter.
+    """
     job = _load_job(db, job_id, scope, user)
     jd = (
         db.query(JobDocument)
@@ -5962,6 +6020,8 @@ def delete_job_document_file(
     if jd is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on this job")
 
+    if park and jd.file_path:
+        _park_pages_as_unclassified(db, job, jd, list(range(1, (jd.page_count or 0) + 1)))
     doc_dir = _remove_document_file(db, job, jd)
     db.commit()
     shutil.rmtree(doc_dir, ignore_errors=True)
@@ -5974,6 +6034,7 @@ def delete_job_document_page(
     job_id: str,
     job_document_id: str,
     page_number: int,
+    park: bool = False,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
@@ -6002,6 +6063,12 @@ def delete_job_document_page(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if page_number < 1 or page_number > jd.page_count:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That page does not exist on this document.")
+
+    # Parked BEFORE anything is torn down - the rendered image this copies from lives in the
+    # directory the single-page branch is about to delete, and in the pages/ directory the
+    # multi-page branch is about to wipe and re-render. See _park_pages_as_unclassified.
+    if park:
+        _park_pages_as_unclassified(db, job, jd, [page_number])
 
     if jd.page_count == 1:
         doc_dir = _remove_document_file(db, job, jd)

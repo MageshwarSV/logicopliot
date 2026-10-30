@@ -203,13 +203,20 @@ export async function uploadJobDocument(
   return data;
 }
 
-/** Remove ONE file from a slot — the wrong invoice, uploaded by mistake. */
+/** Remove ONE file from a slot — the wrong invoice, uploaded by mistake.
+ *
+ *  `park` keeps its pages on the Unclassified pile instead of destroying them, so they can be
+ *  dragged back. OPT-IN: this same call is also the second half of every move and merge (copy
+ *  elsewhere, then remove the source), and parking there would leave a duplicate of a document
+ *  that was never really removed. Only a genuine Remove/Delete passes it. */
 export async function deleteJobDocumentFile(
   jobId: string,
   jobDocumentId: string,
+  park = false,
 ): Promise<JobDetail> {
   const { data } = await apiClient.delete<JobDetail>(
     `/jobs/${jobId}/documents/${jobDocumentId}/file`,
+    { params: park ? { park: true } : undefined },
   );
   return data;
 }
@@ -255,9 +262,13 @@ export async function deleteJobDocumentPage(
   jobId: string,
   jobDocumentId: string,
   pageNumber: number,
+  /** Keep the page on the Unclassified pile instead of destroying it - see
+   *  deleteJobDocumentFile's own note on why this is opt-in rather than the default. */
+  park = false,
 ): Promise<JobDetail> {
   const { data } = await apiClient.delete<JobDetail>(
     `/jobs/${jobId}/documents/${jobDocumentId}/pages/${pageNumber}`,
+    { params: park ? { park: true } : undefined },
   );
   return data;
 }
