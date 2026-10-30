@@ -5440,6 +5440,22 @@ function DualSourcePicker({
             <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
               (8-Digit Code)
             </span>
+            {/* WHICH key of the customer's sheet produced the code - on the heading line, by
+                request, so it reads as part of what this field IS rather than as another note
+                stacked under the box. Matched on the part number it is the precise answer;
+                matched only on the wording it is worth a second look, and on these invoices
+                the part code is often blank so wording was the only thing that could have
+                matched at all. Shown only when the value really did come from the sheet that
+                way (see JobFieldValueOut.lookup_source) - never over a code typed by hand. */}
+            {primary.lookup_source && (
+              <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
+                (From dump :{" "}
+                <span className="font-semibold text-slate-500 dark:text-slate-400">
+                  {primary.lookup_source}
+                </span>
+                )
+              </span>
+            )}
           </p>
           {/* Only offered when there is something to protect - on a single-line invoice
               there are no other lines to spare, and the button would be a choice with no
@@ -5517,21 +5533,6 @@ function DualSourcePicker({
         {cthIncomplete && (
           <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
             {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
-          </p>
-        )}
-        {/* WHICH key of the customer's sheet produced this code - the part number, or the
-            wording. Matched on the part number it is the precise answer; matched only on the
-            description it is worth a second look, and on these invoices the part code is often
-            blank, so wording was the only thing that could have matched at all. Shown only when
-            the value on screen really did come from the sheet that way (see
-            JobFieldValueOut.lookup_source) - never guessed over an operator's own typed code. */}
-        {primary.lookup_source && (
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-            (From dump :{" "}
-            <span className="font-medium text-slate-600 dark:text-slate-300">
-              {primary.lookup_source}
-            </span>
-            )
           </p>
         )}
         <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
