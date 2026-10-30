@@ -693,11 +693,18 @@ export function JobRunPage() {
     }
   }
 
-  async function handleAssignUnclassifiedPage(pageId: string, templateDocumentId: string) {
+  /** `jobDocumentId` is set when the page was dropped straight ONTO one already-placed
+   *  document rather than onto the slot's general area - it then joins the end of that
+   *  document instead of landing beside it as a second, separate one. */
+  async function handleAssignUnclassifiedPage(
+    pageId: string,
+    templateDocumentId: string,
+    jobDocumentId?: string,
+  ) {
     setAssigningPageId(pageId);
     setError(null);
     try {
-      setJob(await jobsApi.assignUnclassifiedPage(jobId, pageId, templateDocumentId));
+      setJob(await jobsApi.assignUnclassifiedPage(jobId, pageId, templateDocumentId, jobDocumentId));
       setUnclassifiedPages((prev) => prev.filter((p) => p.id !== pageId));
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not assign that page.");
@@ -2536,23 +2543,34 @@ export function JobRunPage() {
                         // stopped here before it can also bubble to the slot's own onDrop,
                         // which would otherwise ALSO fire and land it as a second, separate
                         // document instead.
+                        // An unclassified PAGE dropped here joins THIS document; a whole
+                        // document dropped here merges into it. Both are stopped before they
+                        // can bubble to the slot's own onDrop, which would otherwise also fire
+                        // and land the thing as a second, separate document instead - which is
+                        // all that used to be possible for a page, so two pages of the same
+                        // arrival notice became two one-page documents with no way to join
+                        // them afterwards.
                         onDragOver={(e) => {
-                          if (!draggedDocId || draggedDocId === d.id) return;
+                          if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
                           e.preventDefault();
                           e.stopPropagation();
                           setDragOverDocId(d.id);
                         }}
-                        onDragLeave={() => { if (draggedDocId) setDragOverDocId(null); }}
+                        onDragLeave={() => { if (draggedDocId || draggedPageId) setDragOverDocId(null); }}
                         onDrop={(e) => {
-                          if (!draggedDocId || draggedDocId === d.id) return;
+                          if (!draggedPageId && (!draggedDocId || draggedDocId === d.id)) return;
                           e.preventDefault();
                           e.stopPropagation();
                           setDragOverDocId(null);
-                          handleMergeDocumentIntoDocument(draggedDocId, d.id);
+                          if (draggedPageId) {
+                            handleAssignUnclassifiedPage(draggedPageId, tdocId, d.id);
+                          } else if (draggedDocId) {
+                            handleMergeDocumentIntoDocument(draggedDocId, d.id);
+                          }
                           setDraggedDocId(null);
                           setDraggedDocFromTdocId(null);
                         }}
-                        title={readOnly ? undefined : "Drag onto another document type to move it there, or onto another document to merge into it"}
+                        title={readOnly ? undefined : "Drag onto another document type to move it there, or onto another document to merge into it. Drop an unclassified page here to add it to this document."}
                         className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors ${
                           dragOverDocId === d.id
                             ? "border-indigo-400 bg-indigo-50 text-indigo-800 ring-2 ring-indigo-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
@@ -2648,7 +2666,8 @@ export function JobRunPage() {
                 Unclassified pages · {unclassifiedPages.length}
               </p>
               <p className="mb-2 text-xs text-slate-400">
-                Couldn't be auto-routed — drag one onto the right document type on the left.
+                Couldn't be auto-routed — drag one onto the right document type on the left, or
+                straight onto a document already there to add it to that one.
               </p>
               {/* Its own scroll, separate from the page's - so a long list never pushes the
                   document-type slots on the left out of reach while you're mid-drag. */}

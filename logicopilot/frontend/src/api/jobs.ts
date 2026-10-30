@@ -373,10 +373,16 @@ export async function assignUnclassifiedPage(
   jobId: string,
   pageId: string,
   templateDocumentId: string,
+  /** Dropped onto ONE already-placed document rather than the slot's general area - append
+   *  this page to the end of that document instead of landing it as a separate one. */
+  jobDocumentId?: string,
 ): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(
     `/jobs/${jobId}/unclassified-pages/${pageId}/assign`,
-    { template_document_id: templateDocumentId },
+    {
+      template_document_id: templateDocumentId,
+      ...(jobDocumentId ? { job_document_id: jobDocumentId } : {}),
+    },
   );
   return data;
 }

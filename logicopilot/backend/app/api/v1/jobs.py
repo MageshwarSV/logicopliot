@@ -5433,14 +5433,36 @@ def _merge_into_document(
     would need converting to a PDF first, deliberately out of scope here (the operator can
     still send it in as a separate document instead).
     """
-    if not target.file_path or Path(target.file_path).suffix.lower() != ".pdf":
+    if not target.file_path:
         raise HTTPException(
             status_code=422,
-            detail="Only a PDF document can have more pages merged into it - send this in as a separate document instead.",
+            detail="That document has no file to merge into - send this in as a separate document instead.",
         )
     target_path = Path(target.file_path)
     if not target_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The target document's file is missing on disk.")
+
+    if target_path.suffix.lower() != ".pdf":
+        # An IMAGE target is promoted to a one-page PDF first, in place, rather than refused.
+        # A single image genuinely cannot hold a second page - but every document that arrives
+        # from the Unclassified pile is a .png (assign_unclassified_page lands the page image
+        # as the file itself), so refusing meant the one case an operator hits most could never
+        # be merged into: two pages of the same arrival notice dragged over one after another
+        # became two separate single-page documents, with no way to join them afterwards.
+        # Same conversion _append_to_pdf already performs on the INSERT side.
+        import fitz  # PyMuPDF
+
+        img_doc = fitz.open(target_path)
+        try:
+            as_pdf = img_doc.convert_to_pdf()
+        finally:
+            img_doc.close()
+        pdf_path = target_path.with_suffix(".pdf")
+        pdf_path.write_bytes(as_pdf)
+        if pdf_path != target_path:
+            target_path.unlink(missing_ok=True)
+        target.file_path = str(pdf_path)
+        target_path = pdf_path
 
     rebuilt = _append_to_pdf(target_path, insert_bytes, insert_ext)
     target_path.write_bytes(rebuilt)
@@ -6706,6 +6728,10 @@ def get_unclassified_page_image(
 
 class AssignUnclassifiedPagePayload(BaseModel):
     template_document_id: str
+    # Dropped onto ONE already-placed document rather than onto the slot's general area:
+    # append this page to the END of that document instead of landing it as a separate one.
+    # None (dropping on the slot) keeps the original behaviour - its own new document.
+    job_document_id: str | None = None
 
 
 @router.post("/jobs/{job_id}/unclassified-pages/{page_id}/assign")
@@ -6736,20 +6762,44 @@ def assign_unclassified_page(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Document type not found on this job's template.")
 
-    jd = _slot_for_new_file(db, job, tdoc.id)
-    if jd is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Could not find or create a slot for this document type.",
+    if payload.job_document_id:
+        # Dropped straight onto one already-placed document: this page belongs WITH that one,
+        # not beside it. Two pages of the same arrival notice dragged over one after another
+        # used to become two separate single-page documents with no way to join them - see
+        # _merge_into_document, which also promotes an image-based document to a PDF so a
+        # document that itself came from this pile can still be merged into.
+        jd = (
+            db.query(JobDocument)
+            .filter(JobDocument.id == payload.job_document_id, JobDocument.job_id == job.id)
+            .first()
         )
-    jd.original_name = row.original_filename[:255] or None
-    ddir = _job_doc_dir(jd.id)
-    ddir.mkdir(parents=True, exist_ok=True)
-    dorig = ddir / "original.png"
-    shutil.copy(Path(row.image_path), dorig)
-    jd.file_path = str(dorig)
-    jd.page_count = _render_pages(dorig, ddir / "pages")
-    record_billable_pages(db, job, jd.page_count)
+        if jd is None or not jd.file_path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That document is not on this job any more.",
+            )
+        if jd.template_document_id != tdoc.id:
+            raise HTTPException(
+                status_code=422,
+                detail="That document belongs to a different document type.",
+            )
+        _merge_into_document(db, job, jd, Path(row.image_path).read_bytes(), ".png")
+        record_billable_pages(db, job, 1)
+    else:
+        jd = _slot_for_new_file(db, job, tdoc.id)
+        if jd is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Could not find or create a slot for this document type.",
+            )
+        jd.original_name = row.original_filename[:255] or None
+        ddir = _job_doc_dir(jd.id)
+        ddir.mkdir(parents=True, exist_ok=True)
+        dorig = ddir / "original.png"
+        shutil.copy(Path(row.image_path), dorig)
+        jd.file_path = str(dorig)
+        jd.page_count = _render_pages(dorig, ddir / "pages")
+        record_billable_pages(db, job, jd.page_count)
 
     try:
         document_samples.remember(

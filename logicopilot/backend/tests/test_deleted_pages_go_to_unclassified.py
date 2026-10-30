@@ -185,3 +185,126 @@ def test_a_parked_page_can_be_dragged_back_onto_a_slot(client, db_session, tmp_p
     assert _parked(db_session, job) == []
     placed = [d for d in resp.json()["documents"] if d.get("file_path") or d.get("page_count")]
     assert placed, resp.text
+
+
+# ---- dropping a page ONTO an existing document, instead of beside it ------------------------
+
+def _park_a_page(client, db_session, job, jd, page_number=1):
+    client.delete(f"/api/v1/jobs/{job.id}/documents/{jd.id}/pages/{page_number}?park=true")
+    return _parked(db_session, job)[-1]
+
+
+def test_a_page_dropped_onto_a_document_joins_it_rather_than_landing_beside_it(
+    client, db_session, tmp_path,
+):
+    """Dropping onto the SLOT makes a separate document; dropping onto one already-placed
+    document means "this belongs with that one". Without the second, two pages of the same
+    arrival notice dragged over one after another became two one-page documents with no way
+    to join them afterwards."""
+    tenant, operator, job, jd = _setup(db_session, tmp_path, pages=3)
+    login(client, operator.email)
+    before = jd.page_count
+
+    row = _park_a_page(client, db_session, job, jd, page_number=3)
+    db_session.refresh(jd)
+    assert jd.page_count == before - 1
+
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{row.id}/assign",
+        json={"template_document_id": jd.template_document_id, "job_document_id": jd.id},
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.refresh(jd)
+    assert jd.page_count == before          # back where it started, on the SAME document
+    assert _parked(db_session, job) == []
+    placed = [d for d in resp.json()["documents"] if d.get("page_count")]
+    assert len(placed) == 1, "it must not have created a second document"
+
+
+def test_a_page_can_be_merged_into_a_document_that_itself_came_from_the_pile(
+    client, db_session, tmp_path,
+):
+    """The case this is actually for. A document assigned from the pile IS an image file, and
+    merging used to refuse any non-PDF target outright - so the very documents an operator
+    creates this way were the ones that could never be added to."""
+    tenant, operator, job, jd = _setup(db_session, tmp_path, pages=2)
+    login(client, operator.email)
+    tdoc_id = jd.template_document_id
+
+    first = _park_a_page(client, db_session, job, jd, page_number=1)
+    second = _park_a_page(client, db_session, job, jd, page_number=1)
+    assert len(_parked(db_session, job)) == 2
+
+    # The first page lands as its own new (image-backed) document...
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{first.id}/assign",
+        json={"template_document_id": tdoc_id},
+    )
+    assert resp.status_code == 200, resp.text
+    # Parking BOTH pages emptied the original document, so it was removed outright and its
+    # now-free row is what the assignment landed in - whichever row it is, there is exactly
+    # one placed document and it is image-backed.
+    from app.models.job import JobDocument as _JD
+    db_session.expire_all()      # the request used its own session; drop this one's cache
+    created = (
+        db_session.query(_JD)
+        .filter(_JD.job_id == job.id, _JD.template_document_id == tdoc_id,
+                _JD.file_path.isnot(None))
+        .all()
+    )
+    assert len(created) == 1, [d.file_path for d in created]
+    target = created[0]
+    assert target.file_path.endswith(".png"), "precondition: it arrives as an image"
+
+    # ...and the second is dropped straight onto it.
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{second.id}/assign",
+        json={"template_document_id": tdoc_id, "job_document_id": target.id},
+    )
+    assert resp.status_code == 200, resp.text
+    db_session.refresh(target)
+    assert target.page_count == 2
+    assert target.file_path.endswith(".pdf"), "promoted so it could grow a second page"
+
+
+def test_dropping_onto_a_document_of_a_different_type_is_refused(client, db_session, tmp_path):
+    """The slot and the document have to agree, or a page would silently join a document the
+    operator did not aim at."""
+    tenant, operator, job, jd = _setup(db_session, tmp_path, pages=2)
+    login(client, operator.email)
+    other = TemplateDocument(tenant_id=tenant.id, group_id=job.group_id, name="Packing List",
+                             doc_type="PackingList", order_index=1)
+    db_session.add(other)
+    db_session.commit()
+
+    row = _park_a_page(client, db_session, job, jd, page_number=1)
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{row.id}/assign",
+        json={"template_document_id": other.id, "job_document_id": jd.id},
+    )
+    assert resp.status_code == 422, resp.text
+    assert _parked(db_session, job), "the page stays on the pile when the drop is refused"
+
+
+def test_dropping_on_the_slot_still_makes_its_own_document(client, db_session, tmp_path):
+    """The original behaviour, unchanged - this is still what dropping on the slot's general
+    area does, and the only thing that happened before."""
+    tenant, operator, job, jd = _setup(db_session, tmp_path, pages=2)
+    login(client, operator.email)
+    tdoc_id = jd.template_document_id
+
+    row = _park_a_page(client, db_session, job, jd, page_number=1)
+    resp = client.post(
+        f"/api/v1/jobs/{job.id}/unclassified-pages/{row.id}/assign",
+        json={"template_document_id": tdoc_id},
+    )
+    assert resp.status_code == 200, resp.text
+    from app.models.job import JobDocument as _JD
+    placed = (
+        db_session.query(_JD)
+        .filter(_JD.job_id == job.id, _JD.template_document_id == tdoc_id,
+                _JD.file_path.isnot(None))
+        .all()
+    )
+    assert len(placed) == 2, "a separate document, beside the original"
