@@ -85,6 +85,10 @@ export interface JobDocument {
   gk2_approved?: boolean;
   /** False = optional — Document Capture can complete without this document uploaded. */
   is_required?: boolean;
+  /** This file's content changed since it was last read (a page cut out, a page added, a
+   *  reupload) and nothing has re-read it since. Drives the Extract prompt on this document's
+   *  own card - the job-level banner never said WHICH document it meant. */
+  needs_reextraction?: boolean;
   /** Bumped whenever this slot's file is replaced - a same-slot delete+reupload reuses the
    *  SAME id and often the same page_count, so this is what tells the preview the file
    *  actually changed and its cached page images must be re-fetched, not reused. */

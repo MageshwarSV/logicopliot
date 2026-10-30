@@ -1036,7 +1036,7 @@ def _job_category(job: Job) -> str:
     return "new"
 
 
-def _start_extraction_background(job_id: str) -> None:
+def _start_extraction_background(job_id: str, only_job_document_id: str | None = None) -> None:
     """Run extraction off the request thread, so an upload or the Extract button returns at
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
     session resume in main.py: the request's session closes when the endpoint returns, long
@@ -1052,7 +1052,7 @@ def _start_extraction_background(job_id: str) -> None:
             job2 = db2.get(Job, job_id)
             if job2 is None:
                 return
-            run_extraction(db2, job2)
+            run_extraction(db2, job2, only_job_document_id=only_job_document_id)
         except Exception:  # noqa: BLE001
             logger.exception("background extraction failed for job %s", job_id)
             db2.rollback()
@@ -1068,7 +1068,7 @@ def _start_extraction_background(job_id: str) -> None:
     threading.Thread(target=_go, daemon=True, name=f"extract-{job_id}").start()
 
 
-def _begin_extraction(db: Session, job: Job) -> None:
+def _begin_extraction(db: Session, job: Job, only_job_document_id: str | None = None) -> None:
     """Common start-of-extraction bookkeeping for the auto-trigger, the Extract button and
     Re-run extraction alike: clear any earlier approvals — a fresh read can change the very
     values that were approved, on Data Extraction and on Data Validation both — then hand off
@@ -1084,8 +1084,13 @@ def _begin_extraction(db: Session, job: Job) -> None:
     does for an operator's own click, so _job_stage() has a CURRENT answer to fall back to
     instead of a stale one.
     """
-    db.query(JobDocument).filter(JobDocument.job_id == job.id).update(
-        {"approved": False, "gk2_approved": False}, synchronize_session=False)
+    # Only the document actually being re-read loses its approval on a scoped run - the
+    # others' content has not changed, so sending an operator back through three documents
+    # they already checked is work this is meant to remove, not create.
+    approval_scope = db.query(JobDocument).filter(JobDocument.job_id == job.id)
+    if only_job_document_id:
+        approval_scope = approval_scope.filter(JobDocument.id == only_job_document_id)
+    approval_scope.update({"approved": False, "gk2_approved": False}, synchronize_session=False)
     job.validation_approved = False
     job.gk2_validation_approved = False
     job.gk2_status = None
@@ -1095,7 +1100,7 @@ def _begin_extraction(db: Session, job: Job) -> None:
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage="Data Validation", note="Extraction started — back to Data Validation for review"))
     db.commit()
-    _start_extraction_background(job.id)
+    _start_extraction_background(job.id, only_job_document_id=only_job_document_id)
 
 
 def _maybe_auto_extract(db: Session, job: Job) -> None:
@@ -3164,6 +3169,16 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             gk2_approved=jd.gk2_approved,
             is_required=(tdoc_by_id[jd.template_document_id].is_required
                         if jd.template_document_id in tdoc_by_id else True),
+            # Every path that changes a document's content clears extracted_json (removing a
+            # page, merging one in, a reupload), and a document added to an already-extracted
+            # job has none yet either - both mean "nothing has read this as it now stands".
+            # Only on a job that HAS been read at least once: in draft NOTHING has been read,
+            # so flagging every document would say nothing.
+            needs_reextraction=(
+                job.status not in ("draft", "extracting")
+                and jd.file_path is not None
+                and jd.extracted_json is None
+            ),
             updated_at=jd.updated_at,
         )
         # The TEMPLATE's own order, which is deliberately most-authoritative-first — Bill of
@@ -6988,9 +7003,22 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
     return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
 
 
-def run_extraction(db: Session, job: Job) -> None:
+def run_extraction(db: Session, job: Job, only_job_document_id: str | None = None) -> None:
     """Extract every marked field for a job's uploaded documents and set status to
-    'extracted'. Reusable by the operator's Extract button AND the email auto-pull."""
+    'extracted'. Reusable by the operator's Extract button AND the email auto-pull.
+
+    `only_job_document_id` re-reads just ONE document - for when a single file changed (a page
+    cut out, a page added, a reupload) and re-reading all four is work nobody asked for. Every
+    other document keeps the values it already has; only this one is sent to the model again.
+
+    What is NOT scoped, deliberately: every tenant CUSTOM field is still recomputed in full.
+    They have no job_document_id of their own, and a field with no source_document_ids reads
+    EVERY document as its fallback - so there is no honest way to tell whether a given CTH,
+    composite or lookup depended on the file that just changed (see _wipe_derived_field_values,
+    which documents the same limitation from the other side). Recomputing them all is what
+    makes this safe: nothing can be left pointing at content that no longer says it. The saving
+    is the per-document model calls, which is where the time actually goes.
+    """
     if is_extraction_paused(db, tenant_id=job.tenant_id):
         # A Super Admin turned extraction off (see app/api/v1/system_settings.py) - before
         # any OCR or AI call, not after one fails. The two existing callers already handle
@@ -7046,8 +7074,20 @@ def run_extraction(db: Session, job: Job) -> None:
         .all()
     }
 
-    # Clear any prior run.
-    db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
+    # Clear any prior run - but on a SCOPED run only what this run will actually rewrite.
+    # Every mark value carries its own job_document_id (both write sites below set it), so
+    # "this document's readings" is an exact filter, and the untouched documents keep theirs.
+    # Custom fields go regardless of scope: they are all recomputed below, for the reason in
+    # this function's own docstring.
+    prior = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)
+    if only_job_document_id:
+        prior = prior.filter(
+            or_(
+                JobFieldValue.job_document_id == only_job_document_id,
+                JobFieldValue.custom_field_id.isnot(None),
+            )
+        )
+    prior.delete(synchronize_session=False)
     # A fresh extraction makes the job current again by definition - see
     # Job.needs_reextraction / _remove_document_file for how it gets set.
     job.needs_reextraction = False
@@ -7170,6 +7210,11 @@ def run_extraction(db: Session, job: Job) -> None:
     # invoice numbers instead of overwriting one another.
     for tdoc, jd in [(t, d) for t in group.documents for d in docs_by_tdoc.get(t.id, [])]:
         if jd.file_path is None or not tdoc.marks:
+            continue
+        # A scoped run reads ONE document. The others' values were deliberately left in place
+        # by the delete above, so skipping here keeps them exactly as they are rather than
+        # blanking them - this `continue` and that filter only make sense together.
+        if only_job_document_id and jd.id != only_job_document_id:
             continue
 
         ocr_text = text_for_doc(jd)
@@ -8163,7 +8208,18 @@ def extract_job(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job's documents are already being read right now — wait for that to finish before running it again.",
         )
-    _begin_extraction(db, job)
+    if job_document_id is not None:
+        owned = (
+            db.query(JobDocument)
+            .filter(JobDocument.id == job_document_id, JobDocument.job_id == job.id)
+            .first()
+        )
+        if owned is None or not owned.file_path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That document is not on this job any more.",
+            )
+    _begin_extraction(db, job, only_job_document_id=job_document_id)
     db.refresh(job)
     return _build_detail(db, job)
 

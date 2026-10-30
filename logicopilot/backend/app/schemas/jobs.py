@@ -134,6 +134,13 @@ class JobDocumentOut(BaseModel):
     gk2_approved: bool = False
     # False = this document is optional — Document Capture can complete without it.
     is_required: bool = True
+    # This file's content changed since it was last read (a page cut out, a page added, a
+    # reupload) and nothing has re-read it since - every one of those paths clears
+    # extracted_json, which is what this is derived from. Only ever true on a job that HAS
+    # been extracted at least once; on a job still in draft nothing has been read yet, so
+    # "stale" would be meaningless. Drives the Extract prompt on this document's own card -
+    # the job-level Job.needs_reextraction banner never said WHICH document it meant.
+    needs_reextraction: bool = False
     # Bumped whenever this slot's file is replaced (delete + reupload reuses the SAME row/id
     # when it was the only file in the slot - see _remove_document_file) - the frontend keys
     # its page-image fetch on this too, not just id+page_count, which stay identical across a

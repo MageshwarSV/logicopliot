@@ -323,8 +323,19 @@ export async function mergeJobDocumentPageIntoDocument(
   return data;
 }
 
-export async function extractJob(jobId: string): Promise<JobDetail> {
-  const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/extract`);
+export async function extractJob(
+  jobId: string,
+  /** Re-read ONE document instead of all of them - the Extract button on a single document's
+   *  own card, for when only that file changed. Every other document keeps the values it
+   *  already has; fields that span documents (CTH, composites, lookups) are still recomputed
+   *  in full, because none of them can be attributed to a single file. */
+  jobDocumentId?: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/extract`,
+    undefined,
+    { params: jobDocumentId ? { job_document_id: jobDocumentId } : undefined },
+  );
   return data;
 }
 

@@ -1178,7 +1178,10 @@ export function JobRunPage() {
     }
   }
 
-  async function runExtract() {
+  /** `jobDocumentId` re-reads only that one document - the Extract button on its own card,
+   *  for when only that file changed. Fields that span documents are still recomputed, so
+   *  nothing downstream is left pointing at content that moved. */
+  async function runExtract(jobDocumentId?: string) {
     // The request now returns as soon as extraction has STARTED, not once it is done — the job
     // comes back with status "extracting", and the poll effect above takes it from there. Move
     // to Data Extraction so the operator lands where the "AI Processing" progress actually
@@ -1186,7 +1189,7 @@ export function JobRunPage() {
     setExtracting(true);
     setError(null);
     try {
-      const j = await jobsApi.extractJob(jobId);
+      const j = await jobsApi.extractJob(jobId, jobDocumentId);
       setJob(j);
       setActiveTab("extraction");
       // A fresh read means a fresh review of everything downstream too. The backend already
@@ -2344,9 +2347,21 @@ export function JobRunPage() {
           not just Document Capture, since whoever opens the job next could land anywhere. */}
       {job.needs_reextraction && job.status !== "extracting" && (
         <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-          <span>⚠️ One of this job's documents changed since it was last extracted — press Extract to refresh its data.</span>
+          {/* Names the documents rather than leaving the operator to find them. Each one also
+              carries its own prompt and its own "Extract this one" on its card in Document
+              Capture; this banner stays because whoever opens the job could land on any tab. */}
+          <span>
+            ⚠️{" "}
+            {(() => {
+              const stale = job.documents.filter((d) => d.needs_reextraction);
+              const names = [...new Set(stale.map((d) => d.name))];
+              return names.length
+                ? `${names.join(", ")} changed since the last extraction — press Extract to refresh.`
+                : "One of this job's documents changed since it was last extracted — press Extract to refresh its data.";
+            })()}
+          </span>
           {!readOnly && (
-            <Button size="sm" variant="secondary" onClick={runExtract} isLoading={extracting}>
+            <Button size="sm" variant="secondary" onClick={() => runExtract()} isLoading={extracting}>
               Extract now
             </Button>
           )}
@@ -2396,7 +2411,7 @@ export function JobRunPage() {
                     AI Processing…
                   </span>
                 ) : (
-                  <Button size="sm" onClick={runExtract} isLoading={extracting} disabled={!allUploaded}>
+                  <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
                     {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
                   </Button>
                 )}
@@ -2628,6 +2643,27 @@ export function JobRunPage() {
                           </div>
                         )}
                       </div>
+                      {/* THIS document changed since it was last read. The job-level banner at
+                          the top of the page says only that "one of this job's documents"
+                          changed, which leaves the operator to work out which - so it is said
+                          here, on the card it is actually about, with a button that re-reads
+                          only this file. Fields that span documents are still recomputed, so
+                          nothing downstream keeps a value taken from content that moved. */}
+                      {d.needs_reextraction && job.status !== "extracting" && (
+                        <div className="mt-1 flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                          <span>⚠️ Changed since it was last read.</span>
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              onClick={() => runExtract(d.id)}
+                              disabled={extracting}
+                              className="shrink-0 rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                            >
+                              {extracting ? "Extracting…" : "Extract this one"}
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <JobDocPreview
                         jobId={jobId}
                         docId={d.id}
