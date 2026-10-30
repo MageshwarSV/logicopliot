@@ -164,3 +164,72 @@ def test_an_unscoped_run_still_clears_everything(db_session):
     # scoped run, where Invoice No stays "INV-001" untouched.
     assert values.get(("Invoice No", jd_inv.id)) != "INV-001"
     assert values.get(("Freight Amount", jd_frt.id)) != "100.00"
+
+
+# ------------------------------------------------- the HTTP endpoint, not just run_extraction
+#
+# Everything above drives run_extraction() directly, which is where the interesting logic is -
+# but that left POST /jobs/{id}/extract itself completely uncovered, and the first version of
+# this feature shipped with the endpoint's body reading a `job_document_id` its signature never
+# declared. Every call raised NameError: not only the new per-document button, but the plain
+# whole-job Re-run too. The tests below go through the API so that the wire contract the
+# frontend actually uses - ?job_document_id=<id> as a query parameter - is held in place.
+
+from app.models.user import User  # noqa: E402  (grouped with the endpoint tests below)
+from tests.conftest import login, make_user  # noqa: E402
+
+
+def _login_operator(client, db_session, tenant, email):
+    op = make_user(db_session, role="operator", tenant=tenant, email=email)
+    login(client, op.email)
+    return op
+
+
+def test_the_endpoint_accepts_job_document_id_and_passes_it_through(client, db_session):
+    """The per-document "Extract this one" button. The query parameter has to reach
+    _begin_extraction as only_job_document_id, or the scoping silently does nothing."""
+    tenant, group, job, jd_inv, jd_frt, cf = _setup(db_session)
+    _login_operator(client, db_session, tenant, "scoped-op@example.com")
+
+    with patch("app.api.v1.jobs._begin_extraction") as begin:
+        resp = client.post(f"/api/v1/jobs/{job.id}/extract",
+                           params={"job_document_id": jd_frt.id})
+
+    assert resp.status_code == 200, resp.text
+    begin.assert_called_once()
+    assert begin.call_args.kwargs.get("only_job_document_id") == jd_frt.id
+
+
+def test_the_endpoint_without_the_parameter_still_runs_the_whole_job(client, db_session):
+    """The plain Re-run button. This is the one the NameError broke for everybody, including
+    operators who never touched the new feature."""
+    tenant, group, job, jd_inv, jd_frt, cf = _setup(db_session)
+    _login_operator(client, db_session, tenant, "scoped-op2@example.com")
+
+    with patch("app.api.v1.jobs._begin_extraction") as begin:
+        resp = client.post(f"/api/v1/jobs/{job.id}/extract")
+
+    assert resp.status_code == 200, resp.text
+    begin.assert_called_once()
+    assert begin.call_args.kwargs.get("only_job_document_id") is None
+
+
+def test_a_job_document_id_from_another_job_is_refused(client, db_session):
+    """Scoping to someone else's document would delete this job's rows and re-read nothing."""
+    tenant, group, job, jd_inv, jd_frt, cf = _setup(db_session)
+    other = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-OTHER", status="extracted")
+    db_session.add(other)
+    db_session.flush()
+    foreign = JobDocument(tenant_id=tenant.id, job_id=other.id,
+                          template_document_id=jd_inv.template_document_id,
+                          file_path="/tmp/other.pdf", page_count=1)
+    db_session.add(foreign)
+    db_session.commit()
+    _login_operator(client, db_session, tenant, "scoped-op3@example.com")
+
+    with patch("app.api.v1.jobs._begin_extraction") as begin:
+        resp = client.post(f"/api/v1/jobs/{job.id}/extract",
+                           params={"job_document_id": foreign.id})
+
+    assert resp.status_code == 404, resp.text
+    begin.assert_not_called()

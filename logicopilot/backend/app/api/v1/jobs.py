@@ -8166,6 +8166,9 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
 @router.post("/jobs/{job_id}/extract", response_model=JobDetailOut)
 def extract_job(
     job_id: str,
+    # Re-read ONE document instead of the whole job - the Extract button on a single document's
+    # own card. Absent (the plain Re-run button) means every document, the original behaviour.
+    job_document_id: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
