@@ -6619,11 +6619,8 @@ function ExtractionReview({
                           labelOverridePercentage={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
                           labelOverrideAmount={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.["insurance_amount"]}
                           onBeforeSave={
-                            (insuranceMode === "amount" ? insuranceAmountFv : insurancePercentageFv)?.custom_field_id
-                              ? () =>
-                                  requireInsuranceCertificate(
-                                    (insuranceMode === "amount" ? insuranceAmountFv : insurancePercentageFv)!.custom_field_id!,
-                                  )
+                            insuranceMode === "percentage" && insurancePercentageFv?.custom_field_id
+                              ? () => requireInsuranceCertificate(insurancePercentageFv!.custom_field_id!)
                               : undefined
                           }
                         />
