@@ -85,6 +85,8 @@ export function JobActivityChart() {
   const isCurrentMonth = month === currentMonthStr();
   const max = Math.max(1, ...days.flatMap((d) => [d.new_jobs, d.erp_submitted_jobs]));
   const { top: niceMax, ticks } = niceTicks(max);
+  const totalNew = days.reduce((sum, d) => sum + d.new_jobs, 0);
+  const totalSubmitted = days.reduce((sum, d) => sum + d.erp_submitted_jobs, 0);
 
   const dayWidth = 72;
   const barWidth = 22;
@@ -140,8 +142,14 @@ export function JobActivityChart() {
       </div>
 
       <div className="mb-3 flex items-center gap-4 text-sm">
-        <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-[#3b82f6]" /> New Jobs</span>
-        <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-[#22c55e]" /> ERP Submitted Jobs</span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-sm bg-[#3b82f6]" /> New Jobs
+          <span className="font-semibold text-slate-700 dark:text-slate-200">{totalNew}</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-sm bg-[#22c55e]" /> ERP Submitted Jobs
+          <span className="font-semibold text-slate-700 dark:text-slate-200">{totalSubmitted}</span>
+        </span>
       </div>
 
       {loading ? (
