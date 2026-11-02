@@ -96,6 +96,21 @@ class JobCategoryCounts(BaseModel):
     completed: int = 0
 
 
+class JobActivityDay(BaseModel):
+    """One calendar day's worth of activity for the Job Activity Dashboard chart - how many
+    jobs arrived that day (created_at) next to how many were submitted to the ERP that day
+    (ai_submitted_at). Both are historical events tied to a specific day, unlike the live-status
+    "New Jobs"/"ERP Submitted Jobs" sidebar badges above, which answer "what's true right now"
+    and have no meaning once attributed to a day that has already passed."""
+    date: str
+    new_jobs: int = 0
+    erp_submitted_jobs: int = 0
+
+
+class JobActivityChartOut(BaseModel):
+    days: list[JobActivityDay]
+
+
 class JobEventOut(BaseModel):
     """One line of a job's history, for the popup behind the Last updated column."""
     model_config = ConfigDict(from_attributes=True)

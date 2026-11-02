@@ -89,6 +89,25 @@ export async function getJobCategoryCounts(filters?: JobCategoryCountFilters): P
   return data;
 }
 
+/** One calendar day's worth of the Job Activity Dashboard chart - see GET /jobs/activity-chart.
+ *  A historical "what happened that day" count (created_at / ai_submitted_at), not the same
+ *  thing as JobCategoryCounts' live "what's true right now" badges above. */
+export interface JobActivityDay {
+  date: string;
+  new_jobs: number;
+  erp_submitted_jobs: number;
+}
+
+export async function getJobActivityChart(
+  month: string,
+  assignedTo?: string,
+): Promise<JobActivityDay[]> {
+  const { data } = await apiClient.get<{ days: JobActivityDay[] }>("/jobs/activity-chart", {
+    params: { month, assigned_to: assignedTo || undefined },
+  });
+  return data.days;
+}
+
 /** How far through its steps a run has got. `total` is 0 when nothing knows the length yet -
  *  a bar drawn off nothing is worse than no bar, so the screen leaves it out in that case. */
 export interface RunProgress {

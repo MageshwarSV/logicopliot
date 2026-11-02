@@ -61,6 +61,8 @@ from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
     FieldValueCorrect,
+    JobActivityChartOut,
+    JobActivityDay,
     JobCategoryCounts,
     JobCreate,
     JobDetailOut,
@@ -1949,6 +1951,64 @@ def job_category_counts(
         submitted=sum(1 for j in submitted_candidates if _extra(j)),
         completed=sum(1 for j in completed_candidates if _extra(j)),
     )
+
+
+@router.get("/jobs/activity-chart", response_model=JobActivityChartOut)
+def job_activity_chart(
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+    month: str = "",
+    assigned_to: str | None = None,
+) -> JobActivityChartOut:
+    """One bar per calendar day (IST) of the given month ("YYYY-MM"): how many jobs arrived
+    that day (created_at) next to how many were submitted to the ERP that day (ai_submitted_at).
+    This is a historical activity/throughput view, deliberately NOT the same thing as the
+    "New Jobs"/"ERP Submitted Jobs" sidebar badges above (job_category_counts) - those answer
+    "what's true of a job RIGHT NOW", which cannot be attributed to a past day (a job created
+    two weeks ago is no longer "new" today, but it genuinely did arrive on that day two weeks
+    ago - that is the event this chart counts). assigned_to mirrors category-counts' own filter
+    exactly (an operator's full_name, not an id - see _operator_name/_job_passes_extra_filters),
+    so this dashboard's "Assigned To" dropdown agrees with every other screen that already
+    filters jobs this way."""
+    try:
+        year, mon = (int(x) for x in month.split("-"))
+        start = datetime(year, mon, 1, tzinfo=IST)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="month must be YYYY-MM")
+    end = datetime(year + (1 if mon == 12 else 0), 1 if mon == 12 else mon + 1, 1, tzinfo=IST)
+
+    base = _jobs_visible_query(db, scope, user)
+    created_candidates = base.filter(Job.created_at >= start, Job.created_at < end).all()
+    submitted_candidates = base.filter(
+        Job.ai_submitted_at.isnot(None),
+        Job.ai_submitted_at >= start, Job.ai_submitted_at < end,
+    ).all()
+    if assigned_to:
+        created_candidates = [j for j in created_candidates if _operator_name(db, j) == assigned_to]
+        submitted_candidates = [j for j in submitted_candidates if _operator_name(db, j) == assigned_to]
+
+    def _bucket(timestamps: list[datetime]) -> dict[date, int]:
+        counts: dict[date, int] = {}
+        for ts in timestamps:
+            d = ts.astimezone(IST).date()
+            counts[d] = counts.get(d, 0) + 1
+        return counts
+
+    new_counts = _bucket([j.created_at for j in created_candidates])
+    submitted_counts = _bucket([j.ai_submitted_at for j in submitted_candidates])
+
+    days: list[JobActivityDay] = []
+    cursor = start
+    while cursor < end:
+        day = cursor.date()
+        days.append(JobActivityDay(
+            date=day.isoformat(),
+            new_jobs=new_counts.get(day, 0),
+            erp_submitted_jobs=submitted_counts.get(day, 0),
+        ))
+        cursor += timedelta(days=1)
+    return JobActivityChartOut(days=days)
 
 
 @router.get("/jobs", response_model=list[JobOut])

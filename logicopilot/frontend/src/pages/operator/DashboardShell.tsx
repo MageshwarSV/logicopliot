@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { JobsOverview } from "../../components/JobsOverview";
+import { JobActivityChart } from "../../components/JobActivityChart";
 import { useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Button } from "../../components/ui/Button";
@@ -78,6 +79,10 @@ export function OperatorDashboard() {
           {mailMsg}
         </div>
       )}
+
+      <div className="mb-6">
+        <JobActivityChart />
+      </div>
 
       {/* Pressing any box navigates straight to the Jobs list, filtered to exactly what it
           counted — there is no separate "recent jobs" table here to keep in sync with it. */}
