@@ -633,6 +633,13 @@ export function JobsPage() {
     });
   }
 
+  function timeOnly(iso?: string | null) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
   const customers = useMemo(() => {
     const s = new Set<string>();
     for (const j of jobs) if (j.customer_name) s.add(j.customer_name);
@@ -776,9 +783,10 @@ export function JobsPage() {
             openHistory(j);
           }}
           title="View full status history"
-          className="text-slate-600 underline decoration-dotted underline-offset-2 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
+          className="text-left text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
         >
-          {when(j.created_at, false)}
+          <span className="block underline decoration-dotted underline-offset-2">{when(j.created_at, false)}</span>
+          <span className="block text-[11px] text-slate-400 dark:text-slate-500">{timeOnly(j.created_at)}</span>
         </button>
       ),
     },

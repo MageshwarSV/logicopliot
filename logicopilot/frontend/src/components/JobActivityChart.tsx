@@ -31,13 +31,17 @@ function dayLabel(iso: string): { num: string; mon: string } {
 }
 
 /** A "nice" axis step (1/2/5 x a power of 10) for a given max value, so the gridlines read as
- *  round numbers (0/50/100/...) instead of whatever the data happens to top out at. */
+ *  round numbers (0/50/100/...) instead of whatever the data happens to top out at. Job counts
+ *  are always whole numbers, so the step itself is never allowed below 1 - without that floor,
+ *  a quiet day (max count of 1) produced a fractional step like 0.2, labelling the axis
+ *  0/0.2/0.4/0.6/0.8/1 for a value that can only ever be a whole job count. */
 function niceTicks(max: number): { step: number; top: number; ticks: number[] } {
-  const rawStep = Math.max(max, 1) / 5;
+  const safeMax = Math.max(1, Math.ceil(max));
+  const rawStep = Math.max(1, Math.ceil(safeMax / 5));
   const pow10 = Math.pow(10, Math.floor(Math.log10(rawStep)));
   const norm = rawStep / pow10;
-  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * pow10;
-  const top = Math.ceil(Math.max(max, 1) / step) * step;
+  const step = Math.max(1, (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * pow10);
+  const top = Math.ceil(safeMax / step) * step;
   const ticks: number[] = [];
   for (let v = 0; v <= top; v += step) ticks.push(v);
   return { step, top, ticks };
@@ -82,18 +86,18 @@ export function JobActivityChart() {
   const max = Math.max(1, ...days.flatMap((d) => [d.new_jobs, d.erp_submitted_jobs]));
   const { top: niceMax, ticks } = niceTicks(max);
 
-  const dayWidth = 56;
-  const barWidth = 16;
-  const barGap = 4;
-  const chartHeight = 260;
-  const topPadding = 24;
-  const bottomPadding = 34;
+  const dayWidth = 72;
+  const barWidth = 22;
+  const barGap = 6;
+  const chartHeight = 520;
+  const topPadding = 28;
+  const bottomPadding = 40;
   const plotHeight = chartHeight - topPadding - bottomPadding;
   const innerWidth = Math.max(days.length * dayWidth, dayWidth);
   const yFor = (v: number) => topPadding + (plotHeight - (v / niceMax) * plotHeight);
 
   return (
-    <Card className="p-5">
+    <Card className="flex min-h-[calc(100vh-11rem)] flex-col p-5">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900 dark:text-slate-50">Job Activity</h3>
@@ -141,11 +145,11 @@ export function JobActivityChart() {
       </div>
 
       {loading ? (
-        <div className="flex h-[260px] items-center justify-center text-sm text-slate-400">Loading…</div>
+        <div className="flex flex-1 items-center justify-center text-sm text-slate-400">Loading…</div>
       ) : days.length === 0 ? (
-        <div className="flex h-[260px] items-center justify-center text-sm text-slate-400">No data for this month.</div>
+        <div className="flex flex-1 items-center justify-center text-sm text-slate-400">No data for this month.</div>
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-1 gap-1">
           {/* Y-axis labels sit outside the scroll area so they stay fixed while the chart scrolls. */}
           <svg width={32} height={chartHeight} className="flex-shrink-0">
             {ticks.map((t) => (
