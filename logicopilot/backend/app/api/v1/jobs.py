@@ -4118,6 +4118,34 @@ def _ruling_context(db: Session, job: Job, group: TemplateGroup) -> tuple[list[s
     # answered "no real incoterm found" and held the job. The search only reports what is
     # printed and where — the admin's rule still decides what that means and which documents
     # it requires, so the business logic stays configuration, not code.
+    #
+    # A second, independent source of the same fact: whatever this job's own field extraction
+    # already read off that document (a drawn box like "TOI"/"Terms of Invoice"/"Incoterm" -
+    # already shown to the operator, correctable, and trusted everywhere else in the app).
+    # Found live on JOB-B87A35: extraction correctly read TOI="CIF" off the Invoice and showed
+    # it on screen, but the ruling's OWN re-scan of that same page's (filtered, budget-
+    # truncated) raw text came up empty and blocked Submit with "no consistent incoterm found" -
+    # re-deriving a fact the app had already correctly established must never produce a LESS
+    # trustworthy answer than the extraction it is re-deriving.
+    tdoc_name_by_jd_id: dict[str, str] = {
+        jd.id: tdoc.name
+        for tdoc in group.documents
+        for jd in docs_by_tdoc.get(tdoc.id, [])
+    }
+    field_hits_by_doc: dict[str, list[str]] = {}
+    for fv in (db.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job.id,
+                       JobFieldValue.job_document_id.isnot(None),
+                       JobFieldValue.row_index.is_(None)).all()):
+        val = (fv.corrected_value or fv.extracted_value or "").strip()
+        m = INCOTERM_RE.search(val)
+        if not m:
+            continue
+        doc_name = tdoc_name_by_jd_id.get(fv.job_document_id)
+        if doc_name is None:
+            continue
+        field_hits_by_doc.setdefault(doc_name, []).append(f"{fv.label_name}={m.group(0).upper()}")
+
     found_lines: list[str] = []
     for tdoc, text, label in raw_by_doc:
         hits: list[str] = []
@@ -4125,10 +4153,17 @@ def _ruling_context(db: Session, job: Job, group: TemplateGroup) -> tuple[list[s
             token = m.group(0).upper()
             if token not in hits:
                 hits.append(token)
+        field_hits = field_hits_by_doc.get(tdoc.name, [])
         if hits:
             first = INCOTERM_RE.search(text)
             snippet = " ".join(text[max(0, first.start() - 40): first.start() + 30].split())
             found_lines.append(f"  {label}: {', '.join(hits)}   (printed as: …{snippet}…)")
+        elif field_hits:
+            codes = sorted({h.split("=")[1] for h in field_hits})
+            found_lines.append(
+                f"  {label}: {', '.join(codes)}   (from this document's own extracted field: "
+                + ", ".join(field_hits) + ")"
+            )
         else:
             found_lines.append(f"  {label}: none")
 
