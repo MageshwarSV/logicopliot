@@ -977,12 +977,32 @@ def extract_document_rows_from_images(
     Single fields have had an image fallback since the beginning, but rows did not: when OCR
     returned nothing, every line item was dropped with no error anywhere, while the single
     fields on the same document still came back. A partly-filled job looked like a complete one.
+
+    image_paths beyond MAX_VISION_PAGES are batched, not dropped - found live on JOB-C9A21E
+    under the gpt5_mini_vision engine (every document read by image regardless of OCR text):
+    a 12-page invoice and an 18-page packing list each silently lost every page past the 6th,
+    no matter how many times the job was rerun, since this function used to just slice
+    image_paths[:MAX_VISION_PAGES] and never look at the rest. Rows ACCUMULATE across batches
+    (same reasoning as extract_document_rows' own text chunking) - no overlap/dedup needed
+    here, since a page is either sent whole or not at all, never split mid-row the way text can
+    be.
     """
     settings = get_settings()
     effective_model = model or settings.openai_model
     labels = [f["label"] for f in fields]
     if not settings.openai_api_key or not fields or not image_paths:
         return []
+
+    if len(image_paths) > MAX_VISION_PAGES:
+        collected: list[dict[str, str | None]] = []
+        for i in range(0, len(image_paths), MAX_VISION_PAGES):
+            batch = image_paths[i: i + MAX_VISION_PAGES]
+            # expected_row_count names the WHOLE document's count - no single batch knows how
+            # many of those rows are its own, so (like the text path) it is not passed down.
+            collected.extend(
+                extract_document_rows_from_images(batch, fields, model=model, tenant_id=tenant_id)
+            )
+        return collected
 
     try:
         content: list[dict] = [
@@ -1010,20 +1030,32 @@ def extract_document_rows_from_images(
                 ),
             }
         ]
-        for path in image_paths[:MAX_VISION_PAGES]:
+        for path in image_paths:
             b64 = base64.b64encode(path.read_bytes()).decode()
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = create_chat_completion_with_retry(
-            timeout=120,
+            # A batch of up to MAX_VISION_PAGES full page images is a slow round trip - 120s
+            # was already timing out on a single 12-image request before batching existed;
+            # kept generous even now that a batch is capped at 6 pages.
+            timeout=180,
             tenant_id=tenant_id,
             model=effective_model,
             # On a reasoning-family model this pin is translated/dropped - see
             # reasoning_safe_chat_params.
-            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=3000),
+            #
+            # max_tokens caps the RESPONSE, not the images - same failure mode as
+            # extract_document_rows' own token cap (see its comment): a batch of 6 dense pages
+            # can hold 70+ rows, which needs well over 3000 tokens of JSON to return whole.
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=12000),
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )
+        if resp.choices[0].finish_reason == "length":
+            logger.warning(
+                "Vision row extraction: response hit the token cap and was cut off mid-answer "
+                "- some or all rows in this batch may be missing."
+            )
         data = json.loads(resp.choices[0].message.content or "{}")
         rows = data.get("rows")
         if not isinstance(rows, list):
