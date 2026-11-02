@@ -779,7 +779,16 @@ def extract_document_rows(
             # "2026-12-12", and repeat runs scored differently on identical input. (On a
             # reasoning-family model this pin is translated/dropped - see
             # reasoning_safe_chat_params.)
-            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=3000),
+            #
+            # max_tokens caps the RESPONSE, not the input - found live on JOB-C9A21E: a
+            # 12-page, 144-line invoice chunked into ~55-row pieces, each needing well over
+            # 3000 tokens of JSON just to hold its own rows. The response got cut off
+            # mid-JSON, json.loads() below threw, and the except clause silently returned []
+            # for every chunk - a deterministic zero-products result that re-running could
+            # never fix, since the same truncation happened every time on the same input.
+            # 12000 comfortably covers a chunk many times denser than that one, still well
+            # under gpt-4o-mini's 16,384-token output ceiling.
+            **reasoning_safe_chat_params(effective_model, temperature=0, max_tokens=12000),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -814,6 +823,13 @@ def extract_document_rows(
                 },
             ],
         )
+        if resp.choices[0].finish_reason == "length":
+            # Even 12000 wasn't enough for this chunk - say so plainly rather than letting a
+            # downstream JSON parse error (if any) read as a generic, unexplained failure.
+            logger.warning(
+                "Row extraction: response hit the token cap and was cut off mid-answer - "
+                "some or all rows in this chunk may be missing."
+            )
         data = json.loads(resp.choices[0].message.content or "{}")
         rows = data.get("rows") or []
         if not isinstance(rows, list):
