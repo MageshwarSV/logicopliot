@@ -35,6 +35,15 @@ class UserCount(BaseModel):
     user_id: str | None = None
     name: str
     completed: int
+    # Jobs this person PUT IN during the period - every job of theirs that was created in the
+    # window, whatever state it reached. `completed` is the other half of the pair: jobs they
+    # FINISHED in the window, whenever those were created. Two different flows, intake and
+    # output, so one is not a subset of the other and `completed` can exceed `jobs` for
+    # someone who spent the period clearing a backlog. Kept that way on purpose: `completed`
+    # has to go on matching the portal's own definition exactly (see the manager_app module
+    # docstring), and redefining it as "of the jobs created in this window" would quietly
+    # break the one number the app and the portal are guaranteed to agree on.
+    jobs: int = 0
     # Share of the period's total, 0-100. Handy for the bar behind each row.
     share_pct: float = 0.0
 

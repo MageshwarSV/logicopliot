@@ -37,7 +37,8 @@ from app.core.deps import get_db, require_role
 from app.core.modes import MODES
 from app.models.job import Job
 from app.models.template_group import TemplateGroup
-from app.models.user import APP_MANAGER, User
+from app.models.user import APP_MANAGER, OPERATOR, User
+from app.models.user_template import UserTemplateAssignment
 from app.schemas.manager_app import (
     AppIdentity,
     DashboardOut,
@@ -154,6 +155,131 @@ def _completed_in(db: Session, tenant_id: str, modes: list[str], start: datetime
 
 def _count(db: Session, tenant_id: str, modes: list[str], start: datetime, end: datetime) -> int:
     return _completed_in(db, tenant_id, modes, start, end).count()
+
+
+def _created_in(db: Session, tenant_id: str, modes: list[str], start: datetime, end: datetime):
+    """Every job of these modes PUT IN during the window, whatever became of it.
+
+    The counterpart to _completed_in: that one asks what finished, this one asks what
+    arrived. No category filter at all - a job still being worked on is exactly the kind
+    this is meant to count, and the point of showing it beside the completed figure is to
+    make the difference between the two visible.
+    """
+    return (
+        db.query(Job)
+        .join(TemplateGroup, Job.group_id == TemplateGroup.id)
+        .filter(Job.tenant_id == tenant_id)
+        .filter(TemplateGroup.mode.in_(modes))
+        .filter(Job.created_at >= start)
+        .filter(Job.created_at < end)
+    )
+
+
+def _mode_roster(db: Session, tenant_id: str, modes: list[str]) -> set[str]:
+    """Who COULD work these shipment types - the people, not their output.
+
+    This is what lets the usage screen list someone who finished nothing. Without it the
+    table can only ever show users that a count query already found, which is the same as
+    saying a quiet operator does not exist.
+
+    Membership comes from UserTemplateAssignment, not from User.assigned_modes: for an
+    operator that column is only a UI tab-filter convenience and is routinely empty (the
+    model says so in its own docstring), while the assignment table is their real access
+    control. Its documented rule is that NO assignments means every template in the tenant,
+    so an unassigned operator belongs to every mode rather than to none.
+    """
+    candidates = (
+        db.query(User.id)
+        .filter(User.tenant_id == tenant_id)
+        .filter(User.role == OPERATOR)
+        .filter(User.is_active.is_(True))
+        .all()
+    )
+    if not candidates:
+        return set()
+
+    assigned: dict[str, set[str]] = {}
+    for user_id, mode in (
+        db.query(UserTemplateAssignment.user_id, TemplateGroup.mode)
+        .join(TemplateGroup, UserTemplateAssignment.group_id == TemplateGroup.id)
+        .filter(UserTemplateAssignment.tenant_id == tenant_id)
+        .all()
+    ):
+        assigned.setdefault(user_id, set()).add(mode)
+
+    wanted = set(modes)
+    return {
+        uid for (uid,) in candidates
+        if uid not in assigned or (assigned[uid] & wanted)
+    }
+
+
+def _user_activity(
+    db: Session, tenant_id: str, modes: list[str], start: datetime, end: datetime,
+) -> list[UserCount]:
+    """Every user of these shipment types, with what they put in and what they finished.
+
+    Three sources, unioned, because any one of them alone hides someone real:
+      * the roster      - so a person who did nothing this period still appears, at 0
+      * jobs created    - so someone who arrived mid-period and has finished nothing yet
+                          is not invisible
+      * jobs completed  - so a user who has since been deactivated, or who is not an
+                          operator at all (a tenant admin who filed one), is never dropped
+                          from a table whose completed column has to add up to the total
+                          shown above it
+
+    Jobs owned by nobody keep their single "Unassigned" row, for that same adding-up reason.
+    """
+    owner = func.coalesce(Job.assigned_operator_id, Job.created_by_id)
+
+    done = {
+        r.owner_id: int(r.n)
+        for r in _completed_in(db, tenant_id, modes, start, end)
+        .with_entities(owner.label("owner_id"), func.count(Job.id).label("n"))
+        .group_by(owner)
+        .all()
+    }
+    put = {
+        r.owner_id: int(r.n)
+        for r in _created_in(db, tenant_id, modes, start, end)
+        .with_entities(owner.label("owner_id"), func.count(Job.id).label("n"))
+        .group_by(owner)
+        .all()
+    }
+
+    ids = {uid for uid in (*done, *put) if uid} | _mode_roster(db, tenant_id, modes)
+    names = {
+        u.id: (u.full_name or u.email)
+        for u in db.query(User).filter(User.id.in_(ids)).all()
+    } if ids else {}
+
+    total_done = sum(done.values()) or 1
+    rows = [
+        UserCount(
+            user_id=uid,
+            name=names.get(uid) or "Unknown user",
+            completed=done.get(uid, 0),
+            jobs=put.get(uid, 0),
+            share_pct=round(done.get(uid, 0) / total_done * 100, 1),
+        )
+        for uid in ids
+    ]
+    # Ownerless jobs, if there are any. Never a roster entry - there is no person here.
+    if done.get(None) or put.get(None):
+        rows.append(
+            UserCount(
+                user_id=None,
+                name="Unassigned",
+                completed=done.get(None, 0),
+                jobs=put.get(None, 0),
+                share_pct=round(done.get(None, 0) / total_done * 100, 1),
+            )
+        )
+
+    # Busiest first; the people who did nothing settle at the bottom in name order rather
+    # than in whatever order the database handed them over.
+    rows.sort(key=lambda r: (-r.completed, -r.jobs, r.name.lower()))
+    return rows
 
 
 def _by_mode(
@@ -423,7 +549,10 @@ def usage(
         completed=total,
         previous_completed=prev_total,
         change_pct=_change_pct(total, prev_total),
-        users=_by_user(db, tenant_id, chosen, start_utc, end_utc),
+        # The full roster, not just the people with a completion - see _user_activity. The
+        # dashboard's top_users deliberately still uses _by_user: a "top 3" of names that
+        # finished nothing would be a strange thing to put on a home screen.
+        users=_user_activity(db, tenant_id, chosen, start_utc, end_utc),
         by_mode=_by_mode(db, tenant_id, chosen, start_utc, end_utc, prev_start_utc, prev_end_utc),
         modes=chosen,
     )
