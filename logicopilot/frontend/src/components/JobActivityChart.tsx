@@ -4,6 +4,7 @@ import * as jobsApi from "../api/jobs";
 import type { JobActivityDay } from "../api/jobs";
 import * as usersApi from "../api/users";
 import type { User } from "../types/auth";
+import { useAuth } from "../auth/useAuth";
 
 const fieldClass =
   "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200";
@@ -49,8 +50,12 @@ function niceTicks(max: number): { step: number; top: number; ticks: number[] } 
  *  fixed width, so the chart itself scrolls horizontally instead - that native scrollbar IS the
  *  "bottom slider to scroll/navigate across the monthly data" the spec asks for. */
 export function JobActivityChart() {
+  const { user } = useAuth();
+  // Defaults to whoever is signed in, not "All Users" - an operator opening their own
+  // dashboard wants to see their own activity first, same as /jobs' own default view
+  // (ROLE_HOME sends an operator to /jobs?...&assignedTo=me already).
   const [month, setMonth] = useState(currentMonthStr());
-  const [assignedTo, setAssignedTo] = useState("");
+  const [assignedTo, setAssignedTo] = useState(user?.full_name ?? "");
   const [operators, setOperators] = useState<User[]>([]);
   const [days, setDays] = useState<JobActivityDay[]>([]);
   const [loading, setLoading] = useState(true);
