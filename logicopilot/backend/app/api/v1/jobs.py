@@ -33,7 +33,12 @@ from app.core.deps import (
 from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
-from app.core.page_filter import claim_fingerprint, kept_page_to_original, merge_pdf_pages
+from app.core.page_filter import (
+    claim_fingerprint,
+    kept_page_to_original,
+    merge_pdf_pages,
+    strip_repeated_page_header,
+)
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import get_extraction_engine, is_extraction_paused
 from app.core.extraction import (
@@ -7244,11 +7249,19 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                         jdoc.id, page,
                     )
         tdoc = tdoc_by_id.get(tdoc_id)
+        # Strip a header reprinted on every page (shipper/consignee/invoice no. ahead of each
+        # page's own slice of a line-item table) BEFORE the carrier-terms filter below - pure
+        # intra-page noise, and found live to be a likely cause of row extraction losing most
+        # of a 12-page invoice's real product lines (JOB-C9A21E). Applied to a COPY, not
+        # `parts` itself - `parts` is persisted below as the genuinely raw, unfiltered OCR
+        # record (extracted_json.pages), and a debugger relying on that contract must still
+        # see the real thing, not what extraction actually read after this trim.
+        deduped = strip_repeated_page_header(parts)
         # Strip carrier terms-and-conditions pages. A sea waybill's terms page is 39,572 of its
         # 43,956 characters and holds no data — it crowded other documents out of the shared
         # budgets and its prose is where "Blue Anchor" and "FREIGHT COLLECT" were mistaken for
         # a vessel name and an incoterm. Position is not fixed, so each page is judged alone.
-        kept, dropped_pages = filter_pages_with_custom(parts, custom_filter_texts, tdoc.name if tdoc else "document")
+        kept, dropped_pages = filter_pages_with_custom(deduped, custom_filter_texts, tdoc.name if tdoc else "document")
         doc_text_cache[jdoc.id] = "\n".join(kept)
         # Same drop list applies to the token boxes — a value's text should never be "found"
         # on a terms-and-conditions page extraction itself ignored.

@@ -113,6 +113,53 @@ def classify_page(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+# Below this many characters a shared prefix is not worth acting on - too short to be
+# confident it is really the same reprinted header rather than two pages starting the same
+# way by coincidence ("Page 2 of 2").
+_HEADER_DEDUPE_MIN_CHARS = 200
+# ...and it must also be a substantial fraction of the page it is being stripped from, or a
+# short page that is ENTIRELY header text (no table on it at all) would be emptied out -
+# losing real content is worse than leaving one repeated header in place.
+_HEADER_DEDUPE_MIN_FRACTION = 0.3
+
+
+def strip_repeated_page_header(pages: list[str]) -> list[str]:
+    """A multi-page document whose EVERY page reprints the same header block (shipper,
+    consignee, invoice number, "Shipped Per:"...) before its own slice of a line-item table -
+    found live on a 12-page invoice where this repetition is suspected of confusing row
+    extraction into losing most of its real product lines. Pages after the first have
+    whatever LEADING text they share with page 1 removed, keeping only what is actually new
+    on that page: a net reduction in size (noise, not data) and one less reason for a row-
+    reading model to mistake "the same header again" for "a new document starting over".
+
+    Pure exact-prefix comparison, no fuzzy/AI matching - Document AI's OCR of the same
+    printed header is deterministic page to page, so this stays explainable and identical on
+    every run, same philosophy as classify_page above. Only page 1 is ever read in full;
+    every later page is compared against IT specifically (not the page before it), since the
+    header repeats from a fixed template, not by continuing from whatever came right before.
+    """
+    if len(pages) < 2 or not pages[0]:
+        return pages
+    anchor = pages[0]
+    out = [anchor]
+    for page in pages[1:]:
+        if not page:
+            out.append(page)
+            continue
+        prefix_len = 0
+        limit = min(len(anchor), len(page))
+        while prefix_len < limit and anchor[prefix_len] == page[prefix_len]:
+            prefix_len += 1
+        if prefix_len >= _HEADER_DEDUPE_MIN_CHARS and prefix_len >= len(page) * _HEADER_DEDUPE_MIN_FRACTION:
+            # Trimmed back to the start of a line - never mid-word/mid-line.
+            cut = anchor.rfind("\n", 0, prefix_len)
+            cut = cut + 1 if cut != -1 else prefix_len
+            out.append(page[cut:])
+        else:
+            out.append(page)
+    return out
+
+
 def filter_pages(
     pages: list[str],
     document_name: str = "document",
