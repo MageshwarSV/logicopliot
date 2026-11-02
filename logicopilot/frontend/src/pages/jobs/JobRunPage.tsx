@@ -324,7 +324,7 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // treatment. Its paired branch field ("ERP Importer Address / Branch Code") is NOT listed
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
-const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
+const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name", "CustomsHouseCode"]);
 // Picking a row in one of those searches also ANSWERS other fields, straight off the same row.
 // A world-port row is (country, place, code) - so choosing "CHINA SHEKOU(CNSHK)" has already
 // told us the country and the city, and making the operator retype both from the same document
@@ -359,6 +359,7 @@ const FULL_WIDTH_FIELD_LABELS = new Set([
 const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
   "ERP Consignee Name": "Search by consignee to find or correct the match…",
+  CustomsHouseCode: "Search the full list to find or correct the code…",
 };
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
