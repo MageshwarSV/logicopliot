@@ -6505,6 +6505,33 @@ def smart_upload(
     # trace it ever existed (see UnmatchedUploadPage's own docstring).
     unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job_id / "unmatched"
     custom_filter_texts = get_active_custom_filter_texts(db)
+
+    def _extend_kept_pages_for_item(item: dict) -> None:
+        """OCR whatever real pages of this file were never examined for classification (it
+        stops at page 6 - see the cap above), extending item["kept_pages"]/["kept_original"]
+        in place to cover the whole file. Idempotent - a second call is a no-op once already
+        extended, since it compares against len(item["kept_pages"]) rather than the original
+        cap. Only ever called for a claim that plausibly continues past what was examined (see
+        its call site) - most uploads never pay this extra OCR at all.
+        """
+        already = len(item["kept_pages"])
+        if item["real_page_count"] <= already:
+            return
+        extra_raw: list[str] = []
+        with fitz.open(stream=item["blob"], filetype="pdf") as doc:
+            for i in range(already + 1, item["real_page_count"] + 1):
+                png = item["fdir"] / "pages" / f"page_{i}.png"
+                if not png.exists():
+                    doc[i - 1].get_pixmap(dpi=150).save(png)
+                try:
+                    extra_raw.append(ocr_page_image(png).get("text", ""))
+                except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
+                    extra_raw.append("")
+        extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
+        extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
+        item["kept_pages"] = item["kept_pages"] + extra_kept
+        item["kept_original"] = item["kept_original"] + extra_kept_original
+
     try:
         # PREPARE every file first, then assign them together. One slot can only take one file
         # and the whole set has to be weighed at once to decide which file that is - classifying
@@ -6524,7 +6551,9 @@ def smart_upload(
             img_path = None
             try:
                 page_count = 0
+                real_page_count = 0
                 with fitz.open(orig) as doc:
+                    real_page_count = doc.page_count
                     for i, page in enumerate(doc, start=1):
                         if i > 6:  # cap pages OCR'd for classification
                             break
@@ -6559,6 +6588,12 @@ def smart_upload(
             prepared.append({"name": name, "ext": ext, "blob": data,
                              "text": text, "image": img_path,
                              "drop_pages": dropped_pages, "page_count": page_count,
+                             # The PDF's REAL page count, independent of the classification
+                             # cap above (page_count stops at 6) - a claim covering every page
+                             # that WAS examined, on a file with more pages than that, needs
+                             # this to know there is more of itself still unexamined. See its
+                             # use for the multi-invoice-per-file split below.
+                             "real_page_count": real_page_count,
                              "fdir": fdir, "kept_pages": kept_pages,
                              "kept_original": kept_original,
                              # Every kept page's own image, keyed by its KEPT-page number -
@@ -6654,18 +6689,36 @@ def smart_upload(
             item_pending_count = 0
             for claim in strong_claims:
                 doc_type = key_doc_type.get(claim["key"])
-                # A combined multi-invoice file (JOB-A58BCB: one 40-page Invoice attachment
-                # holding 20 separate two-page invoices back to back) looks like ONE claim to
-                # the classifier - every page equally looks like "an Invoice page", so there is
-                # nothing here for it to use to tell them apart up front. Split THIS claim's
-                # own pages wherever their own printed invoice number actually changes, before
-                # the number-based GROUPING below ever runs - that step already turns several
-                # same-key claims sharing a number into one document correctly; it only needs
-                # to be handed more than one claim in the first place to do its job.
-                sub_page_groups = [claim["pages"]]
-                if doc_type in doc_sets.GROUPABLE_DOC_TYPES and len(claim["pages"]) > 1:
+                claim_pages = claim["pages"]
+                # A claim reaching all the way to the LAST page classification actually
+                # examined (the <=6 cap), on a file with more real pages than that, likely
+                # continues beyond what was looked at - JOB-A58BCB: a 40-page Invoice
+                # attachment, only pages 1-6 ever OCR'd for classification. Extend to the
+                # file's real end before deciding whether/where to split, or every page past
+                # the cap would be silently lost once this claim's own pages get carved out of
+                # the original file below (rather than the "use the whole blob" shortcut that
+                # applied before this feature existed).
+                if (
+                    doc_type in doc_sets.GROUPABLE_DOC_TYPES
+                    and item["real_page_count"] > item["page_count"]
+                    and claim_pages
+                    and max(claim_pages) >= len(item["kept_pages"])
+                ):
+                    before = len(item["kept_pages"])
+                    _extend_kept_pages_for_item(item)
+                    if len(item["kept_pages"]) > before:
+                        claim_pages = claim_pages + list(range(before + 1, len(item["kept_pages"]) + 1))
+                # A combined multi-invoice file (several separate invoices back to back) looks
+                # like ONE claim to the classifier - every page equally looks like "an Invoice
+                # page", so there is nothing here for it to use to tell them apart up front.
+                # Split THIS claim's own pages wherever their own printed invoice number
+                # actually changes, before the number-based GROUPING below ever runs - that
+                # step already turns several same-key claims sharing a number into one document
+                # correctly; it only needs to be handed more than one claim in the first place.
+                sub_page_groups = [claim_pages]
+                if doc_type in doc_sets.GROUPABLE_DOC_TYPES and len(claim_pages) > 1:
                     page_texts = {
-                        p: item["kept_pages"][p - 1] for p in claim["pages"]
+                        p: item["kept_pages"][p - 1] for p in claim_pages
                         if 1 <= p <= len(item["kept_pages"])
                     }
                     sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(doc_type, page_texts)
