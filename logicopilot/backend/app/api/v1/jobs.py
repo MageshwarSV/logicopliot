@@ -6647,24 +6647,46 @@ def smart_upload(
             for i, row in enumerate(unmatched_rows, start=1):
                 if row is not None and i in claimed_pages:
                     db.delete(row)
-            # A combined file (one PDF carrying both the Invoice and the Packing List) must
-            # give each slot only ITS pages, not the whole thing - see merge_pdf_pages below.
-            split_by_item_id[id(item)] = len(strong_claims) > 1 and item["ext"] == ".pdf"
             result_by_item_id[id(item)] = {"filename": item["name"], "matched": []}
             if debug:
                 result_by_item_id[id(item)]["debug_text"] = item["text"][:6000]
                 result_by_item_id[id(item)]["debug_claims"] = claims
+            item_pending_count = 0
             for claim in strong_claims:
                 doc_type = key_doc_type.get(claim["key"])
-                number = None
-                # Read straight off THIS claim's own pages - never the whole file's text, which
-                # may carry several invoices at once (that is exactly the case being split).
-                if doc_type in doc_sets.GROUPABLE_DOC_TYPES:
-                    page_text = "\n".join(
-                        item["kept_pages"][p - 1] for p in claim["pages"]
-                        if 1 <= p <= len(item["kept_pages"]))
-                    number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
-                pending.append({"item": item, "claim": claim, "key": claim["key"], "number": number})
+                # A combined multi-invoice file (JOB-A58BCB: one 40-page Invoice attachment
+                # holding 20 separate two-page invoices back to back) looks like ONE claim to
+                # the classifier - every page equally looks like "an Invoice page", so there is
+                # nothing here for it to use to tell them apart up front. Split THIS claim's
+                # own pages wherever their own printed invoice number actually changes, before
+                # the number-based GROUPING below ever runs - that step already turns several
+                # same-key claims sharing a number into one document correctly; it only needs
+                # to be handed more than one claim in the first place to do its job.
+                sub_page_groups = [claim["pages"]]
+                if doc_type in doc_sets.GROUPABLE_DOC_TYPES and len(claim["pages"]) > 1:
+                    page_texts = {
+                        p: item["kept_pages"][p - 1] for p in claim["pages"]
+                        if 1 <= p <= len(item["kept_pages"])
+                    }
+                    sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(doc_type, page_texts)
+                for pages in sub_page_groups:
+                    sub_claim = {**claim, "pages": pages}
+                    number = None
+                    # Read straight off THIS (sub-)claim's own pages - never the whole file's
+                    # text, which may carry several invoices at once (that is exactly the case
+                    # being split).
+                    if doc_type in doc_sets.GROUPABLE_DOC_TYPES:
+                        page_text = "\n".join(
+                            item["kept_pages"][p - 1] for p in pages
+                            if 1 <= p <= len(item["kept_pages"]))
+                        number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
+                    pending.append({"item": item, "claim": sub_claim, "key": sub_claim["key"], "number": number})
+                    item_pending_count += 1
+            # A combined file needs its pages carved apart whenever it ends up contributing
+            # more than one real document - whether that's several DIFFERENT types sharing one
+            # PDF (the original reason this flag exists) or ONE type that turned out to hold
+            # several separate invoices once split above - see merge_pdf_pages below.
+            split_by_item_id[id(item)] = item_pending_count > 1 and item["ext"] == ".pdf"
 
         # Before grouping: drop a claim whose pages say exactly what another claim has
         # already said for the SAME slot.

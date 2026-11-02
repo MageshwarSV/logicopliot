@@ -112,6 +112,51 @@ def same_number(a: str, b: str) -> bool:
     return len(short) >= MIN_KEY_LEN and len(short) < len(long) and long.endswith(short)
 
 
+def split_claim_pages_by_invoice_number(doc_type: str, page_texts: dict[int, str]) -> list[list[int]]:
+    """Split ONE classified claim's own pages into separate invoices, wherever the invoice
+    number actually printed on them changes partway through.
+
+    Found live on JOB-A58BCB: a single 40-page Invoice attachment held 20 separate two-page
+    invoices back to back (a cover/address page, then a details page, repeating), each with
+    its own distinct number. The page classifier has no reason to split this up front - every
+    page equally looks like "an Invoice page" - so the whole 40 pages landed as ONE claim, and
+    only the first invoice's number (and line items) ever made it onto the job; the other 19
+    were silently never captured as documents of their own.
+
+    This never GROUPS pages back together - that is assign_sets' own job, downstream, and it
+    already does it correctly across however many claims (from this same file, or separate
+    ones) end up sharing a number. This only ever draws a boundary where a NEW, genuinely
+    different number is read directly off a page. A page with no number of its own (OCR noise,
+    a blank-looking page, anything extract_invoice_number_from_text cannot read) stays
+    attached to whichever invoice came immediately before it - it never starts a new group on
+    its own, since that would turn one unreadable page into a phantom extra invoice.
+
+    `page_texts` is this claim's own pages only, keyed by their 1-based page number within the
+    claim - never the whole file's text, which may hold several invoices at once (exactly the
+    case this exists to split apart).
+    """
+    pages = sorted(page_texts)
+    if len(pages) <= 1:
+        return [pages] if pages else []
+    groups: list[list[int]] = []
+    current: list[int] = []
+    current_number: str | None = None
+    for p in pages:
+        number = extract_invoice_number_from_text(doc_type, page_texts[p])
+        if (
+            number and current_number and current
+            and not same_number(number, current_number)
+        ):
+            groups.append(current)
+            current = []
+        current.append(p)
+        if number:
+            current_number = number
+    if current:
+        groups.append(current)
+    return groups
+
+
 def assign_sets(files: list[dict]) -> dict[str, int | None]:
     """Work out which set each uploaded file belongs to.
 
