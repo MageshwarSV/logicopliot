@@ -373,6 +373,14 @@ export async function smartUpload(jobId: string, files: File[]): Promise<SmartUp
   return data;
 }
 
+/** Super Admin only - re-runs Smart Upload's own classification on a job's ALREADY-uploaded
+ *  documents, in place: wipes them (and every field value tied to one) and rebuilds from their
+ *  own source files, exactly as if freshly uploaded. See reclassify_documents in jobs.py. */
+export async function reclassifyDocuments(jobId: string): Promise<SmartUploadResult> {
+  const { data } = await apiClient.post<SmartUploadResult>(`/jobs/${jobId}/reclassify-documents`);
+  return data;
+}
+
 /** A page a smart-upload could not confidently place anywhere - kept instead of silently
  *  discarded, shown as a draggable card next to the document slots so an operator can resolve
  *  it by hand (see assignUnclassifiedPage). */

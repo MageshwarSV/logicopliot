@@ -6379,30 +6379,19 @@ CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"}
 
 
-@router.post("/jobs/{job_id}/smart-upload")
-def smart_upload(
-    job_id: str,
-    files_in: list[UploadFile] = File(..., alias="files"),
-    # Verification-only: returns each file's own OCR text and full per-claim evidence
-    # alongside the ordinary result, instead of collapsing straight to matched slot names.
-    # Never sent by the real Smart Upload UI - added to directly diagnose a real
-    # misclassification (a bill of lading and an arrival notice swapping identities) without
-    # guessing at what the classifier actually saw.
-    debug: bool = False,
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
-):
-    """Upload any mix of PDFs/images and ZIPs in one go; each file is OCR'd + classified
-    (BL/PL/INV/Freight) and routed to the matching document slot(s). A combined file (e.g.
-    BL+PL, or three invoices in one PDF) fills every slot/instance it matches. Returns the
-    classification summary + updated job detail.
+def _classify_and_place_files(
+    db: Session, job: Job, group: "TemplateGroup", candidates: list[dict],
+    extraction_engine: str, vision_engine_model: str,
+    files: list[tuple[str, bytes]], debug: bool = False,
+) -> dict:
+    """Shared core of Smart Upload: classify `files` (already read into memory, any ZIPs
+    already unpacked) against `candidates` and place each into the right document slot(s) on
+    `job`, splitting/merging as needed. `files` is a list of (filename, bytes).
 
-    Several files in one request matter, not just for convenience: the specificity rule below
-    (which file wins a contested slot) only works when every file in the batch is classified
-    together. Looping one file per request the way the browser used to is why three invoices
-    sent one at a time each landed as if it were the ONLY invoice, instead of three rows in
-    the same slot.
+    Used by both the real upload endpoint (smart_upload, below) and reclassify_documents
+    (re-runs this on a job's own already-uploaded files, in place, once a classifier fix needs
+    to be applied retroactively) - identical logic either way, just a different source for
+    `files`.
     """
     import uuid
 
@@ -6410,67 +6399,10 @@ def smart_upload(
 
     from app.core import doc_sets, office_convert
 
-    job = _load_job(db, job_id, scope, user)
-    if is_extraction_paused(db, tenant_id=job.tenant_id):
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Extraction is currently paused by an administrator.")
-    # Read ONCE, up front, before any tentative row below is ever flushed - the first-ever
-    # read of a system setting lazily creates (and commits) its row if none exists yet (see
-    # get_system_settings), and doing that lazily deep inside this request, after something
-    # tentative was already flushed but not committed, would incidentally commit that
-    # half-built state along with it. Same reasoning as email_puller's identical fix.
-    extraction_engine = get_extraction_engine(db)
-    vision_engine_model = get_settings().vision_engine_model
-    if job.status == "extracting":
-        # See the identical guard in upload_job_document (same file, above) - same race,
-        # same fix.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
-        )
-    group = db.get(TemplateGroup, job.group_id)
-    # `fields` lets a "Custom" document (no built-in content hint) still be classified,
-    # by describing itself through the labels configured on it.
-    # What this customer's own documents of each type have looked like, taken from the
-    # slots they filled by hand. The prompt already describes `reference` to the model
-    # as "the customer's own sample of this document"; nothing had ever filled it.
-    #
-    # This matters more than any wording rule. Nothing in the text of shipping
-    # paperwork separates these reliably - every document in a consignment quotes the
-    # others - but one customer's invoice and packing list are laid out consistently,
-    # and that is what these show.
-    samples = document_samples.for_slots(db, [d.id for d in group.documents])
-    candidates = [
-        {
-            "key": d.id,
-            "name": d.name,
-            "doc_type": d.doc_type,
-            "fields": [m.label_name for m in d.marks],
-            "reference": samples.get(d.id, ""),
-        }
-        for d in group.documents
-    ]
-    job_docs = {jd.template_document_id: jd for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all()}
-
-    # Collect the files to process — each uploaded item as itself, or unzipped if it is a ZIP.
-    files: list[tuple[str, bytes]] = []
-    for uf in files_in:
-        content = uf.file.read(50 * 1024 * 1024)
-        fname = uf.filename or "upload"
-        if fname.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    for n in z.namelist():
-                        if not n.endswith("/") and Path(n).suffix.lower() in UPLOAD_EXTS:
-                            files.append((Path(n).name, z.read(n)))
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
-        else:
-            files.append((fname, content))
     if not files:
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
-    tmp = Path(get_settings().uploads_dir) / "_classify" / job_id
+    tmp = Path(get_settings().uploads_dir) / "_classify" / job.id
     shutil.rmtree(tmp, ignore_errors=True)
     results: list[dict] = []
     # Word -> one PDF, Excel -> one PDF per worksheet (see app.core.office_convert) - done
@@ -6503,7 +6435,7 @@ def smart_upload(
     # above - `tmp` is unconditionally wiped in the `finally` below no matter how
     # classification goes, which used to mean a page nobody could place was gone with no
     # trace it ever existed (see UnmatchedUploadPage's own docstring).
-    unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job_id / "unmatched"
+    unmatched_dir = Path(get_settings().uploads_dir) / "jobs" / job.id / "unmatched"
     custom_filter_texts = get_active_custom_filter_texts(db)
 
     def _extend_kept_pages_for_item(item: dict) -> None:
@@ -6861,6 +6793,184 @@ def smart_upload(
     _maybe_auto_extract(db, job)
     db.refresh(job)
     return {"results": results, "detail": _build_detail(db, job).model_dump()}
+
+
+@router.post("/jobs/{job_id}/smart-upload")
+def smart_upload(
+    job_id: str,
+    files_in: list[UploadFile] = File(..., alias="files"),
+    # Verification-only: returns each file's own OCR text and full per-claim evidence
+    # alongside the ordinary result, instead of collapsing straight to matched slot names.
+    # Never sent by the real Smart Upload UI - added to directly diagnose a real
+    # misclassification (a bill of lading and an arrival notice swapping identities) without
+    # guessing at what the classifier actually saw.
+    debug: bool = False,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """Upload any mix of PDFs/images and ZIPs in one go; each file is OCR'd + classified
+    (BL/PL/INV/Freight) and routed to the matching document slot(s). A combined file (e.g.
+    BL+PL, or three invoices in one PDF) fills every slot/instance it matches. Returns the
+    classification summary + updated job detail.
+
+    Several files in one request matter, not just for convenience: the specificity rule below
+    (which file wins a contested slot) only works when every file in the batch is classified
+    together. Looping one file per request the way the browser used to is why three invoices
+    sent one at a time each landed as if it were the ONLY invoice, instead of three rows in
+    the same slot.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if is_extraction_paused(db, tenant_id=job.tenant_id):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Extraction is currently paused by an administrator.")
+    # Read ONCE, up front, before any tentative row below is ever flushed - the first-ever
+    # read of a system setting lazily creates (and commits) its row if none exists yet (see
+    # get_system_settings), and doing that lazily deep inside this request, after something
+    # tentative was already flushed but not committed, would incidentally commit that
+    # half-built state along with it. Same reasoning as email_puller's identical fix.
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
+    if job.status == "extracting":
+        # See the identical guard in upload_job_document (same file, above) - same race,
+        # same fix.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
+        )
+    group = db.get(TemplateGroup, job.group_id)
+    # `fields` lets a "Custom" document (no built-in content hint) still be classified,
+    # by describing itself through the labels configured on it.
+    # What this customer's own documents of each type have looked like, taken from the
+    # slots they filled by hand. The prompt already describes `reference` to the model
+    # as "the customer's own sample of this document"; nothing had ever filled it.
+    #
+    # This matters more than any wording rule. Nothing in the text of shipping
+    # paperwork separates these reliably - every document in a consignment quotes the
+    # others - but one customer's invoice and packing list are laid out consistently,
+    # and that is what these show.
+    samples = document_samples.for_slots(db, [d.id for d in group.documents])
+    candidates = [
+        {
+            "key": d.id,
+            "name": d.name,
+            "doc_type": d.doc_type,
+            "fields": [m.label_name for m in d.marks],
+            "reference": samples.get(d.id, ""),
+        }
+        for d in group.documents
+    ]
+
+    # Collect the files to process — each uploaded item as itself, or unzipped if it is a ZIP.
+    files: list[tuple[str, bytes]] = []
+    for uf in files_in:
+        content = uf.file.read(50 * 1024 * 1024)
+        fname = uf.filename or "upload"
+        if fname.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as z:
+                    for n in z.namelist():
+                        if not n.endswith("/") and Path(n).suffix.lower() in UPLOAD_EXTS:
+                            files.append((Path(n).name, z.read(n)))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
+        else:
+            files.append((fname, content))
+    if not files:
+        raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
+
+    return _classify_and_place_files(
+        db, job, group, candidates, extraction_engine, vision_engine_model, files, debug,
+    )
+
+
+@router.post("/jobs/{job_id}/reclassify-documents")
+def reclassify_documents(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Re-run Smart Upload's own classification on a job's ALREADY-uploaded documents, in
+    place - for a job whose documents were placed before a classifier fix shipped (JOB-A58BCB:
+    a 40-page Invoice attachment holding 20 separate invoices, which only split correctly once
+    the multi-invoice-per-file fix landed). Every currently-uploaded document's own file is fed
+    back through _classify_and_place_files exactly as if it had just been uploaded fresh.
+
+    Destructive by design, not an addition: the job's existing documents, and every field value
+    tied to one of them, are wiped first and entirely replaced by whatever this fresh
+    classification decides - the same "switch place and place properly, don't just add
+    alongside" behaviour a real re-upload would have. Re-extraction then runs automatically
+    (same as any Smart Upload), so the job ends up fully rebuilt from its own source files, not
+    merely re-sorted. Super-Admin only: this discards every correction an operator has already
+    made on this job's fields, not just how its documents are organised - a deliberate recovery
+    action for a job's whole document set, not something to reach for casually.
+    """
+    job = _load_job(db, job_id, scope, user)
+    if is_extraction_paused(db, tenant_id=job.tenant_id):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Extraction is currently paused by an administrator.")
+    if job.status == "extracting":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents are being read right now — wait for extraction to finish before reclassifying.",
+        )
+    extraction_engine = get_extraction_engine(db)
+    vision_engine_model = get_settings().vision_engine_model
+    group = db.get(TemplateGroup, job.group_id)
+    samples = document_samples.for_slots(db, [d.id for d in group.documents])
+    candidates = [
+        {
+            "key": d.id,
+            "name": d.name,
+            "doc_type": d.doc_type,
+            "fields": [m.label_name for m in d.marks],
+            "reference": samples.get(d.id, ""),
+        }
+        for d in group.documents
+    ]
+
+    existing_docs = (
+        db.query(JobDocument)
+        .filter(JobDocument.job_id == job.id, JobDocument.file_path.isnot(None))
+        .order_by(JobDocument.file_index)
+        .all()
+    )
+    if not existing_docs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job has no uploaded documents to reclassify.",
+        )
+    # Read every existing file's bytes BEFORE anything is deleted below - the source for this
+    # run is each document's own already-uploaded content, same as what the operator originally
+    # sent in, not whatever (now possibly stale) interpretation was made of it at the time.
+    files: list[tuple[str, bytes]] = []
+    for jd in existing_docs:
+        path = Path(jd.file_path)
+        if path.exists():
+            files.append((jd.original_name or path.name, path.read_bytes()))
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This job's documents could not be read from disk - nothing to reclassify.",
+        )
+
+    # Wipe this job's documents (JobFieldValue rows tied to one of them cascade-delete - see
+    # JobFieldValue.job_document_id's ondelete="CASCADE") and re-seed one empty slot per
+    # declared document, exactly as a brand-new job gets (see create_job) - a fresh
+    # classification run below owns the result completely, the same way a from-scratch Smart
+    # Upload on a new job would.
+    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+        shutil.rmtree(_job_doc_dir(jd.id), ignore_errors=True)
+        db.delete(jd)
+    db.flush()
+    for tdoc in group.documents:
+        db.add(JobDocument(tenant_id=job.tenant_id, job_id=job.id, template_document_id=tdoc.id))
+    db.flush()
+
+    return _classify_and_place_files(
+        db, job, group, candidates, extraction_engine, vision_engine_model, files, debug=False,
+    )
 
 
 class UnclassifiedPageOut(BaseModel):

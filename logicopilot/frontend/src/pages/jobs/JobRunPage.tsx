@@ -624,6 +624,7 @@ export function JobRunPage() {
   const [excelBusy, setExcelBusy] = useState(false);
   const [excelError, setExcelError] = useState<string | null>(null);
   const [smartBusy, setSmartBusy] = useState(false);
+  const [reclassifyBusy, setReclassifyBusy] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   // Set when Submit is pressed with something still empty. The button used to be disabled
   // instead, which says "you cannot" without ever saying WHAT is missing.
@@ -1176,6 +1177,32 @@ export function JobRunPage() {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Smart upload failed.");
     } finally {
       setSmartBusy(false);
+    }
+  }
+
+  /** Super Admin only - wipes this job's documents and field values, then re-classifies its
+   *  own already-uploaded files from scratch (see reclassify_documents in jobs.py). Destructive
+   *  on purpose: confirmed before running, same as every other irreversible action on this page. */
+  async function handleReclassifyDocuments() {
+    if (!window.confirm(
+      "This replaces every document on this job with a fresh classification of the same "
+      + "files, and clears every field value and correction already saved. This cannot be "
+      + "undone. Continue?",
+    )) {
+      return;
+    }
+    setReclassifyBusy(true);
+    setError(null);
+    setSmartResult(null);
+    try {
+      const res = await jobsApi.reclassifyDocuments(jobId);
+      setJob(res.detail);
+      setSmartResult(res.results);
+      await refreshUnclassifiedPages();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Reclassify failed.");
+    } finally {
+      setReclassifyBusy(false);
     }
   }
 
@@ -2387,23 +2414,44 @@ export function JobRunPage() {
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-slate-50">Upload documents</h2>
-            {!readOnly && (
+            {(!readOnly || showsMachinery) && (
               <div className="flex items-center gap-2">
-                <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
-                  {smartBusy ? "Classifying…" : "Smart upload (auto-classify)"}
-                  <input
-                    type="file"
-                    multiple
-                    accept=".pdf,.png,.jpg,.jpeg,.zip,.doc,.docx,.xls,.xlsx"
-                    className="hidden"
-                    disabled={smartBusy}
-                    onChange={(e) => {
-                      handleSmartUpload(e.target.files);
-                      // Selecting the SAME file(s) again later must still fire onChange.
-                      e.target.value = "";
-                    }}
-                  />
-                </label>
+                {!readOnly && (
+                  <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
+                    {smartBusy ? "Classifying…" : "Smart upload (auto-classify)"}
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.png,.jpg,.jpeg,.zip,.doc,.docx,.xls,.xlsx"
+                      className="hidden"
+                      disabled={smartBusy}
+                      onChange={(e) => {
+                        handleSmartUpload(e.target.files);
+                        // Selecting the SAME file(s) again later must still fire onChange.
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                )}
+                {/* Super Admin only - re-runs Smart Upload's own classification on whatever is
+                    ALREADY uploaded, in place. Built for a job whose documents were placed
+                    before a classifier fix shipped (JOB-A58BCB: a 40-page Invoice attachment
+                    holding 20 separate invoices, only split correctly once that fix landed) -
+                    no need to download and re-upload by hand to pick up a fix like that.
+                    Destructive (wipes and rebuilds this job's documents and field values), so
+                    gated the same way as every other super-admin-only recovery action on this
+                    page (showsMachinery), not just hidden behind readOnly. */}
+                {showsMachinery && (
+                  <Button
+                    size="sm" variant="secondary"
+                    onClick={handleReclassifyDocuments}
+                    isLoading={reclassifyBusy}
+                    disabled={!job.documents.some((d) => d.is_uploaded)}
+                    title="Re-run classification on this job's own already-uploaded documents - replaces them entirely with the result."
+                  >
+                    Re-classify documents
+                  </Button>
+                )}
                 {job.status === "extracting" ? (
                   // Extraction now starts on its own once every slot is filled — nothing left
                   // to press here, just something to show is actually happening.
@@ -2412,9 +2460,11 @@ export function JobRunPage() {
                     AI Processing…
                   </span>
                 ) : (
-                  <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
-                    {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
-                  </Button>
+                  !readOnly && (
+                    <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
+                      {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
+                    </Button>
+                  )
                 )}
               </div>
             )}
