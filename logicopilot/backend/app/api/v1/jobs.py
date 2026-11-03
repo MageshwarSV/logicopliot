@@ -5011,6 +5011,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
         db.commit()
         return erp
     job.status = "completed"
+    # Every completed job now waits on the SAME explicit Verify press as a GK2/AI submission
+    # does, regardless of which screen actually did the ERP entry - confirmed with the user
+    # (2026-11-03): a job must land on ERP Submitted Jobs first and move to ERP Verified Jobs
+    # ONLY when a human presses Verify, never automatically just because an operator ran the
+    # direct entry screen themselves. Setting ai_submitted_at here is the entire mechanism -
+    # _job_category/_category_condition already read "ai_submitted_at set, erp_verified_at
+    # not" as "submitted", so this alone is enough; nothing else needs to change.
+    if job.ai_submitted_at is None:
+        job.ai_submitted_at = datetime.now(timezone.utc)
     # A job auto-created from an incoming email (or any job that never got a real reference of
     # its own) carries a placeholder ("JOB-7F3A9C" - see generate_job_no()) until the real ERP
     # entry exists. The moment it does, the ERP's own job number IS the job's real identity -
@@ -5072,6 +5081,10 @@ def complete_job(
         erp = {"erp_status": "no_script", "erp_log": ["No ready ERP script is configured for this template."]}
         # Nothing was entered anywhere, but the operator's work on the job IS finished.
         job.status = "completed"
+        # Same rule as persist_run_outcome's own completion - waits on an explicit Verify
+        # press before counting as ERP Verified, not just this screen's own completion.
+        if job.ai_submitted_at is None:
+            job.ai_submitted_at = datetime.now(timezone.utc)
         db.commit()
     else:
         # The same inputs the Entry Browser's replay gets - one function, so a fix to how
