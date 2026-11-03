@@ -4649,6 +4649,7 @@ function ExtractedField({
   transformBeforeSave,
   neverEdited,
   digitsOnly,
+  carryToAllRows,
   id,
 }: {
   fv: JobFieldValue;
@@ -4727,6 +4728,14 @@ function ExtractedField({
    *  lit up permanently on a field the operator had never typed into. Same reasoning as the
    *  origin "fixed" exemption just below, which it sits alongside rather than replaces. */
   neverEdited?: boolean;
+  /** Carries a typed value to every OTHER product line, and draws its own "only this line"
+   *  escape hatch next to the label. An invoice's lines are usually all the same commodity,
+   *  so the CTH is usually the same eight digits on every one of them, and typing it a
+   *  hundred and forty-four times is a hundred and forty-four chances to fat-finger a customs
+   *  code. `previous` is what this box held BEFORE the edit, which is what lets the carry
+   *  skip a line somebody has already given a different code of its own (see
+   *  applyCthValueToAllRows). Undefined on every field that is not a per-line code. */
+  carryToAllRows?: (value: string, previous: string) => Promise<void>;
   /** Digits only, exactly this many of them. A CTH is eight digits - not "up to eight", so a
    *  shorter one is an UNFINISHED code rather than a different one, and is kept in the box
    *  without being saved until it is whole. Filtered on the way IN as well, because a paste
@@ -4811,6 +4820,13 @@ function ExtractedField({
 
   const dirty = draft !== current;
 
+  // "Only this line": the escape hatch from the carry-across, and the same idea the
+  // Dump/Document picker above this field carries. Carrying a typed code to every line is
+  // right for the common invoice, where every line is the same commodity; it is wrong for
+  // the one line that differs. Resets whenever the card is re-rendered, because it describes
+  // one edit rather than a setting.
+  const [soloEdit, setSoloEdit] = useState(false);
+
   const saveValue = async (value: string) => {
     if (readOnly) return;
     const transformed = transformBeforeSave ? transformBeforeSave(value) : value;
@@ -4821,8 +4837,17 @@ function ExtractedField({
     setSaving(true);
     setFailed(false);
     try {
+      // Read BEFORE the write: once correctFieldValue lands, this box's own old value is
+      // gone, and it is the only way to tell a line that was merely following this one along
+      // from a line somebody deliberately set to something else.
+      const previous = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
       await jobsApi.correctFieldValue(fv.id, transformed);
-      await reload();
+      if (carryToAllRows && !soloEdit) {
+        // Does its own reload at the end, covering this row too.
+        await carryToAllRows(transformed, previous);
+      } else {
+        await reload();
+      }
     } catch {
       setFailed(true);
     } finally {
@@ -4891,6 +4916,26 @@ function ExtractedField({
         {saving && <span className="shrink-0 text-[10px] text-slate-400">saving…</span>}
         {failed && (
           <span className="shrink-0 text-[10px] text-rose-600">could not save</span>
+        )}
+        {/* Pushed to the right, so it sits where the picker's own "only this line" sits and
+            reads as the same control rather than a second, different one. */}
+        {carryToAllRows && !readOnly && (
+          <button
+            type="button"
+            onClick={() => setSoloEdit((v) => !v)}
+            title={
+              soloEdit
+                ? "This line only \u2014 every other product keeps its own code"
+                : "Normally, typing here fills every product. Press to change just this one."
+            }
+            className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              soloEdit
+                ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            }`}
+          >
+            {soloEdit ? "\u270e only this line" : "only this line"}
+          </button>
         )}
       </div>
       <div
@@ -6972,6 +7017,19 @@ function ExtractionReview({
                                 digitsOnly={
                                   (fv.label_name ?? "").trim().toUpperCase() === "CTH"
                                     ? CTH_LENGTH
+                                    : undefined
+                                }
+                                // Typed by hand, the CTH fills every other product line, the
+                                // same way picking Dump/Document above it already does. Only
+                                // this field: every other box on the card describes ONE
+                                // product and must never reach another.
+                                carryToAllRows={
+                                  (fv.label_name ?? "").trim().toUpperCase() === "CTH"
+                                    && fv.custom_field_id
+                                    ? (value, previous) =>
+                                        applyCthValueToAllRows(
+                                          fv.custom_field_id!, value, previous,
+                                        )
                                     : undefined
                                 }
                                 flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "Combined Description")}
