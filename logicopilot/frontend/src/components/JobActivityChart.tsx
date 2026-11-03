@@ -53,7 +53,16 @@ function niceTicks(max: number): { step: number; top: number; ticks: number[] } 
  *  SpendAnalyticsPage's BarChart). A 31-day month gets unreadably thin bars if squeezed into a
  *  fixed width, so the chart itself scrolls horizontally instead - that native scrollbar IS the
  *  "bottom slider to scroll/navigate across the monthly data" the spec asks for. */
-export function JobActivityChart() {
+export function JobActivityChart({
+  onViewChange,
+}: {
+  // Lets a parent (the operator dashboard) keep the sidebar's own badge counts scoped to
+  // whichever month/operator this chart is currently showing, instead of them silently
+  // disagreeing - found live (2026-11-03): "ERP Submitted Jobs 9" for November 2026 right next
+  // to a sidebar badge reading "31" (an all-time total). Called on every month/Assigned To
+  // change, including the initial mount.
+  onViewChange?: (view: { month: string; assignedTo: string }) => void;
+} = {}) {
   const { user } = useAuth();
   // Defaults to whoever is signed in, not "All Users" - an operator opening their own
   // dashboard wants to see their own activity first, same as /jobs' own default view
@@ -70,6 +79,14 @@ export function JobActivityChart() {
       () => setOperators([]),
     );
   }, []);
+
+  useEffect(() => {
+    // The parent (OperatorDashboard) must pass a useCallback-stabilized onViewChange - an
+    // inline arrow function here would re-fire this effect on every one of the parent's own
+    // re-renders (each one a fresh function reference), which re-triggers the parent's state
+    // update that caused the re-render in the first place, looping forever.
+    onViewChange?.({ month, assignedTo });
+  }, [month, assignedTo, onViewChange]);
 
   useEffect(() => {
     let cancelled = false;
