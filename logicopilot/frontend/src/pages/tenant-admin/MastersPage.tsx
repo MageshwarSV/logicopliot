@@ -9,6 +9,7 @@ import * as userTypesApi from "../../api/userTypes";
 import { customTypeIdOf, type TypeSelection, type UserType } from "../../api/userTypes";
 import { MODES } from "../../types/onboarding";
 import { ReferenceSheetsSection } from "../super-admin/ReferenceSheetsSection";
+import { ReferenceValuesSection } from "../super-admin/ReferenceValuesSection";
 
 type CreatableRole = "operator" | "gk2" | "manager";
 
@@ -326,6 +327,14 @@ export function MastersPage() {
           shows only this Tenant Admin's own templates, never another tenant's. */}
       <Card className="mt-6 max-w-2xl p-0">
         <ReferenceSheetsSection />
+      </Card>
+
+      {/* The feature actually asked for: every field ticked "This is a target value?" in the
+          template wizard keeps its own reference table here - download a template, fill it in
+          offline, upload it in bulk. Same reuse-as-is reasoning as ReferenceSheetsSection
+          above - its own API calls (listGroups/getGroup) are tenant-scoped server-side. */}
+      <Card className="mt-6 max-w-2xl p-0">
+        <ReferenceValuesSection />
       </Card>
     </AppShell>
   );
