@@ -91,13 +91,22 @@ export function JobActivityChart({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    jobsApi
-      .getJobActivityChart(month, assignedTo || undefined)
-      .then((d) => { if (!cancelled) setDays(d); })
-      .catch(() => { if (!cancelled) setDays([]); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    // "Loading…" only covers the FIRST fetch after a month/Assigned To change - the 30s
+    // background refresh (same interval the sidebar badges already poll at, AppShell.tsx)
+    // updates the bars silently, and keeps the last good data on screen rather than wiping it
+    // to "No data" if one refresh happens to fail.
+    let first = true;
+    const load = () => {
+      if (first) setLoading(true);
+      jobsApi
+        .getJobActivityChart(month, assignedTo || undefined)
+        .then((d) => { if (!cancelled) setDays(d); })
+        .catch(() => { if (!cancelled && first) setDays([]); })
+        .finally(() => { if (!cancelled) { setLoading(false); first = false; } });
+    };
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { cancelled = true; window.clearInterval(t); };
   }, [month, assignedTo]);
 
   const isCurrentMonth = month === currentMonthStr();
