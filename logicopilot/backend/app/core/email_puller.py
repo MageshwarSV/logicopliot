@@ -1103,21 +1103,67 @@ def _process_one_message(
 
     # ---- attachments, including whatever is inside a .zip
     import io
+    import shutil
+    import uuid
     import zipfile
 
+    from app.core import office_convert
+
+    safe_mid = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:60] or "msg"
+    tmp = Path(get_settings().uploads_dir) / "_email" / safe_mid
+
     files: list[tuple[str, bytes]] = []
+    # Word/Excel attachments are converted below, same as a manual Smart Upload already does -
+    # collected separately here since they need that extra step before they can join `files`.
+    office_attachments: list[tuple[str, bytes]] = []
     for name, blob in _extract_attachments(msg):
         if name.lower().endswith(".zip"):
             try:
                 with zipfile.ZipFile(io.BytesIO(blob)) as z:
                     for n in z.namelist():
-                        if not n.endswith("/") and \
-                                Path(n).suffix.lower() in CLASSIFY_EXTS:
+                        if n.endswith("/"):
+                            continue
+                        n_ext = Path(n).suffix.lower()
+                        if n_ext in CLASSIFY_EXTS:
                             files.append((Path(n).name, z.read(n)))
+                        elif n_ext in office_convert.OFFICE_EXTS:
+                            office_attachments.append((Path(n).name, z.read(n)))
             except zipfile.BadZipFile:
                 continue
-        elif Path(name).suffix.lower() in CLASSIFY_EXTS:
-            files.append((name, blob))
+        else:
+            ext = Path(name).suffix.lower()
+            if ext in CLASSIFY_EXTS:
+                files.append((name, blob))
+            elif ext in office_convert.OFFICE_EXTS:
+                office_attachments.append((name, blob))
+
+    # Word -> one PDF, Excel -> one PDF per worksheet - the SAME conversion Smart Upload
+    # already does for a manual upload (see its own identical block in jobs.py). Found live on
+    # JOB-8616BC: an Excel/Word attachment arriving by email was silently dropped before
+    # classification ever saw it - CLASSIFY_EXTS (PDF/PNG/JPG only) filtered it straight out
+    # above, with no log line and no "unclassified" staging, so there was no trace it had even
+    # arrived.
+    if office_attachments:
+        office_work_dir = tmp / "_office"
+        office_work_dir.mkdir(parents=True, exist_ok=True)
+        for name, data in office_attachments:
+            ext = Path(name).suffix.lower()
+            src = office_work_dir / f"{uuid.uuid4().hex}{ext}"
+            src.write_bytes(data)
+            try:
+                if ext in office_convert.WORD_EXTS:
+                    pdf = office_convert.convert_word_to_pdf(src, office_work_dir, office_work_dir)
+                    files.append((f"{Path(name).stem}.pdf", pdf.read_bytes()))
+                else:
+                    for sheet_name, pdf in office_convert.convert_excel_sheets_to_pdfs(
+                        src, office_work_dir, office_work_dir
+                    ):
+                        files.append((f"{Path(name).stem} - {sheet_name}.pdf", pdf.read_bytes()))
+            except office_convert.OfficeConversionFailed as exc:
+                logger.warning(
+                    "email classify: %s - could not convert this Office attachment: %s",
+                    name, exc,
+                )
 
     if not files:
         _record(db, mid, sender, subject, "no_documents",
@@ -1126,10 +1172,6 @@ def _process_one_message(
                 "reason": "no document attachments"}
 
     # ---- read every page, and hold the text only as long as it is needed
-    import shutil
-
-    safe_mid = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:60] or "msg"
-    tmp = Path(get_settings().uploads_dir) / "_email" / safe_mid
     doc_texts: list[tuple[str, str]] = []
     prepared: list[dict] = []
     group = None
@@ -1462,7 +1504,12 @@ def _process_one_message(
         # invoice fill both the Invoice and the Packing List slot, and a bill of lading
         # fill both the BL and the Freight slot - the real packing list and freight
         # certificate were silently dropped.
-        claims_per_file = assign_documents_detailed(
+        from app.core.extraction_queue import run_queued
+
+        # Shares the same cap as extraction (see extraction_queue's own docstring) -
+        # classification makes the identical kind of slow OpenAI call and was found holding
+        # the same kind of resource open on 2026-11-03, just never through this queue before.
+        claims_per_file = run_queued(lambda: assign_documents_detailed(
             prepared, cand_slots, engine=extraction_engine,
             vision_model=vision_engine_model,
             # Classify every page from its own image instead of page 1 alone, same
@@ -1470,7 +1517,7 @@ def _process_one_message(
             # page just as easily arriving by mail as uploaded by hand.
             per_page_vision=True,
             tenant_id=job.tenant_id,
-        )
+        ))
         for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
             # The AI second-opinion pathway (_ai_verify_second_type, source
             # "ai_second") is the weakest signal assign_documents_detailed produces -

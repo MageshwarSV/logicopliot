@@ -6883,9 +6883,11 @@ def smart_upload(
     if not files:
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
-    return _classify_and_place_files(
+    from app.core.extraction_queue import run_queued
+
+    return run_queued(lambda: _classify_and_place_files(
         db, job, group, candidates, extraction_engine, vision_engine_model, files, debug,
-    )
+    ))
 
 
 @router.post("/jobs/{job_id}/reclassify-documents")
@@ -6972,9 +6974,11 @@ def reclassify_documents(
         db.add(JobDocument(tenant_id=job.tenant_id, job_id=job.id, template_document_id=tdoc.id))
     db.flush()
 
-    return _classify_and_place_files(
+    from app.core.extraction_queue import run_queued
+
+    return run_queued(lambda: _classify_and_place_files(
         db, job, group, candidates, extraction_engine, vision_engine_model, files, debug=False,
-    )
+    ))
 
 
 class UnclassifiedPageOut(BaseModel):
