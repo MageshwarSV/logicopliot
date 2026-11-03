@@ -19,6 +19,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
+from app.core.tariff_codes import TARIFF_CODE_SYNONYMS, is_tariff_code_field
 
 logger = logging.getLogger(__name__)
 
@@ -874,6 +875,12 @@ def _field_lines(fields: list[dict]) -> list[str]:
             f'- "{f["label"]}": {f.get("prompt") or f.get("description") or ""} '
             f"(may be captioned as: {variations})"
         )
+        # The tariff code is the one field whose caption genuinely differs from document to
+        # document - CTH, HS Code, HSN, HTS, RITC, ITC-HS are all the same column (see
+        # tariff_codes). Attached to the FIELD rather than to the whole prompt, so a job
+        # carrying no tariff field pays nothing for it.
+        if is_tariff_code_field(f.get("label")):
+            line += "\n    " + TARIFF_CODE_SYNONYMS
         # What the Super Admin's CROP actually saw on the reference document. This is the
         # whole point of drawing a box: it is evidence about which part of the page this
         # field lives in and what its value looks like. Without it the model reads the

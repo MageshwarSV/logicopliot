@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 
 from app.core.config import get_settings
+from app.core.tariff_codes import TARIFF_CODE_SYNONYMS, is_tariff_code_field
 
 logger = logging.getLogger(__name__)
 
@@ -403,8 +404,20 @@ def ai_classify_outcome(
         }
 
 
+def _instruction(prompt: str, field_label: str | None) -> str:
+    """The instruction block every compute_custom_field* call opens with, plus the tariff
+    caption list when this field is a tariff code (see tariff_codes).
+
+    Keyed on the field's NAME, not on its prompt text, and so costs nothing on the fields
+    that are not one."""
+    if is_tariff_code_field(field_label):
+        return f"Instruction: {prompt}\n\n{TARIFF_CODE_SYNONYMS}\n\n"
+    return f"Instruction: {prompt}\n\n"
+
+
 def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str] | None = None,
-                         records: list[dict] | None = None, tenant_id: str | None = None) -> str:
+                         records: list[dict] | None = None, tenant_id: str | None = None,
+                         field_label: str | None = None) -> str:
     """Compute a custom field's value from the selected documents, following the Super Admin's
     instruction (e.g. a calculation across documents).
 
@@ -457,7 +470,7 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
                 {
                     "role": "user",
                     "content": (
-                        f"Instruction: {prompt}\n\n"
+                        _instruction(prompt, field_label)
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
                         + (f"Already-extracted values: {json.dumps(values, ensure_ascii=False)}\n\n"
@@ -681,7 +694,8 @@ CUSTOM_FIELD_ROWS_LIMIT = 200
 
 def compute_custom_field_rows(prompt: str, documents_text: str,
                                records: list[dict] | None = None,
-                               tenant_id: str | None = None) -> list[str]:
+                               tenant_id: str | None = None,
+                               field_label: str | None = None) -> list[str]:
     """Like compute_custom_field, but for a field ticked "multiple values from document" —
     the instruction describes ONE item (a container number, a line on a packing list with no
     mark of its own) and this returns every instance actually found, instead of one value for
@@ -716,7 +730,7 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
                 {
                     "role": "user",
                     "content": (
-                        f"Instruction: {prompt}\n\n"
+                        _instruction(prompt, field_label)
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
                         + f"Raw document text (supporting evidence, may be shortened):\n"
@@ -736,7 +750,8 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
 
 def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: list[dict],
                                   records: list[dict] | None = None,
-                                  tenant_id: str | None = None) -> list[str]:
+                                  tenant_id: str | None = None,
+                                  field_label: str | None = None) -> list[str]:
     """Like compute_custom_field_rows, but for a per-row field whose ROWS are already known -
     this job's own product lines, each already carrying whatever OTHER per-row fields (a part
     code, a description, a quantity) extraction already found for it. Returns exactly
@@ -792,8 +807,8 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
                 {
                     "role": "user",
                     "content": (
-                        f"Instruction: {prompt}\n\n"
-                        f"Product lines to answer for, in order ({len(row_context)} line(s)):\n"
+                        _instruction(prompt, field_label)
+                        + f"Product lines to answer for, in order ({len(row_context)} line(s)):\n"
                         f"{json.dumps(row_context, ensure_ascii=False)}\n\n"
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")

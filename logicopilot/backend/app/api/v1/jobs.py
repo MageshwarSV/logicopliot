@@ -8220,6 +8220,7 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 ]
                 answers = compute_custom_field_per_row(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
+                    field_label=cf.label_name,
                 )
                 for key, answer in zip(line_keys, answers):
                     looked_up[key] = answer
@@ -8316,7 +8317,8 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 # this field was never tied to any mark's line items to begin with.
                 from app.core.llm import compute_custom_field_rows
 
-                rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records)
+                rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records,
+                                                 field_label=cf.label_name)
                 logger.info("%r on job %s: %d row(s) read directly from its own document(s)",
                             cf.label_name, job.reference, len(rows))
                 # Idempotent on the same reasoning as every other write loop in this function -
@@ -8346,7 +8348,8 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
 
             from app.core.llm import compute_custom_field
 
-            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
+                                         field_label=cf.label_name)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
@@ -8839,7 +8842,8 @@ def _recompute_per_row_custom_field(
             }
             for i, key in enumerate(line_keys)
         ]
-        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
+        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context,
+                                               records=records, field_label=cf.label_name)
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
         if composite_pieces_override is not None:
@@ -9007,7 +9011,8 @@ def recompute_custom_field(
 
         from app.core.llm import compute_custom_field
 
-        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
+                                     field_label=cf.label_name)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
 
