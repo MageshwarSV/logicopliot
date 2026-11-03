@@ -12,6 +12,7 @@ One OpenAI call per document (all its fields batched) keeps it cheap and coheren
 
 import base64
 import datetime as _dt
+import functools
 import json
 import logging
 import re
@@ -91,6 +92,17 @@ _DATE_FORMATS = (
 )
 
 
+# Cached because this runs on every cross-document comparison, on every job, every time the
+# Jobs list or a job's own page is viewed - not just once at extraction time. Found live
+# (2026-11-03, via a production thread dump) piling up dozens of threads at once, all inside
+# datetime.strptime(): CPython's own _strptime module serializes every call in the whole
+# process through one shared lock to build its format cache, so many threads parsing dates
+# at the same moment queue up behind each other instead of running in parallel - exactly the
+# kind of site-wide stall this was causing. The SAME date string (an invoice date shared
+# across several documents in one shipment, or across many jobs from the same customer) is
+# common enough that caching cuts most of this at the source; the lock itself is unchanged,
+# but calls that repeat a value seen before never reach it at all.
+@functools.lru_cache(maxsize=8192)
 def _parse_date(value: str | None) -> _dt.date | None:
     text = (value or "").strip()
     if not text:
