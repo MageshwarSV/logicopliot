@@ -12,8 +12,10 @@ treated as a single, unclassifiable document. Done by building a temporary singl
 of the workbook per sheet (openpyxl) and converting each of those separately, since
 LibreOffice's own --convert-to has no per-sheet output mode.
 """
+import os
 import re
 import shutil
+import signal
 import subprocess
 import uuid
 from pathlib import Path
@@ -38,27 +40,40 @@ def _run_soffice(args: list[str], profile_dir: Path, timeout: int = 180) -> None
     # two Smart Upload requests converting a file at the same moment race for the same default
     # profile lock and one of them fails outright ("Fatal Error: file could not be locked").
     profile_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "soffice", "--headless", "--norestore", "--nologo", "--nodefault",
+        "--nofirststartwizard",
+        f"-env:UserInstallation=file://{profile_dir}",
+        *args,
+    ]
     try:
-        result = subprocess.run(
-            [
-                "soffice", "--headless", "--norestore", "--nologo", "--nodefault",
-                "--nofirststartwizard",
-                f"-env:UserInstallation=file://{profile_dir}",
-                *args,
-            ],
-            capture_output=True, timeout=timeout,
-        )
+        # start_new_session puts soffice in its OWN process group - without this, a timeout
+        # only ever kills the one process Python directly launched. LibreOffice forks its own
+        # child during startup, and that child does not die with its parent: found live
+        # (2026-11-03, JOB-8616BC) as a soffice.bin that sat doing NOTHING - 0 seconds of CPU
+        # time - for 5+ minutes, well past this function's own 180s timeout, because killing
+        # the parent alone left the actual worker running untouched. Killing the whole group on
+        # timeout (os.killpg) reaches every process LibreOffice spawned, not just the first one.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
     except FileNotFoundError:
         raise OfficeConversionFailed(
             "LibreOffice (soffice) is not installed on this server - Word/Excel upload is "
             "unavailable until it is."
         )
+    try:
+        _out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()  # reap, now that every process in the group is dead
         raise OfficeConversionFailed("Converting this file to PDF took too long and was stopped.")
-    if result.returncode != 0:
+    if proc.returncode != 0:
         raise OfficeConversionFailed(
             f"LibreOffice could not convert this file to PDF: "
-            f"{result.stderr.decode(errors='replace').strip()[:500] or 'unknown error'}"
+            f"{err.decode(errors='replace').strip()[:500] or 'unknown error'}"
         )
 
 
