@@ -4647,6 +4647,8 @@ function ExtractedField({
   onBeforeSave,
   onDraftChange,
   transformBeforeSave,
+  neverEdited,
+  digitsOnly,
   id,
 }: {
   fv: JobFieldValue;
@@ -4719,6 +4721,18 @@ function ExtractedField({
     country?: string;
     onPick: (value: string) => Promise<void>;
   };
+  /** Never show the "edited" badge, however the value got there. For a field whose value is
+   *  WRITTEN BY SOMETHING ELSE on the same card - the CTH and RITC No. that a Dump/Document
+   *  pick fills in - every single value is a "correction" in the database sense, so the badge
+   *  lit up permanently on a field the operator had never typed into. Same reasoning as the
+   *  origin "fixed" exemption just below, which it sits alongside rather than replaces. */
+  neverEdited?: boolean;
+  /** Digits only, exactly this many of them. A CTH is eight digits - not "up to eight", so a
+   *  shorter one is an UNFINISHED code rather than a different one, and is kept in the box
+   *  without being saved until it is whole. Filtered on the way IN as well, because a paste
+   *  out of a spreadsheet routinely carries "8482 4000 90" or "8482400090.0" and keeping just
+   *  the digits is what the operator meant every time. */
+  digitsOnly?: number;
   /** Runs before a save reaches the server - resolve false to cancel the save outright (the
    *  draft stays as typed, nothing is sent). Insurance Rate (%) uses this to require an
    *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
@@ -4818,6 +4832,11 @@ function ExtractedField({
 
   const commit = async () => {
     if (!dirty || readOnly) return;
+    // An incomplete tariff heading is not a different code, it is an unfinished one - and one
+    // of those reached five product lines on JOB-3151A3 before anybody noticed. The box keeps
+    // what was typed so the operator can finish it; nothing goes to the database until it is
+    // whole. Clearing the box entirely is still allowed.
+    if (digitsOnly && draft !== "" && draft.length !== digitsOnly) return;
     await saveValue(draft);
   };
 
@@ -4845,7 +4864,8 @@ function ExtractedField({
   // Every other field is untouched - a document mark the operator really did correct still
   // shows the badge, and so does an AI or lookup field (origin "computed"/"reference").
   const corrected =
-    fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
+    !neverEdited
+    && fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
   return (
     <div id={id} className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
@@ -5032,9 +5052,14 @@ function ExtractedField({
             <input
               value={draft}
               readOnly={readOnly}
+              inputMode={digitsOnly ? "numeric" : undefined}
+              maxLength={digitsOnly ?? undefined}
               onChange={(e) => {
-                setDraft(e.target.value);
-                onDraftChange?.(e.target.value);
+                const next = digitsOnly
+                  ? e.target.value.replace(/\D/g, "").slice(0, digitsOnly)
+                  : e.target.value;
+                setDraft(next);
+                onDraftChange?.(next);
               }}
               onFocus={() => {
                 onFocusField?.(fv);
@@ -6850,7 +6875,32 @@ function ExtractionReview({
                         // With two tick-boxes above it that no longer holds - neither of them is
                         // the CTH, they are the two candidates for it.
                       });
-                      const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
+                      // Sorted, because the order these arrive in is not stable from one row
+                      // to the next: CTH sat left of Combined Product Description on product 2
+                      // and right of it on product 3, so a column an operator had just learned
+                      // to look at moved under them on every card. Nothing here carries a
+                      // configured display order to honour, so any FIXED order beats an
+                      // incidental one; the id is only a tie-break so two fields sharing a
+                      // label can never swap either.
+                      const rest = lookedUp
+                        .filter((fv) => !pairedIds.has(fv.id))
+                        .slice()
+                        .sort(
+                          (a, b) =>
+                            (a.label_name ?? "").localeCompare(b.label_name ?? "", undefined, {
+                              sensitivity: "base",
+                            }) || a.id.localeCompare(b.id),
+                        );
+                      // Everything a Dump/Document pick WRITES - the CTH itself and whatever
+                      // else the pairing syncs (RITC No.). Picking is the normal way these get
+                      // their value, so a "corrected" flag on them says nothing about whether a
+                      // human disagreed with a reading, which is the only thing the badge is
+                      // for.
+                      const pickerWrittenIds = new Set<string>(
+                        pairs.flatMap(({ other, syncTargets }) =>
+                          other ? syncTargets.map((t) => t.id) : [],
+                        ),
+                      );
                       // Purely a backing flag for product_description/Combined Description's own
                       // red highlight below - never a field of its own on screen (see
                       // TRANSLATED_FLAG_SOURCE_LABELS).
@@ -6918,6 +6968,12 @@ function ExtractionReview({
                                 fv={fv}
                                 readOnly={readOnly}
                                 reload={reload}
+                                neverEdited={pickerWrittenIds.has(fv.id)}
+                                digitsOnly={
+                                  (fv.label_name ?? "").trim().toUpperCase() === "CTH"
+                                    ? CTH_LENGTH
+                                    : undefined
+                                }
                                 flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "Combined Description")}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
