@@ -40,10 +40,16 @@ def _run_soffice(args: list[str], profile_dir: Path, timeout: int = 180) -> None
     # two Smart Upload requests converting a file at the same moment race for the same default
     # profile lock and one of them fails outright ("Fatal Error: file could not be locked").
     profile_dir.mkdir(parents=True, exist_ok=True)
+    # .resolve() - a relative profile_dir produced "file://uploads/_classify/..." here, which
+    # is not a valid file:// URI (everything up to the next "/" reads as a HOST, not a path
+    # segment). Found live (2026-11-03, JOB-8616BC) as the real difference between a soffice
+    # call that hung reliably inside this app and the exact same command run by hand with an
+    # absolute profile path, which finished in 2 seconds. Always resolving to an absolute path
+    # here means the URI is well-formed regardless of what the caller happened to pass in.
     cmd = [
         "soffice", "--headless", "--norestore", "--nologo", "--nodefault",
         "--nofirststartwizard",
-        f"-env:UserInstallation=file://{profile_dir}",
+        f"-env:UserInstallation=file://{profile_dir.resolve()}",
         *args,
     ]
     try:
