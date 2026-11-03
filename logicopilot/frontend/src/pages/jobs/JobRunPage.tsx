@@ -5381,7 +5381,8 @@ function DualSourcePicker({
    *  custom_field_id of its own (should not happen for a real pairing). */
   applyToAllRows?: (which: "primary" | "other") => Promise<void>;
   /** CTH layout only: carries a typed value to every other product line that has not been
-   *  given its own (see commitCth). `previous` is what this box held before the edit, which
+   *  given its own (see commitPrimary). `previous` is what this box held before the edit,
+   *  which
    *  is how a line that merely followed the old value is told apart from one somebody
    *  deliberately set to something different. */
   applyValueToAllRows?: (
@@ -5420,6 +5421,21 @@ function DualSourcePicker({
   const [primaryDraft, setPrimaryDraft] = useState(primaryValue);
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
+
+  // "Only this line": the escape hatch from the carry-across.
+  //
+  // Carrying a pick, or a typed code, to every line is right for the common invoice, where
+  // every line is the same commodity. It is wrong for the one line that differs - and when
+  // all the lines already share a value, changing any one of them would take the other four
+  // with it, since they all look like lines that were merely following along.
+  //
+  // So it is a deliberate, per-line choice rather than a guess. Switched on, this card saves
+  // its own value and touches nothing else; every other line keeps what it has. It resets
+  // when the card is re-rendered from scratch, because it describes one edit, not a setting.
+  //
+  // Declared up here, above the `if (!other)` bail-out further down, because it is a hook:
+  // behind that return it would be a conditional one.
+  const [soloEdit, setSoloEdit] = useState(false);
 
   // CTH layout only: follow a value written from ANOTHER product line's box.
   //
@@ -5485,7 +5501,10 @@ function DualSourcePicker({
       // Ripples to every OTHER product line's own copy of this pairing (each keeping its OWN
       // values) - applyToAllRows does its own reload at the end covering this row too, so skip
       // the separate reload() below when it ran.
-      if (applyToAllRows) {
+      //
+      // Held back by "only this line": an operator who has said this one product is
+      // different means it about WHICH SOURCE is right, as much as about a value they typed.
+      if (applyToAllRows && !soloEdit) {
         await applyToAllRows(which);
       } else {
         await reload();
@@ -5496,16 +5515,33 @@ function DualSourcePicker({
   };
 
   // Editing primary's OWN box: it is unconditionally the field exports actually read, so a
-  // direct correction always carries the synced fields (RITC, etc.) along with it, same as
-  // picking it would.
+  // direct correction always carries the synced fields (CTH, RITC, etc.) along with it, the
+  // same as picking it would.
+  //
+  // On a CTH pairing it ALSO carries to every other product line, unless "only this line" is
+  // on. An invoice's lines are usually all the same commodity, so the code is usually the
+  // same eight digits on every one of them, and typing it twelve times is twelve chances to
+  // fat-finger a customs code. applyValueToAllRows only fills lines that are EMPTY or still
+  // carry the value this box held before the edit, so a line somebody has already given a
+  // different code of its own keeps it.
   const commitPrimary = async () => {
-    if (readOnly || primaryDraft === primaryValue) return;
+    if (readOnly || saving || primaryDraft === primaryValue) return;
+    // Never save a half-typed heading. A CTH is eight digits; six is not a different code, it
+    // is an unfinished one - and an unfinished one reached five product lines on JOB-3151A3
+    // before anybody noticed. The box keeps what was typed so the operator can finish it;
+    // nothing goes to the database until it is whole.
+    if (isCthPairing && primaryDraft !== "" && primaryDraft.length !== CTH_LENGTH) return;
     setSaving(true);
     try {
+      const previous = primaryValue;
       await jobsApi.correctFieldValue(primary.id, primaryDraft);
       ownPrimaryValueRef.current = primaryDraft;
       for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
-      await reload();
+      if (isCthPairing && applyValueToAllRows && primary.custom_field_id && !soloEdit) {
+        await applyValueToAllRows(primary.custom_field_id, primaryDraft, previous);
+      } else {
+        await reload();
+      }
     } finally {
       setSaving(false);
     }
@@ -5537,218 +5573,60 @@ function DualSourcePicker({
         : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
     } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`;
 
-  // A pairing that feeds a field actually called CTH gets a different, simpler shape: ONE
-  // box, which IS the CTH, with what the document read shown underneath as a reference.
-  //
-  // The two checkboxes made sense when neither source was privileged, but for the CTH they
-  // are not equal: the reference sheet is the customer's own declared code, the document's
-  // is whatever the supplier happened to print. Asking an operator to choose between them on
-  // every product line, when the answer is almost always the sheet, is a decision they have
-  // to make hundreds of times and get right every time.
-  //
-  // Only this case changes. A pairing that syncs somewhere else (Bhuvaneswari's, which feeds
-  // RITC No. and has no CTH field at all) keeps the picker exactly as it was - those two
-  // sources really are alternatives there, and silently picking one for them would be
-  // choosing a customs code on their behalf.
-  const cthTarget = syncTargets.find(
-    (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
-  );
-
   // Eight digits, and only eight. A CTH shorter than that is an incomplete tariff heading,
   // not a different one - found live on JOB-3151A3, where "1231342" (seven) had been typed
-  // and then carried onto a second product line before anything noticed.
+  // and then carried onto a second product line before anything noticed. Only meaningful on
+  // a CTH pairing; a pairing that feeds something else may carry a code of any length.
   const cthIncomplete =
-    primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
+    isCthPairing && primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
 
-  // "Only this line": the escape hatch from the carry-across.
+  // Both sources are shown, and the operator picks between them.
   //
-  // Carrying a typed code to every line is right for the common invoice, where every line is
-  // the same commodity. It is wrong for the one line that differs - and when all the lines
-  // already share a value, editing any one of them would take the other four with it, since
-  // they all look like lines that were merely following along.
+  // This was briefly ONE box - the dump's value, with the document's reading printed
+  // underneath as a note - on the grounds that the sheet is the customer's own declared code
+  // while the document's is only whatever the supplier happened to print. The people filing
+  // on it asked for the two tick-boxes back: a note is something to read, and what they want
+  // is something to CHOOSE, with the chosen source visible on the line at a glance.
   //
-  // So it is a deliberate, per-line choice rather than a guess. Switched on, this box saves
-  // its own value and touches nothing else; every other line keeps what it has. It resets
-  // when the card is re-rendered from scratch, because it describes one edit, not a setting.
-  const [soloEdit, setSoloEdit] = useState(false);
-
-  /** Saving a CTH, and carrying it to the other product lines.
-   *
-   * An invoice's lines are usually all the same commodity, so the CTH is usually the same
-   * eight digits on every one of them - typing it twelve times is twelve chances to fat-finger
-   * a customs code.
-   *
-   * It only fills lines that are EMPTY or still carry the value this box held before the
-   * edit. A line somebody has already given a different code keeps it, so the mixed-commodity
-   * invoice (where line 7 genuinely differs) is not quietly flattened by someone correcting
-   * line 1 afterwards. That is the whole reason it is not a blunt "set them all".
-   */
-  const commitCth = async (valueOverride?: string) => {
-    // Takes the value explicitly when called from onChange: setPrimaryDraft has not landed
-    // in state yet on that same tick, so reading primaryDraft there would save the digit
-    // BEFORE the one just typed.
-    const value = valueOverride ?? primaryDraft;
-    if (readOnly || saving || value === primaryValue) return;
-    // Never save a half-typed heading. A CTH is eight digits; six is not a different code,
-    // it is an unfinished one - and an unfinished one reached five product lines on
-    // JOB-3151A3 before anybody noticed. The box keeps what was typed so the operator can
-    // finish it; nothing goes to the database until it is whole.
-    if (value !== "" && value.length !== CTH_LENGTH) return;
-    setSaving(true);
-    try {
-      const previous = primaryValue;
-      await jobsApi.correctFieldValue(primary.id, value);
-      ownPrimaryValueRef.current = value;
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
-      if (applyValueToAllRows && primary.custom_field_id && !soloEdit) {
-        await applyValueToAllRows(primary.custom_field_id, value, previous);
-      } else {
-        await reload();
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (cthTarget) {
-    return (
-      <div>
-        {/* Exactly the markup every other small field label uses (see ExtractedField) -
-            same size, weight and colour, and the same rose asterisk. It looked like a
-            different kind of thing sitting among them before, which is misleading: it is an
-            ordinary mandatory field and should read as one.
-
-            Always marked required: a Bill of Entry cannot be filed without a CTH. */}
-        <div className="mb-1 flex items-center justify-between gap-1.5">
-          {/* The class list is ExtractedField's own, copied verbatim rather than tidied.
-              It carries two conflicting pairs - font-semibold/font-medium and
-              text-slate-900/text-slate-500 - and Tailwind settles those by stylesheet order,
-              not by the order they appear here, so what actually renders is semibold and
-              slate-900. Writing out only the "tidy" half produced a visibly lighter label
-              sitting next to identical ones. Kept character-for-character so the two cannot
-              drift apart again if that conflict is ever cleaned up. */}
-          <p className="truncate font-semibold text-slate-900 dark:text-slate-100 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            CTH
-            <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
-            <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
-              (8-Digit Code)
-            </span>
-            {/* WHICH key of the customer's sheet produced the code - on the heading line, by
-                request, so it reads as part of what this field IS rather than as another note
-                stacked under the box. Matched on the part number it is the precise answer;
-                matched only on the wording it is worth a second look, and on these invoices
-                the part code is often blank so wording was the only thing that could have
-                matched at all. Shown only when the value really did come from the sheet that
-                way (see JobFieldValueOut.lookup_source) - never over a code typed by hand. */}
-            {primary.lookup_source && (
-              <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
-                (From dump :{" "}
-                <span className="font-semibold text-slate-500 dark:text-slate-400">
-                  {primary.lookup_source}
-                </span>
-                )
-              </span>
-            )}
-          </p>
-          {/* Only offered when there is something to protect - on a single-line invoice
-              there are no other lines to spare, and the button would be a choice with no
-              consequence either way. */}
-          {!readOnly && (applyValueToAllRows !== undefined) && (
-            <button
-              type="button"
-              onClick={() => setSoloEdit((v) => !v)}
-              title={
-                soloEdit
-                  ? "This line only — other products keep their own CTH"
-                  : "Normally, typing here fills every product. Press to change just this one."
-              }
-              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                soloEdit
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
-                  : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
-              }`}
-            >
-              {soloEdit ? "✎ only this line" : "only this line"}
-            </button>
-          )}
-        </div>
-        <input
-          type="text"
-          value={primaryDraft}
-          readOnly={readOnly}
-          // A CTH is exactly eight digits. Anything else is not a tariff heading, so the
-          // field refuses it rather than accepting it and failing later at the ERP - where
-          // the operator has moved on and no longer has the invoice in front of them.
-          //
-          // Filtered on the way IN rather than validated on the way out: a paste from a
-          // spreadsheet routinely carries "8482 4000 90" or "8482400090.0", and silently
-          // keeping the digits is what the operator meant every time.
-          inputMode="numeric"
-          maxLength={CTH_LENGTH}
-          onChange={(e) => {
-            const next = e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH);
-            setPrimaryDraft(next);
-            // Saved and carried to the other product lines the moment it is whole, rather
-            // than waiting for the field to lose focus. A CTH is a fixed eight digits, so
-            // "eight entered" is a reliable finished signal - unlike an ordinary text field,
-            // where only leaving it says the typing is done.
-            //
-            // Without this an operator types the code, sees the line below still empty,
-            // and reasonably concludes it did not work: the save was waiting for a click
-            // they had no reason to make.
-            if (next.length === CTH_LENGTH) void commitCth(next);
-          }}
-          onBlur={() => void commitCth()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-          // Blank when the reference sheet does not carry this part, on purpose - the
-          // document's own reading is shown underneath to copy from, but nothing is filled in
-          // on the operator's behalf. A code nobody confirmed should not be able to reach
-          // customs just because somebody clicked past it.
-          //
-          // "dump" names WHICH source came up empty. "not found" alone invited the reading
-          // that nothing anywhere has a CTH, when the document's own value may be sitting
-          // right below.
-          placeholder="dump not found — type the CTH"
-          className={`w-full rounded-lg border px-2 py-1 text-xs placeholder:italic focus:outline-none ${
-            flagged
-              ? "border-rose-300 bg-rose-50 text-rose-900 placeholder:text-rose-400 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
-              : "border-indigo-300 bg-indigo-50 text-indigo-900 placeholder:text-slate-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
-          } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`}
-        />
-        {/* What the DOCUMENT read, under the box. Bracketed and muted so it reads as a note
-            about where a number could come from, not as a second value for this field - it
-            is there to check the reference sheet against, and to copy from when the sheet
-            has nothing. Always shown, including when the document gave nothing, because
-            "the document has none either" is the thing an operator needs to know before
-            typing one in by hand. */}
-        {cthIncomplete && (
-          <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-            {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
-          </p>
-        )}
-        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-          (Document CTH :{" "}
-          {otherValue ? (
-            <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
-          ) : (
-            <span className="italic">Not Found</span>
-          )}
-          )
-        </p>
-        {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
-      </div>
-    );
-  }
+  // What the single box was right about is kept rather than thrown away with it: the
+  // eight-digit guard above, and the carry-across to the other product lines with "only this
+  // line" to escape it.
 
   return (
     <div>
-      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-        {primary.picker_heading?.trim() || "Pick which one is right for this line"}
-      </p>
+      <div className="mb-1 flex items-center justify-between gap-1.5">
+        <p className="truncate text-[11px] font-medium uppercase tracking-wider text-slate-400">
+          {primary.picker_heading?.trim() || "Pick which one is right for this line"}
+          {/* The CTH field itself is hidden on this card - the picker is what writes it - so
+              its "mandatory and still blank" state has to surface HERE, or a job sits blocked
+              from approval by a red field nobody can see. */}
+          {flagged && (
+            <span className="ml-1 text-rose-600 dark:text-rose-400" aria-label="Mandatory">
+              *
+            </span>
+          )}
+        </p>
+        {/* Only offered when there are other lines to protect - on a single-line invoice this
+            would be a choice with no consequence either way. */}
+        {!readOnly && applyToAllRows !== undefined && (
+          <button
+            type="button"
+            onClick={() => setSoloEdit((v) => !v)}
+            title={
+              soloEdit
+                ? "This line only \u2014 every other product keeps its own code"
+                : "Normally, picking or typing here fills every product. Press to change just this one."
+            }
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              soloEdit
+                ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            }`}
+          >
+            {soloEdit ? "\u270e only this line" : "only this line"}
+          </button>
+        )}
+      </div>
       <div className="flex flex-col gap-1.5">
         <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
           <input
@@ -5764,7 +5642,20 @@ function DualSourcePicker({
             type="text"
             value={primaryDraft}
             readOnly={readOnly}
-            onChange={(e) => setPrimaryDraft(e.target.value)}
+            // A CTH is exactly eight digits, so a paste of "8482 4000 90" or "8482400090.0"
+            // out of a spreadsheet keeps its digits and drops the rest - silently keeping the
+            // digits is what the operator meant every time. Filtered on the way IN rather
+            // than validated on the way out, and only on a CTH pairing: a pairing that feeds
+            // something else may legitimately carry a code with letters in it.
+            inputMode={isCthPairing ? "numeric" : undefined}
+            maxLength={isCthPairing ? CTH_LENGTH : undefined}
+            onChange={(e) =>
+              setPrimaryDraft(
+                isCthPairing
+                  ? e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH)
+                  : e.target.value,
+              )
+            }
             onBlur={commitPrimary}
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -5797,6 +5688,24 @@ function DualSourcePicker({
           />
         </label>
       </div>
+      {cthIncomplete && (
+        <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+          {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
+        </p>
+      )}
+      {/* WHICH key of the customer's sheet produced the code. Matched on the part number it
+          is the precise answer; matched only on the wording it is worth a second look, and on
+          these invoices the part code is often blank, so the wording was the only thing that
+          could have matched at all. Shown only when the value really did come from the sheet
+          that way (see JobFieldValueOut.lookup_source) - never over a code typed by hand. */}
+      {primary.lookup_source && (
+        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+          From dump :{" "}
+          <span className="font-semibold text-slate-500 dark:text-slate-400">
+            {primary.lookup_source}
+          </span>
+        </p>
+      )}
       {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
     </div>
   );
