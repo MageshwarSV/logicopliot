@@ -115,6 +115,25 @@ def convert_word_to_pdf(src: Path, out_dir: Path, work_dir: Path) -> Path:
     return convert_to_pdf(src, out_dir, work_dir)
 
 
+def _ensure_xlsx(src: Path, work_dir: Path) -> Path:
+    """openpyxl - used below to split a workbook into one file per sheet - only reads the
+    modern .xlsx format; it raises outright on the older binary .xls format, even though .xls
+    is one of this module's own advertised EXCEL_EXTS. Found live: a real customer email
+    (JOB-8616BC) attached a genuine .xls file and the whole request crashed with an unhandled
+    500 instead of converting. LibreOffice reads both, so an .xls is converted to .xlsx FIRST
+    (the same soffice call already used for the real PDF conversion below, just a different
+    --convert-to target) and everything after this point runs on that .xlsx unchanged."""
+    if src.suffix.lower() != ".xls":
+        return src
+    profile_dir = work_dir / f"profile_{uuid.uuid4().hex}"
+    _run_soffice(["--convert-to", "xlsx", "--outdir", str(work_dir), str(src)], profile_dir)
+    shutil.rmtree(profile_dir, ignore_errors=True)
+    converted = work_dir / f"{src.stem}.xlsx"
+    if not converted.exists():
+        raise OfficeConversionFailed(f"Could not convert {src.name!r} from the old .xls format.")
+    return converted
+
+
 def convert_excel_sheets_to_pdfs(src: Path, out_dir: Path, work_dir: Path) -> list[tuple[str, Path]]:
     """One PDF per worksheet, in the workbook's own sheet order. A sheet LibreOffice renders
     as genuinely blank (no print area, no cells with content) still gets its own PDF - an
@@ -149,6 +168,7 @@ def convert_excel_sheets_to_pdfs(src: Path, out_dir: Path, work_dir: Path) -> li
 
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+    src = _ensure_xlsx(src, work_dir)
     sheet_names = list(load_workbook(src, read_only=True).sheetnames)
     results: list[tuple[str, Path]] = []
     for sheet_name in sheet_names:
