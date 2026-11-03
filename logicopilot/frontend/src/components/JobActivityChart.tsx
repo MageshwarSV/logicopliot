@@ -4,7 +4,6 @@ import * as jobsApi from "../api/jobs";
 import type { JobActivityDay } from "../api/jobs";
 import * as usersApi from "../api/users";
 import type { User } from "../types/auth";
-import { useAuth } from "../auth/useAuth";
 
 const fieldClass =
   "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200";
@@ -63,12 +62,14 @@ export function JobActivityChart({
   // change, including the initial mount.
   onViewChange?: (view: { month: string; assignedTo: string }) => void;
 } = {}) {
-  const { user } = useAuth();
-  // Defaults to whoever is signed in, not "All Users" - an operator opening their own
-  // dashboard wants to see their own activity first, same as /jobs' own default view
-  // (ROLE_HOME sends an operator to /jobs?...&assignedTo=me already).
+  // Defaults to "All Users" - confirmed with the user (2026-11-03): defaulting to whoever is
+  // signed in made the chart's own total look wrong at a glance (an operator opening their
+  // dashboard saw a Nov 3 bar of 3, while the Jobs list's own "ERP Submitted Jobs" badge for
+  // the same day read 5 - the other 2 just belonged to a different operator, filtered out by
+  // this default). All Users is also what every other count on this page (the sidebar badges)
+  // already shows unfiltered, so this keeps the chart consistent with them by default.
   const [month, setMonth] = useState(currentMonthStr());
-  const [assignedTo, setAssignedTo] = useState(user?.full_name ?? "");
+  const [assignedTo, setAssignedTo] = useState("");
   const [operators, setOperators] = useState<User[]>([]);
   const [days, setDays] = useState<JobActivityDay[]>([]);
   const [loading, setLoading] = useState(true);
