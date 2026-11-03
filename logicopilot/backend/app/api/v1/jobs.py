@@ -1739,9 +1739,14 @@ def _apply_dashboard_filter(query, group: str, bucket: str):
         query = query.filter(Job.gk2_status == "pending")
         date_col = Job.created_at
     elif group == "completed":
-        # Exactly the condition _outer_status uses to produce "AI - ERP Submitted" - the
-        # manager dashboard's "Completed" box.
-        query = query.filter(Job.gk2_status == "submitted")
+        # The dashboard's "Completed" box counts a job whether it's still only ERP Submitted
+        # or already ERP Verified - same union isJobCompleted (JobsOverview.tsx, via
+        # outer_status == "AI - ERP Submitted") already counts client-side for the box's own
+        # number. Checking gk2_status == "submitted" alone (the old condition) missed a job
+        # that completed via the direct Submit Entry path: persist_run_outcome resets
+        # gk2_status to None on every run through that screen, even a successful one - found
+        # live (2026-11-03) clicking the box showed fewer jobs than the box's own count said.
+        query = query.filter(_category_condition("submitted") | _category_condition("completed"))
         date_col = Job.created_at
     elif group == "missing":
         # Only a cheap SQL pre-narrowing - the real required-vs-filled check cannot be
