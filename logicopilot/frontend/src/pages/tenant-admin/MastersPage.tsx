@@ -8,6 +8,7 @@ import * as tenantsApi from "../../api/tenants";
 import * as userTypesApi from "../../api/userTypes";
 import { customTypeIdOf, type TypeSelection, type UserType } from "../../api/userTypes";
 import { MODES } from "../../types/onboarding";
+import { ReferenceSheetsSection } from "../super-admin/ReferenceSheetsSection";
 
 type CreatableRole = "operator" | "gk2" | "manager";
 
@@ -318,6 +319,13 @@ export function MastersPage() {
             })}
           </div>
         )}
+      </Card>
+
+      {/* Reused as-is from the Super Admin's own Settings page - listGroups() is now
+          tenant-scoped server-side (see list_groups in template_groups.py), so this already
+          shows only this Tenant Admin's own templates, never another tenant's. */}
+      <Card className="mt-6 max-w-2xl p-0">
+        <ReferenceSheetsSection />
       </Card>
     </AppShell>
   );

@@ -810,6 +810,15 @@ def _get_target_value_mark(db: Session, mark_id: str):
     return mark
 
 
+def _require_same_tenant(user: User, tenant_id: str | None) -> None:
+    """A Tenant Admin may manage the reference table of a field/mark belonging to their OWN
+    tenant only - a Super Admin is unrestricted. 404, not 403: the same "don't even confirm
+    this id exists" pattern already used for set_document_required, so a Tenant Admin probing
+    another tenant's field id learns nothing beyond "not found"."""
+    if user.role == TENANT_ADMIN and tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
 def _reference_values_response(db: Session, *, custom_field_id: str | None = None, mark_id: str | None = None) -> dict:
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
@@ -978,12 +987,13 @@ def _delete_reference_value_row(db: Session, value_id: int, *,
 def list_reference_values(
     field_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
     """Every value learned for this field so far - what the material master (or, for a
     target-value field, nothing) had no answer for, and what a person supplied instead, the
     one time it took someone to answer."""
-    _get_lookup_custom_field(db, field_id)
+    cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
     return _reference_values_response(db, custom_field_id=field_id)
 
 
@@ -991,11 +1001,12 @@ def list_reference_values(
 def download_reference_values_template(
     field_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ):
     """A blank workbook with the right columns in the right order - fill it in and upload it
     with POST .../reference-values/upload rather than typing rows in one at a time."""
     cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
     return _download_reference_template(cf.label_name)
 
 
@@ -1004,9 +1015,10 @@ def upload_reference_values(
     field_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
-    _get_lookup_custom_field(db, field_id)
+    cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
     return _upload_reference_values(db, file, custom_field_id=field_id)
 
 
@@ -1016,12 +1028,14 @@ def update_reference_value_endpoint(
     value_id: int,
     payload: dict,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
     """Apply a new value to one existing row - the explicit "update it" choice for a row an
     upload flagged as already present with a different value. Leaving it alone (the "keep the
     old value" choice) needs no call here at all - an upload never writes a conflicting row on
     its own."""
+    cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
     return _update_reference_value_row(db, value_id, payload, custom_field_id=field_id)
 
 
@@ -1031,10 +1045,12 @@ def delete_reference_value(
     field_id: str,
     value_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> None:
     """Remove one wrong learned value - it will simply be asked for again on the next line
     that needs it."""
+    cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
     _delete_reference_value_row(db, value_id, custom_field_id=field_id)
 
 
@@ -1068,9 +1084,10 @@ def clear_reference_values(
 def list_mark_reference_values(
     mark_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
-    _get_target_value_mark(db, mark_id)
+    mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
     return _reference_values_response(db, mark_id=mark_id)
 
 
@@ -1078,9 +1095,10 @@ def list_mark_reference_values(
 def download_mark_reference_values_template(
     mark_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ):
     mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
     return _download_reference_template(mark.label_name)
 
 
@@ -1089,9 +1107,10 @@ def upload_mark_reference_values(
     mark_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
-    _get_target_value_mark(db, mark_id)
+    mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
     return _upload_reference_values(db, file, mark_id=mark_id)
 
 
@@ -1101,8 +1120,10 @@ def update_mark_reference_value_endpoint(
     value_id: int,
     payload: dict,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
+    mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
     return _update_reference_value_row(db, value_id, payload, mark_id=mark_id)
 
 
@@ -1112,8 +1133,10 @@ def delete_mark_reference_value(
     mark_id: str,
     value_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> None:
+    mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
     _delete_reference_value_row(db, value_id, mark_id=mark_id)
 
 

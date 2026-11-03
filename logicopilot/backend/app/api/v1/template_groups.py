@@ -95,10 +95,16 @@ def create_group(
 def list_groups(
     tenant_id: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> list[TemplateGroupOut]:
     query = db.query(TemplateGroup)
-    if tenant_id:
+    # A Tenant Admin only ever sees their OWN tenant's groups, regardless of what `tenant_id`
+    # says - built so this same endpoint can back a Tenant Admin's own "pick a template"
+    # dropdown (e.g. the reference-sheet manager) without them being able to browse another
+    # tenant's templates just by passing a different id.
+    if user.role == TENANT_ADMIN:
+        query = query.filter(TemplateGroup.tenant_id == user.tenant_id)
+    elif tenant_id:
         query = query.filter(TemplateGroup.tenant_id == tenant_id)
     groups = query.order_by(TemplateGroup.created_at.desc()).all()
     return [TemplateGroupOut.model_validate(g) for g in groups]
@@ -838,7 +844,7 @@ def upload_material_master(
     group_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
     """Attach this customer's material master - their part code against its CTH.
 
@@ -846,6 +852,9 @@ def upload_material_master(
     shipping documents, so without this list an operator types the CTH on every line of every
     job. The customer already exports it from their own system; it is taken as it comes, and
     the two columns that matter are found by their headings.
+
+    A Tenant Admin may only attach a master to their OWN tenant's template - see
+    _require_same_tenant's identical reasoning in field_marks.py.
     """
     from app.core.material_master import (
         clear_cache, master_path, remember_name, start_background_parse,
@@ -853,6 +862,9 @@ def upload_material_master(
 
     group = db.get(TemplateGroup, group_id)
     if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Template group not found")
     name = (file.filename or "").strip()
@@ -895,7 +907,7 @@ def upload_material_master(
 def material_master_status(
     group_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
     """Is a master attached to this customer, and how many materials does it hold?
 
@@ -904,6 +916,10 @@ def material_master_status(
     is exactly what was observed to get the worker answering this request killed. Reports
     processing=true instead and kicks off (or confirms) a background parse - poll again in a
     few seconds.
+
+    A Tenant Admin may only check their OWN tenant's template - this previously allowed ANY
+    tenant admin to read ANY group's material-master status/sample rows just by knowing its
+    id, since TENANT_ADMIN was already allowed here but nothing checked whose group it was.
     """
     from app.core.material_master import (
         cached_mapping, is_building, master_path, original_name, sheet_headers,
@@ -912,6 +928,9 @@ def material_master_status(
 
     group = db.get(TemplateGroup, group_id)
     if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Template group not found")
     path = master_path(group_id)
@@ -937,13 +956,16 @@ def material_master_status(
 def material_master_columns(
     group_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
     """The reference sheet's own column headings, so a field can be pointed at them by name."""
     from app.core.material_master import sheet_headers
 
     group = db.get(TemplateGroup, group_id)
     if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Template group not found")
     return {"columns": sheet_headers(group_id)}
@@ -953,13 +975,19 @@ def material_master_columns(
 def delete_material_master(
     group_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(SUPER_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
 ) -> dict:
-    """Remove the master. Lookup fields then fall back to reading the code off the documents."""
+    """Remove the master. Lookup fields then fall back to reading the code off the documents.
+
+    A Tenant Admin may only remove their OWN tenant's master - same reasoning as the upload
+    endpoint above."""
     from app.core.material_master import clear_cache, master_path
 
     group = db.get(TemplateGroup, group_id)
     if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Template group not found")
     clear_cache(group_id)
