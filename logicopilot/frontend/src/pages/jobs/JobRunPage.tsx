@@ -6835,18 +6835,20 @@ function ExtractionReview({
                       // (no such field on this row at all) is the one real case with nothing to
                       // pair against - that falls through to `rest` as an ordinary field.
                       const pairedIds = new Set<string>();
-                      pairs.forEach(({ primary, other, syncTargets }) => {
+                      pairs.forEach(({ primary, other }) => {
                         if (!other) return;
                         pairedIds.add(primary.id);
                         pairedIds.add(other.id);
-                        // A pairing that feeds a field called CTH draws ONE box, and that box
-                        // IS the CTH (see DualSourcePicker). Leaving the CTH field in `rest`
-                        // as well would put the same value in two boxes on the same card, and
-                        // only one of them would carry the sync when edited.
-                        const cth = syncTargets.find(
-                          (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
-                        );
-                        if (cth) pairedIds.add(cth.id);
+                        // The CTH itself stays VISIBLE, as its own box among the other fields,
+                        // exactly as RITC No. is on the template whose pairing feeds that
+                        // instead. It is what the picker WRITES: the operator ticks a source and
+                        // watches the real customs code land in it, so hiding it took away the
+                        // only confirmation that ticking had done anything at all.
+                        //
+                        // It was hidden while the picker was a single box that WAS the CTH,
+                        // where showing it again really would have been the same value twice.
+                        // With two tick-boxes above it that no longer holds - neither of them is
+                        // the CTH, they are the two candidates for it.
                       });
                       const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
                       // Purely a backing flag for product_description/Combined Description's own
