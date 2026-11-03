@@ -60,6 +60,29 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
 
     @app.on_event("startup")
+    async def _raise_request_thread_ceiling() -> None:
+        """Every plain `def` endpoint (almost all of them here) runs on a shared pool of
+        worker threads AnyIO manages for the whole process, capped at 40 by default. That cap
+        is unrelated to the database pool - it is how many requests, of ANY kind, this one
+        process can be in the middle of handling at once.
+
+        Found live on 2026-11-03: a handful of slow Smart-Upload/email classifications (see
+        extraction_queue.py) was enough, on its own, to fill that default 40-thread ceiling,
+        and a plain `GET /jobs/{id}` - doing nothing slow itself - queued behind them for a
+        free thread until nginx gave up at 60s. The database was fine; there was simply
+        nowhere left to even START running a fast request. This backend runs as a single
+        process (see deploy notes), so there is no second worker for a fast request to fall
+        back to the way there would be with --workers > 1.
+
+        Raised well above what classification+extraction's own cap (six at a time, shared,
+        see extraction_queue.py) could ever occupy, so a fast, cheap request always has a free
+        thread to start on regardless of how many slow ones are already queued or running.
+        """
+        import anyio.to_thread
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 200
+
+    @app.on_event("startup")
     def _release_stranded_runs() -> None:
         """Free any job left saying `processing` or `extracting` by the previous process.
 
