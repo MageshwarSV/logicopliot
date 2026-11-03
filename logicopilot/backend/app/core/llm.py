@@ -691,6 +691,17 @@ def classify_container_type_code(raw_value: str, tenant_id: str | None = None) -
 # document it misreads as one giant table) from writing thousands of JobFieldValue rows.
 CUSTOM_FIELD_ROWS_LIMIT = 200
 
+# How many product lines one compute_custom_field_per_row call answers for. The whole reply
+# has to fit in that call's token cap, and the cost of being wrong is silent: a cut-off reply
+# is unparseable JSON, which reads as "nothing found" for every line in it. Forty 8-digit
+# codes is a few hundred tokens against a cap of several thousand, so there is a wide margin
+# even when a model answers more verbosely than it needs to.
+#
+# Forty rather than fifty because the batch size also governs how LONG one call takes, and a
+# call that overruns its timeout fails exactly the same silent way a truncated one does. On
+# JOB-FC08FF's 144 lines, batches of 50 overran; the 44-line remainder came back complete.
+PER_ROW_BATCH = 20
+
 
 def compute_custom_field_rows(prompt: str, documents_text: str,
                                records: list[dict] | None = None,
@@ -710,7 +721,10 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
             tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
-            max_tokens=1500,
+            # Up to CUSTOM_FIELD_ROWS_LIMIT values can come back here, and the same cut-off
+            # reply reads as "found nothing" rather than as a failure - see
+            # compute_custom_field_per_row, where that cost a whole invoice its CTH column.
+            max_tokens=8000,
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -768,19 +782,49 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
     a customs classification code specifically, a value that lands on the wrong product line
     is not a rounding error, it is a wrong customs declaration for the RIGHT product with the
     WRONG code and the WRONG product with none at all.
+
+    Asked for more than PER_ROW_BATCH lines at a time it splits the LINES into batches and
+    asks once per batch, every batch reading the same documents. One reply carrying 144
+    answers does not fit in a sane token cap: it was cut off mid-JSON, json.loads threw, and
+    the except below turned that into 144 empty strings - a whole invoice reading "no CTH
+    printed on this document" when the document had an HTS CODE column on every page. Found
+    on JOB-FC08FF, where all 144 lines came back blank against an invoice that plainly
+    showed them.
+
+    Batching rather than only raising the cap, because a bigger number is still a number
+    some invoice will exceed, and the failure it produces is silent. It also contains the
+    damage: a batch that does fail loses its own lines, not all of them.
     """
     settings = get_settings()
     if not row_context:
         return []
+    if len(row_context) > PER_ROW_BATCH:
+        out: list[str] = []
+        for i in range(0, len(row_context), PER_ROW_BATCH):
+            out.extend(compute_custom_field_per_row(
+                prompt, documents_text, row_context[i: i + PER_ROW_BATCH],
+                records=records, tenant_id=tenant_id, field_label=field_label,
+            ))
+        return out
     if not settings.openai_api_key:
         return [""] * len(row_context)
     try:
         resp = create_chat_completion_with_retry(
-            timeout=45,
+            # Not 45. Reading a batch of lines out of a long invoice is a far bigger request
+            # than the single-value calls that number was chosen for - the whole document goes
+            # up with every batch. On JOB-FC08FF two batches of a 144-line invoice overran 45s,
+            # and an overrun lands in the except below, which returns a blank for every line in
+            # the batch: 100 product lines reading "no CTH printed on this document" against an
+            # invoice with an HTS CODE column on every page, with nothing on screen to say a
+            # call had failed at all.
+            timeout=180,
             tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
-            max_tokens=1500,
+            # Scaled to the batch actually being asked for, with room to spare. A reply that
+            # hits this cap is cut off mid-JSON and becomes a blank answer for every line in
+            # the batch, so the margin is deliberately generous rather than tight.
+            max_tokens=max(1500, min(12000, 80 * len(row_context) + 500)),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -800,8 +844,18 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
                         "a value, never reuse one line's answer for another, and never answer "
                         "from a reference sheet or prior knowledge - only from what a document "
                         "actually, visibly states for that exact line.\n\n"
-                        'Reply with JSON: {"values": [<string>, ...]} - the list length equal '
-                        "to the number of lines in row_context, in the same order."
+                        "COUNT THE LINES YOU WERE GIVEN AND STOP THERE. The document may well "
+                        "list MORE rows than you have been asked about - you are given one "
+                        "slice of this job's lines at a time, while the text behind them is "
+                        "always the whole document. Answer for the lines in row_context and "
+                        "nothing else: do not continue down the document past the last one, "
+                        "and do not pad the list out to the number of rows the document "
+                        "happens to have.\n\n"
+                        'Reply with JSON: {"answers": {"<row>": "<value>", ...}} - ONE entry '
+                        "for every row number in row_context, using that row's own number from "
+                        "row_context as the key, exactly as given. A row with nothing to report "
+                        "gets an empty string, never a missing key. Never add a key for a row "
+                        "you were not asked about."
                     ),
                 },
                 {
@@ -818,14 +872,32 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
                 },
             ],
         )
-        values = json.loads(resp.choices[0].message.content or "{}").get("values", [])
+        if resp.choices[0].finish_reason == "length":
+            # Say it plainly. This used to surface only as a JSON parse error in the except
+            # below, which reads as a model glitch rather than "the answer did not fit" - and
+            # the values it produces, blanks for every line, look exactly like a document that
+            # genuinely carries no such field.
+            logger.warning(
+                "compute_custom_field_per_row: the reply hit the token cap and was cut off - "
+                "%d line(s) in this batch will come back blank", len(row_context),
+            )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        answers = data.get("answers")
+        if isinstance(answers, dict):
+            # Keyed by the row's OWN number, which is what makes this safe. A flat list had to
+            # be exactly the right length in exactly the right order or every value after the
+            # mistake landed on the wrong product - and asking for a 144-element array sent the
+            # model into a repetition loop that ran past any token cap and returned nothing at
+            # all. Keys give it somewhere to stop, let an extra answer be ignored instead of
+            # shifting anything, and make a missing one simply blank for THAT line.
+            return [str(answers.get(str(r.get("row")), "") or "").strip() for r in row_context]
+        # A model that answered in the older flat shape anyway. Same defensive padding as
+        # before: pad short replies at the END (where an overlooked last line would fall) and
+        # truncate long ones, so an off-by-one never shifts an earlier correct answer along.
+        values = data.get("values", [])
         if not isinstance(values, list):
             values = []
         out = [str(v).strip() for v in values]
-        # Defensive padding/truncation against a slightly-off count, rather than trust the
-        # model's count blindly - a short reply pads with blanks at the END (the tail is
-        # where an overlooked last line would fall), a long one is truncated, so a real
-        # off-by-one never SHIFTS an earlier line's own correct answer into the wrong slot.
         if len(out) < len(row_context):
             out = out + [""] * (len(row_context) - len(out))
         elif len(out) > len(row_context):
