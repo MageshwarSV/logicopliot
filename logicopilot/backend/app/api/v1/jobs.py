@@ -829,17 +829,34 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
     return "ERP Submission"
 
 
-def _missing_mandatory_documents(db: Session, job: Job) -> list[str]:
+def _missing_mandatory_documents(
+    db: Session, job: Job,
+    *, job_documents: list["JobDocument"] | None = None,
+    group_docs: list["TemplateDocument"] | None = None,
+) -> list[str]:
     """Names of the mandatory documents this job still has not received, in template order -
     the same required-vs-filled test _maybe_auto_extract/_outer_status's own "Document
     Capture" branch already use to decide the job is still waiting on paperwork, exposed here
     so the list itself (not just the fact that something is missing) can be shown wherever the
-    job's status is - JobOut/JobDetailOut's own missing_documents field."""
-    group = db.get(TemplateGroup, job.group_id)
-    if group is None:
-        return []
-    filled_ids = {d.template_document_id for d in job.documents if d.file_path}
-    return [td.name for td in group.documents if td.is_required and td.id not in filled_ids]
+    job's status is - JobOut/JobDetailOut's own missing_documents field.
+
+    `job_documents`/`group_docs`, when given, replace the `job.documents`/`group.documents`
+    lazy-loads below - see list_jobs' own "missing"/"new" category branch, which checks this
+    for every candidate job and found live (2026-11-03) that leaving these as plain lazy-loads
+    meant one extra database round trip PER JOB PER FIELD just to render the list - 40 jobs on
+    screen was 80+ queries competing for a connection, which is what jammed the whole site. The
+    caller batches both in ONE query apiece across every candidate instead.
+    """
+    if group_docs is not None:
+        tdocs = group_docs
+    else:
+        group = db.get(TemplateGroup, job.group_id)
+        if group is None:
+            return []
+        tdocs = group.documents
+    docs = job.documents if job_documents is None else job_documents
+    filled_ids = {d.template_document_id for d in docs if d.file_path}
+    return [td.name for td in tdocs if td.is_required and td.id not in filled_ids]
 
 
 # Any job in one of these states is a genuinely terminal or already-dispatched outcome -
@@ -852,7 +869,11 @@ _MISSING_DOCS_EXCLUDED_STATUSES = (
 )
 
 
-def _is_missing_documents(db: Session, job: Job) -> bool:
+def _is_missing_documents(
+    db: Session, job: Job,
+    *, job_documents: list["JobDocument"] | None = None,
+    group_docs: list["TemplateDocument"] | None = None,
+) -> bool:
     """Whether _outer_status would currently read this job as "Missing Documents" - the exact
     same precedence/exclusions as that function's own check. Factored out so the Jobs list's
     "missing" category and the dashboard's "Missing Documents" box can filter/count by it
@@ -860,6 +881,9 @@ def _is_missing_documents(db: Session, job: Job) -> bool:
     to be wrong: a job extracted once, then stripped of every document afterward, stays
     status=="extracted" forever, so it IS "Missing Documents" (outer_status agrees) but was
     invisible to this screen entirely under the old approximation.
+
+    `job_documents`/`group_docs` just pass through to _missing_mandatory_documents - see its
+    own docstring.
     """
     if job.gk2_status is not None:
         return False
@@ -871,7 +895,9 @@ def _is_missing_documents(db: Session, job: Job) -> bool:
         return False
     if job.status in _MISSING_DOCS_EXCLUDED_STATUSES:
         return False
-    return bool(_missing_mandatory_documents(db, job))
+    return bool(_missing_mandatory_documents(
+        db, job, job_documents=job_documents, group_docs=group_docs,
+    ))
 
 
 def _missing_documents_sql_candidates(query, bucket: str | None = None):
@@ -1953,9 +1979,37 @@ def job_category_counts(
     failed_candidates = base.filter(_category_condition("failed")).all()
     submitted_candidates = base.filter(_category_condition("submitted")).all()
     completed_candidates = base.filter(_category_condition("completed")).all()
+
+    # Batched ONCE across both candidate sets, instead of _is_missing_documents' own two lazy-
+    # loads running once per candidate (found live 2026-11-03 jamming the whole site - this
+    # endpoint backs the sidebar badges, so it fires on nearly every page load, each one its
+    # own flood of per-job queries). See _missing_mandatory_documents' docstring.
+    missing_check_candidates = {j.id: j for j in new_candidates}
+    missing_check_candidates.update({j.id: j for j in missing_candidates})
+    mc_ids = list(missing_check_candidates.keys())
+    docs_by_job: dict[str, list[JobDocument]] = {jid: [] for jid in mc_ids}
+    for jd in (
+        db.query(JobDocument).filter(JobDocument.job_id.in_(mc_ids)).all() if mc_ids else []
+    ):
+        docs_by_job[jd.job_id].append(jd)
+    mc_group_ids = {j.group_id for j in missing_check_candidates.values()}
+    group_docs_by_group: dict[str, list[TemplateDocument]] = {gid: [] for gid in mc_group_ids}
+    for td in (
+        db.query(TemplateDocument).filter(TemplateDocument.group_id.in_(mc_group_ids)).all()
+        if mc_group_ids else []
+    ):
+        group_docs_by_group[td.group_id].append(td)
+
+    def _missing(j: Job) -> bool:
+        return _is_missing_documents(
+            db, j,
+            job_documents=docs_by_job.get(j.id, []),
+            group_docs=group_docs_by_group.get(j.group_id, []),
+        )
+
     return JobCategoryCounts(
-        new=sum(1 for j in new_candidates if not _is_missing_documents(db, j) and _extra(j)),
-        missing=sum(1 for j in missing_candidates if _is_missing_documents(db, j) and _extra(j)),
+        new=sum(1 for j in new_candidates if not _missing(j) and _extra(j)),
+        missing=sum(1 for j in missing_candidates if _missing(j) and _extra(j)),
         failed=sum(1 for j in failed_candidates if _extra(j)),
         submitted=sum(1 for j in submitted_candidates if _extra(j)),
         completed=sum(1 for j in completed_candidates if _extra(j)),
@@ -2062,11 +2116,38 @@ def list_jobs(
     # table, then paginates in Python instead of in the database. "new" similarly needs that
     # same check applied the OTHER way (excluding, not selecting) - a job already showing its
     # own "Missing Documents" badge must not also appear under New Jobs.
-    if group == "missing" or category == "missing":
-        jobs_all = [j for j in query.all() if _is_missing_documents(db, j)]
-        jobs = jobs_all[offset: offset + limit] if limit is not None else jobs_all
-    elif category == "new":
-        jobs_all = [j for j in query.all() if not _is_missing_documents(db, j)]
+    if group == "missing" or category == "missing" or category == "new":
+        candidates = query.all()
+        # Batched ONCE for every candidate, instead of _is_missing_documents' own two lazy-
+        # loads running once PER CANDIDATE - see _missing_mandatory_documents' docstring for
+        # why that mattered: this branch runs before pagination, so a "New Jobs" list of 40
+        # used to mean 40+ separate database round trips just to decide what to show.
+        cand_ids = [j.id for j in candidates]
+        docs_by_job: dict[str, list[JobDocument]] = {jid: [] for jid in cand_ids}
+        for jd in (
+            db.query(JobDocument).filter(JobDocument.job_id.in_(cand_ids)).all()
+            if cand_ids else []
+        ):
+            docs_by_job[jd.job_id].append(jd)
+        cand_group_ids = {j.group_id for j in candidates}
+        group_docs_by_group: dict[str, list[TemplateDocument]] = {gid: [] for gid in cand_group_ids}
+        for td in (
+            db.query(TemplateDocument).filter(TemplateDocument.group_id.in_(cand_group_ids)).all()
+            if cand_group_ids else []
+        ):
+            group_docs_by_group[td.group_id].append(td)
+
+        def _missing(j: Job) -> bool:
+            return _is_missing_documents(
+                db, j,
+                job_documents=docs_by_job.get(j.id, []),
+                group_docs=group_docs_by_group.get(j.group_id, []),
+            )
+
+        if group == "missing" or category == "missing":
+            jobs_all = [j for j in candidates if _missing(j)]
+        else:  # category == "new"
+            jobs_all = [j for j in candidates if not _missing(j)]
         jobs = jobs_all[offset: offset + limit] if limit is not None else jobs_all
     else:
         if limit is not None:
