@@ -8189,6 +8189,18 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 key_label = (getattr(cf, "lookup_key_label", None) or "").strip()
                 keys = _line_values(key_label) if key_label else {}
                 codes = keys or _line_values("item_material_code")
+                # Second-level lookup key, PER LINE - distinct from the `codes = keys or
+                # _line_values(...)` fallback above, which only kicks in when the configured
+                # key (lookup_key_label, e.g. "Customer Part Code") has NO values anywhere on
+                # the job. This is for the line-by-line case: that key has a real value for
+                # THIS line, but it is not in the reference sheet - try the Item Material Code
+                # for that same line before giving up, rather than only ever trying one key per
+                # line. Skipped when the configured key already IS item_material_code, so this
+                # never becomes a pointless repeat of the exact same lookup.
+                secondary_codes = (
+                    _line_values("item_material_code")
+                    if key_label and key_label != "item_material_code" else {}
+                )
                 descs = _line_values("product_description")
                 if key_label in standalone_mark_labels:
                     # Keyed on its own standalone mark (container_type, say) - exactly one
@@ -8216,6 +8228,14 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                     # The part number first, then the description - the customer's list is
                     # keyed on both, and a line without a code still has words on it.
                     code = lookup_cth(material, master, description=desc)
+                    if not code and secondary_codes.get(key, "").strip():
+                        # Not found under the configured key for THIS line - try the Item
+                        # Material Code for the same line against the same reference sheet
+                        # before falling through to the cached/AI fallbacks below. Only ever
+                        # OVERRIDES a genuine non-match, never a match already found above.
+                        secondary_material = material_from(secondary_codes.get(key, ""), desc)
+                        if secondary_material and secondary_material != material:
+                            code = lookup_cth(secondary_material, master, description=desc)
                     if code:
                         hits += 1
                     elif material or desc:
