@@ -1048,9 +1048,13 @@ def _start_extraction_background(job_id: str, only_job_document_id: str | None =
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
     session resume in main.py: the request's session closes when the endpoint returns, long
     before this finishes.
-    """
-    import threading
 
+    Queued, NOT started outright. That session is held for the whole run - its queries are
+    quick, but the transaction stays open across every OpenAI call - so one thread per job
+    meant one CONNECTION per job, and nothing capped how many jobs that was. See
+    extraction_queue for the day that took the site down.
+    """
+    from app.core.extraction_queue import submit_extraction
     from app.db.session import SessionLocal
 
     def _go() -> None:
@@ -1072,7 +1076,7 @@ def _start_extraction_background(job_id: str, only_job_document_id: str | None =
         finally:
             db2.close()
 
-    threading.Thread(target=_go, daemon=True, name=f"extract-{job_id}").start()
+    submit_extraction(_go)
 
 
 def _begin_extraction(db: Session, job: Job, only_job_document_id: str | None = None) -> None:
