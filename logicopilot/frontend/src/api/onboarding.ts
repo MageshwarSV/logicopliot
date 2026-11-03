@@ -167,6 +167,24 @@ export async function deleteReferenceValue(ownerType: ReferenceOwnerType, ownerI
   await apiClient.delete(`/${ownerType}/${ownerId}/reference-values/${valueId}`);
 }
 
+/** One row typed by hand in the "+ Add more" popup - same shape the server expects, match
+ *  values in order (1 to however many this field actually uses) plus the resolved value. */
+export interface ManualReferenceRowInput {
+  match_values: string[];
+  resolved_value: string;
+}
+
+/** Add one or a few rows without a whole workbook round-trip - same staging/conflict handling
+ *  as uploadReferenceValues above (see ReferenceUploadResult), just for a quick manual add. */
+export async function addReferenceValues(
+  ownerType: ReferenceOwnerType, ownerId: string, rows: ManualReferenceRowInput[],
+): Promise<ReferenceUploadResult> {
+  const { data } = await apiClient.post<ReferenceUploadResult>(
+    `/${ownerType}/${ownerId}/reference-values`, { rows },
+  );
+  return data;
+}
+
 export async function setRuling(groupId: string, rulingPrompt: string | null): Promise<TemplateGroupDetail> {
   const { data } = await apiClient.patch<TemplateGroupDetail>(`/template-groups/${groupId}/ruling`, {
     ruling_prompt: rulingPrompt,

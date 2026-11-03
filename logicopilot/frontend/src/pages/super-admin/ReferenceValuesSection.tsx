@@ -2,9 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
 import * as api from "../../api/onboarding";
 import type { ReferenceOwnerType, ReferenceUploadConflict, ReferenceValueRow } from "../../api/onboarding";
 import type { TemplateGroup } from "../../types/onboarding";
+
+/** One row being typed into the "+ Add more" popup - kept as plain strings (never submitted)
+ *  until Save, so a half-filled row doesn't need its own validation state. */
+interface DraftRow {
+  matchValues: [string, string, string, string];
+  resolvedValue: string;
+}
+
+function blankDraftRow(): DraftRow {
+  return { matchValues: ["", "", "", ""], resolvedValue: "" };
+}
 
 // One entry per is_target_value field found across every template group - a mark (under a
 // document) or a custom field, flattened into one pickable list since both are managed the
@@ -31,6 +43,10 @@ export function ReferenceValuesSection() {
   const [conflicts, setConflicts] = useState<ReferenceUploadConflict[]>([]);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [draftRows, setDraftRows] = useState<DraftRow[]>([blankDraftRow()]);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   // Every group's own target-value fields, gathered once - this screen is an occasional
   // admin task, not a hot path, so a handful of extra requests up front is the simplest way
@@ -130,6 +146,57 @@ export function ReferenceValuesSection() {
     }
   }
 
+  function openAddPopup() {
+    setDraftRows([blankDraftRow()]);
+    setAddError(null);
+    setAddOpen(true);
+  }
+
+  function updateDraftMatch(rowIndex: number, matchIndex: number, value: string) {
+    setDraftRows((prev) =>
+      prev.map((row, i) => {
+        if (i !== rowIndex) return row;
+        const matchValues = [...row.matchValues] as DraftRow["matchValues"];
+        matchValues[matchIndex] = value;
+        return { ...row, matchValues };
+      }),
+    );
+  }
+
+  function updateDraftResolved(rowIndex: number, value: string) {
+    setDraftRows((prev) => prev.map((row, i) => (i === rowIndex ? { ...row, resolvedValue: value } : row)));
+  }
+
+  async function saveDraftRows() {
+    if (!selected) return;
+    // A blank row (nothing typed at all) is simply dropped rather than rejected - someone who
+    // pressed "+ Add row" once too many shouldn't have to also remove it before saving.
+    const rows = draftRows
+      .filter((r) => r.resolvedValue.trim() || r.matchValues.some((v) => v.trim()))
+      .map((r) => ({ match_values: r.matchValues, resolved_value: r.resolvedValue }));
+    if (rows.length === 0) {
+      setAddError("Fill in at least one row before saving.");
+      return;
+    }
+    if (rows.some((r) => !r.resolved_value.trim())) {
+      setAddError("Every row needs a resolved value.");
+      return;
+    }
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      const result = await api.addReferenceValues(selected.ownerType, selected.ownerId, rows);
+      setUploadResult({ added: result.rows_added, unchanged: result.rows_unchanged, skipped: result.rows_skipped });
+      setConflicts(result.conflicts);
+      await refreshRows();
+      setAddOpen(false);
+    } catch (err) {
+      setAddError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not save these rows." : "Could not save these rows.");
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
   async function resolveConflict(c: ReferenceUploadConflict, useUploaded: boolean) {
     if (!selected) return;
     if (!useUploaded) {
@@ -217,6 +284,7 @@ export function ReferenceValuesSection() {
       {selected && (
         <div className="mt-4 space-y-3">
           <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={openAddPopup}>+ Add more</Button>
             <Button size="sm" variant="secondary" onClick={downloadTemplate}>Download template</Button>
             <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
               {uploading ? "Uploading…" : "Upload filled-in template"}
@@ -325,6 +393,73 @@ export function ReferenceValuesSection() {
           {error}
         </p>
       )}
+
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add reference values" maxWidth="max-w-2xl">
+        <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+          Fill in whichever Match columns this field actually uses (leave the rest blank) and
+          its resolved value. Press "+ Add row" to add several at once before saving - a key
+          already on file with a different value is reported back the same way an upload's
+          would be, never silently overwritten.
+        </p>
+        <div className="space-y-3">
+          {draftRows.map((row, i) => (
+            <div key={i} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Row {i + 1}</p>
+                {draftRows.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setDraftRows((prev) => prev.filter((_, idx) => idx !== i))}
+                    className="text-xs text-rose-600 hover:underline dark:text-rose-400"
+                  >
+                    Remove row
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {row.matchValues.map((v, mi) => (
+                  <div key={mi}>
+                    <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">Match {mi + 1}</label>
+                    <input
+                      type="text"
+                      value={v}
+                      onChange={(e) => updateDraftMatch(i, mi, e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2">
+                <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">Resolved value</label>
+                <input
+                  type="text"
+                  value={row.resolvedValue}
+                  onChange={(e) => updateDraftResolved(i, e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <Button
+          size="sm" variant="ghost" className="mt-3"
+          onClick={() => setDraftRows((prev) => [...prev, blankDraftRow()])}
+        >
+          + Add row
+        </Button>
+
+        {addError && (
+          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+            {addError}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setAddOpen(false)} disabled={addBusy}>Cancel</Button>
+          <Button size="sm" onClick={saveDraftRows} isLoading={addBusy}>Save</Button>
+        </div>
+      </Modal>
     </div>
   );
 }

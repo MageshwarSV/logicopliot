@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.anchors import detect_value_and_anchor
@@ -906,12 +907,28 @@ def _upload_reference_values(
     # Row 1 is the template's own header - skipped rather than validated, the same as the
     # material master upload: an admin who reordered or renamed a column still gets the columns
     # read by position, which is what "download this template and fill it in" means.
-    added = unchanged = skipped = 0
-    conflicts = []
+    parsed_rows = []
     for row in rows[1:]:
         cells = [str(c).strip() if c is not None else "" for c in (row or ())][:5]
         cells += [""] * (5 - len(cells))
-        match_values, resolved = cells[:4], cells[4]
+        parsed_rows.append((cells[:4], cells[4]))
+    return _stage_reference_rows(db, parsed_rows, custom_field_id=custom_field_id, mark_id=mark_id)
+
+
+def _stage_reference_rows(
+    db: Session, rows: list[tuple[list[str], str]], *,
+    custom_field_id: str | None = None, mark_id: str | None = None,
+) -> dict:
+    """Shared by the bulk Excel upload and the manual "+ Add more" popup - one (match_values,
+    resolved_value) pair per row, staged and committed the identical way either path arrives.
+    Only ADDS: a key already on file with a different value is left exactly as it is and
+    reported back as a conflict rather than overwritten (see _upload_reference_values' own
+    docstring for why)."""
+    from app.core.reference_cache import stage_upload_row
+
+    added = unchanged = skipped = 0
+    conflicts = []
+    for match_values, resolved in rows:
         staged = stage_upload_row(db, custom_field_id, match_values, resolved, mark_id=mark_id)
         if staged is None:
             skipped += 1
@@ -1022,6 +1039,43 @@ def upload_reference_values(
     return _upload_reference_values(db, file, custom_field_id=field_id)
 
 
+class ManualReferenceRow(BaseModel):
+    match_values: list[str]
+    resolved_value: str
+
+
+class ManualReferenceRowsPayload(BaseModel):
+    rows: list[ManualReferenceRow]
+
+
+def _rows_from_payload(payload: "ManualReferenceRowsPayload") -> list[tuple[list[str], str]]:
+    if not payload.rows:
+        raise HTTPException(status_code=422, detail="Give at least one row.")
+    out = []
+    for r in payload.rows:
+        values = [(v or "").strip() for v in r.match_values][:4]
+        values += [""] * (4 - len(values))
+        out.append((values, (r.resolved_value or "").strip()))
+    return out
+
+
+@router.post("/custom-fields/{field_id}/reference-values")
+def add_reference_values(
+    field_id: str,
+    payload: ManualReferenceRowsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> dict:
+    """Add one or a handful of rows by hand - the "+ Add more" popup's own save, for someone
+    who knows the one or two values that need adding right now and doesn't want a whole
+    workbook round-trip for it. Same staging/conflict handling as a bulk upload (see
+    _stage_reference_rows), so a key already on file with a different value is reported back
+    as a conflict exactly the same way, never silently overwritten."""
+    cf = _get_lookup_custom_field(db, field_id)
+    _require_same_tenant(user, cf.tenant_id)
+    return _stage_reference_rows(db, _rows_from_payload(payload), custom_field_id=field_id)
+
+
 @router.patch("/custom-fields/{field_id}/reference-values/{value_id}")
 def update_reference_value_endpoint(
     field_id: str,
@@ -1112,6 +1166,19 @@ def upload_mark_reference_values(
     mark = _get_target_value_mark(db, mark_id)
     _require_same_tenant(user, mark.tenant_id)
     return _upload_reference_values(db, file, mark_id=mark_id)
+
+
+@router.post("/marks/{mark_id}/reference-values")
+def add_mark_reference_values(
+    mark_id: str,
+    payload: ManualReferenceRowsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> dict:
+    """Mark equivalent of add_reference_values above - see its own docstring."""
+    mark = _get_target_value_mark(db, mark_id)
+    _require_same_tenant(user, mark.tenant_id)
+    return _stage_reference_rows(db, _rows_from_payload(payload), mark_id=mark_id)
 
 
 @router.patch("/marks/{mark_id}/reference-values/{value_id}")
