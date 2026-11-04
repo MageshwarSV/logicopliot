@@ -2790,6 +2790,48 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
         return None
 
 
+def _click_through(page, loc, sel_for_log: str | None = None, timeout: int = 8000,
+                    fx: float | None = None, fy: float | None = None,
+                    position: dict | None = None) -> None:
+    """Click `loc`, tolerating a stale/invisible leftover covering it.
+
+    Shared by BOTH click-execution paths - _perform_step's own click branch for a normal
+    recorded step, and ai_takeover's fallback click for an element the AI picked when the
+    recorded one was not on screen - so a fix to one can never again silently fail to
+    apply to the other. perform()'s own docstring already explains why these two paths
+    must never be allowed to drift: "they used to be two near-identical copies of 120
+    lines, and every time they drifted a step quietly did nothing on one path while
+    working on the other." This exact click logic WAS one of those undetected drifts -
+    ai_takeover kept a bare loc.click(timeout=8000) with none of the fixes below, and hit
+    the identical `wf3`-style leftover with the plain, uninformative Playwright timeout
+    the earlier fixes were written to get past.
+
+    Waits for anything a HUMAN could see to clear first (up to OVERLAY_WAIT_MS) - a
+    genuinely visible, live dimmer still blocks and is still reported, via logger.info.
+    Once that has passed: a plain coordinate click if nothing (even invisibly) covers the
+    point; otherwise dispatches mousedown/mouseup/click directly on the element (bypassing
+    hit-testing entirely - a bare coordinate click, force=True, and a bare el.click() each
+    confirmed live, on a real stale overlay, not to be enough on their own) and presses
+    Escape as a second, unrelated mechanism, in case the element's own event handling
+    still is not what actually dismisses whatever this control is for.
+    """
+    stuck = _wait_clickable(page, loc.first, fx=fx, fy=fy)
+    if stuck:
+        logger.info("click on %r still reported covered by %s after %ds - dispatching "
+                    "mousedown/mouseup/click on it directly instead of a coordinate click",
+                    sel_for_log, stuck, OVERLAY_WAIT_MS // 1000)
+        loc.first.evaluate(
+            r"""el => {
+                 for (const type of ['mousedown', 'mouseup', 'click']) {
+                   el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                 }
+               }"""
+        )
+        page.keyboard.press("Escape")
+    else:
+        loc.click(timeout=timeout, **(position or {}))
+
+
 def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS,
                      fx: float | None = None, fy: float | None = None) -> str | None:
     """Wait for whatever is covering this element to go away. Returns what stayed, or None.
@@ -2880,61 +2922,13 @@ def _perform_step(page, step: dict, val: str) -> None:
         if step.get("_hover_opener"):
             _press_held(page, step["_hover_opener"], loc)
         else:
-            # Wait for any modal dimmer over this control to lift. Without this the click is
-            # swallowed by the overlay and reported as a plain timeout, which reads as "the
-            # button is missing" when it is on screen and merely covered. Checked at the SAME
-            # point the click below will actually use (click_fx/click_fy), not always dead
-            # centre - see _blocker's own docstring for why that distinction matters.
+            # See _click_through's own docstring for the full story (stale-overlay
+            # tolerance, shared with ai_takeover's fallback click so the two paths can
+            # never again silently drift apart). Checked/clicked at the SAME point
+            # (click_fx/click_fy), not always dead centre - see _blocker's own docstring
+            # for why that distinction matters.
             fx, fy = step.get("click_fx"), step.get("click_fy")
-            stuck = _wait_clickable(page, loc.first, fx=fx, fy=fy)
-            if stuck:
-                # Used to raise and stop the whole run here, then (previous commit) to force a
-                # normal coordinate click instead. Neither actually gets this click to DO
-                # anything when the thing covering it is real in the DOM, not just a CSS trick:
-                # Playwright's force=True still fires the click through the browser's own real
-                # hit-testing at that screen position, which - confirmed live - delivers it to
-                # whatever is ACTUALLY topmost there (`wf3`, a stale leftover from an earlier
-                # popup in this same ASP.NET "window chrome" library, per the real DOM path a
-                # Super Admin pulled from DevTools), exactly as a genuine mouse click would.
-                # "ok, nothing happened" is worse than a clean failure - the popup silently
-                # stays open and every later step runs against a screen that never changed.
-                #
-                # Invoking the element's OWN events in JS instead sidesteps hit-testing
-                # entirely - delivered directly to THIS element, with no question of what else
-                # occupies that pixel. Only reached once _wait_clickable has already confirmed
-                # nothing a human could SEE is blocking it; a genuinely visible, live dimmer
-                # still waits and is still reported, unchanged.
-                #
-                # A bare el.click() (tried first) still reported "ok" but did not close the
-                # popup - confirmed live. This old "window chrome" library's own button-press
-                # handling (the same blueHeaderBuiltinButtonsContainer component a Super Admin
-                # traced via DevTools) most likely reacts to the actual mousedown/mouseup pair a
-                # real press produces, not only the synthesised 'click' HTMLElement.click()
-                # fires on its own - a common pattern for custom-drawn, pressed-state buttons.
-                # Dispatching the full sequence directly on the element covers both: delivery to
-                # the right element, AND the same event shape a real press would produce.
-                logger.info("click on %r still reported covered by %s after %ds - dispatching "
-                            "mousedown/mouseup/click on it directly instead of a coordinate click",
-                            sel, stuck, OVERLAY_WAIT_MS // 1000)
-                loc.first.evaluate(
-                    r"""el => {
-                         for (const type of ['mousedown', 'mouseup', 'click']) {
-                           el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
-                         }
-                       }"""
-                )
-                # A DIFFERENT mechanism entirely, tried alongside the click attempt rather than
-                # instead of it - not another guess at the shape of the SAME click event. A full
-                # reusable modal-window system like this one (the "blueWindow..." family of
-                # classes names a whole window-chrome component, not a one-off button) overwhelmingly
-                # also closes on Escape, via a single global keydown listener that has nothing to
-                # do with hit-testing, button handlers, or which element a click lands on - so it
-                # sidesteps every failure mode the click attempts above could still be hitting.
-                # Harmless if this ERP's own window library does not happen to bind it: Escape
-                # with nothing listening for it does nothing, same as it does on any ordinary page.
-                page.keyboard.press("Escape")
-            else:
-                loc.click(timeout=8000, **_click_spot(loc, step))
+            _click_through(page, loc, sel, fx=fx, fy=fy, position=_click_spot(loc, step))
             # A click that takes the ERP to a genuinely NEW screen races the very next step:
             # that step's own "is my element on screen" check runs right after this returns,
             # and if the OLD screen happens to still have an element that coincidentally
@@ -5253,7 +5247,12 @@ def play_steps(
                 if idx is not None and 0 <= idx < len(els):
                     el = els[idx]
                     try:
-                        _scoped(page, el.get("frames"), el["selector"]).click(timeout=8000)
+                        # _click_through, not a bare .click() - this exact spot used to be
+                        # the one drift _perform_step's own docstring warns about: an
+                        # AI-picked element could hit the identical stale-overlay leftover a
+                        # recorded click can, and this path had none of that tolerance.
+                        _click_through(page, _one(_scoped(page, el.get("frames"), el["selector"])),
+                                        el.get("selector"))
                         _settle(page)
                         return f'AI clicked "{(el.get("text") or el.get("selector") or "")[:40]}" ({choice.get("reason", "")})'
                     except Exception as exc:  # noqa: BLE001
