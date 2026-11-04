@@ -204,16 +204,22 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
     { value: "P", label: "Prior" },
     { value: "N", label: "Normal" },
   ],
+  // The real ICEGATE BE Type codes - single capital letters, exactly as the reference sheet
+  // the user supplied lists them. The PREVIOUS list here was wrong: multi-character made-up
+  // codes ("SEZ-Z", "SEZ-M", ...) and an "I"/"In-Bond" option that isn't one of the real eight
+  // at all, with "W" (Warehouse) missing entirely - any job that picked anything but H or X
+  // would have saved an invalid BE Type for customs filing. The stored VALUE is the bare
+  // letter (what the Excel export's GENERAL!C/BETypeCode column needs); the LABEL is the
+  // descriptive text so the operator can actually tell the options apart.
   BETypeCode: [
-    { value: "H", label: "Home" },
-    { value: "I", label: "In-Bond" },
-    { value: "X", label: "Ex-Bond" },
-    { value: "SEZ-Z", label: "SEZ-Z | SEZ Bill of Entry" },
-    { value: "SEZ-M", label: "SEZ-M | DTA Sales-Manufacturing" },
-    { value: "SEZ-T", label: "SEZ-T | DTA Sales-Trading" },
-    { value: "SEZ-V", label: "SEZ-V | Movement of Goods" },
-    { value: "SEZ-S", label: "SEZ-S | DTA Clearance of Goods" },
-    { value: "SEZ-W", label: "SEZ-W | SEZ to Customs Bonded Warehouse" },
+    { value: "H", label: "H - Home Consumption" },
+    { value: "W", label: "W - Ware House" },
+    { value: "X", label: "X - Ex-bond BE" },
+    { value: "Z", label: "Z - SEZ BE (FTA - SEZ)" },
+    { value: "T", label: "T - SEZ (DTA Sales - Trading)" },
+    { value: "M", label: "M - SEZ (DTA Sales - Manufacturing)" },
+    { value: "V", label: "V - SEZ Goods Movement (Manufacturing Goods)" },
+    { value: "S", label: "S - SEZ (DTA Sales - Stock Clearance of BEs filed prior to ICES implementation)" },
   ],
   // ISO 6346 size/type codes - the same closed list app.core.llm's classify_container_type_code
   // constrains its own AI fallback to, so a wrong read is always pickable from here instead of
