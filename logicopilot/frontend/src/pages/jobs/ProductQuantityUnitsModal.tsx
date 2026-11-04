@@ -12,18 +12,14 @@ import { Alert } from "../../components/ui/Alert";
 // PATCH every other per-row edit in this screen already goes through - rather than a new bulk
 // endpoint, so there is nothing new for the backend to learn about a "bulk" operation at all.
 //
-// Which field is "the unit"/"the quantity" is found by label pattern, not a hardcoded exact
-// string - label wording is set per tenant/template (this one happens to call it "product
-// quantity type"; another customer's could read "UOM" or "Unit of Measure"), and the same
-// patterns already exist in jobs.py's own _row_read_looks_broken for exactly this reason.
+// Which field is "the unit" is found by label pattern, not a hardcoded exact string - label
+// wording is set per tenant/template (this one happens to call it "product quantity type";
+// another customer's could read "UOM" or "Unit of Measure"), and the same patterns already
+// exist in jobs.py's own _row_read_looks_broken for exactly this reason.
 const UNIT_FIELD_PATTERN = /quantity.?type|unit.?of.?measure|\buom\b|quantity.?unit/i;
-const QUANTITY_VALUE_PATTERN = /quantity/i;
 
 function findUnitField(cells: JobFieldValue[]): JobFieldValue | undefined {
   return cells.find((fv) => UNIT_FIELD_PATTERN.test(fv.label_name));
-}
-function findQuantityValueField(cells: JobFieldValue[]): JobFieldValue | undefined {
-  return cells.find((fv) => QUANTITY_VALUE_PATTERN.test(fv.label_name) && !UNIT_FIELD_PATTERN.test(fv.label_name));
 }
 
 interface RangeRow {
@@ -139,8 +135,8 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
         setError(`Row ${i + 1}: From Count and To Count must be numbers.`);
         return null;
       }
-      if (from >= to) {
-        setError(`Row ${i + 1}: From Count must be less than To Count.`);
+      if (from > to) {
+        setError(`Row ${i + 1}: From Count must not be greater than To Count.`);
         return null;
       }
       parsed.push({ from, to, unit: r.unit.trim() });
@@ -151,9 +147,11 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
     }
     const sorted = [...parsed].sort((a, b) => a.from - b.from);
     for (let i = 1; i < sorted.length; i++) {
-      // Half-open ranges (from <= qty < to) - touching at a boundary (…-10, 10-…) is fine,
-      // genuinely overlapping spans are not.
-      if (sorted[i].from < sorted[i - 1].to) {
+      // Both ends inclusive (1-10 means products 1 through 10, 10 products) - so the next
+      // range has to start strictly after this one ends, e.g. 11-20 right after 1-10. A
+      // touching boundary (1-10 then 10-20) is treated as a real overlap, not allowed - "10"
+      // would otherwise match two rows at once with no way to say which one wins.
+      if (sorted[i].from <= sorted[i - 1].to) {
         setError(
           `Ranges overlap: ${sorted[i - 1].from}-${sorted[i - 1].to} and ${sorted[i].from}-${sorted[i].to}.`,
         );
@@ -167,18 +165,19 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
     const parsed = validateRanges();
     if (!parsed) return;
     const updates: { id: string; value: string }[] = [];
-    for (const [, cells] of lineRows) {
+    // "Count" is the product's own position - the same number shown as "Product N" on its
+    // card (FieldMark.row_index) - not its Item Quantity value. Confirmed live: a 144-line
+    // invoice with real quantities in the thousands matched nothing when this used to read
+    // the quantity value instead.
+    for (const [rowIndex, cells] of lineRows) {
       const unitFv = findUnitField(cells);
-      const qtyFv = findQuantityValueField(cells);
-      if (!unitFv || !qtyFv) continue;
-      const qty = Number((qtyFv.corrected_value ?? qtyFv.extracted_value ?? "").trim());
-      if (!Number.isFinite(qty)) continue;
-      const match = parsed.find((r) => qty >= r.from && qty < r.to);
+      if (!unitFv) continue;
+      const match = parsed.find((r) => rowIndex >= r.from && rowIndex <= r.to);
       if (!match) continue;
       updates.push({ id: unitFv.id, value: match.unit });
     }
     if (!updates.length) {
-      setError("No product's quantity falls inside any of these ranges - nothing to apply.");
+      setError("No product's position falls inside any of these ranges - nothing to apply.");
       return;
     }
     await runApply(
@@ -222,7 +221,8 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
             >
               <span className="font-medium text-slate-800 dark:text-slate-100">Apply for Selected Products</span>
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                Different units for different quantity ranges (e.g. 1-10 PCS, 10-20 BOX).
+                Different units for different product ranges, by their position (e.g. products
+                1-10 get PCS, 11-20 get BOX).
               </span>
             </button>
           </div>
@@ -246,6 +246,11 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
 
         {mode === "selected" && (
           <div className="flex flex-col gap-4">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              From Count / To Count is each product's own position - the same number on its
+              "Product N" card - not its Item Quantity. Ranges can't touch: use 1-10 then 11-20,
+              not 1-10 then 10-20.
+            </p>
             <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
