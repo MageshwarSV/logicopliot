@@ -3626,8 +3626,10 @@ export function JobRunPage() {
               </Card>
 
               {groupedAdditionalDetailsFields.map(({ heading, items }) => {
-                // Bill of Entry Type defaults to Advance (pre-selected, not auto-saved - see
-                // ExtractedField's own defaultValue prop). When Advance is in effect - either
+                // Bill of Entry Type defaults to Advance, and BE Type to Home (H) - both
+                // pre-selected, not auto-saved (see ExtractedField's own defaultValue prop), by
+                // request: Home is overwhelmingly the common case, so the operator corrects the
+                // rare job instead of picking it every time. When Advance is in effect - either
                 // already saved, or still just this default - there is no Master Bill of
                 // Lading yet either, so MBL No defaults to "NO MBL" instead of a blank box.
                 const advanceFv = job.field_values.find(
@@ -3665,9 +3667,11 @@ export function JobRunPage() {
                         const defaultValue =
                           fv.label_name === "AdvancePriorNormal"
                             ? "A"
-                            : fv.label_name === "MBL No" && advanceValue === "A"
-                              ? "NO MBL"
-                              : undefined;
+                            : fv.label_name === "BETypeCode"
+                              ? "H"
+                              : fv.label_name === "MBL No" && advanceValue === "A"
+                                ? "NO MBL"
+                                : undefined;
                         const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
                         let comboOptions: string[] | undefined;
                         if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
