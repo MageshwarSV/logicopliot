@@ -5428,6 +5428,20 @@ function InsuranceModeField({
  *  eight, which is why a shorter one is flagged rather than accepted as a different code. */
 const CTH_LENGTH = 8;
 
+/** How many product cards are built at once.
+ *
+ * Each card carries roughly twenty-three editable boxes, so a 144-line invoice is about
+ * 3,300 of them - and the screen stayed on "Loading…" while every one was built, before any
+ * of it could be painted. Nothing was broken and nothing errored; the page was simply doing
+ * a few seconds of work with nothing to show for it. Small jobs were always fine, which is
+ * exactly the shape of a volume problem rather than a bug.
+ *
+ * Twenty-five appears almost at once, and the rest arrive a press at a time. Deliberately
+ * NOT virtualised scrolling: a half-filled CTH box that unmounts when it scrolls out of view
+ * takes its unsaved draft with it, and these boxes are how a customs code gets typed. Cards
+ * already built stay built. */
+const PRODUCTS_PER_PAGE = 25;
+
 function DualSourcePicker({
   primary,
   other,
@@ -6425,6 +6439,14 @@ function ExtractionReview({
   // subtotal band, a header repeated on page 2, a note inside the goods table. Those demand
   // a CTH and a quantity like any real line and block submission over paperwork that does
   // not exist, and re-extracting the whole document was the only way out.
+  // How many product cards are currently built. Grows on request, never shrinks, so a card
+  // an operator has already typed into is never taken away from under them.
+  const [shownProducts, setShownProducts] = useState(PRODUCTS_PER_PAGE);
+  // Back to the first page when the operator switches to a different document - its own
+  // lines are a different list, and carrying the previous document's count over would build
+  // a hundred cards of a document nobody has looked at yet.
+  useEffect(() => setShownProducts(PRODUCTS_PER_PAGE), [activeFileId]);
+
   const [deletingRow, setDeletingRow] = useState<number | null>(null);
   const handleDeleteRow = async (rowIndex: number) => {
     if (!active) return;
@@ -6844,7 +6866,7 @@ function ExtractionReview({
                     )}
                   </div>
                   <div className="flex flex-col gap-2">
-                    {lineRows.map(([n, cells]) => {
+                    {lineRows.slice(0, shownProducts).map(([n, cells]) => {
                       // A field keyed on a standalone mark (ContainerTypeCode, keyed on
                       // container_type) belongs on THAT mark's own card (Container Detail),
                       // never a product card and vice versa - see standalone_multi_value's
@@ -7048,6 +7070,32 @@ function ExtractionReview({
                         </div>
                       );
                     })}
+                    {/* Only when there is something left to show. The count is spelled out
+                        because "Show more" alone gives no sense of whether that is two more
+                        cards or another hundred. */}
+                    {lineRows.length > shownProducts && (
+                      <div className="flex items-center justify-center gap-2 py-2">
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                          Showing {shownProducts} of {lineRows.length} products
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setShownProducts((n) => n + PRODUCTS_PER_PAGE)
+                          }
+                          className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                        >
+                          Show {Math.min(PRODUCTS_PER_PAGE, lineRows.length - shownProducts)} more
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShownProducts(lineRows.length)}
+                          className="rounded-md px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                        >
+                          Show all {lineRows.length}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
