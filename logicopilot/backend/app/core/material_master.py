@@ -294,7 +294,7 @@ def cached_mapping(group_id: str, match_columns: list | None = None,
 def cached_mapping_stamp(group_id: str, match_columns: list | None = None,
                          return_column: str | None = None) -> tuple | None:
     """The same stamp cached_mapping keys ITS OWN cache on, exposed so a caller doing its own
-    repeated, expensive per-lookup work against the mapping (see fuzzy_cache_for) can tie that
+    repeated, expensive per-lookup work against the mapping (see lookup_accel_for) can tie that
     work's lifetime to the exact same "has the sheet actually changed" signal, instead of
     guessing a second, possibly different one. None when there is no master to look up at all -
     same meaning cached_mapping's own None already carries."""
@@ -303,33 +303,6 @@ def cached_mapping_stamp(group_id: str, match_columns: list | None = None,
         return None
     want = (tuple(sorted(str(c) for c in (match_columns or []))), str(return_column or ""))
     return _stamp(path) + want + (_CACHE_VERSION,)
-
-
-# Memoizes _fuzzy_description_match's own expensive difflib work, per master version - found
-# live (2026-11-04): jobs.py's _build_detail recomputes a line's CTH on EVERY GET /jobs/{id}
-# (deliberately - see its own comment on why the answer isn't persisted), and a dense packing
-# list's 50+ rows, each falling through to this O(master size) fuzzy scan on every poll, was
-# caught by py-spy pegging a full CPU core - and because this is pure-Python/GIL-bound work, not
-# I/O, several of these piling up serializes EVERY OTHER request on the same worker process
-# behind them, not just the job detail page itself. Keyed and invalidated the exact same way
-# _CACHE already is (by the master's own stamp), so a re-uploaded sheet can never serve a stale
-# fuzzy answer - this is purely "don't redo the same expensive comparison for the same inputs
-# against the same sheet version", not a new source of truth.
-_FUZZY_CACHE: dict[str, tuple[tuple, dict[str, str]]] = {}
-
-
-def fuzzy_cache_for(group_id: str, stamp: tuple | None) -> dict[str, str] | None:
-    """The memo dict for this group's CURRENT master version, or None if there is none to key
-    on (stamp is None) - callers pass None straight through to _fuzzy_description_match, which
-    already treats a None cache as "don't memoize", so this is safe to call unconditionally."""
-    if stamp is None:
-        return None
-    hit = _FUZZY_CACHE.get(group_id)
-    if hit is not None and hit[0] == stamp:
-        return hit[1]
-    cache: dict[str, str] = {}
-    _FUZZY_CACHE[group_id] = (stamp, cache)
-    return cache
 
 
 def _building_marker(group_id: str) -> Path:
@@ -561,18 +534,71 @@ CTH_SOURCE_PART_CODE = "Part Code"
 CTH_SOURCE_DESCRIPTION = "Description"
 
 
+class LookupAccel:
+    """Precomputed, O(1)-lookup stand-ins for lookup_cth_with_source's three O(master size)
+    scans (squashed-key match, variant-stem match, fuzzy description match) - built ONCE per
+    master version instead of once per ROW per REQUEST. See lookup_accel_for.
+
+    Found live (2026-11-04): a 32,000-row master, load-tested directly against JOB-8616BC (869
+    per-row lookup values) - 10 concurrent calls to _build_detail took ~15s EACH (roughly 10x a
+    single call's ~1.5s, i.e. fully serialized, not overlapping at all) even AFTER the fuzzy-
+    match-only cache shipped minutes earlier. The fuzzy fallback was never the only expensive
+    part: the squashed-key scan and the variant-stem scan each walk the ENTIRE master too, and
+    they run on every lookup regardless of whether anything fuzzy is ever reached - for BOTH the
+    part-code and description candidates. That is up to 4 full master scans per row, uncached,
+    on every single poll.
+    """
+
+    __slots__ = ("squashed_index", "stem_groups", "fuzzy_memo")
+
+    def __init__(self, master: dict[str, str]):
+        squashed_index: dict[str, str] = {}
+        stem_groups: dict[str, set[str]] = {}
+        for k, v in master.items():
+            # setdefault, not assignment - the original loop returned the FIRST key (in
+            # iteration/insertion order) whose squashed form matched; keeping only the first
+            # value stored under a squashed key preserves that exact tie-break.
+            squashed_index.setdefault(k.replace(" ", ""), v)
+            if v:
+                stem_groups.setdefault(_stem(k) or k, set()).add(v)
+        self.squashed_index = squashed_index
+        self.stem_groups = stem_groups
+        self.fuzzy_memo: dict[str, str] = {}
+
+
+# One LookupAccel per (group_id, master stamp) - see LookupAccel's own docstring. Keyed and
+# invalidated the exact same way _CACHE/_FUZZY_CACHE already are, so a re-uploaded sheet can
+# never serve a stale index.
+_ACCEL_CACHE: dict[str, tuple[tuple, LookupAccel]] = {}
+
+
+def lookup_accel_for(group_id: str, stamp: tuple | None, master: dict[str, str]) -> LookupAccel | None:
+    """The accelerator for this group's CURRENT master version, building it if this is the
+    first lookup against it - that one build is itself O(master size), same cost as ONE of the
+    scans it replaces, so the very first row of the very first request after a restart or a
+    sheet re-upload pays it once and every row/request after that is O(1)."""
+    if stamp is None:
+        return None
+    hit = _ACCEL_CACHE.get(group_id)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    accel = LookupAccel(master)
+    _ACCEL_CACHE[group_id] = (stamp, accel)
+    return accel
+
+
 def lookup_cth(
     material: str, master: dict[str, str], description: str = "",
-    fuzzy_cache: dict[str, str] | None = None,
+    accel: LookupAccel | None = None,
 ) -> str:
     """The CTH for this line, or "". See lookup_cth_with_source - this is that, without the
     second half of the answer, for the callers that only want the code."""
-    return lookup_cth_with_source(material, master, description, fuzzy_cache)[0]
+    return lookup_cth_with_source(material, master, description, accel)[0]
 
 
 def lookup_cth_with_source(
     material: str, master: dict[str, str], description: str = "",
-    fuzzy_cache: dict[str, str] | None = None,
+    accel: LookupAccel | None = None,
 ) -> tuple[str, str]:
     """(The CTH for this line, what it was matched on) - ("", "") when nothing matched.
 
@@ -582,8 +608,9 @@ def lookup_cth_with_source(
     - nothing fuzzy on the part code itself, because a part that is merely similar is a
     different part with a different classification.
 
-    `fuzzy_cache` (see fuzzy_cache_for) is passed straight through to the fuzzy fallback - every
-    other caller omits it (None, unchanged behaviour, just uncached) and only _build_detail's
+    `accel` (see lookup_accel_for), when given, replaces the squashed-key scan, the variant-
+    stem scan and the fuzzy-match scan with O(1) lookups against precomputed indexes - every
+    caller but one omits it (None, unchanged O(master size) behaviour) and only _build_detail's
     own repeatedly-polled per-row loop needs to supply one.
     """
     if not master:
@@ -596,9 +623,14 @@ def lookup_cth_with_source(
         if key in master:
             return master[key], source
         squashed = key.replace(" ", "")
-        for k, v in master.items():
-            if k.replace(" ", "") == squashed:
-                return v, source
+        if accel is not None:
+            found_squashed = accel.squashed_index.get(squashed)
+            if found_squashed is not None:
+                return found_squashed, source
+        else:
+            for k, v in master.items():
+                if k.replace(" ", "") == squashed:
+                    return v, source
         # VARIANT SUFFIXES. A material master lists a part once per variant - 094624A.101,
         # 094624A.102, 094624A.P01 - while the invoice prints the part itself, 094624A. Neither
         # side is wrong and they are the same part, but nothing above matches them, so every
@@ -613,12 +645,17 @@ def lookup_cth_with_source(
         # The invoice usually carries the bare part and the master the variants, so the stem is
         # taken from BOTH sides: whichever way round the suffix happens to be, they meet.
         stem = _stem(key) or key
-        found = {v for k, v in master.items() if v and (_stem(k) or k) == stem}
+        if accel is not None:
+            found = accel.stem_groups.get(stem, set())
+        else:
+            found = {v for k, v in master.items() if v and (_stem(k) or k) == stem}
         if len(found) == 1:
             return found.pop(), source
     desc_key = _norm(description)
     if desc_key:
-        fuzzy = _fuzzy_description_match(desc_key, master, cache=fuzzy_cache)
+        fuzzy = _fuzzy_description_match(
+            desc_key, master, cache=accel.fuzzy_memo if accel is not None else None,
+        )
         if fuzzy:
             return fuzzy, CTH_SOURCE_DESCRIPTION
     return "", ""
