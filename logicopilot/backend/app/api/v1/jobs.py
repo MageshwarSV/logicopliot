@@ -3490,7 +3490,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         if (c.kind or "") == "lookup" and c.per_row and not getattr(c, "skip_material_master", False)
     ]
     if per_row_lookup_cfs:
-        from app.core.material_master import cached_mapping, lookup_cth_with_source, material_from
+        from app.core.material_master import (
+            cached_mapping, cached_mapping_stamp, fuzzy_cache_for, lookup_cth_with_source,
+            material_from,
+        )
 
         line_text: dict[tuple[int, int], dict[str, str]] = {}
         for fv in fvs:
@@ -3507,13 +3510,18 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             rows_for_cf = by_cf.get(c.id)
             if not rows_for_cf:
                 continue
-            master = cached_mapping(
-                group.id,
-                match_columns=getattr(c, "lookup_match_columns", None),
-                return_column=getattr(c, "lookup_return_column", None),
-            )
+            match_columns = getattr(c, "lookup_match_columns", None)
+            return_column = getattr(c, "lookup_return_column", None)
+            master = cached_mapping(group.id, match_columns=match_columns, return_column=return_column)
             if not master:
                 continue
+            # Memoizes the expensive fuzzy-description fallback across every row of this field
+            # (and across every later poll of this same job, until the sheet changes) - see
+            # fuzzy_cache_for's own docstring for why this exists; found live (2026-11-04)
+            # pegging a CPU core and stalling the whole worker process on a dense job.
+            fuzzy_cache = fuzzy_cache_for(
+                group.id, cached_mapping_stamp(group.id, match_columns=match_columns, return_column=return_column)
+            )
             key_label = (getattr(c, "lookup_key_label", None) or "").strip()
             for fv in rows_for_cf:
                 shown = (fv.corrected_value or fv.extracted_value or "").strip()
@@ -3525,7 +3533,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     "item_material_code", ""
                 )
                 found, source = lookup_cth_with_source(
-                    material_from(code, desc), master, description=desc,
+                    material_from(code, desc), master, description=desc, fuzzy_cache=fuzzy_cache,
                 )
                 if source and found and found == shown:
                     lookup_source_by_fv[fv.id] = source
