@@ -141,3 +141,20 @@ def test_the_big_cth_box_cannot_be_left_empty_even_when_the_dump_found_a_code(cl
     missing = _unanswered_operator_fields(db_session, job)
     assert "CTH (line 1)" in missing
     assert "Dump CTH Number (line 1)" not in missing
+
+
+def test_clearing_the_dump_box_does_NOT_clear_the_document_reading(client, db_session):
+    """Asked directly, because the wording of a commit message made it sound otherwise.
+
+    Clearing travels between "Dump CTH Number" and "CTH" - the two boxes that hold the ANSWER.
+    It never reaches "Document CTH", which holds what the supplier printed. That reading is the
+    operator's evidence; nothing an operator does to the answer should erase the evidence.
+    """
+    job, fvs = _setup(client, db_session)
+    client.patch(f"/api/v1/job-field-values/{fvs[('Dump CTH Number', 1)].id}",
+                 json={"corrected_value": "85412900"})
+    client.patch(f"/api/v1/job-field-values/{fvs[('Dump CTH Number', 1)].id}",
+                 json={"corrected_value": ""})
+    db_session.expire_all()
+    assert _value(db_session, fvs[("Document CTH", 1)]) == "20000001"   # untouched
+    assert _value(db_session, fvs[("CTH", 1)]) == ""                     # cleared with it
