@@ -2690,32 +2690,45 @@ GLANCE_MS = 250
 OVERLAY_WAIT_MS = 20000
 
 
-def _blocker(page, loc) -> str | None:
+def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str | None:
     """What is lying on top of this element, if anything. Its id/class, or None.
 
     Playwright refuses to click through an overlay, and rightly - a click that lands on a
     dimmer is not the click that was recorded. But its message says only "Timeout 8000ms
     exceeded", which reads like the element was missing when it was there all along, visible
     and enabled, under a grey sheet.
+
+    Checked at `fx`/`fy` (the step's own recorded click_fx/click_fy - a fraction of the
+    element's own width/height) when given, the SAME point `_click_spot` will actually click,
+    rather than always the element's plain centre. A wide cell with a small icon tucked into
+    one corner of it (an old table-based dialog title bar's own Close button, say) can have
+    its CENTRE sitting over a different layer - a decorative title-bar background, another
+    button's own hover-state sprite - than the one pixel the operator actually recorded
+    pressing. Checking the centre there reports a false "covered", and blocks a click that
+    would have landed cleanly. Falls back to the centre when no fraction was recorded, exactly
+    as before.
     """
     try:
         return loc.evaluate(
-            r"""el => {
+            r"""(el, [fx, fy]) => {
                  const r = el.getBoundingClientRect();
                  if (!r.width || !r.height) return null;
-                 const top = document.elementFromPoint(r.left + r.width / 2,
-                                                       r.top + r.height / 2);
+                 const x = r.left + (fx == null ? r.width / 2 : fx * r.width);
+                 const y = r.top + (fy == null ? r.height / 2 : fy * r.height);
+                 const top = document.elementFromPoint(x, y);
                  if (!top || top === el || el.contains(top) || top.contains(el)) return null;
                  return (top.id ? '#' + top.id : '') +
                         (top.className && typeof top.className === 'string'
                            ? '.' + top.className.trim().split(/\s+/).join('.') : '')
                         || top.tagName.toLowerCase();
-               }""")
+               }""",
+            [fx, fy])
     except Exception:  # noqa: BLE001
         return None
 
 
-def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS) -> str | None:
+def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS,
+                     fx: float | None = None, fy: float | None = None) -> str | None:
     """Wait for whatever is covering this element to go away. Returns what stayed, or None.
 
     The ERP puts a `blueFilterDivLayer` over the whole screen while it takes an upload, so the
@@ -2725,10 +2738,10 @@ def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS) -> str | None:
     """
     import time as _t
     deadline = _t.monotonic() + timeout / 1000
-    what = _blocker(page, loc)
+    what = _blocker(page, loc, fx, fy)
     while what and _t.monotonic() < deadline:
         page.wait_for_timeout(250)
-        what = _blocker(page, loc)
+        what = _blocker(page, loc, fx, fy)
     return what
 
 
@@ -2806,8 +2819,10 @@ def _perform_step(page, step: dict, val: str) -> None:
         else:
             # Wait for any modal dimmer over this control to lift. Without this the click is
             # swallowed by the overlay and reported as a plain timeout, which reads as "the
-            # button is missing" when it is on screen and merely covered.
-            stuck = _wait_clickable(page, loc.first)
+            # button is missing" when it is on screen and merely covered. Checked at the SAME
+            # point the click below will actually use (click_fx/click_fy), not always dead
+            # centre - see _blocker's own docstring for why that distinction matters.
+            stuck = _wait_clickable(page, loc.first, fx=step.get("click_fx"), fy=step.get("click_fy"))
             if stuck:
                 raise RuntimeError(
                     f"{step.get('description') or sel!r} is on screen but covered by {stuck} "
