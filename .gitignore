@@ -5,6 +5,11 @@
 # picked up by `git add .`, rather than being swept in by accident.
 /*
 !/.gitignore
+!/.gitattributes
+# The deploy script belongs WITH the code it deploys. Left loose on the server it was
+# mistaken for leftover debris during the move to the new box and dropped, and three deploys
+# were then done by hand.
+!/deploy.sh
 !/logicopilot/
 /logicopilot/*
 !/logicopilot/backend/

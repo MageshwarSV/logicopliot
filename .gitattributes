@@ -1,0 +1,5 @@
+# deploy.sh runs under bash on Linux. Checked out with CRLF it fails on its very first line
+# with a "\r: command not found" that reads like nonsense, so its endings are pinned here
+# rather than left to whatever core.autocrlf a given machine happens to have. Every other
+# file keeps the existing behaviour.
+*.sh text eol=lf
