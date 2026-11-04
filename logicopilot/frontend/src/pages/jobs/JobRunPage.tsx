@@ -6071,6 +6071,36 @@ function ExtractionReview({
           return;
         }
       }
+      // Ordinary per-row table fields - an invoice's own line items (Quantity, Description,
+      // ...), one row per product. Found live: a mandatory per-row field left blank on just
+      // ONE row out of 20 products let the Invoice get approved and the job move straight to
+      // the next page anyway, since `pool` above only ever looks at row_index == null fields
+      // and the standalone check just above this is container-specific. self_filled excluded -
+      // a reference-sheet lookup (CTH) already has its own, job-wide gate on the Dump Data /
+      // extraction stage; hidden_from_capture excluded - that field renders nowhere on this
+      // screen, so blocking on it would ask for something there is no box to type into.
+      const productRows = job.field_values.filter(
+        (fv) =>
+          fv.row_index != null &&
+          fv.job_document_id === active.id &&
+          !fv.standalone_multi_value &&
+          fv.self_filled !== true &&
+          !fv.hidden_from_capture,
+      );
+      const missingProductFields = productRows.filter(
+        (fv) => fv.mandatory !== false && !(fv.value ?? "").trim(),
+      );
+      if (missingProductFields.length) {
+        blockApproval(
+          `This document can't be approved yet. ${missingProductFields.length} product line field${
+            missingProductFields.length === 1 ? "" : "s"
+          } still need${missingProductFields.length === 1 ? "s" : ""} a value: ${
+            [...new Set(missingProductFields.map((fv) => fv.label_name))].join(", ")
+          }.`,
+          missingProductFields.map((fv) => fv.id),
+        );
+        return;
+      }
     }
     setApproveError(null);
     setMissingRequiredIds(new Set());
