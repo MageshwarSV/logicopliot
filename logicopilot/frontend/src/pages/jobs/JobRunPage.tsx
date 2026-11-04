@@ -4950,12 +4950,22 @@ function ExtractedField({
       </div>
       <div
         className="relative"
-        // Closes the combo dropdown only once focus leaves this WHOLE box - the main input,
-        // the panel's own search box, and every suggestion button all live inside this div, so
-        // moving focus between them (e.g. clicking into the search box) never closes it early.
+        // Commits/closes the combo dropdown only once focus leaves this WHOLE box - the main
+        // input, the panel's own search box, and every suggestion button all live inside this
+        // div, so moving focus between them (e.g. the search box's own autoFocus stealing focus
+        // the instant the panel opens) never counts as leaving the field. Found live: a combo
+        // field that had failed its own format validation (CustomsHouseCode) re-ran that
+        // validation - and re-showed the alert - the moment the operator clicked back in to
+        // keep typing, because the search box's autoFocus blurred the main input before a single
+        // new character landed, and blur used to commit unconditionally on the input itself.
         onBlur={(e) => {
-          if (comboOptions && !e.currentTarget.contains(e.relatedTarget as Node)) {
-            setComboOpen(false);
+          if (!comboOptions || e.currentTarget.contains(e.relatedTarget as Node)) return;
+          setComboOpen(false);
+          if (comboPickOnly) {
+            setDraft(current);
+            onDraftChange?.(current);
+          } else {
+            void commit();
           }
         }}
       >
@@ -5123,17 +5133,14 @@ function ExtractedField({
                   setComboOpen(true);
                 }
               }}
-              // Blur still saves, as a safety net for anyone who types and tabs away - closing
-              // the combo dropdown itself is handled by the wrapping div above, not here, so a
-              // click into the panel's own search box (below) doesn't count as leaving the box.
-              // comboPickOnly fields are the exception: only a clicked result ever saves (see
-              // the button below), so typed-and-unpicked text just reverts instead of saving.
+              // Blur still saves, as a safety net for anyone who types and tabs away. For a
+              // comboOptions field, commit/revert is handled by the WRAPPING div's own onBlur
+              // instead (see its comment) - this input's own blur fires the instant the combo
+              // panel's search box steals focus via its autoFocus, which is not really leaving
+              // the field, so this must not commit here or it re-validates/re-saves on every
+              // click back into an already-failed field before a new keystroke ever lands.
               onBlur={() => {
-                if (comboOptions && comboPickOnly) {
-                  setDraft(current);
-                  onDraftChange?.(current);
-                  return;
-                }
+                if (comboOptions) return;
                 void commit();
               }}
               onKeyDown={(e) => {
