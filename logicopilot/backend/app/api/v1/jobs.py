@@ -4831,6 +4831,16 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     # Only the paired candidate is held back. A code typed straight into CTH still answers for
     # the group, which is the case this grouping was built for in the first place.
     candidate_only = {c.paired_custom_field_id for c in all_per_row if c.paired_custom_field_id}
+    # The sync TARGET - the big "CTH" box the picker feeds, and the one an operator types into
+    # when neither source is right - has to carry its OWN value. It is what the entry sheet's
+    # second code column reads, and letting a sibling answer for it meant a line could be
+    # approved with that box visibly empty on screen. Asked for directly: "the bigger CTH field
+    # should not submit empty."
+    #
+    # Its siblings may still lean on the group. That is what keeps the dump sheet's own lookup
+    # from having to be retyped by hand to "confirm" a code more authoritative than anything
+    # the operator would type.
+    sync_targets = {sid for c in all_per_row for sid in (c.sync_field_ids or [])}
     if not asked_marks and not asked_customs and not per_row_ids:
         return []
 
@@ -4880,8 +4890,10 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             JobFieldValue.custom_field_id.in_(list(per_row_ids)),
             JobFieldValue.row_index.isnot(None),
         ).order_by(JobFieldValue.row_index).all():
-            answered = _effective_answer(fv) or group_answer_by_row.get(
-                (link_groups.find(fv.custom_field_id), fv.row_index), "")
+            answered = _effective_answer(fv)
+            if not answered and fv.custom_field_id not in sync_targets:
+                answered = group_answer_by_row.get(
+                    (link_groups.find(fv.custom_field_id), fv.row_index), "")
             if not answered:
                 unanswered_rows.append(f"{per_row_ids[fv.custom_field_id]} (line {fv.row_index})")
 
@@ -8836,6 +8848,61 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
         )
 
 
+def _synced_partner_ids(db: Session, cf) -> list[str]:
+    """Every custom field holding the SAME answer as `cf`, in BOTH directions.
+
+    sync_field_ids is written down on one side only - "Dump CTH Number" names "CTH", and CTH
+    names nothing back - but what the link states is "these two boxes are the same answer",
+    and that is not a one-way statement. Honouring it one way is what let a code typed into
+    the CTH box never reach "Dump CTH Number", which is the field the entry sheet's CTH column
+    actually reads: the screen looked complete and the sheet went out with that column blank.
+
+    Deliberately NOT across paired_custom_field_id. "Document CTH" is a separate READING of the
+    same question, not the same answer - overwriting it would destroy the very thing the
+    picker exists to let an operator compare against.
+    """
+    from app.models.custom_field import CustomField
+
+    partners = set(cf.sync_field_ids or [])
+    for other in db.query(CustomField).filter(CustomField.group_id == cf.group_id).all():
+        if cf.id in (other.sync_field_ids or []):
+            partners.add(other.id)
+    partners.discard(cf.id)
+    return list(partners)
+
+
+def _carry_to_synced_partners(db: Session, fv: JobFieldValue, value: str) -> None:
+    """Write `value` into this line's other boxes that hold the same answer.
+
+    Same line only - (set_index, row_index), not row_index alone, because with three invoices
+    on one job "line 1" is three different products. Does not commit; the caller does.
+    """
+    if not fv.custom_field_id:
+        return
+    from app.models.custom_field import CustomField
+
+    cf = db.get(CustomField, fv.custom_field_id)
+    if cf is None:
+        return
+    partner_ids = _synced_partner_ids(db, cf)
+    if not partner_ids:
+        return
+    targets = db.query(JobFieldValue).filter(
+        JobFieldValue.job_id == fv.job_id,
+        JobFieldValue.custom_field_id.in_(partner_ids),
+        JobFieldValue.row_index == fv.row_index,
+        JobFieldValue.set_index == fv.set_index,
+    ).all()
+    for target in targets:
+        current = (target.corrected_value if target.corrected_value is not None
+                   else target.extracted_value) or ""
+        # Already says the same thing - writing it again would re-record the operator's
+        # placement in the reference learning for no new information.
+        if current.strip() == value.strip():
+            continue
+        _apply_correction(db, target, value)
+
+
 @router.post("/jobs/{job_id}/carry-across-rows")
 def carry_across_rows(
     job_id: str,
@@ -8871,7 +8938,7 @@ def carry_across_rows(
         if fv.custom_field_id:
             rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
 
-    sync_ids = list(cf.sync_field_ids or [])
+    sync_ids = _synced_partner_ids(db, cf)
     previous = (payload.previous or "").strip()
     written = 0
 
@@ -8944,6 +9011,10 @@ def correct_field_value(
     # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
     # behaving differently purely because of what came along with it.
     _apply_correction(db, fv, payload.corrected_value or "")
+    # ... and into every box on this line holding the same answer, in both directions. The
+    # frontend already walked the link forwards; nothing walked it back, so typing into the
+    # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
+    _carry_to_synced_partners(db, fv, payload.corrected_value or "")
     db.commit()
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None
