@@ -79,13 +79,33 @@ _ELEMENT_JS = r"""
 ([x, y]) => {
   function css(e) {
     if (e.id) return '#' + CSS.escape(e.id);
-    for (const a of ['name','data-testid','placeholder']) {
+    // aria-label/alt/title added alongside the original three: an <img> close icon with no
+    // id/name/testid carries nothing functional, but its own alt/title text (or an
+    // aria-label on a button) is still a far more stable identity than its position in the
+    // page - and costs nothing to check first.
+    for (const a of ['name','data-testid','placeholder','aria-label','alt','title']) {
       const v = e.getAttribute && e.getAttribute(a);
       if (v) return e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
     }
-    // nth-of-type path (bounded depth)
+    // nth-of-type path, anchored to the NEAREST ANCESTOR WITH AN ID if one turns up within
+    // the walk (bounded depth, widened from 6 to 10 to give this a real chance of finding
+    // one). Two dialogs built from the same generic template - a close "X" wrapped in its
+    // own one-cell <table>, the common ASP.NET/Telerik chrome pattern - produce byte-
+    // IDENTICAL unanchored nth-of-type paths from wherever the walk stops, so this selector
+    // matched every lookalike icon on the page, not just the one dialog it was recorded
+    // against. Found live: a recorded "Close" click on one dialog's icon worked while the
+    // Super Admin tested it by hand (only that one dialog was open), then during a real job
+    // run a DIFFERENT, structurally-identical icon was the first visible match instead - the
+    // click still reported "ok", it just closed the wrong thing. Stopping at the nearest
+    // ancestor id scopes the match to that one container instead of every page-wide
+    // lookalike; when no ancestor has an id at all this produces exactly the same selector
+    // as before.
     let node = e, parts = [];
-    while (node && node.nodeType === 1 && parts.length < 6 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+    while (node && node.nodeType === 1 && parts.length < 10 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+      if (node !== e && node.id) {
+        parts.unshift('#' + CSS.escape(node.id));
+        return parts.join(' > ');
+      }
       let sel = node.tagName.toLowerCase();
       const p = node.parentNode;
       if (p && p.children) {
@@ -422,12 +442,20 @@ _EVENTS_JS = r"""
 () => {
   function css(e) {
     if (e.id) return '#' + CSS.escape(e.id);
-    for (const a of ['name','data-testid','placeholder']) {
+    // Kept identical to _ELEMENT_JS's own css() (see its comments there) - aria-label/alt/
+    // title as extra identity signals, then an ancestor-id-anchored positional path rather
+    // than an unanchored one, so a step recorded through this "everything clickable" overlay
+    // is exactly as robust as one recorded by pointing at a single element.
+    for (const a of ['name','data-testid','placeholder','aria-label','alt','title']) {
       const v = e.getAttribute && e.getAttribute(a);
       if (v) return e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
     }
     let node = e, parts = [];
-    while (node && node.nodeType === 1 && parts.length < 6 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+    while (node && node.nodeType === 1 && parts.length < 10 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+      if (node !== e && node.id) {
+        parts.unshift('#' + CSS.escape(node.id));
+        return parts.join(' > ');
+      }
       let sel = node.tagName.toLowerCase();
       const p = node.parentNode;
       if (p && p.children) {
