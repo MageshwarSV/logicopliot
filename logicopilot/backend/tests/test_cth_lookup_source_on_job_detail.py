@@ -39,8 +39,19 @@ def _setup(db_session, lines):
                             doc_type="Invoice")
     db_session.add(tdoc)
     db_session.commit()
+    # Paired, as the real field is. lookup_source is a PICKER feature - the note under the
+    # "Dump CTH Number" box - and the picker is built from exactly the fields that name a
+    # partner in paired_custom_field_id. This fixture used to create a bare, unpaired lookup
+    # field, which no live template has: in production the field doing the sheet lookup is
+    # "Dump CTH Number", paired to "Document CTH".
+    partner = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Document CTH",
+                          kind="ai", per_row=True, ask_operator=False)
+    db_session.add(partner)
+    db_session.commit()
+    db_session.refresh(partner)
     cf = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="CTH",
-                     kind="lookup", per_row=True, lookup_key_label="Customer Part code")
+                     kind="lookup", per_row=True, lookup_key_label="Customer Part code",
+                     paired_custom_field_id=partner.id)
     db_session.add(cf)
     db_session.commit()
     db_session.refresh(cf)
@@ -131,3 +142,38 @@ def test_nothing_is_claimed_when_the_sheet_is_not_in_the_cache(client, db_sessio
     tenant, operator, job = _setup(db_session, [("SOMETHING ELSE", "PART-ONE", "87089900")])
     login(client, operator.email)
     assert _sources(client, job) == {1: None}
+
+
+def test_a_lookup_field_with_no_picker_is_not_searched_for_at_all(client, db_session, served_master):
+    """Deliberate narrowing, and the reason the job detail stopped taking twenty seconds.
+
+    lookup_source has exactly one reader in the product: the line under the dump box in the
+    picker, and the picker is built from the fields that name a partner. Searching the
+    customer's sheet for a per-row lookup field that is NOT a picker primary produced an answer
+    that was serialized and then looked at by nothing.
+
+    On Sea import that was "CTH" and "ContainerTypeCode" as well as the dump - three times the
+    work for one field's worth of information, and on a 144-line job against a 32,248-row
+    master, 288 searches per page load thrown away.
+    """
+    tenant, operator, job = _setup(db_session, [("SOMETHING ELSE", "PART-ONE", "87089900")])
+    bare = CustomField(tenant_id=tenant.id, group_id=job.group_id,
+                       label_name="ContainerTypeCode", kind="lookup", per_row=True,
+                       lookup_key_label="Customer Part code")
+    db_session.add(bare)
+    db_session.commit()
+    db_session.refresh(bare)
+    db_session.add(JobFieldValue(
+        tenant_id=tenant.id, job_id=job.id, custom_field_id=bare.id,
+        label_name="ContainerTypeCode", row_index=1, extracted_value="87089900",
+    ))
+    db_session.commit()
+    login(client, operator.email)
+
+    r = client.get(f"/api/v1/jobs/{job.id}")
+    assert r.status_code == 200, r.text
+    by_label = {v["label_name"]: v for v in r.json()["field_values"] if v.get("row_index") == 1}
+    # The paired one still reports where its code came from...
+    assert by_label["CTH"]["lookup_source"]
+    # ...and the unpaired one is never searched for, so it says nothing.
+    assert by_label["ContainerTypeCode"]["lookup_source"] is None

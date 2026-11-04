@@ -3502,9 +3502,21 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # cached_mapping, never load_master: this is a request handler, and parsing a not-yet-
     # parsed workbook inline would hang it - see load_master's own docstring.
     lookup_source_by_fv: dict[str, str] = {}
+    # Only the PICKER PRIMARIES - the fields with a paired candidate, i.e. "Dump CTH Number".
+    # lookup_source has exactly one reader in the whole product: the line under that box in the
+    # picker ("matched on Part Code"). It is not stored, not read by the manager app, and left
+    # None by every other endpoint that builds a JobFieldValueOut.
+    #
+    # Without this filter the sheet was searched for EVERY per-row lookup field - on Sea import
+    # that is "CTH" and "ContainerTypeCode" as well as the dump - and the answer for those two
+    # was computed, serialized, and never looked at by anything. Three times the work for one
+    # field's worth of information. On JOB-FC08FF (144 lines, a 32,248-row master) that is 288
+    # searches of the customer's sheet, per page load, thrown away.
     per_row_lookup_cfs = [
         c for c in cf_rows
-        if (c.kind or "") == "lookup" and c.per_row and not getattr(c, "skip_material_master", False)
+        if (c.kind or "") == "lookup" and c.per_row
+        and not getattr(c, "skip_material_master", False)
+        and c.paired_custom_field_id
     ]
     if per_row_lookup_cfs:
         from app.core.material_master import (
