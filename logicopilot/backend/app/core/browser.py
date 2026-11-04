@@ -2656,6 +2656,17 @@ def capture_success_shot(page, full_page: bool = True) -> str | None:
 # How long to wait for a modal dimmer to lift before giving up on a covered control. An ERP
 # raises one while it processes an upload or a save; they clear in a second or two when the
 # work finishes, and never clear at all when a dialog is waiting for somebody.
+#
+# Widened from 20s to 60s after a real failure on 4S Logistics' SOFTLINK script: closing a
+# Declarations popup hit the ERP's own `blueFilterDivLayer` (id "wf3") and it was STILL up
+# 35+ seconds later, across several following steps. Confirmed by hand: clicking Close
+# manually never shows this dimmer at all - it finishes closing instantly. The difference is
+# pace, not a stuck dialog - a human naturally pauses between steps (reading, moving the
+# mouse), giving whatever background work raises this dimmer time to quietly finish before
+# they ever reach the click it would otherwise block; the recorded script reaches the same
+# click in well under a second and catches that same work still running. 60s costs nothing on
+# the ordinary, unblocked path (_blocker returns instantly when nothing covers the target) and
+# only adds patience to the one case that needed it.
 # The launch flags for every browser this app opens, in ONE place so the recorder and a real
 # job can never be started differently.
 #
@@ -2687,7 +2698,7 @@ BROWSER_ARGS = [
 # surprising name; it is a hang, and it hung a test for ten minutes before it was spotted.
 GLANCE_MS = 250
 
-OVERLAY_WAIT_MS = 20000
+OVERLAY_WAIT_MS = 60000
 
 
 def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str | None:
