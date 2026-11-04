@@ -2719,15 +2719,23 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
     would have landed cleanly. Falls back to the centre when no fraction was recorded, exactly
     as before.
 
-    A covering element with effectively ZERO opacity is not reported as a blocker at all. A
-    real, live dimmer is something a person on the other end of the screen can see - that is
-    the whole reason this check exists (do not click through what a human would never click
-    through either). Found live on 4S Logistics' SOFTLINK script: a stale `blueFilterDivLayer`
-    (id "wf3") stayed in the DOM, still intercepting pointer events, 60+ seconds after
-    whatever last used it - but a screenshot taken at that exact moment showed no dimming at
-    all, and closing the same dialog by hand never shows one either. An invisible leftover like
-    that can never clear on its own no matter how long a run waits, and a human doing the same
-    click would never have been stopped by it either - so neither should this.
+    A covering element that PAINTS NOTHING A HUMAN COULD SEE is not reported as a blocker at
+    all. A real, live dimmer is something a person on the other end of the screen can see -
+    that is the whole reason this check exists (do not click through what a human would never
+    click through either). Found live on 4S Logistics' SOFTLINK script: a stale
+    `blueFilterDivLayer` (id "wf3") stayed in the DOM, still intercepting pointer events, 60+
+    seconds after whatever last used it - but a screenshot taken at that exact moment showed no
+    dimming at all, and closing the same dialog by hand never shows one either. An invisible
+    leftover like that can never clear on its own no matter how long a run waits, and a human
+    doing the same click was never stopped by it either - so neither should this.
+
+    Checking only `opacity` turned out not to be enough - this exact element reports
+    `opacity: 1` while still painting nothing, because its OWN background is fully transparent
+    rather than the whole element being faded. So this also reads `background-color`'s own
+    alpha channel (treating the bare `transparent` keyword, and any `rgba(...)`/`hsla(...)`
+    whose last component is near zero, as nothing painted) and `background-image` - a div with
+    no background colour, no background image, and full opacity is still invisible, it simply
+    is not using opacity to say so.
     """
     try:
         return loc.evaluate(
@@ -2738,9 +2746,23 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
                  const y = r.top + (fy == null ? r.height / 2 : fy * r.height);
                  const top = document.elementFromPoint(x, y);
                  if (!top || top === el || el.contains(top) || top.contains(el)) return null;
-                 const op = parseFloat((top.ownerDocument.defaultView || window)
-                                        .getComputedStyle(top).opacity);
-                 if (!isNaN(op) && op < 0.05) return null;
+                 const st = (top.ownerDocument.defaultView || window).getComputedStyle(top);
+                 const op = parseFloat(st.opacity);
+                 const bg = st.backgroundColor || '';
+                 // rgba(r,g,b,a)/hsla(h,s,l,a) - the LAST number before the closing paren is
+                 // alpha; a plain rgb(...)/hsl(...) or a named colour has no alpha channel at
+                 // all, meaning fully opaque (1). 'transparent' paints nothing (alpha 0).
+                 let bgAlpha = 1;
+                 if (bg === 'transparent') bgAlpha = 0;
+                 else {
+                   const m = bg.match(/\(([^)]+)\)/);
+                   if (m) {
+                     const parts = m[1].split(',').map(s => parseFloat(s.trim()));
+                     if (parts.length >= 4) bgAlpha = parts[3];
+                   }
+                 }
+                 const noImage = !st.backgroundImage || st.backgroundImage === 'none';
+                 if ((!isNaN(op) && op < 0.05) || (bgAlpha < 0.05 && noImage)) return null;
                  return (top.id ? '#' + top.id : '') +
                         (top.className && typeof top.className === 'string'
                            ? '.' + top.className.trim().split(/\s+/).join('.') : '')
