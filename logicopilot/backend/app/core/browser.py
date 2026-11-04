@@ -2871,32 +2871,28 @@ def _perform_step(page, step: dict, val: str) -> None:
             fx, fy = step.get("click_fx"), step.get("click_fy")
             stuck = _wait_clickable(page, loc.first, fx=fx, fy=fy)
             if stuck:
-                # Used to raise and stop the whole run here. Three tries at teaching _blocker()
-                # to recognise exactly which CSS trick makes a particular leftover invisible
-                # (opacity, then background-colour alpha) each deployed clean and each still
-                # failed the same way on a real run - _blocker() still calls whatever this is
-                # "visible" and the run never even reaches the force-click below. Rather than
-                # guess a fourth property: log what was found, the same way a repaired/relocated
-                # selector already gets logged elsewhere in this function, and go ahead and force
-                # the click anyway. force=True clicks the TARGET's own coordinates regardless of
-                # what else claims to sit on top of them - if that really is a live, meaningful
-                # dialog (not this kind of stale leftover), the click still lands where recorded
-                # and simply does not achieve anything through a genuine blocker, exactly the
-                # same harmless non-outcome as today's hard stop, just without halting every
-                # later step over it too.
-                logger.info("click on %r still reported covered by %s after %ds - pressing "
-                            "anyway", sel, stuck, OVERLAY_WAIT_MS // 1000)
-            # _wait_clickable already did the ONLY safety check that matters here: is anything
-            # a HUMAN could actually see still covering this control (_blocker, above). Once
-            # that has passed, force=True unconditionally rather than trying to also guess
-            # exactly which CSS property makes a leftover invisible - that guessing already
-            # took two tries (opacity, then background-colour alpha) and still was not the
-            # right property for a real element found live (4S Logistics' SOFTLINK script,
-            # `#wf3.blueFilterDivLayer`). Playwright's own click() has no concept of "covered
-            # but invisible", so without force=True here ANY such leftover - whatever CSS trick
-            # it turns out to use - hits the exact same wall a moment later as a plain "Timeout
-            # 8000ms exceeded", undoing everything the visible-dimmer check above worked out.
-            loc.click(timeout=8000, force=True, **_click_spot(loc, step))
+                # Used to raise and stop the whole run here, then (previous commit) to force a
+                # normal coordinate click instead. Neither actually gets this click to DO
+                # anything when the thing covering it is real in the DOM, not just a CSS trick:
+                # Playwright's force=True still fires the click through the browser's own real
+                # hit-testing at that screen position, which - confirmed live - delivers it to
+                # whatever is ACTUALLY topmost there (`wf3`, a stale leftover from an earlier
+                # popup in this same ASP.NET "window chrome" library, per the real DOM path a
+                # Super Admin pulled from DevTools), exactly as a genuine mouse click would.
+                # "ok, nothing happened" is worse than a clean failure - the popup silently
+                # stays open and every later step runs against a screen that never changed.
+                #
+                # Invoking the element's OWN click() in JS instead sidesteps hit-testing
+                # entirely - it fires every listener bound to THIS element directly, with no
+                # question of what else occupies that pixel. Only reached once _wait_clickable
+                # has already confirmed nothing a human could SEE is blocking it; a genuinely
+                # visible, live dimmer still waits and is still reported, unchanged.
+                logger.info("click on %r still reported covered by %s after %ds - invoking its "
+                            "own click() directly instead of a coordinate click",
+                            sel, stuck, OVERLAY_WAIT_MS // 1000)
+                loc.first.evaluate("el => el.click()")
+            else:
+                loc.click(timeout=8000, **_click_spot(loc, step))
             # A click that takes the ERP to a genuinely NEW screen races the very next step:
             # that step's own "is my element on screen" check runs right after this returns,
             # and if the OLD screen happens to still have an element that coincidentally
