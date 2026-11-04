@@ -2114,7 +2114,23 @@ def list_jobs(
     elif category == "missing":
         query = _missing_documents_sql_candidates(query)
 
-    query = query.order_by(Job.created_at.desc())
+    if category in ("submitted", "completed"):
+        # Newest SUBMISSION first, not newest arrival.
+        #
+        # These two screens are about what went to the ERP, and each row already prints that
+        # moment under its own badge - "AI - ERP Submitted / Nov 04, 11:34 AM". Ordering them
+        # by created_at instead put those stamps in no order at all down the page: Nov 03
+        # 5:44pm, then 4:32pm, then 6:26pm, then Nov 04. An operator checking what has just
+        # gone through had to read every row to find it.
+        #
+        # Falls back to created_at for a job finished before completed_at existed (and whose
+        # history was too old to backfill from) - those sort by arrival, as they always did,
+        # rather than sinking to the bottom as NULLs.
+        query = query.order_by(
+            func.coalesce(Job.completed_at, Job.created_at).desc(), Job.created_at.desc()
+        )
+    else:
+        query = query.order_by(Job.created_at.desc())
 
     # "missing" (either as group=missing, the dashboard box, or category=missing, the sidebar
     # link) cannot be a single SQL predicate - see _is_missing_documents. The filters above
