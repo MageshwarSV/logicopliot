@@ -254,29 +254,29 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // only the dropdown's own option list is narrowed by just the first key, so the operator can
 // still correct the mode by picking the other code for the same city.
 const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
-  CustomsHouseCode: "port_of_entry",
-  // Same shape as CustomsHouseCode: a forwarder's own branch list only ever matters once you
-  // know WHICH forwarder (ERP Quotation Name / Erp Entry Name) - AIT's own branches, not
-  // Kuehne+Nagel's. Reference table seeded from the Super Admin's own "Billing customers"
-  // sheet (Organization -> branch code, one row per branch).
+  // A forwarder's own branch list only ever matters once you know WHICH forwarder (ERP
+  // Quotation Name / Erp Entry Name) - AIT's own branches, not Kuehne+Nagel's. Reference table
+  // seeded from the Super Admin's own "Billing customers" sheet (Organization -> branch code,
+  // one row per branch).
   branch_name: "Erp Entry Name",
 };
 // Of the fields above, these offer EVERY row their reference table holds instead of only the
 // rows matching the filter field's current value. The entry above is still what makes their
-// options get fetched at all - only the NARROWING is skipped.
-//
-// CustomsHouseCode by request. Its whole table is 21 rows (18 distinct codes), so there is no
-// readability argument for cutting it down, and narrowing to the port_of_entry read off the
-// document hid every other code - including the two cases that actually matter: the entry is
-// filed under a different customs house than the port on the paperwork, and nothing was read
-// at all, which left the dropdown completely empty with no way to pick anything.
-const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set(["CustomsHouseCode"]);
+// options get fetched at all - only the NARROWING is skipped. Empty for now (CustomsHouseCode
+// used to be the one entry here, before it moved to COMBOBOX_REFERENCE_FIELD_LABELS below,
+// whose own box is never narrowed in the first place) - kept around for whichever FILTER_BY
+// field needs this treatment next.
+const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set<string>([]);
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
 // brand-new typed value - unlike that one, this never replaces free text with a closed
 // <select>: the operator can pick a known name or type one that's not there yet, and either
 // way the save path (correct_field_value) remembers it so it shows up next time too.
-const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage"]);
+//
+// CustomsHouseCode moved here by request: it used to render as a forced <select> PLUS a
+// separate "search the full list" box underneath it (SEARCHABLE_REFERENCE_FIELD_LABELS) - two
+// stacked controls for one field. One typeable, searchable box replaces both.
+const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage", "CustomsHouseCode"]);
 // "ERP Quotation Address" - 4S Logistics only, UI-only (no JobFieldValue, no export mapping,
 // no ERP script reads it - see check_jfv_exists.py). A read-only wide box shown right after
 // "ERP Quotation Branch" in the "ERP Reference Mapping" card, resolved two-key (ERP Quotation
@@ -325,7 +325,7 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // treatment. Its paired branch field ("ERP Importer Address / Branch Code") is NOT listed
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
-const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name", "CustomsHouseCode"]);
+const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
 // Picking a row in one of those searches also ANSWERS other fields, straight off the same row.
 // A world-port row is (country, place, code) - so choosing "CHINA SHEKOU(CNSHK)" has already
 // told us the country and the city, and making the operator retype both from the same document
@@ -360,7 +360,6 @@ const FULL_WIDTH_FIELD_LABELS = new Set([
 const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
   "ERP Consignee Name": "Search by consignee to find or correct the match…",
-  CustomsHouseCode: "Search the full list to find or correct the code…",
 };
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
@@ -372,6 +371,16 @@ function countryCodeFormatError(raw: string): string | null {
   return /^[A-Za-z]{2,3}$/.test(v)
     ? null
     : "Shipment Country Code must be 2-3 letters only (e.g. IN, IND) - no numbers, symbols, or longer codes.";
+}
+// CustomsHouseCode: 5 letters then 1 digit ("INKAT1") - the standard Indian customs house
+// code shape. Format-only, same reasoning as Shipment Country Code above.
+const CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS = new Set(["CustomsHouseCode"]);
+function customsHouseCodeFormatError(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
+  return /^[A-Za-z]{5}[0-9]$/.test(v)
+    ? null
+    : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
 }
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
@@ -6049,7 +6058,10 @@ function ExtractionReview({
       // invalid value (ExtractedField's onBeforeSave), but a value saved before that existed,
       // or written some other way, is still caught here rather than silently approved.
       const invalidFormat = pool.filter(
-        (fv) => COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null,
+        (fv) =>
+          (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
+          (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
+            customsHouseCodeFormatError(fv.value ?? "") !== null),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6829,10 +6841,20 @@ function ExtractionReview({
                                 }
                                 return true;
                               }
+                            : CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? async (value: string) => {
+                                const err = customsHouseCodeFormatError(value);
+                                if (err) {
+                                  window.alert(err);
+                                  return false;
+                                }
+                                return true;
+                              }
                             : undefined
                         }
                         transformBeforeSave={
-                          COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                          COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
+                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
