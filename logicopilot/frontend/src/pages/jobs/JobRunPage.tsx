@@ -5482,20 +5482,35 @@ function DualSourcePicker({
   }
   const primaryValue = ownPrimaryValueRef.current;
 
-  const [selected, setSelected] = useState<"primary" | "other" | null>(() => {
-    const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-    // primary's OWN raw computed value - UNLIKE primaryValue above, this is never touched by
-    // picking "other" (which only ever overwrites corrected_value, so exports still read the
-    // chosen value under primary's own name). Using primaryValue here was the bug: after
-    // picking "other" once, every later reload re-mounts with primaryValue ALREADY equal to
-    // otherValue (since that pick wrote it there), permanently hiding the choice from then on -
-    // primary.extracted_value survives that write untouched, so it stays a reliable "would
-    // primary and other have coincided anyway, with nothing ever picked" check.
-    const rawPrimaryValue = (primary.extracted_value ?? "").trim();
-    return current === otherValue && otherValue !== "" && rawPrimaryValue !== otherValue
-      ? "other"
-      : "primary";
-  });
+  const currentPrimary = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+  // primary's OWN raw reading - UNLIKE primaryValue above, this is never touched by picking
+  // "other", which only ever overwrites corrected_value. It has to overwrite it: the export's
+  // CTH column (column I) reads THIS field by name, so the chosen code must land here. That is
+  // also what keeps this a reliable "would the two have coincided anyway, with nothing ever
+  // picked" check.
+  const rawPrimaryValue = (primary.extracted_value ?? "").trim();
+
+  // WHICH side is feeding the export, worked out from the values on every render rather than
+  // frozen when the card first mounted.
+  //
+  // This was a useState initialiser, and an initialiser runs exactly once. Picking a side on
+  // one line carries that choice to every other line and reloads - the database was right, and
+  // the other cards even showed the new value - but their tick never moved, because those cards
+  // were already mounted and the initialiser never ran again. "I press the document CTH and the
+  // other products do not select it" was this, not a carry that failed to happen.
+  const derivedSelected: "primary" | "other" | null =
+    currentPrimary === ""
+      ? null
+      : currentPrimary === otherValue && otherValue !== "" && rawPrimaryValue !== otherValue
+        ? "other"
+        : "primary";
+  // An optimistic override, so the tick moves on the click instead of after the round trip.
+  // Cleared the moment the real values change underneath, handing it back to the derivation.
+  const [pickedOverride, setPickedOverride] =
+    useState<"primary" | "other" | null | undefined>(undefined);
+  useEffect(() => setPickedOverride(undefined), [currentPrimary, otherValue]);
+  const selected = pickedOverride !== undefined ? pickedOverride : derivedSelected;
+  const setSelected = setPickedOverride;
 
   // Each box is independently editable (not just pickable) - sometimes NEITHER the dump
   // lookup nor the document read is right, and the operator needs to type the real answer in
@@ -5505,6 +5520,34 @@ function DualSourcePicker({
   const [primaryDraft, setPrimaryDraft] = useState(primaryValue);
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
+
+  // What the DUMP box actually displays.
+  //
+  // Picking the document side writes that document code into this field - it must, the export
+  // reads this field by name - but the BOX has to go on showing what the customer's own sheet
+  // said, or the two rows of the picker show the identical number and there is visibly nothing
+  // left to choose between. Reported as "why is it taking the document CTH in dump": the dump's
+  // reading had not been lost, it was just no longer on screen.
+  //
+  // While the box is being typed in it shows the draft instead, seeded from that same dump
+  // reading, so an operator who wants neither source can still type the real answer here.
+  const [editingPrimary, setEditingPrimary] = useState(false);
+  const primaryFocusStart = useRef("");
+  const primaryShown = !editingPrimary && selected === "other" ? rawPrimaryValue : primaryDraft;
+  const startPrimaryEdit = () => {
+    const from = selected === "other" ? rawPrimaryValue : primaryDraft;
+    primaryFocusStart.current = from;
+    if (from !== primaryDraft) setPrimaryDraft(from);
+    setEditingPrimary(true);
+  };
+  // Looking at the dump's value and clicking away is not an edit. Without this, merely focusing
+  // the box while the document side was picked would commit the dump value and silently move
+  // the tick.
+  const endPrimaryEdit = () => {
+    setEditingPrimary(false);
+    if (primaryDraft === primaryFocusStart.current) return;
+    void commitPrimary();
+  };
 
   // "Only this line": the escape hatch from the carry-across.
   //
@@ -5577,20 +5620,19 @@ function DualSourcePicker({
     const value = which === "primary" ? primaryValue : otherValue;
     setSaving(true);
     try {
-      await jobsApi.correctFieldValue(primary.id, value);
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
       setSelected(which);
-      // Ripples to every OTHER product line's own copy of this pairing (each keeping its OWN
-      // values) - applyToAllRows does its own reload at the end covering this row too, so skip
-      // the separate reload() below when it ran.
-      //
       // Held back by "only this line": an operator who has said this one product is
       // different means it about WHICH SOURCE is right, as much as about a value they typed.
       if (applyToAllRows && !soloEdit) {
+        // ONE request for the whole job, this line included. The bulk pass writes this row
+        // exactly as the single calls below would - sending both meant two extra round trips
+        // of pure duplication before anything changed on screen.
         await applyToAllRows(which);
       } else {
+        await jobsApi.correctFieldValue(primary.id, value);
+        for (const target of syncTargets) {
+          await jobsApi.correctFieldValue(target.id, value);
+        }
         await reload();
       }
     } finally {
@@ -5618,12 +5660,15 @@ function DualSourcePicker({
     setSaving(true);
     try {
       const previous = primaryValue;
-      await jobsApi.correctFieldValue(primary.id, primaryDraft);
       ownPrimaryValueRef.current = primaryDraft;
-      for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
       if (isCthPairing && applyValueToAllRows && primary.custom_field_id && !soloEdit) {
+        // One request for every line, this one included: the bulk pass fills any line still
+        // carrying `previous` - which is exactly what this box held a moment ago - and leaves
+        // a line that has a code of its own well alone.
         await applyValueToAllRows(primary.custom_field_id, primaryDraft, previous);
       } else {
+        await jobsApi.correctFieldValue(primary.id, primaryDraft);
+        for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
         await reload();
       }
     } finally {
@@ -5724,7 +5769,7 @@ function DualSourcePicker({
           </span>
           <input
             type="text"
-            value={primaryDraft}
+            value={primaryShown}
             readOnly={readOnly}
             // A CTH is exactly eight digits, so a paste of "8482 4000 90" or "8482400090.0"
             // out of a spreadsheet keeps its digits and drops the rest - silently keeping the
@@ -5740,7 +5785,8 @@ function DualSourcePicker({
                   : e.target.value,
               )
             }
-            onBlur={commitPrimary}
+            onFocus={startPrimaryEdit}
+            onBlur={endPrimaryEdit}
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}

@@ -4817,6 +4817,20 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             link_groups.union(c.id, c.paired_custom_field_id)
         for sync_id in (c.sync_field_ids or []):
             link_groups.union(c.id, sync_id)
+    # The OTHER half of a picker pairing - "Document CTH", read straight off whatever the
+    # supplier happened to print on the invoice - is a CANDIDATE for the group's answer, not
+    # the answer itself, and nothing exports it: for every live template the entry sheet's CTH
+    # column reads "Dump CTH Number" and its RITC column reads the sync target. So a document
+    # reading nobody ever picked leaves BOTH of those columns blank.
+    #
+    # Letting it answer for the whole group is what allowed a job to be approved, and filed,
+    # with no tariff heading on the line at all: the operator never ticked either box, and
+    # Submit raised nothing because the document had printed a code somewhere on the page.
+    # Picking it is one click, and that click is the whole point of the picker.
+    #
+    # Only the paired candidate is held back. A code typed straight into CTH still answers for
+    # the group, which is the case this grouping was built for in the first place.
+    candidate_only = {c.paired_custom_field_id for c in all_per_row if c.paired_custom_field_id}
     if not asked_marks and not asked_customs and not per_row_ids:
         return []
 
@@ -4857,7 +4871,7 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             JobFieldValue.row_index.isnot(None),
         ).all():
             ans = _effective_answer(fv)
-            if ans:
+            if ans and fv.custom_field_id not in candidate_only:
                 key = (link_groups.find(fv.custom_field_id), fv.row_index)
                 group_answer_by_row.setdefault(key, ans)
 
