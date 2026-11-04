@@ -82,10 +82,22 @@ _ELEMENT_JS = r"""
     // aria-label/alt/title added alongside the original three: an <img> close icon with no
     // id/name/testid carries nothing functional, but its own alt/title text (or an
     // aria-label on a button) is still a far more stable identity than its position in the
-    // page - and costs nothing to check first.
+    // page - and costs nothing to check first. ONLY when it actually identifies this one
+    // element uniquely, though - "Close" (a title/alt every dialog's own close icon in a
+    // shared window-chrome library carries identically) matched several elements on a real
+    // page, and every one of the force-click/el.click()/mousedown-mouseup-click/Escape
+    // attempts built on top of it "succeeded" against whichever one happened to be the
+    // first visible match - the WRONG popup's close icon, not the one actually on screen -
+    // while the real, visible dialog never closed. A generic attribute value is worse than
+    // no attribute at all if it is not unique; the ancestor-anchored positional path below
+    // at least scopes to the one container actually open right now.
     for (const a of ['name','data-testid','placeholder','aria-label','alt','title']) {
       const v = e.getAttribute && e.getAttribute(a);
-      if (v) return e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
+      if (!v) continue;
+      const cand = e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
+      try {
+        if (document.querySelectorAll(cand).length === 1) return cand;
+      } catch (err) { /* fall through to the next candidate */ }
     }
     // nth-of-type path, anchored to the NEAREST ANCESTOR WITH AN ID if one turns up within
     // the walk (bounded depth, widened from 6 to 10 to give this a real chance of finding
@@ -443,12 +455,17 @@ _EVENTS_JS = r"""
   function css(e) {
     if (e.id) return '#' + CSS.escape(e.id);
     // Kept identical to _ELEMENT_JS's own css() (see its comments there) - aria-label/alt/
-    // title as extra identity signals, then an ancestor-id-anchored positional path rather
-    // than an unanchored one, so a step recorded through this "everything clickable" overlay
-    // is exactly as robust as one recorded by pointing at a single element.
+    // title as extra identity signals ONLY when unique on the page, then an ancestor-id-
+    // anchored positional path rather than an unanchored one, so a step recorded through
+    // this "everything clickable" overlay is exactly as robust as one recorded by pointing
+    // at a single element.
     for (const a of ['name','data-testid','placeholder','aria-label','alt','title']) {
       const v = e.getAttribute && e.getAttribute(a);
-      if (v) return e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
+      if (!v) continue;
+      const cand = e.tagName.toLowerCase() + '[' + a + '="' + CSS.escape(v) + '"]';
+      try {
+        if (document.querySelectorAll(cand).length === 1) return cand;
+      } catch (err) { /* fall through to the next candidate */ }
     }
     let node = e, parts = [];
     while (node && node.nodeType === 1 && parts.length < 10 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
