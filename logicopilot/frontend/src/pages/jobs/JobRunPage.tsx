@@ -11,6 +11,7 @@ import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
 import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
+import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
 import { useAuth } from "../../auth/useAuth";
 import type { JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
 
@@ -6577,6 +6578,9 @@ function ExtractionReview({
   // "Combine fields" modal entirely (confirmed with the user) - saving there recomputes this
   // job immediately too, via the jobId passed below, so the change is visible right away.
   const [compositeOpen, setCompositeOpen] = useState(false);
+  // Apply All Product Units - bulk-set a per-row "unit" field (PCS/BOX/KG/...) across some or
+  // all of this document's product lines at once. See ProductQuantityUnitsModal.
+  const [unitsOpen, setUnitsOpen] = useState(false);
   const jobConsigneeFv = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "consignee_full_name",
   );
@@ -6932,13 +6936,22 @@ function ExtractionReview({
                       {lineRows.length}
                     </p>
                     {!readOnly && !docIsStandalone && (
-                      <button
-                        type="button"
-                        onClick={() => setCompositeOpen(true)}
-                        className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
-                      >
-                        🧩 Combine fields
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setUnitsOpen(true)}
+                          className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        >
+                          📏 Apply All Product Units
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCompositeOpen(true)}
+                          className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        >
+                          🧩 Combine fields
+                        </button>
+                      </div>
                     )}
                   </div>
                   <div className="flex flex-col gap-2">
@@ -7207,6 +7220,12 @@ function ExtractionReview({
         defaultConsignee={jobConsignee}
         jobId={jobId}
         onSaved={() => { void reload(); }}
+      />
+      <ProductQuantityUnitsModal
+        open={unitsOpen}
+        onClose={() => setUnitsOpen(false)}
+        lineRows={lineRows}
+        onApplied={reload}
       />
       {insurancePopup && (
         <InsuranceCertificatePopup
