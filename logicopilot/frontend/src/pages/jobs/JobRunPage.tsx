@@ -5742,6 +5742,29 @@ function DualSourcePicker({
         <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
           <input
             type="checkbox"
+            checked={selected === "other"}
+            disabled={readOnly || saving}
+            onChange={() => void choose("other")}
+          />
+          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {other.label_name}
+          </span>
+          <input
+            type="text"
+            value={otherDraft}
+            readOnly={readOnly}
+            onChange={(e) => setOtherDraft(e.target.value)}
+            onBlur={commitOther}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+            className={boxClass("other")}
+          />
+        </label>
+        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
+          <input
+            type="checkbox"
             checked={selected === "primary"}
             disabled={readOnly || saving}
             onChange={() => void choose("primary")}
@@ -5775,46 +5798,26 @@ function DualSourcePicker({
             className={boxClass("primary")}
           />
         </label>
-        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
-          <input
-            type="checkbox"
-            checked={selected === "other"}
-            disabled={readOnly || saving}
-            onChange={() => void choose("other")}
-          />
-          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            {other.label_name}
-          </span>
-          <input
-            type="text"
-            value={otherDraft}
-            readOnly={readOnly}
-            onChange={(e) => setOtherDraft(e.target.value)}
-            onBlur={commitOther}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-            placeholder="—"
-            className={boxClass("other")}
-          />
-        </label>
+        {/* WHICH key of the customer's sheet produced this code, directly under the box it
+            came from rather than adrift at the bottom of the card. Matched on the part number
+            it is the precise answer; matched only on the wording it is worth a second look -
+            and on these invoices the part code is often blank, so the wording was the only
+            thing that could have matched at all. Shown only when the value really did come
+            from the sheet that way (see JobFieldValueOut.lookup_source), never over a code
+            typed by hand and never when the sheet had nothing for this line. */}
+        {primary.lookup_source && (
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] text-slate-400 dark:text-slate-500">
+            (matched on{" "}
+            <span className="font-medium text-slate-500 dark:text-slate-400">
+              {primary.lookup_source}
+            </span>
+            )
+          </p>
+        )}
       </div>
       {cthIncomplete && (
         <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
           {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
-        </p>
-      )}
-      {/* WHICH key of the customer's sheet produced the code. Matched on the part number it
-          is the precise answer; matched only on the wording it is worth a second look, and on
-          these invoices the part code is often blank, so the wording was the only thing that
-          could have matched at all. Shown only when the value really did come from the sheet
-          that way (see JobFieldValueOut.lookup_source) - never over a code typed by hand. */}
-      {primary.lookup_source && (
-        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-          From dump :{" "}
-          <span className="font-semibold text-slate-500 dark:text-slate-400">
-            {primary.lookup_source}
-          </span>
         </p>
       )}
       {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
