@@ -8849,26 +8849,24 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
 
 
 def _synced_partner_ids(db: Session, cf) -> list[str]:
-    """Every custom field holding the SAME answer as `cf`, in BOTH directions.
+    """The fields `cf` feeds. One way only - a diode, as asked for directly.
 
-    sync_field_ids is written down on one side only - "Dump CTH Number" names "CTH", and CTH
-    names nothing back - but what the link states is "these two boxes are the same answer",
-    and that is not a one-way statement. Honouring it one way is what let a code typed into
-    the CTH box never reach "Dump CTH Number", which is the field the entry sheet's CTH column
-    actually reads: the screen looked complete and the sheet went out with that column blank.
+    The candidate boxes feed the answer box and nothing feeds back:
 
-    Deliberately NOT across paired_custom_field_id. "Document CTH" is a separate READING of the
-    same question, not the same answer - overwriting it would destroy the very thing the
-    picker exists to let an operator compare against.
+        Dump CTH Number ---> CTH          a tick, or an edit, flows down
+        Document CTH    ---> CTH
+        CTH             -/-> either       what is typed in the big box stays there
+
+    A brief attempt at making this two-way was wrong, and the reason it looked necessary is
+    worth writing down: the entry sheet's CTH column currently reads "Dump CTH Number", so the
+    answer had to be forced back into that field for the export to see it. That is a mapping
+    problem, not a data-model one. The two small boxes are EVIDENCE - the customer's master
+    sheet on one side, what the supplier printed on the other - and evidence that rewrites
+    itself to match the answer is no longer evidence.
+
+    Never across paired_custom_field_id either, for the same reason.
     """
-    from app.models.custom_field import CustomField
-
-    partners = set(cf.sync_field_ids or [])
-    for other in db.query(CustomField).filter(CustomField.group_id == cf.group_id).all():
-        if cf.id in (other.sync_field_ids or []):
-            partners.add(other.id)
-    partners.discard(cf.id)
-    return list(partners)
+    return [sid for sid in (cf.sync_field_ids or []) if sid != cf.id]
 
 
 def _carry_to_synced_partners(db: Session, fv: JobFieldValue, value: str) -> None:
@@ -8966,6 +8964,11 @@ def carry_across_rows(
             # "restoring" an empty extraction over it would throw that answer away.
             primary_val = (primary.extracted_value or primary.corrected_value or "").strip()
             value = primary_val if payload.which == "primary" else other_val
+            # A tick says WHICH candidate is right, and that is all it says. It does not move
+            # the candidate: the dump box keeps the customer's master code and the document box
+            # keeps what the supplier printed, so the two stay there to be compared on every
+            # line. Only the answer field is written.
+            targets = [by_cf[sid] for sid in sync_ids if sid in by_cf]
         else:
             value = (payload.value or "").strip()
             current = (primary.corrected_value or primary.extracted_value or "").strip()
@@ -8975,12 +8978,13 @@ def carry_across_rows(
             # held before the edit. Correcting line 1 must not flatten line 7.
             if current != "" and current != previous:
                 continue
+            # A typed value belongs in the box it was typed into, and then flows downstream.
+            targets = [primary] + [by_cf[sid] for sid in sync_ids if sid in by_cf]
 
-        _apply_correction(db, primary, value)
-        for sid in sync_ids:
-            target = by_cf.get(sid)
-            if target is not None:
-                _apply_correction(db, target, value)
+        if not targets:
+            continue
+        for target in targets:
+            _apply_correction(db, target, value)
         written += 1
 
     db.commit()

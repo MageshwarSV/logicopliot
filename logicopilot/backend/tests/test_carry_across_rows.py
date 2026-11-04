@@ -12,6 +12,9 @@ customs declaration:
 
   * a "pick" gives every line its OWN value from that side, never line 1's value copied
     everywhere - line 7's document reading is line 7's answer
+  * a pick writes the ANSWER field only. The two candidate boxes - the customer's master sheet
+    on one side, what the supplier printed on the other - are evidence, and are never rewritten
+    to agree with the choice made between them
   * a carried VALUE skips any line that already carries a code of its own, so correcting
     line 1 on a mixed-commodity invoice cannot flatten line 7
 """
@@ -84,7 +87,9 @@ def test_a_pick_gives_every_line_its_OWN_value_from_that_side(client, db_session
     assert r.status_code == 200, r.text
     assert r.json()["rows_written"] == 3
     db_session.expire_all()
-    assert _values(db_session, job, dump) == [(1, "20000001"), (2, "20000002"), (3, "20000003")]
+    assert _values(db_session, job, cth) == [(1, "20000001"), (2, "20000002"), (3, "20000003")]
+    # ... and the dump box still says what the customer's master sheet says.
+    assert _values(db_session, job, dump) == [(1, "10000001"), (2, "10000002"), (3, "10000003")]
 
 
 def test_a_pick_carries_to_the_synced_field_too(client, db_session):
@@ -123,7 +128,8 @@ def test_a_line_with_nothing_on_the_other_side_is_left_alone(client, db_session)
         "custom_field_id": dump.id, "mode": "pick", "which": "other"})
     assert r.json()["rows_written"] == 2
     db_session.expire_all()
-    assert _values(db_session, job, dump) == [(1, "20000001"), (2, "10000002"), (3, "20000003")]
+    # Line 2 had nothing on the document side, so its answer is left exactly as it was.
+    assert _values(db_session, job, cth) == [(1, "20000001"), (2, "10000002"), (3, "20000003")]
 
 
 def test_a_typed_value_fills_every_line_that_was_following_along(client, db_session):

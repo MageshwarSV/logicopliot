@@ -5484,32 +5484,36 @@ function DualSourcePicker({
   const primaryValue = ownPrimaryValueRef.current;
 
   const currentPrimary = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-  // primary's OWN raw reading - UNLIKE primaryValue above, this is never touched by picking
-  // "other", which only ever overwrites corrected_value. It has to overwrite it: the export's
-  // CTH column (column I) reads THIS field by name, so the chosen code must land here. That is
-  // also what keeps this a reliable "would the two have coincided anyway, with nothing ever
-  // picked" check.
-  const rawPrimaryValue = (primary.extracted_value ?? "").trim();
+  // What the big CTH box currently holds - the ANSWER, which is the only thing a tick writes.
+  const answerValue = (
+    syncTargets[0]?.corrected_value ?? syncTargets[0]?.extracted_value ?? ""
+  ).trim();
 
-  // WHICH side is feeding the export, worked out from the values on every render rather than
-  // frozen when the card first mounted.
+  // WHICH candidate the answer currently matches, read off the values on every render rather
+  // than frozen when the card first mounted.
   //
   // This was a useState initialiser, and an initialiser runs exactly once. Picking a side on
   // one line carries that choice to every other line and reloads - the database was right, and
   // the other cards even showed the new value - but their tick never moved, because those cards
   // were already mounted and the initialiser never ran again. "I press the document CTH and the
   // other products do not select it" was this, not a carry that failed to happen.
+  //
+  // It is read off the ANSWER box and not off the dump box, because a tick no longer writes
+  // into the dump box at all. A code typed straight into the big box matches neither candidate,
+  // and then NEITHER ticks - which is the honest answer: the operator overrode both.
   const derivedSelected: "primary" | "other" | null =
-    currentPrimary === ""
+    answerValue === ""
       ? null
-      : currentPrimary === otherValue && otherValue !== "" && rawPrimaryValue !== otherValue
-        ? "other"
-        : "primary";
+      : answerValue === currentPrimary
+        ? "primary"
+        : answerValue === otherValue
+          ? "other"
+          : null;
   // An optimistic override, so the tick moves on the click instead of after the round trip.
   // Cleared the moment the real values change underneath, handing it back to the derivation.
   const [pickedOverride, setPickedOverride] =
     useState<"primary" | "other" | null | undefined>(undefined);
-  useEffect(() => setPickedOverride(undefined), [currentPrimary, otherValue]);
+  useEffect(() => setPickedOverride(undefined), [answerValue, currentPrimary, otherValue]);
   const selected = pickedOverride !== undefined ? pickedOverride : derivedSelected;
   const setSelected = setPickedOverride;
 
@@ -5522,33 +5526,10 @@ function DualSourcePicker({
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
 
-  // What the DUMP box actually displays.
-  //
-  // Picking the document side writes that document code into this field - it must, the export
-  // reads this field by name - but the BOX has to go on showing what the customer's own sheet
-  // said, or the two rows of the picker show the identical number and there is visibly nothing
-  // left to choose between. Reported as "why is it taking the document CTH in dump": the dump's
-  // reading had not been lost, it was just no longer on screen.
-  //
-  // While the box is being typed in it shows the draft instead, seeded from that same dump
-  // reading, so an operator who wants neither source can still type the real answer here.
-  const [editingPrimary, setEditingPrimary] = useState(false);
-  const primaryFocusStart = useRef("");
-  const primaryShown = !editingPrimary && selected === "other" ? rawPrimaryValue : primaryDraft;
-  const startPrimaryEdit = () => {
-    const from = selected === "other" ? rawPrimaryValue : primaryDraft;
-    primaryFocusStart.current = from;
-    if (from !== primaryDraft) setPrimaryDraft(from);
-    setEditingPrimary(true);
-  };
-  // Looking at the dump's value and clicking away is not an edit. Without this, merely focusing
-  // the box while the document side was picked would commit the dump value and silently move
-  // the tick.
-  const endPrimaryEdit = () => {
-    setEditingPrimary(false);
-    if (primaryDraft === primaryFocusStart.current) return;
-    void commitPrimary();
-  };
+  // The dump box needs no special display handling any more: nothing writes into it except an
+  // operator typing in it, so what it holds IS the customer's master code. The workaround that
+  // used to live here - showing extracted_value because a tick had overwritten the box - went
+  // away with the overwrite.
 
   // "Only this line": the escape hatch from the carry-across.
   //
@@ -5604,14 +5585,15 @@ function DualSourcePicker({
       // Clicking the already-selected box again unselects it - clears the saved answer so
       // the operator can pick again or type a fresh value, instead of being stuck once either
       // side has been chosen.
+      // Unticking clears the ANSWER, so the operator can pick again or type their own. The
+      // two candidate boxes keep their readings - they are what the document and the sheet
+      // said, and that does not stop being true because nothing is chosen yet.
       setSaving(true);
       try {
-        await jobsApi.correctFieldValue(primary.id, "");
         for (const target of syncTargets) {
           await jobsApi.correctFieldValue(target.id, "");
         }
         setSelected(null);
-        setPrimaryDraft("");
         await reload();
       } finally {
         setSaving(false);
@@ -5630,7 +5612,6 @@ function DualSourcePicker({
         // of pure duplication before anything changed on screen.
         await applyToAllRows(which);
       } else {
-        await jobsApi.correctFieldValue(primary.id, value);
         for (const target of syncTargets) {
           await jobsApi.correctFieldValue(target.id, value);
         }
@@ -5770,7 +5751,7 @@ function DualSourcePicker({
           </span>
           <input
             type="text"
-            value={primaryShown}
+            value={primaryDraft}
             readOnly={readOnly}
             // A CTH is exactly eight digits, so a paste of "8482 4000 90" or "8482400090.0"
             // out of a spreadsheet keeps its digits and drops the rest - silently keeping the
@@ -5786,8 +5767,7 @@ function DualSourcePicker({
                   : e.target.value,
               )
             }
-            onFocus={startPrimaryEdit}
-            onBlur={endPrimaryEdit}
+            onBlur={commitPrimary}
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
