@@ -291,6 +291,47 @@ def cached_mapping(group_id: str, match_columns: list | None = None,
     return None
 
 
+def cached_mapping_stamp(group_id: str, match_columns: list | None = None,
+                         return_column: str | None = None) -> tuple | None:
+    """The same stamp cached_mapping keys ITS OWN cache on, exposed so a caller doing its own
+    repeated, expensive per-lookup work against the mapping (see fuzzy_cache_for) can tie that
+    work's lifetime to the exact same "has the sheet actually changed" signal, instead of
+    guessing a second, possibly different one. None when there is no master to look up at all -
+    same meaning cached_mapping's own None already carries."""
+    path = master_path(group_id)
+    if not path.exists():
+        return None
+    want = (tuple(sorted(str(c) for c in (match_columns or []))), str(return_column or ""))
+    return _stamp(path) + want + (_CACHE_VERSION,)
+
+
+# Memoizes _fuzzy_description_match's own expensive difflib work, per master version - found
+# live (2026-11-04): jobs.py's _build_detail recomputes a line's CTH on EVERY GET /jobs/{id}
+# (deliberately - see its own comment on why the answer isn't persisted), and a dense packing
+# list's 50+ rows, each falling through to this O(master size) fuzzy scan on every poll, was
+# caught by py-spy pegging a full CPU core - and because this is pure-Python/GIL-bound work, not
+# I/O, several of these piling up serializes EVERY OTHER request on the same worker process
+# behind them, not just the job detail page itself. Keyed and invalidated the exact same way
+# _CACHE already is (by the master's own stamp), so a re-uploaded sheet can never serve a stale
+# fuzzy answer - this is purely "don't redo the same expensive comparison for the same inputs
+# against the same sheet version", not a new source of truth.
+_FUZZY_CACHE: dict[str, tuple[tuple, dict[str, str]]] = {}
+
+
+def fuzzy_cache_for(group_id: str, stamp: tuple | None) -> dict[str, str] | None:
+    """The memo dict for this group's CURRENT master version, or None if there is none to key
+    on (stamp is None) - callers pass None straight through to _fuzzy_description_match, which
+    already treats a None cache as "don't memoize", so this is safe to call unconditionally."""
+    if stamp is None:
+        return None
+    hit = _FUZZY_CACHE.get(group_id)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    cache: dict[str, str] = {}
+    _FUZZY_CACHE[group_id] = (stamp, cache)
+    return cache
+
+
 def _building_marker(group_id: str) -> Path:
     """A plain sentinel file, not part of the cache - disk state so EVERY worker process can
     see a parse is already under way, not just the one that started it."""
@@ -475,7 +516,9 @@ def material_from(code: str, description: str) -> str:
 _DESC_FUZZY_THRESHOLD = 0.80
 
 
-def _fuzzy_description_match(desc_key: str, master: dict[str, str]) -> str:
+def _fuzzy_description_match(
+    desc_key: str, master: dict[str, str], cache: dict[str, str] | None = None,
+) -> str:
     """One more try for a description that matched nothing exactly - found live: the document's
     own wording is a shorter or differently-worded version of what the customer's own master
     lists for the identical product (a 2-word invoice description against the master's 3-word
@@ -489,14 +532,24 @@ def _fuzzy_description_match(desc_key: str, master: dict[str, str]) -> str:
     different real products that happen to read similarly) and "" is returned - ask the
     operator - rather than silently pick one, the same ambiguity rule the exact variant-stem
     match above already follows.
+
+    `cache`, when given (see fuzzy_cache_for), memoizes the result per desc_key - this is the
+    expensive part of a lookup (one difflib.ratio() per description-like master key, and a real
+    master can hold thousands), and the same (job, line) gets asked again on every poll of the
+    job detail page with an unchanged desc_key every time.
     """
     if not desc_key:
         return ""
+    if cache is not None and desc_key in cache:
+        return cache[desc_key]
     codes = {
         code for key, code in master.items()
         if " " in key and difflib.SequenceMatcher(None, desc_key, key).ratio() >= _DESC_FUZZY_THRESHOLD
     }
-    return codes.pop() if len(codes) == 1 else ""
+    result = codes.pop() if len(codes) == 1 else ""
+    if cache is not None:
+        cache[desc_key] = result
+    return result
 
 
 # What lookup_cth_with_source matched on, shown to the operator beside the code it produced
@@ -508,14 +561,18 @@ CTH_SOURCE_PART_CODE = "Part Code"
 CTH_SOURCE_DESCRIPTION = "Description"
 
 
-def lookup_cth(material: str, master: dict[str, str], description: str = "") -> str:
+def lookup_cth(
+    material: str, master: dict[str, str], description: str = "",
+    fuzzy_cache: dict[str, str] | None = None,
+) -> str:
     """The CTH for this line, or "". See lookup_cth_with_source - this is that, without the
     second half of the answer, for the callers that only want the code."""
-    return lookup_cth_with_source(material, master, description)[0]
+    return lookup_cth_with_source(material, master, description, fuzzy_cache)[0]
 
 
 def lookup_cth_with_source(
     material: str, master: dict[str, str], description: str = "",
+    fuzzy_cache: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """(The CTH for this line, what it was matched on) - ("", "") when nothing matched.
 
@@ -524,6 +581,10 @@ def lookup_cth_with_source(
     Matching is exact (then a fuzzy description-only fallback - see _fuzzy_description_match)
     - nothing fuzzy on the part code itself, because a part that is merely similar is a
     different part with a different classification.
+
+    `fuzzy_cache` (see fuzzy_cache_for) is passed straight through to the fuzzy fallback - every
+    other caller omits it (None, unchanged behaviour, just uncached) and only _build_detail's
+    own repeatedly-polled per-row loop needs to supply one.
     """
     if not master:
         return "", ""
@@ -557,7 +618,7 @@ def lookup_cth_with_source(
             return found.pop(), source
     desc_key = _norm(description)
     if desc_key:
-        fuzzy = _fuzzy_description_match(desc_key, master)
+        fuzzy = _fuzzy_description_match(desc_key, master, cache=fuzzy_cache)
         if fuzzy:
             return fuzzy, CTH_SOURCE_DESCRIPTION
     return "", ""
