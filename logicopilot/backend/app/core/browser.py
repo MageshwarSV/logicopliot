@@ -2718,6 +2718,16 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
     pressing. Checking the centre there reports a false "covered", and blocks a click that
     would have landed cleanly. Falls back to the centre when no fraction was recorded, exactly
     as before.
+
+    A covering element with effectively ZERO opacity is not reported as a blocker at all. A
+    real, live dimmer is something a person on the other end of the screen can see - that is
+    the whole reason this check exists (do not click through what a human would never click
+    through either). Found live on 4S Logistics' SOFTLINK script: a stale `blueFilterDivLayer`
+    (id "wf3") stayed in the DOM, still intercepting pointer events, 60+ seconds after
+    whatever last used it - but a screenshot taken at that exact moment showed no dimming at
+    all, and closing the same dialog by hand never shows one either. An invisible leftover like
+    that can never clear on its own no matter how long a run waits, and a human doing the same
+    click would never have been stopped by it either - so neither should this.
     """
     try:
         return loc.evaluate(
@@ -2728,6 +2738,9 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
                  const y = r.top + (fy == null ? r.height / 2 : fy * r.height);
                  const top = document.elementFromPoint(x, y);
                  if (!top || top === el || el.contains(top) || top.contains(el)) return null;
+                 const op = parseFloat((top.ownerDocument.defaultView || window)
+                                        .getComputedStyle(top).opacity);
+                 if (!isNaN(op) && op < 0.05) return null;
                  return (top.id ? '#' + top.id : '') +
                         (top.className && typeof top.className === 'string'
                            ? '.' + top.className.trim().split(/\s+/).join('.') : '')
@@ -2736,6 +2749,33 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
             [fx, fy])
     except Exception:  # noqa: BLE001
         return None
+
+
+def _intercepted(loc, fx: float | None = None, fy: float | None = None) -> bool:
+    """Is ANYTHING - visible or not - sitting on top of this element's click point right now.
+
+    Separate from _blocker(), which deliberately ignores an invisible leftover so a run does
+    not wait out the whole OVERLAY_WAIT_MS budget over something nobody could ever see.
+    Playwright's own click() still refuses to click an intercepted point regardless of
+    opacity - it has no concept of "invisible but harmless" - so a step _blocker() correctly
+    let through still hits the exact same wall a moment later inside loc.click() itself, just
+    as a plainer, less informative "Timeout 8000ms exceeded". This tells the click call
+    whether it needs force=True to get through, without turning force on for every ordinary,
+    genuinely unobstructed click.
+    """
+    try:
+        return bool(loc.evaluate(
+            r"""(el, [fx, fy]) => {
+                 const r = el.getBoundingClientRect();
+                 if (!r.width || !r.height) return false;
+                 const x = r.left + (fx == null ? r.width / 2 : fx * r.width);
+                 const y = r.top + (fy == null ? r.height / 2 : fy * r.height);
+                 const top = document.elementFromPoint(x, y);
+                 return !(!top || top === el || el.contains(top) || top.contains(el));
+               }""",
+            [fx, fy]))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS,
@@ -2833,13 +2873,21 @@ def _perform_step(page, step: dict, val: str) -> None:
             # button is missing" when it is on screen and merely covered. Checked at the SAME
             # point the click below will actually use (click_fx/click_fy), not always dead
             # centre - see _blocker's own docstring for why that distinction matters.
-            stuck = _wait_clickable(page, loc.first, fx=step.get("click_fx"), fy=step.get("click_fy"))
+            fx, fy = step.get("click_fx"), step.get("click_fy")
+            stuck = _wait_clickable(page, loc.first, fx=fx, fy=fy)
             if stuck:
                 raise RuntimeError(
                     f"{step.get('description') or sel!r} is on screen but covered by {stuck} "
                     f"after {OVERLAY_WAIT_MS // 1000}s - the ERP still has something open over "
                     "it. Whatever that is has to be dealt with before this step can run.")
-            loc.click(timeout=8000, **_click_spot(loc, step))
+            # _wait_clickable only ever clears on an INVISIBLE leftover, never a visible one -
+            # but Playwright's own click() still refuses an intercepted point regardless of
+            # opacity, so without force=True here this hits the identical wall a moment later
+            # as a plain "Timeout 8000ms exceeded", undoing everything _blocker()/_wait_clickable
+            # just worked out. force=False (Playwright's own full safety check) for every
+            # ordinary click with nothing in its way at all - this only ever turns on for the
+            # exact leftover-overlay case just ruled harmless above.
+            loc.click(timeout=8000, force=_intercepted(loc.first, fx, fy), **_click_spot(loc, step))
             # A click that takes the ERP to a genuinely NEW screen races the very next step:
             # that step's own "is my element on screen" check runs right after this returns,
             # and if the OLD screen happens to still have an element that coincidentally
