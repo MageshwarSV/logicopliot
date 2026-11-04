@@ -2882,15 +2882,40 @@ def _perform_step(page, step: dict, val: str) -> None:
                 # "ok, nothing happened" is worse than a clean failure - the popup silently
                 # stays open and every later step runs against a screen that never changed.
                 #
-                # Invoking the element's OWN click() in JS instead sidesteps hit-testing
-                # entirely - it fires every listener bound to THIS element directly, with no
-                # question of what else occupies that pixel. Only reached once _wait_clickable
-                # has already confirmed nothing a human could SEE is blocking it; a genuinely
-                # visible, live dimmer still waits and is still reported, unchanged.
-                logger.info("click on %r still reported covered by %s after %ds - invoking its "
-                            "own click() directly instead of a coordinate click",
+                # Invoking the element's OWN events in JS instead sidesteps hit-testing
+                # entirely - delivered directly to THIS element, with no question of what else
+                # occupies that pixel. Only reached once _wait_clickable has already confirmed
+                # nothing a human could SEE is blocking it; a genuinely visible, live dimmer
+                # still waits and is still reported, unchanged.
+                #
+                # A bare el.click() (tried first) still reported "ok" but did not close the
+                # popup - confirmed live. This old "window chrome" library's own button-press
+                # handling (the same blueHeaderBuiltinButtonsContainer component a Super Admin
+                # traced via DevTools) most likely reacts to the actual mousedown/mouseup pair a
+                # real press produces, not only the synthesised 'click' HTMLElement.click()
+                # fires on its own - a common pattern for custom-drawn, pressed-state buttons.
+                # Dispatching the full sequence directly on the element covers both: delivery to
+                # the right element, AND the same event shape a real press would produce.
+                logger.info("click on %r still reported covered by %s after %ds - dispatching "
+                            "mousedown/mouseup/click on it directly instead of a coordinate click",
                             sel, stuck, OVERLAY_WAIT_MS // 1000)
-                loc.first.evaluate("el => el.click()")
+                loc.first.evaluate(
+                    r"""el => {
+                         for (const type of ['mousedown', 'mouseup', 'click']) {
+                           el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                         }
+                       }"""
+                )
+                # A DIFFERENT mechanism entirely, tried alongside the click attempt rather than
+                # instead of it - not another guess at the shape of the SAME click event. A full
+                # reusable modal-window system like this one (the "blueWindow..." family of
+                # classes names a whole window-chrome component, not a one-off button) overwhelmingly
+                # also closes on Escape, via a single global keydown listener that has nothing to
+                # do with hit-testing, button handlers, or which element a click lands on - so it
+                # sidesteps every failure mode the click attempts above could still be hitting.
+                # Harmless if this ERP's own window library does not happen to bind it: Escape
+                # with nothing listening for it does nothing, same as it does on any ordinary page.
+                page.keyboard.press("Escape")
             else:
                 loc.click(timeout=8000, **_click_spot(loc, step))
             # A click that takes the ERP to a genuinely NEW screen races the very next step:
