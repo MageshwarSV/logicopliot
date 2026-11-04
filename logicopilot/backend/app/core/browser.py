@@ -2773,33 +2773,6 @@ def _blocker(page, loc, fx: float | None = None, fy: float | None = None) -> str
         return None
 
 
-def _intercepted(loc, fx: float | None = None, fy: float | None = None) -> bool:
-    """Is ANYTHING - visible or not - sitting on top of this element's click point right now.
-
-    Separate from _blocker(), which deliberately ignores an invisible leftover so a run does
-    not wait out the whole OVERLAY_WAIT_MS budget over something nobody could ever see.
-    Playwright's own click() still refuses to click an intercepted point regardless of
-    opacity - it has no concept of "invisible but harmless" - so a step _blocker() correctly
-    let through still hits the exact same wall a moment later inside loc.click() itself, just
-    as a plainer, less informative "Timeout 8000ms exceeded". This tells the click call
-    whether it needs force=True to get through, without turning force on for every ordinary,
-    genuinely unobstructed click.
-    """
-    try:
-        return bool(loc.evaluate(
-            r"""(el, [fx, fy]) => {
-                 const r = el.getBoundingClientRect();
-                 if (!r.width || !r.height) return false;
-                 const x = r.left + (fx == null ? r.width / 2 : fx * r.width);
-                 const y = r.top + (fy == null ? r.height / 2 : fy * r.height);
-                 const top = document.elementFromPoint(x, y);
-                 return !(!top || top === el || el.contains(top) || top.contains(el));
-               }""",
-            [fx, fy]))
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS,
                      fx: float | None = None, fy: float | None = None) -> str | None:
     """Wait for whatever is covering this element to go away. Returns what stayed, or None.
@@ -2902,14 +2875,17 @@ def _perform_step(page, step: dict, val: str) -> None:
                     f"{step.get('description') or sel!r} is on screen but covered by {stuck} "
                     f"after {OVERLAY_WAIT_MS // 1000}s - the ERP still has something open over "
                     "it. Whatever that is has to be dealt with before this step can run.")
-            # _wait_clickable only ever clears on an INVISIBLE leftover, never a visible one -
-            # but Playwright's own click() still refuses an intercepted point regardless of
-            # opacity, so without force=True here this hits the identical wall a moment later
-            # as a plain "Timeout 8000ms exceeded", undoing everything _blocker()/_wait_clickable
-            # just worked out. force=False (Playwright's own full safety check) for every
-            # ordinary click with nothing in its way at all - this only ever turns on for the
-            # exact leftover-overlay case just ruled harmless above.
-            loc.click(timeout=8000, force=_intercepted(loc.first, fx, fy), **_click_spot(loc, step))
+            # _wait_clickable already did the ONLY safety check that matters here: is anything
+            # a HUMAN could actually see still covering this control (_blocker, above). Once
+            # that has passed, force=True unconditionally rather than trying to also guess
+            # exactly which CSS property makes a leftover invisible - that guessing already
+            # took two tries (opacity, then background-colour alpha) and still was not the
+            # right property for a real element found live (4S Logistics' SOFTLINK script,
+            # `#wf3.blueFilterDivLayer`). Playwright's own click() has no concept of "covered
+            # but invisible", so without force=True here ANY such leftover - whatever CSS trick
+            # it turns out to use - hits the exact same wall a moment later as a plain "Timeout
+            # 8000ms exceeded", undoing everything the visible-dimmer check above worked out.
+            loc.click(timeout=8000, force=True, **_click_spot(loc, step))
             # A click that takes the ERP to a genuinely NEW screen races the very next step:
             # that step's own "is my element on screen" check runs right after this returns,
             # and if the OLD screen happens to still have an element that coincidentally
