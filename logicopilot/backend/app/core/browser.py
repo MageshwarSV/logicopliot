@@ -112,8 +112,17 @@ _ELEMENT_JS = r"""
     // ancestor id scopes the match to that one container instead of every page-wide
     // lookalike; when no ancestor has an id at all this produces exactly the same selector
     // as before.
+    //
+    // 10 still was not enough: a real DevTools-traced path on this same ERP
+    // (img -> td -> tbody -> table -> td -> tr -> table -> td -> tr -> table -> tbody -> tr
+    // -> td -> table -> div -> div -> #WinCommon_container) put the nearest ancestor id 16
+    // levels up from the clicked image - the walk gave up at 10 and fell all the way through
+    // to the exact same unanchored path this fix exists to avoid. Raised to 30: old,
+    // table-heavy window-chrome markup like this one nests far deeper than a typical modern
+    // page, and the cost of searching further is negligible against the cost of silently
+    // falling back to an ambiguous selector again.
     let node = e, parts = [];
-    while (node && node.nodeType === 1 && parts.length < 10 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+    while (node && node.nodeType === 1 && parts.length < 30 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
       if (node !== e && node.id) {
         parts.unshift('#' + CSS.escape(node.id));
         return parts.join(' > ');
@@ -468,7 +477,7 @@ _EVENTS_JS = r"""
       } catch (err) { /* fall through to the next candidate */ }
     }
     let node = e, parts = [];
-    while (node && node.nodeType === 1 && parts.length < 10 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
+    while (node && node.nodeType === 1 && parts.length < 30 && node.tagName.toLowerCase() !== 'body' && node.tagName.toLowerCase() !== 'html') {
       if (node !== e && node.id) {
         parts.unshift('#' + CSS.escape(node.id));
         return parts.join(' > ');
