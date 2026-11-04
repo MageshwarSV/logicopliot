@@ -5428,32 +5428,6 @@ function InsuranceModeField({
  *  eight, which is why a shorter one is flagged rather than accepted as a different code. */
 const CTH_LENGTH = 8;
 
-/** Run `tasks` with at most `limit` of them in flight at once, and wait for all of them.
- *
- * Carrying a CTH across the lines of an invoice is one write per line plus one per field it
- * syncs to. On a 144-line invoice that is nearly 300 requests, and sent strictly one after
- * another it took around a minute - a minute during which the card says "saving…" and an
- * operator reasonably concludes it has hung. Nothing was wrong; it was just a queue of 300
- * round trips, each waiting for the last.
- *
- * Bounded rather than all-at-once on purpose: 300 simultaneous requests would each take a
- * database connection on the server, which is the exact shape of the outage this project
- * spent a day on. A handful at a time is most of the speed for none of that risk.
- *
- * Writes WITHIN one line stay in order - each task does its own line's primary before its
- * sync targets - because only the order ACROSS lines is safe to shuffle. */
-async function runWithLimit(tasks: (() => Promise<void>)[], limit = 8): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    while (next < tasks.length) {
-      const mine = next;
-      next += 1;
-      await tasks[mine]();
-    }
-  });
-  await Promise.all(workers);
-}
-
 function DualSourcePicker({
   primary,
   other,
@@ -6442,28 +6416,7 @@ function ExtractionReview({
   // correcting one line afterwards (typing a new value directly, or picking the other side
   // back just for that line) never touches the rest again.
   const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
-    const tasks: (() => Promise<void>)[] = [];
-    for (const [n] of lineRows) {
-      const rowFields = lookedUpByRow.get(n) ?? [];
-      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
-      const primary = byCF.get(customFieldId);
-      if (!primary || !primary.paired_custom_field_id) continue;
-      const other = byCF.get(primary.paired_custom_field_id);
-      const otherVal = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
-      if (!other || !otherVal) continue; // nothing to pick between on this line
-      const primaryVal = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-      const value = which === "primary" ? primaryVal : otherVal;
-      const syncTargets = (primary.sync_field_ids ?? [])
-        .map((id) => byCF.get(id))
-        .filter((fv): fv is JobFieldValue => !!fv);
-      tasks.push(async () => {
-        await jobsApi.correctFieldValue(primary.id, value);
-        for (const target of syncTargets) {
-          await jobsApi.correctFieldValue(target.id, value);
-        }
-      });
-    }
-    await runWithLimit(tasks);
+    await jobsApi.carryAcrossRows(jobId, { custom_field_id: customFieldId, mode: "pick", which });
     await reload();
   };
 
@@ -6513,26 +6466,9 @@ function ExtractionReview({
   const applyCthValueToAllRows = async (
     customFieldId: string, value: string, previous: string,
   ) => {
-    const tasks: (() => Promise<void>)[] = [];
-    for (const [n] of lineRows) {
-      const rowFields = lookedUpByRow.get(n) ?? [];
-      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
-      const primary = byCF.get(customFieldId);
-      if (!primary) continue;
-      const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-      if (current === value) continue;                     // already right, nothing to write
-      if (current !== "" && current !== previous.trim()) continue;  // its own, deliberate code
-      const syncTargets = (primary.sync_field_ids ?? [])
-        .map((id) => byCF.get(id))
-        .filter((fv): fv is JobFieldValue => !!fv);
-      tasks.push(async () => {
-        await jobsApi.correctFieldValue(primary.id, value);
-        for (const target of syncTargets) {
-          await jobsApi.correctFieldValue(target.id, value);
-        }
-      });
-    }
-    await runWithLimit(tasks);
+    await jobsApi.carryAcrossRows(jobId, {
+      custom_field_id: customFieldId, mode: "value", value, previous,
+    });
     await reload();
   };
 

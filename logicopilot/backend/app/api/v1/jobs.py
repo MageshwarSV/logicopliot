@@ -65,6 +65,7 @@ from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_A
 from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
+    CarryAcrossRows,
     FieldValueCorrect,
     JobActivityChartOut,
     JobActivityDay,
@@ -8706,30 +8707,21 @@ def _line_key_values(db: Session, job_id: str, set_index: int | None, row_index:
     return material_from(code, desc), desc
 
 
-@router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
-def correct_field_value(
-    value_id: str,
-    payload: FieldValueCorrect,
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
-) -> JobFieldValueOut:
-    fv = scoped_query(db, JobFieldValue, scope).filter(JobFieldValue.id == value_id).first()
-    if fv is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field value not found")
-    # A value on its own carries no owner or mode - only its job does. Loading the job through
-    # the shared helper is what actually enforces an operator's own-job restriction and a
-    # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
-    # either restriction could be bypassed just by knowing/guessing a value's id.
-    _load_job(db, fv.job_id, scope, user)
-    # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
-    # read site in this file already defensively does `.strip()` - this was the one write site
-    # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
-    # value - a CTH/RITC code is the case this was found on - rode uncleaned straight through
-    # to the Excel export and failed the ERP's own upload there, while clearing the cell and
-    # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
-    # behaving differently purely because of what came along with it.
-    fv.corrected_value = (payload.corrected_value or "").strip()
+def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
+    """Write ONE corrected value, and everything that has to happen alongside it.
+
+    Pulled out of correct_field_value so carrying a value across every product line can do
+    exactly what saving one line does - the same un-approval of a document whose mandatory
+    field just went blank, and the same reference learning that remembers a hand-filled code
+    for next time. A bulk path that reimplemented any of that would drift from this one the
+    first time either changed.
+
+    Deliberately does NOT commit. The single-field endpoint commits once for its one value;
+    the bulk endpoint commits ONCE for every line it touched, which is the whole point -
+    carrying a CTH across a 144-line invoice becomes one transaction instead of 144.
+    """
+    value = (value or "").strip()
+    fv.corrected_value = value
     # A mandatory mark cleared back to blank on a document already marked Approved must not
     # leave that badge standing - found live: an operator cleared Vessel Name (and others) on
     # an already-approved Bill of Lading, and it stayed "✓ Approved" with a mandatory field now
@@ -8759,7 +8751,7 @@ def correct_field_value(
         if cf is not None and cf.kind == "lookup":
             material, desc = _line_key_values(
                 db, fv.job_id, fv.set_index, fv.row_index, key_label=cf.lookup_key_label)
-            remember_reference(db, cf.id, [material, desc], payload.corrected_value or "")
+            remember_reference(db, cf.id, [material, desc], value)
         elif cf is not None and cf.ask_operator and cf.label_name != "insurance_percentage":
             # A plain ask_operator field with no extraction of its own (e.g. "Erp Entry Name",
             # purely operator-typed) has nothing else to key on - what was just typed is both
@@ -8772,8 +8764,8 @@ def correct_field_value(
             # An operator picking a different customer's rate for one odd job - or typing an
             # outlier - must never rewrite what every FUTURE job for that same customer gets
             # suggested; only the one job's own saved value changes.
-            remember_reference(db, cf.id, [payload.corrected_value or ""],
-                                payload.corrected_value or "", fuzzy=cf.fuzzy_match)
+            remember_reference(db, cf.id, [value],
+                                value, fuzzy=cf.fuzzy_match)
     # is_target_value (mark or custom field): the reference table had nothing for what this
     # field actually extracted (target_value_raw), now filled in by hand - remember it against
     # THAT raw value, so the same raw extraction is resolved automatically next time instead of
@@ -8799,9 +8791,119 @@ def correct_field_value(
         # (no "||" present) round-trips as the one-element list it always was.
         remember_reference(
             db, custom_field_id=fv.custom_field_id, mark_id=fv.mark_id,
-            match_values=(fv.target_value_raw or "").split("||"), resolved_value=payload.corrected_value or "",
+            match_values=(fv.target_value_raw or "").split("||"), resolved_value=value,
             fuzzy=fuzzy,
         )
+
+
+@router.post("/jobs/{job_id}/carry-across-rows")
+def carry_across_rows(
+    job_id: str,
+    payload: CarryAcrossRows,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Carry one operator action across every product line, in ONE request.
+
+    The frontend used to do this itself, a line at a time: for a 144-line invoice that was
+    close to three hundred round trips, sent one after another, and the card sat on "saving…"
+    for about a minute while they drained. Here it is one request, one pass over the rows
+    already in memory, and one commit.
+
+    Every write goes through _apply_correction, exactly as saving a single field does, so the
+    reference learning and the un-approval of a newly-blank mandatory field behave identically
+    whether a value was carried or typed on its own.
+    """
+    from app.models.custom_field import CustomField
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, payload.custom_field_id)
+    if cf is None or cf.tenant_id != job.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
+
+    rows: dict[tuple, dict[str, JobFieldValue]] = {}
+    for fv in (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+        .all()
+    ):
+        if fv.custom_field_id:
+            rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
+
+    sync_ids = list(cf.sync_field_ids or [])
+    previous = (payload.previous or "").strip()
+    written = 0
+
+    for by_cf in rows.values():
+        primary = by_cf.get(cf.id)
+        if primary is None:
+            continue
+
+        if payload.mode == "pick":
+            other = by_cf.get(cf.paired_custom_field_id) if cf.paired_custom_field_id else None
+            other_val = ((other.corrected_value if other else None)
+                         or (other.extracted_value if other else None) or "").strip()
+            # Nothing to pick between on this line - leave it exactly as it is rather than
+            # blanking it out on the strength of a choice made somewhere else.
+            if other is None or not other_val:
+                continue
+            # primary's OWN answer, not whatever an earlier pick wrote over it. For a
+            # lookup field extracted_value IS the sheet's answer, and picking the other
+            # side overwrites only corrected_value - so reading extracted FIRST is what
+            # makes picking back restore this line's own dump value instead of handing it
+            # the document value it was just given.
+            #
+            # Falls back to corrected_value when there is no extraction at all: a line
+            # whose real answer was typed by hand lives entirely in corrected_value, and
+            # "restoring" an empty extraction over it would throw that answer away.
+            primary_val = (primary.extracted_value or primary.corrected_value or "").strip()
+            value = primary_val if payload.which == "primary" else other_val
+        else:
+            value = (payload.value or "").strip()
+            current = (primary.corrected_value or primary.extracted_value or "").strip()
+            if current == value:
+                continue
+            # Already carries a code of its OWN, deliberately different from the one this box
+            # held before the edit. Correcting line 1 must not flatten line 7.
+            if current != "" and current != previous:
+                continue
+
+        _apply_correction(db, primary, value)
+        for sid in sync_ids:
+            target = by_cf.get(sid)
+            if target is not None:
+                _apply_correction(db, target, value)
+        written += 1
+
+    db.commit()
+    return {"rows_written": written}
+
+
+@router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
+def correct_field_value(
+    value_id: str,
+    payload: FieldValueCorrect,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> JobFieldValueOut:
+    fv = scoped_query(db, JobFieldValue, scope).filter(JobFieldValue.id == value_id).first()
+    if fv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field value not found")
+    # A value on its own carries no owner or mode - only its job does. Loading the job through
+    # the shared helper is what actually enforces an operator's own-job restriction and a
+    # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
+    # either restriction could be bypassed just by knowing/guessing a value's id.
+    _load_job(db, fv.job_id, scope, user)
+    # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
+    # read site in this file already defensively does `.strip()` - this was the one write site
+    # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
+    # value - a CTH/RITC code is the case this was found on - rode uncleaned straight through
+    # to the Excel export and failed the ERP's own upload there, while clearing the cell and
+    # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
+    # behaving differently purely because of what came along with it.
+    _apply_correction(db, fv, payload.corrected_value or "")
     db.commit()
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None

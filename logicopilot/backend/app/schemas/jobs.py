@@ -1,3 +1,4 @@
+from typing import Literal
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
@@ -377,6 +378,32 @@ class JobDetailOut(BaseModel):
 
 class FieldValueCorrect(BaseModel):
     corrected_value: str
+
+
+class CarryAcrossRows(BaseModel):
+    """Apply one operator action to EVERY product line of a job, in one request.
+
+    An invoice's lines are usually all the same commodity, so a CTH chosen or typed on one
+    line is nearly always right for the rest. Doing that a line at a time meant one request
+    per line plus one per field it syncs to - close to three hundred on a 144-line invoice,
+    with the card showing "saving…" throughout.
+
+    `mode` says WHAT carries:
+      "pick"  - every line switches to its OWN value from that side of the pairing. The lines
+                do not all end up with the same code: line 7 takes line 7's document reading,
+                not line 1's. Only which SIDE wins carries across.
+      "value" - every line that was merely following along takes this one typed value.
+    """
+
+    custom_field_id: str
+    mode: Literal["pick", "value"]
+    # mode="pick" only.
+    which: Literal["primary", "other"] | None = None
+    # mode="value" only. `previous` is what the edited box held BEFORE the edit, and is what
+    # tells a line that was merely following the old value apart from one somebody
+    # deliberately set to something different - the latter keeps its own.
+    value: str | None = None
+    previous: str | None = None
 
 
 class AvailableGroup(BaseModel):
