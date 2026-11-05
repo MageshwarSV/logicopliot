@@ -3465,6 +3465,15 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_display_label: dict[str, str | None] = {
         m.id: m.display_label for tdoc in group.documents for m in tdoc.marks
     }
+    mark_validation_pattern: dict[str, str | None] = {
+        m.id: m.validation_pattern for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_validation_uppercase: dict[str, bool] = {
+        m.id: m.validation_uppercase for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_validation_message: dict[str, str | None] = {
+        m.id: m.validation_message for tdoc in group.documents for m in tdoc.marks
+    }
     # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
     # THAT mark's own card (Container Detail), not the product line-item cards - same
     # screen-placement rule an AI field ticked multi_value_from_document already gets,
@@ -3480,6 +3489,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # A "Manual Entry" field's own closed dropdown choices and which document tab it is
     # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
+    cf_dropdown_style = {c.id: c.dropdown_style for c in cf_rows}
+    cf_validation_pattern = {c.id: c.validation_pattern for c in cf_rows}
+    cf_validation_uppercase = {c.id: c.validation_uppercase for c in cf_rows}
+    cf_validation_message = {c.id: c.validation_message for c in cf_rows}
     cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
     cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
     cf_display_label = {c.id: c.display_label for c in cf_rows}
@@ -3674,8 +3687,19 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 display_label=(
                     mark_display_label.get(fv.mark_id) or cf_display_label.get(fv.custom_field_id)
                 ),
+                validation_pattern=(
+                    mark_validation_pattern.get(fv.mark_id) or cf_validation_pattern.get(fv.custom_field_id)
+                ),
+                validation_uppercase=(
+                    mark_validation_uppercase.get(fv.mark_id, False)
+                    or cf_validation_uppercase.get(fv.custom_field_id, False)
+                ),
+                validation_message=(
+                    mark_validation_message.get(fv.mark_id) or cf_validation_message.get(fv.custom_field_id)
+                ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
                 fixed_options=cf_fixed_options.get(fv.custom_field_id),
+                dropdown_style=cf_dropdown_style.get(fv.custom_field_id),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
             )

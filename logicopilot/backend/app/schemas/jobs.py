@@ -264,6 +264,13 @@ class JobFieldValueOut(BaseModel):
     # dropdown of exactly these choices instead of a free-text box. None = free text,
     # unchanged for every field that predates this.
     fixed_options: list[str] | None = None
+    # fixed_options only: null/"plain" | "search" | "search_free" - see CustomField.dropdown_style.
+    dropdown_style: str | None = None
+    # Admin-settable format check + auto-uppercase - see FieldMark.validation_pattern's own
+    # docstring. Purely client-side; nothing enforced server-side by this field.
+    validation_pattern: str | None = None
+    validation_uppercase: bool = False
+    validation_message: str | None = None
     # Which document's own tab to group this field under instead of Additional Details -
     # None (every field that predates this) means Additional Details, today's only behavior.
     display_document_id: str | None = None

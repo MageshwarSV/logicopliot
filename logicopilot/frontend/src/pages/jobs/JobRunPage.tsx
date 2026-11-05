@@ -3725,7 +3725,16 @@ export function JobRunPage() {
                                 : undefined;
                         const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
                         let comboOptions: string[] | undefined;
-                        if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
+                        // Admin-typed fixed choices (CustomField.fixed_options), rendered as a
+                        // searchable combobox when dropdown_style asks for one - see the
+                        // document-tab ExtractedField's own copy of this same logic above for
+                        // the full explanation of the three dropdown_style values.
+                        const fixedChoicesSearchable =
+                          !!fv.fixed_options?.length &&
+                          (fv.dropdown_style === "search" || fv.dropdown_style === "search_free");
+                        if (fixedChoicesSearchable) {
+                          comboOptions = fv.fixed_options!;
+                        } else if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
                           // dedupe() - the reference table is a LEARNED (raw text -> corrected
                           // value) mapping, not a plain list of unique names: the same resolved
                           // value legitimately gets re-learned from several different raw texts
@@ -3780,7 +3789,7 @@ export function JobRunPage() {
                               tone={fv.origin === "computed" ? "computed" : undefined}
                               labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={
-                                fv.fixed_options && fv.fixed_options.length
+                                fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
                                   ? fv.fixed_options.map((v) => ({ value: v, label: v }))
                                   : FIELD_SELECT_OPTIONS[fv.label_name]
                               }
@@ -3792,8 +3801,11 @@ export function JobRunPage() {
                               // with it - typing still filters the dropdown below, but only
                               // clicking a result saves anything; blurring with unpicked typed
                               // text reverts to the last saved value instead of saving it.
+                              // A fixed-choices field set to "search" (not "search_free") gets
+                              // the exact same pick-only treatment, admin-configured instead.
                               comboPickOnly={
-                                fv.label_name === "Erp Entry Name" || fv.label_name === "branch_name"
+                                fv.label_name === "Erp Entry Name" || fv.label_name === "branch_name" ||
+                                (fixedChoicesSearchable && fv.dropdown_style === "search")
                               }
                               onDraftChange={
                                 fv.label_name === "Erp Entry Name"
@@ -4900,10 +4912,30 @@ function ExtractedField({
 
   const saveValue = async (value: string) => {
     if (readOnly) return;
-    const transformed = transformBeforeSave ? transformBeforeSave(value) : value;
+    let transformed = transformBeforeSave ? transformBeforeSave(value) : value;
+    // Admin-settable format check + auto-uppercase (FieldMark/CustomField.validation_pattern/
+    // validation_uppercase) - applies to every field everywhere ExtractedField renders, same
+    // enforcement point the earlier hand-coded TOI/CustomsHouseCode/Shipment Country Code
+    // checks already use (onBeforeSave/transformBeforeSave), just driven by real data instead
+    // of a per-field hardcoded check. A caller-provided transformBeforeSave/onBeforeSave (those
+    // three fields, for now) still runs first/instead - this never overrides them.
+    if (fv.validation_uppercase) transformed = transformed.trim().toUpperCase();
     if (onBeforeSave) {
       const proceed = await onBeforeSave(transformed);
       if (!proceed) return;
+    } else if (fv.validation_pattern && transformed.trim()) {
+      // Server-side already rejects an unparseable pattern at save time (see
+      // _check_validation_pattern) - this try/catch only guards against something that was
+      // somehow saved before that check existed, so a bad pattern fails OPEN (nothing blocked)
+      // rather than crashing the save outright.
+      try {
+        if (!new RegExp(`^(?:${fv.validation_pattern})$`).test(transformed.trim())) {
+          window.alert(fv.validation_message || `${fv.label_name} does not match the required format.`);
+          return;
+        }
+      } catch {
+        /* malformed pattern - treat as no restriction */
+      }
     }
     setSaving(true);
     setFailed(false);
@@ -6157,7 +6189,20 @@ function ExtractionReview({
           (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
           (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
             customsHouseCodeFormatError(fv.value ?? "") !== null) ||
-          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null),
+          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null) ||
+          // Admin-settable format check (see ExtractedField's own saveValue) - a value saved
+          // before this existed, or saved some other way, is still caught here. Fails OPEN on
+          // a malformed pattern, same reasoning as saveValue's own try/catch.
+          (() => {
+            if (!fv.validation_pattern) return false;
+            const v = (fv.value ?? "").trim();
+            if (!v) return false;
+            try {
+              return !new RegExp(`^(?:${fv.validation_pattern})$`).test(v);
+            } catch {
+              return false;
+            }
+          })(),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6890,11 +6935,24 @@ function ExtractionReview({
                       ? dynamicReferenceOptions[fv.custom_field_id]
                       : undefined;
                   let options: FieldSelectOption[] | undefined = FIELD_SELECT_OPTIONS[fv.label_name];
-                  // A "Manual Entry" field created as a closed dropdown (see
-                  // CustomField.fixed_options) - a mandatory choice from exactly these values,
-                  // never a reference-backed/history combobox.
+                  // A "Manual Entry" field's own admin-typed choices (CustomField.fixed_options),
+                  // rendered one of three ways depending on CustomField.dropdown_style, set once
+                  // in the Wizard's Custom Tag modal - no code change/deploy needed to pick
+                  // between them:
+                  //   null/"plain" (default, same as before this existed) - a plain closed
+                  //     <select>, exactly these values and nothing else.
+                  //   "search"      - a searchable combobox, still pick-only (comboPickOnly).
+                  //   "search_free" - the same searchable combobox, but typing a value that
+                  //     isn't in the list still saves it (comboPickOnly false).
+                  let fixedChoiceComboOptions: string[] | undefined;
+                  let fixedChoiceComboPickOnly = false;
                   if (fv.fixed_options && fv.fixed_options.length) {
-                    options = fv.fixed_options.map((v) => ({ value: v, label: v }));
+                    if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
+                      fixedChoiceComboOptions = fv.fixed_options;
+                      fixedChoiceComboPickOnly = fv.dropdown_style === "search";
+                    } else {
+                      options = fv.fixed_options.map((v) => ({ value: v, label: v }));
+                    }
                   }
                   if (dynamicRows !== undefined) {
                     const filterFv = job.field_values.find(
@@ -6941,9 +6999,11 @@ function ExtractionReview({
                   const showSearchFallback =
                     fv.label_name !== "ERP Consignee Name" &&
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
-                  const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                    ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
-                    : undefined;
+                  const comboOptions = fixedChoiceComboOptions ?? (
+                    COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
+                      ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
+                      : undefined
+                  );
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   // ...or, failing that, another field's own value on this same job - see
                   // DEFAULT_FROM_OTHER_FIELD_LABEL. Job-level (row_index == null): these
@@ -6972,6 +7032,7 @@ function ExtractionReview({
                         labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                         options={options}
                         comboOptions={comboOptions}
+                        comboPickOnly={fixedChoiceComboPickOnly}
                         asyncSearchPicker={
                           fv.label_name === "ERP Consignee Name" && fv.custom_field_id
                             ? {

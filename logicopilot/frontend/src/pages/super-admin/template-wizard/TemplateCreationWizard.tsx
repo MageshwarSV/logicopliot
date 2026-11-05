@@ -25,6 +25,46 @@ function errText(err: unknown, fallback: string): string {
   return fallback;
 }
 
+// Admin-settable field validation (FieldMark/CustomField.validation_pattern) - the Wizard only
+// ever stores/reads a plain regex BODY (JobRunPage.tsx tests it as `^(?:pattern)$`), but offers
+// a friendlier picker than "type your own regex" for the shapes that come up constantly (a
+// fixed number of letters/digits, like Terms of Invoice's "exactly 3 letters"). "Custom" covers
+// anything that doesn't fit that shape (e.g. Customs House Code's "5 letters then 1 digit").
+type ValidationMode = "none" | "letters" | "digits" | "alnum" | "custom";
+const VALIDATION_CHAR_CLASS: Record<Exclude<ValidationMode, "none" | "custom">, string> = {
+  letters: "A-Za-z",
+  digits: "0-9",
+  alnum: "A-Za-z0-9",
+};
+function buildValidationPattern(mode: ValidationMode, length: string, custom: string): string | null {
+  if (mode === "none") return null;
+  if (mode === "custom") return custom.trim() || null;
+  const charClass = VALIDATION_CHAR_CLASS[mode];
+  const len = length.trim();
+  return len ? `[${charClass}]{${len}}` : `[${charClass}]+`;
+}
+/** Reverses buildValidationPattern for editing an existing field - a pattern that doesn't
+ *  match one of the three basic shapes (e.g. hand-typed, or Customs House Code's compound
+ *  shape) falls back to "custom" with the raw pattern shown as-is, never silently discarded. */
+function parseValidationPattern(pattern: string | null | undefined): { mode: ValidationMode; length: string; custom: string } {
+  if (!pattern) return { mode: "none", length: "", custom: "" };
+  const m = /^\[(A-Za-z0-9|A-Za-z|0-9)\](?:\{(\d+)\}|(\+))$/.exec(pattern);
+  if (m) {
+    const mode: ValidationMode = m[1] === "A-Za-z0-9" ? "alnum" : m[1] === "A-Za-z" ? "letters" : "digits";
+    return { mode, length: m[2] ?? "", custom: "" };
+  }
+  return { mode: "custom", length: "", custom: pattern };
+}
+function validationModeLabel(mode: ValidationMode): string {
+  return mode === "letters" ? "letters" : mode === "digits" ? "digits" : "characters";
+}
+function defaultValidationMessage(label: string, mode: ValidationMode, length: string): string {
+  const kind = validationModeLabel(mode);
+  return length.trim()
+    ? `${label} must be exactly ${length.trim()} ${kind}.`
+    : `${label} must contain only ${kind}.`;
+}
+
 /** One sheet being filled, as the wizard holds it while it is edited. */
 type SheetPlanUi = {
   sheet: string;
@@ -155,6 +195,12 @@ export function TemplateCreationWizard() {
   // What the OPERATOR sees instead of this field's own name, when it should read
   // differently - e.g. label_name stays "HBL No", display label shows "HAWB Number".
   const [displayLabel, setDisplayLabel] = useState("");
+  // Admin-settable format check - see FieldMark.validation_pattern/validation_uppercase.
+  const [validationMode, setValidationMode] = useState<ValidationMode>("none");
+  const [validationLength, setValidationLength] = useState("");
+  const [validationCustom, setValidationCustom] = useState("");
+  const [validationUppercase, setValidationUppercase] = useState(false);
+  const [validationMessage, setValidationMessage] = useState("");
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -320,6 +366,11 @@ export function TemplateCreationWizard() {
   const [editStandalone, setEditStandalone] = useState(false);
   const [editStandaloneHeading, setEditStandaloneHeading] = useState("");
   const [editDisplayLabel, setEditDisplayLabel] = useState("");
+  const [editValidationMode, setEditValidationMode] = useState<ValidationMode>("none");
+  const [editValidationLength, setEditValidationLength] = useState("");
+  const [editValidationCustom, setEditValidationCustom] = useState("");
+  const [editValidationUppercase, setEditValidationUppercase] = useState(false);
+  const [editValidationMessage, setEditValidationMessage] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -356,9 +407,21 @@ export function TemplateCreationWizard() {
   const [cfSectionHeading, setCfSectionHeading] = useState("");
   // What the operator sees instead of this field's own label - see CustomField.display_label.
   const [cfDisplayLabel, setCfDisplayLabel] = useState("");
+  const [cfValidationMode, setCfValidationMode] = useState<ValidationMode>("none");
+  const [cfValidationLength, setCfValidationLength] = useState("");
+  const [cfValidationCustom, setCfValidationCustom] = useState("");
+  const [cfValidationUppercase, setCfValidationUppercase] = useState(false);
+  const [cfValidationMessage, setCfValidationMessage] = useState("");
   // Which document's own tab this field shows under instead of Additional Details - see
   // CustomField.display_document_id. "" = Additional Details (today's only behavior).
   const [cfDisplayDocumentId, setCfDisplayDocumentId] = useState("");
+  // What the operator types/picks into - see CustomField.fixed_options/dropdown_style.
+  // "text" = free text (fixed_options null). "select" = plain closed dropdown (dropdown_style
+  // null/"plain"). "search" = searchable, still pick-only. "search_free" = searchable, but a
+  // typed value not in the list still saves.
+  const [cfInputType, setCfInputType] = useState<"text" | "select" | "search" | "search_free">("text");
+  // One choice per line - parsed into CustomField.fixed_options on save.
+  const [cfFixedOptionsText, setCfFixedOptionsText] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
@@ -477,6 +540,8 @@ export function TemplateCreationWizard() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
     setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
+    setCfInputType("text"); setCfFixedOptionsText("");
+    setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -505,6 +570,20 @@ export function TemplateCreationWizard() {
     setCfSectionHeading(cf.standalone_group_heading ?? "");
     setCfDisplayLabel(cf.display_label ?? "");
     setCfDisplayDocumentId(cf.display_document_id ?? "");
+    setCfInputType(
+      !cf.fixed_options?.length
+        ? "text"
+        : cf.dropdown_style === "search" || cf.dropdown_style === "search_free"
+          ? cf.dropdown_style
+          : "select",
+    );
+    setCfFixedOptionsText((cf.fixed_options ?? []).join("\n"));
+    const cfParsedValidation = parseValidationPattern(cf.validation_pattern);
+    setCfValidationMode(cfParsedValidation.mode);
+    setCfValidationLength(cfParsedValidation.length);
+    setCfValidationCustom(cfParsedValidation.custom);
+    setCfValidationUppercase(!!cf.validation_uppercase);
+    setCfValidationMessage(cf.validation_message ?? "");
     setError(null);
     setCustomOpen(true);
   }
@@ -524,6 +603,10 @@ export function TemplateCreationWizard() {
     if (cfKind === "ai" && !cfPrompt.trim()) { setError("Describe what the AI should compute."); return; }
     if (cfKind === "composite" && cfCompositeLabels.length === 0) {
       setError("Choose at least one piece to combine.");
+      return;
+    }
+    if (cfInputType !== "text" && !cfFixedOptionsText.split("\n").some((v) => v.trim())) {
+      setError("Enter at least one choice, one per line, or switch the input type back to Input box.");
       return;
     }
     setCfSaving(true); setError(null);
@@ -550,6 +633,14 @@ export function TemplateCreationWizard() {
         standalone_group_heading: cfSectionHeading.trim() || null,
         display_label: cfDisplayLabel.trim() || null,
         display_document_id: cfDisplayDocumentId || null,
+        fixed_options:
+          cfInputType === "text"
+            ? null
+            : cfFixedOptionsText.split("\n").map((v) => v.trim()).filter(Boolean),
+        dropdown_style: cfInputType === "text" || cfInputType === "select" ? null : cfInputType,
+        validation_pattern: buildValidationPattern(cfValidationMode, cfValidationLength, cfValidationCustom),
+        validation_uppercase: cfValidationUppercase,
+        validation_message: cfValidationMessage.trim() || null,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -679,6 +770,7 @@ export function TemplateCreationWizard() {
     setStandaloneMultiValue(false);
     setStandaloneHeading("");
     setDisplayLabel("");
+    setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -709,6 +801,9 @@ export function TemplateCreationWizard() {
         is_target_value: targetValue,
         fuzzy_match: targetValue ? fuzzyMatch : false,
         display_label: displayLabel.trim() || null,
+        validation_pattern: buildValidationPattern(validationMode, validationLength, validationCustom),
+        validation_uppercase: validationUppercase,
+        validation_message: validationMessage.trim() || null,
       });
 
       if (verify) {
@@ -802,6 +897,12 @@ export function TemplateCreationWizard() {
     setEditStandalone(!!m.standalone_multi_value);
     setEditStandaloneHeading(m.standalone_group_heading ?? "");
     setEditDisplayLabel(m.display_label ?? "");
+    const parsedValidation = parseValidationPattern(m.validation_pattern);
+    setEditValidationMode(parsedValidation.mode);
+    setEditValidationLength(parsedValidation.length);
+    setEditValidationCustom(parsedValidation.custom);
+    setEditValidationUppercase(!!m.validation_uppercase);
+    setEditValidationMessage(m.validation_message ?? "");
     setError(null);
   }
 
@@ -824,6 +925,9 @@ export function TemplateCreationWizard() {
         // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
         standalone_group_heading: editStandaloneHeading.trim() || null,
         display_label: editDisplayLabel.trim() || null,
+        validation_pattern: buildValidationPattern(editValidationMode, editValidationLength, editValidationCustom),
+        validation_uppercase: editValidationUppercase,
+        validation_message: editValidationMessage.trim() || null,
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1610,6 +1714,64 @@ export function TemplateCreationWizard() {
                       />
                     </div>
                     <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Validation (optional)
+                      </label>
+                      <div className="grid grid-cols-3 gap-2 text-sm">
+                        {([
+                          { key: "none", label: "No restriction" },
+                          { key: "letters", label: "Letters only" },
+                          { key: "digits", label: "Digits only" },
+                          { key: "alnum", label: "Letters & digits" },
+                          { key: "custom", label: "Custom pattern" },
+                        ] as const).map((opt) => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => setEditValidationMode(opt.key)}
+                            className={`rounded-lg border px-2 py-1.5 text-left text-xs font-medium ${
+                              editValidationMode === opt.key
+                                ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                                : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(editValidationMode === "letters" || editValidationMode === "digits" || editValidationMode === "alnum") && (
+                        <input
+                          type="text"
+                          value={editValidationLength}
+                          onChange={(e) => setEditValidationLength(e.target.value.replace(/\D/g, ""))}
+                          placeholder="Exact length (optional, e.g. 3)"
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      {editValidationMode === "custom" && (
+                        <input
+                          type="text"
+                          value={editValidationCustom}
+                          onChange={(e) => setEditValidationCustom(e.target.value)}
+                          placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      {editValidationMode !== "none" && (
+                        <input
+                          type="text"
+                          value={editValidationMessage}
+                          onChange={(e) => setEditValidationMessage(e.target.value)}
+                          placeholder={defaultValidationMessage(m.label_name, editValidationMode, editValidationLength)}
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editValidationUppercase} onChange={(e) => setEditValidationUppercase(e.target.checked)} />
+                        Convert to UPPERCASE automatically on save
+                      </label>
+                    </div>
+                    <div>
                       <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">Anchor variations (labels this field can appear under)</p>
                       <div className="flex flex-wrap gap-1.5">
                         {editAnchors.map((v, i) => (
@@ -2362,6 +2524,64 @@ export function TemplateCreationWizard() {
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Validation (optional)
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              {([
+                { key: "none", label: "No restriction" },
+                { key: "letters", label: "Letters only" },
+                { key: "digits", label: "Digits only" },
+                { key: "alnum", label: "Letters & digits" },
+                { key: "custom", label: "Custom pattern" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setValidationMode(opt.key)}
+                  className={`rounded-lg border px-2 py-1.5 text-left font-medium ${
+                    validationMode === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {(validationMode === "letters" || validationMode === "digits" || validationMode === "alnum") && (
+              <input
+                type="text"
+                value={validationLength}
+                onChange={(e) => setValidationLength(e.target.value.replace(/\D/g, ""))}
+                placeholder="Exact length (optional, e.g. 3)"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {validationMode === "custom" && (
+              <input
+                type="text"
+                value={validationCustom}
+                onChange={(e) => setValidationCustom(e.target.value)}
+                placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {validationMode !== "none" && (
+              <input
+                type="text"
+                value={validationMessage}
+                onChange={(e) => setValidationMessage(e.target.value)}
+                placeholder={defaultValidationMessage(labelName || "This field", validationMode, validationLength)}
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={validationUppercase} onChange={(e) => setValidationUppercase(e.target.checked)} />
+              Convert to UPPERCASE automatically on save
+            </label>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
               Section heading on the job screen (optional)
             </label>
             <p className="mb-1.5 text-xs text-slate-500">
@@ -2616,6 +2836,46 @@ export function TemplateCreationWizard() {
 
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              What does the operator type/pick into this field?
+            </label>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {([
+                { key: "text", label: "Input box", hint: "Free text" },
+                { key: "select", label: "Dropdown", hint: "Pick only, short list" },
+                { key: "search", label: "Dropdown with search", hint: "Pick only, long list" },
+                { key: "search_free", label: "Editable dropdown", hint: "Pick, or type a new value" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setCfInputType(opt.key)}
+                  className={`rounded-lg border px-3 py-2 text-left font-medium ${
+                    cfInputType === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                  <span className="block text-[11px] font-normal text-slate-400">{opt.hint}</span>
+                </button>
+              ))}
+            </div>
+            {cfInputType !== "text" && (
+              <div className="mt-2">
+                <p className="mb-1 text-xs text-slate-500">One choice per line.</p>
+                <textarea
+                  value={cfFixedOptionsText}
+                  onChange={(e) => setCfFixedOptionsText(e.target.value)}
+                  rows={4}
+                  placeholder={"Bangalore\nChennai\nCochin"}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
               Display label shown to the operator (optional)
             </label>
             <p className="mb-1.5 text-xs text-slate-500">
@@ -2629,6 +2889,65 @@ export function TemplateCreationWizard() {
               placeholder="e.g. ERP Importer Name"
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Validation (optional)
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              {([
+                { key: "none", label: "No restriction" },
+                { key: "letters", label: "Letters only" },
+                { key: "digits", label: "Digits only" },
+                { key: "alnum", label: "Letters & digits" },
+                { key: "custom", label: "Custom pattern" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setCfValidationMode(opt.key)}
+                  className={`rounded-lg border px-2 py-1.5 text-left font-medium ${
+                    cfValidationMode === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {(cfValidationMode === "letters" || cfValidationMode === "digits" || cfValidationMode === "alnum") && (
+              <input
+                type="text"
+                value={cfValidationLength}
+                onChange={(e) => setCfValidationLength(e.target.value.replace(/\D/g, ""))}
+                placeholder="Exact length (optional, e.g. 3)"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {cfValidationMode === "custom" && (
+              <input
+                type="text"
+                value={cfValidationCustom}
+                onChange={(e) => setCfValidationCustom(e.target.value)}
+                placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {cfValidationMode !== "none" && (
+              <input
+                type="text"
+                value={cfValidationMessage}
+                onChange={(e) => setCfValidationMessage(e.target.value)}
+                placeholder={defaultValidationMessage(cfLabel || "This field", cfValidationMode, cfValidationLength)}
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={cfValidationUppercase} onChange={(e) => setCfValidationUppercase(e.target.checked)} />
+              Convert to UPPERCASE automatically on save
+            </label>
           </div>
 
           <div>

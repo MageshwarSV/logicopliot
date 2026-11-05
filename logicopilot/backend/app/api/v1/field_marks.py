@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -110,6 +111,7 @@ def create_mark(
             raise HTTPException(status_code=422, detail=f"{name} must be a normalized 0-1 coordinate")
     if payload.width <= 0.001 or payload.height <= 0.001:
         raise HTTPException(status_code=422, detail="Mark box is too small")
+    _check_validation_pattern(payload.validation_pattern)
 
     mark = FieldMark(
         tenant_id=document.tenant_id,
@@ -131,6 +133,9 @@ def create_mark(
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
         display_label=payload.display_label,
+        validation_pattern=payload.validation_pattern,
+        validation_uppercase=payload.validation_uppercase,
+        validation_message=payload.validation_message,
     )
     db.add(mark)
     db.commit()
@@ -250,6 +255,8 @@ def edit_mark(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mark not found")
     old_label = mark.label_name
     updates = payload.model_dump(exclude_unset=True)
+    if "validation_pattern" in updates:
+        _check_validation_pattern(updates["validation_pattern"])
     if "anchor_variations" in updates and updates["anchor_variations"] is not None:
         # de-dupe, drop blanks, keep order
         seen: set[str] = set()
@@ -594,6 +601,21 @@ def _check_display_document_id(db: Session, group_id: str, display_document_id: 
         )
 
 
+def _check_validation_pattern(pattern: str | None) -> None:
+    """Rejects an unparseable regex at save time, in the Wizard, rather than letting it reach
+    the job screen - where JobRunPage.tsx's own `new RegExp(...)` would throw and silently
+    break that one field for every operator who opens it."""
+    if not pattern:
+        return
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"That validation pattern is not a valid regular expression: {exc}",
+        )
+
+
 @router.post("/template-groups/{group_id}/custom-fields", status_code=status.HTTP_201_CREATED)
 def create_custom_field(
     group_id: str,
@@ -604,7 +626,7 @@ def create_custom_field(
     """Add a custom field to a template set: a hardcoded value, or an AI-computed value
     derived from the selected documents' content."""
     from app.models.custom_field import CustomField
-    from app.models.custom_field import CUSTOM_FIELD_KINDS
+    from app.models.custom_field import CUSTOM_FIELD_KINDS, DROPDOWN_STYLES
     from app.models.template_group import TemplateGroup
     from app.schemas.onboarding import CustomFieldOut
 
@@ -620,7 +642,14 @@ def create_custom_field(
             detail=(f"{payload.kind!r} is not a kind of field. Use one of: "
                     + ", ".join(sorted(CUSTOM_FIELD_KINDS))),
         )
+    if payload.dropdown_style is not None and payload.dropdown_style not in DROPDOWN_STYLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"{payload.dropdown_style!r} is not a dropdown style. Use one of: "
+                    + ", ".join(DROPDOWN_STYLES)),
+        )
     _check_display_document_id(db, group_id, payload.display_document_id)
+    _check_validation_pattern(payload.validation_pattern)
     cf = CustomField(
         tenant_id=group.tenant_id,
         group_id=group_id,
@@ -648,9 +677,13 @@ def create_custom_field(
         sync_field_ids=payload.sync_field_ids,
         composite_source_labels=payload.composite_source_labels,
         fixed_options=payload.fixed_options,
+        dropdown_style=payload.dropdown_style,
         display_document_id=payload.display_document_id,
         standalone_group_heading=payload.standalone_group_heading,
         display_label=payload.display_label,
+        validation_pattern=payload.validation_pattern,
+        validation_uppercase=payload.validation_uppercase,
+        validation_message=payload.validation_message,
     )
     db.add(cf)
     db.commit()
@@ -671,7 +704,7 @@ def edit_custom_field(
     whatever label they were extracted under, so history is untouched. Jobs extracted from now
     on carry the new label.
     """
-    from app.models.custom_field import CUSTOM_FIELD_KINDS, CustomField
+    from app.models.custom_field import CUSTOM_FIELD_KINDS, DROPDOWN_STYLES, CustomField
     from app.schemas.onboarding import CustomFieldOut
 
     cf = db.get(CustomField, field_id)
@@ -688,6 +721,14 @@ def edit_custom_field(
             detail=(f"{updates['kind']!r} is not a kind of field. Use one of: "
                     + ", ".join(sorted(CUSTOM_FIELD_KINDS))),
         )
+    if updates.get("dropdown_style") is not None and updates["dropdown_style"] not in DROPDOWN_STYLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"{updates['dropdown_style']!r} is not a dropdown style. Use one of: "
+                    + ", ".join(DROPDOWN_STYLES)),
+        )
+    if "validation_pattern" in updates:
+        _check_validation_pattern(updates["validation_pattern"])
     # A lookup reads from the customer's reference sheet, so it has no fixed value of its own -
     # leaving a stale one behind would have it typed into the ERP whenever the sheet has no
     # answer for a line, which is exactly the guess this is meant to avoid.
@@ -698,7 +739,7 @@ def edit_custom_field(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Label cannot be empty")
         updates["label_name"] = updates["label_name"].strip()
     # NOT NULL columns: an explicit null means "off", never a failed commit.
-    for flag in ("ask_operator", "ask_operator_required", "hidden_from_capture"):
+    for flag in ("ask_operator", "ask_operator_required", "hidden_from_capture", "validation_uppercase"):
         if flag in updates and updates[flag] is None:
             updates[flag] = flag == "ask_operator_required"
     if "source_document_ids" in updates and updates["source_document_ids"] is None:

@@ -78,6 +78,24 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # higher-priority source on top of those, not a replacement for them.
     display_label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Admin-settable format check, purely client-side (same enforcement point the earlier
+    # hand-coded checks already used - ExtractedField's onBeforeSave, and the document-approval
+    # gate's own invalidFormat check - nothing new is enforced server-side). A regex BODY, not
+    # anchored - the frontend always tests it as `^(?:pattern)$` against the trimmed value, so
+    # an admin typing "[A-Za-z]{3}" (not "^[A-Za-z]{3}$") still gets a whole-value match. None
+    # (every field before this existed, and the hand-coded TOI/CustomsHouseCode/Shipment
+    # Country Code checks already in JobRunPage.tsx) means no format restriction from this
+    # mechanism - those three keep working exactly as they do today until someone moves them
+    # over to this column too.
+    validation_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Auto-convert to UPPERCASE on save, independent of validation_pattern (a field can have
+    # one, both, or neither) - same idea as Shipment Country Code's own existing hand-coded
+    # uppercase-on-save.
+    validation_uppercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Shown when validation_pattern fails. None = a generic auto-worded message naming the
+    # field.
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # This mark is extracted normally, then its OWN raw value is looked up in a reference
     # table keyed on itself (see CustomFieldReferenceValue.mark_id) - a match replaces the
     # extraction with the table's stored value, no match returns empty rather than the raw

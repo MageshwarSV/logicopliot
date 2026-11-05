@@ -39,6 +39,13 @@ export interface Mark {
    *  once by an admin rather than a frontend code change. null = falls back to whatever
    *  JobRunPage.tsx's own hardcoded label-override maps already show. */
   display_label?: string | null;
+  /** Admin-settable format check, tested as `^(?:pattern)$` against the trimmed value -
+   *  purely client-side. null = no restriction. */
+  validation_pattern?: string | null;
+  /** Auto-convert to UPPERCASE on save, independent of validation_pattern. */
+  validation_uppercase?: boolean;
+  /** Shown when validation_pattern fails. null = a generic auto-worded message. */
+  validation_message?: string | null;
   /** The extracted value is looked up in its own reference table (keyed on itself); a
    *  match replaces it, no match returns empty. */
   is_target_value?: boolean;
@@ -138,6 +145,9 @@ export interface CustomField {
   /** A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
    *  exactly these choices instead of a free-text box. null = free text. */
   fixed_options?: string[] | null;
+  /** fixed_options only: null/"plain" = plain closed select; "search" = searchable, still
+   *  pick-only; "search_free" = searchable, but a typed value not in the list still saves. */
+  dropdown_style?: "plain" | "search" | "search_free" | null;
   /** Which document's own tab this field is grouped under on the Job Run capture screen,
    *  instead of Additional Details. null = Additional Details. */
   display_document_id?: string | null;
@@ -146,6 +156,10 @@ export interface CustomField {
   standalone_group_heading?: string | null;
   /** What the operator sees instead of label_name - mirrors Mark.display_label. */
   display_label?: string | null;
+  /** Mirrors Mark.validation_pattern/validation_uppercase/validation_message. */
+  validation_pattern?: string | null;
+  validation_uppercase?: boolean;
+  validation_message?: string | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

@@ -181,6 +181,13 @@ export interface JobFieldValue {
   /** What the operator sees instead of label_name, set by an admin - checked ahead of
    *  JobRunPage.tsx's own hardcoded label-override maps. null/blank falls back to those. */
   display_label?: string | null;
+  /** Admin-settable format check, tested as `^(?:pattern)$` against the trimmed value -
+   *  purely client-side, nothing enforced server-side. null = no restriction. */
+  validation_pattern?: string | null;
+  /** Auto-convert to UPPERCASE on save, independent of validation_pattern. */
+  validation_uppercase?: boolean;
+  /** Shown when validation_pattern fails. null = a generic auto-worded message. */
+  validation_message?: string | null;
   /** This value is never shown on the job screen (product card or Dump Data) - it is still
    *  computed and written on every row exactly as normal, purely for something else to read
    *  later (e.g. an ERP script's own field mapping). See CustomField.hidden_from_capture. */
@@ -188,6 +195,10 @@ export interface JobFieldValue {
   /** A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
    *  exactly these choices instead of a free-text box. null = free text. */
   fixed_options?: string[] | null;
+  /** How fixed_options renders: null/"plain" = a plain closed <select>; "search" = a
+   *  searchable combobox, still pick-only; "search_free" = the same searchable combobox, but
+   *  typing a value not in the list still saves it. Set once in the Wizard's Custom Tag modal. */
+  dropdown_style?: "plain" | "search" | "search_free" | null;
   /** Which document's own tab this field is grouped under instead of Additional Details.
    *  null = Additional Details. */
   display_document_id?: string | null;
