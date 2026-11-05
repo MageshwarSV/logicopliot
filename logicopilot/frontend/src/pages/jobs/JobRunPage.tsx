@@ -4888,6 +4888,11 @@ function ExtractedField({
       // from a line somebody deliberately set to something else.
       const previous = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
       await jobsApi.correctFieldValue(fv.id, transformed);
+      // The box otherwise kept showing exactly what was typed (e.g. "fob") until a full
+      // reload re-synced it from the server - transformBeforeSave's own upper-cased value
+      // (e.g. "FOB") is what was actually saved, so show that immediately rather than make
+      // the operator refresh the page to see it.
+      if (transformed !== value) setDraft(transformed);
       if (carryToAllRows && !soloEdit) {
         // Does its own reload at the end, covering this row too.
         await carryToAllRows(transformed, previous);
