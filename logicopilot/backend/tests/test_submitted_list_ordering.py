@@ -106,3 +106,41 @@ def test_new_jobs_is_still_ordered_by_arrival(client, db_session):
 
     r = client.get("/api/v1/jobs?category=new")
     assert _refs(r) == ["ARRIVED-LATE", "ARRIVED-EARLY"]
+
+
+def test_todays_erp_submitted_count_includes_a_job_that_arrived_yesterday(client, db_session):
+    """ERP Submitted and ERP Verified are windowed on WHEN THEY WENT TO THE ERP.
+
+    A job uploaded yesterday and submitted this afternoon belongs in today's ERP Submitted -
+    it is exactly the row an operator opens that screen to find. Counted on arrival, it was
+    missing from today's number while the list beneath it (filtered on the submission stamp)
+    showed it, so the sidebar and the rows disagreed.
+
+    New Jobs is untouched: that screen answers "what came in", so arrival is its date.
+    """
+    from datetime import date
+
+    tenant, group = _setup(client, db_session)
+    today = datetime.now(timezone.utc)
+    yesterday = today - timedelta(days=1)
+    _job(db_session, tenant, group, ref="ARRIVED-YESTERDAY-SENT-TODAY",
+         created=yesterday, completed=today)
+
+    day = date.today().isoformat()
+    r = client.get(f"/api/v1/jobs/category-counts?date_from={day}&date_to={day}")
+    assert r.status_code == 200, r.text
+    assert r.json()["submitted"] == 1
+
+
+def test_a_job_submitted_yesterday_is_not_in_todays_count(client, db_session):
+    """The other half - the window still has to exclude things."""
+    from datetime import date
+
+    tenant, group = _setup(client, db_session)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    _job(db_session, tenant, group, ref="SENT-YESTERDAY",
+         created=yesterday, completed=yesterday)
+
+    day = date.today().isoformat()
+    r = client.get(f"/api/v1/jobs/category-counts?date_from={day}&date_to={day}")
+    assert r.json()["submitted"] == 0
