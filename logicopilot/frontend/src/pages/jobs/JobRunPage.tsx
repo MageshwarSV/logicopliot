@@ -6598,7 +6598,30 @@ function ExtractionReview({
         }
         byHeading.get(heading)!.push(fv);
       }
-      const sections = order.map((heading) => ({ heading, items: byHeading.get(heading)! }));
+      // A heading that happens to match one of the old hardcoded sections (the backfill that
+      // moved every existing template onto this mechanism copied those headings verbatim) keeps
+      // reading in that section's own curated order - both which section comes first, and which
+      // field comes first within it - instead of whatever order the fields happen to be stored
+      // in. A genuinely new heading an admin makes up later (matching nothing hardcoded) has no
+      // such precedent to follow, so it falls back to natural/first-seen order - a reasonable
+      // default until reordering is itself something the Wizard offers.
+      const hardcodedGroups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type] ?? [];
+      const headingRank = new Map(hardcodedGroups.map((g, i) => [g.heading, i]));
+      const labelRankByHeading = new Map(
+        hardcodedGroups.map((g) => [g.heading, new Map(g.labels.map((l, i) => [l, i]))]),
+      );
+      order.sort((a, b) => (headingRank.get(a) ?? Infinity) - (headingRank.get(b) ?? Infinity));
+      const sections = order.map((heading) => {
+        const items = byHeading.get(heading)!;
+        const labelRank = labelRankByHeading.get(heading);
+        if (labelRank) {
+          items.sort(
+            (a, b) =>
+              (labelRank.get(a.label_name) ?? Infinity) - (labelRank.get(b.label_name) ?? Infinity),
+          );
+        }
+        return { heading, items };
+      });
       if (other.length) sections.push({ heading: "Other", items: other });
       return sections;
     }
