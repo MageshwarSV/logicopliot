@@ -58,6 +58,10 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
     }
     return null;
   }, [lineRows]);
+  // How many products are actually on this document - shown so the operator knows the total
+  // before picking a range (e.g. whether "1-10, 11-20" already covers everything, or there is
+  // a 21st product still left out).
+  const totalProducts = lineRows.length;
 
   function reset() {
     setMode("choice");
@@ -79,7 +83,17 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
     setRanges((arr) => (arr.length > 1 ? arr.filter((r) => r.id !== id) : arr));
   }
   function addRange() {
-    setRanges((arr) => [...arr, newRangeRow()]);
+    setRanges((arr) => {
+      // Picks up right where the LAST row's own To Count left off - e.g. a row already
+      // reading 1-10 gets a fresh row starting at 11, instead of an empty box the operator
+      // has to work out and retype by hand every time. Only when that last row actually has
+      // a valid To Count of its own; a wholly blank or non-numeric last row leaves the new
+      // row's From Count blank too, same as before.
+      const last = arr[arr.length - 1];
+      const lastTo = last ? Number(last.to) : NaN;
+      const nextFrom = last && last.to.trim() !== "" && Number.isFinite(lastTo) ? String(lastTo + 1) : "";
+      return [...arr, { ...newRangeRow(), from: nextFrom }];
+    });
   }
 
   async function runApply(updates: { id: string; value: string }[], summary: string) {
@@ -195,6 +209,9 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
             this document's product lines.
           </p>
         )}
+        <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+          Job Product Detail · {totalProducts} product{totalProducts === 1 ? "" : "s"}
+        </p>
         {error && <Alert>{error}</Alert>}
         {successMsg && (
           <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
