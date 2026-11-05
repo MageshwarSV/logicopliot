@@ -5643,6 +5643,11 @@ function DualSourcePicker({
         }
         await reload();
       }
+      // Hand the tick back to the stored values now the write has been and gone. The optimistic
+      // one exists only to cover the round trip; left standing afterwards it reports a choice
+      // the database may not have taken, which is exactly how an empty pick looked like it had
+      // worked. If the write landed, the derivation agrees and nothing moves.
+      setPickedOverride(undefined);
     } finally {
       setSaving(false);
     }
@@ -5769,7 +5774,13 @@ function DualSourcePicker({
           <input
             type="checkbox"
             checked={selected === "other"}
-            disabled={readOnly || saving}
+            // An empty box is not a candidate. Ticking one used to LOOK like it worked - the
+            // tick moved, because it moves optimistically - while the save skipped the line
+            // and nothing was written, on this product or any other. Reported as "I pressed
+            // document CTH and it changed only this one, and the other product is still the
+            // dump". Nothing had changed anywhere; only the tick had moved.
+            disabled={readOnly || saving || !otherValue}
+            title={!otherValue ? "Nothing read on this side for this line - there is no code here to choose" : undefined}
             onChange={() => void choose("other")}
           />
           <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
@@ -5792,7 +5803,8 @@ function DualSourcePicker({
           <input
             type="checkbox"
             checked={selected === "primary"}
-            disabled={readOnly || saving}
+            disabled={readOnly || saving || !primaryDraft}
+            title={!primaryDraft ? "Nothing read on this side for this line - there is no code here to choose" : undefined}
             onChange={() => void choose("primary")}
           />
           <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
