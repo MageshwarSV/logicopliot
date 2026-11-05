@@ -405,6 +405,15 @@ function customsHouseCodeFormatError(raw: string): string | null {
     ? null
     : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
 }
+// Terms of Invoice: exactly 3 letters ("FOB", "CIF") - by request. Lowercase is accepted and
+// upper-cased on save (transformBeforeSave below), same as Shipment Country Code/Customs House
+// Code; only the LENGTH and letters-only shape are enforced here, not which 3 letters.
+const TOI_FORMAT_FIELD_LABELS = new Set(["TOI"]);
+function toiFormatError(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
+  return /^[A-Za-z]{3}$/.test(v) ? null : "Terms of Invoice must be exactly 3 letters (e.g. FOB, CIF).";
+}
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
 // shipment's paperwork rather than in whatever order marks happen to be stored. Keyed by
@@ -6117,7 +6126,8 @@ function ExtractionReview({
         (fv) =>
           (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
           (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
-            customsHouseCodeFormatError(fv.value ?? "") !== null),
+            customsHouseCodeFormatError(fv.value ?? "") !== null) ||
+          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6939,11 +6949,21 @@ function ExtractionReview({
                                 }
                                 return true;
                               }
+                            : TOI_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? async (value: string) => {
+                                const err = toiFormatError(value);
+                                if (err) {
+                                  window.alert(err);
+                                  return false;
+                                }
+                                return true;
+                              }
                             : undefined
                         }
                         transformBeforeSave={
                           COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
-                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
+                          TOI_FORMAT_FIELD_LABELS.has(fv.label_name)
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
