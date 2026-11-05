@@ -6148,12 +6148,30 @@ function ExtractionReview({
       // a reference-sheet lookup (CTH) already has its own, job-wide gate on the Dump Data /
       // extraction stage; hidden_from_capture excluded - that field renders nowhere on this
       // screen, so blocking on it would ask for something there is no box to type into.
+      // ...EXCEPT the answer field of a picker pairing, which is mandatory like any other box.
+      //
+      // "CTH" is self_filled (kind="lookup"), so the exclusion above swallowed it and a
+      // document could be approved with that box reading "not found" while every other
+      // mandatory field on the line was enforced. Reported from the floor exactly that way:
+      // "all mandatory field is working except the cth field".
+      //
+      // Only the ANSWER, never the candidates. The measurements say why: of 240 "Dump CTH
+      // Number" rows on this box, 215 are empty - the customer's sheet genuinely has no row
+      // for most of these parts - so requiring the candidates too would block almost every
+      // document on something no operator can supply. The candidates are evidence and may be
+      // empty; the answer is the declaration and may not. Same rule the backend's own submit
+      // gate uses for a sync target.
+      const answerFieldIds = new Set<string>();
+      for (const fv of job.field_values) {
+        for (const id of fv.sync_field_ids ?? []) answerFieldIds.add(id);
+      }
       const productRows = job.field_values.filter(
         (fv) =>
           fv.row_index != null &&
           fv.job_document_id === active.id &&
           !fv.standalone_multi_value &&
-          fv.self_filled !== true &&
+          (fv.self_filled !== true ||
+            (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
           !fv.hidden_from_capture,
       );
       const missingProductFields = productRows.filter(
