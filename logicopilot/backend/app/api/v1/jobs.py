@@ -8978,10 +8978,6 @@ def carry_across_rows(
             other = by_cf.get(cf.paired_custom_field_id) if cf.paired_custom_field_id else None
             other_val = ((other.corrected_value if other else None)
                          or (other.extracted_value if other else None) or "").strip()
-            # Nothing to pick between on this line - leave it exactly as it is rather than
-            # blanking it out on the strength of a choice made somewhere else.
-            if other is None or not other_val:
-                continue
             # primary's OWN answer, not whatever an earlier pick wrote over it. For a
             # lookup field extracted_value IS the sheet's answer, and picking the other
             # side overwrites only corrected_value - so reading extracted FIRST is what
@@ -8993,6 +8989,20 @@ def carry_across_rows(
             # "restoring" an empty extraction over it would throw that answer away.
             primary_val = (primary.extracted_value or primary.corrected_value or "").strip()
             value = primary_val if payload.which == "primary" else other_val
+            # Nothing on the side they PICKED, on this line - leave the line exactly as it is
+            # rather than blanking it out on the strength of a choice made somewhere else.
+            #
+            # This used to test the OTHER side instead, which is wrong twice over. Ticking
+            # "Dump CTH Number" on a job whose document side is blank - and it is blank on
+            # every line of a job whose invoice simply does not print a code - skipped every
+            # row and wrote nothing at all. The operator ticked the box, the tick appeared, and
+            # the CTH stayed empty. Reported as "I have given the tick mark but the value is
+            # not taken in the box".
+            #
+            # The carry-across protection it was reaching for is unchanged, and now says what
+            # it means: a line with nothing on the chosen side keeps what it has.
+            if not value:
+                continue
             # A tick says WHICH candidate is right, and that is all it says. It does not move
             # the candidate: the dump box keeps the customer's master code and the document box
             # keeps what the supplier printed, so the two stay there to be compared on every

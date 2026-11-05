@@ -183,3 +183,48 @@ def test_ticking_a_box_is_enough_to_clear_that_requirement(client, db_session):
     })
     db_session.expire_all()
     assert _unanswered_operator_fields(db_session, job) == []
+
+
+def test_ticking_the_dump_works_when_the_document_side_is_blank(client, db_session):
+    """The invoice simply does not print a code - which is most Foxconn invoices.
+
+    The guard here used to test the OTHER side: "nothing to pick between on this line, leave
+    it alone". So on a job whose Document CTH is blank on every line, ticking "Dump CTH Number"
+    skipped every row and wrote nothing. The tick appeared and the CTH stayed empty - reported
+    as "I have given the tick mark but the value is not taken in the box".
+
+    What matters is whether the side they PICKED has something, not the other one.
+    """
+    job, fvs = _setup(client, db_session, lines=2)
+    for n in (1, 2):
+        fvs[("Document CTH", n)].extracted_value = ""
+    db_session.commit()
+
+    r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": fvs[("Dump CTH Number", 1)].custom_field_id,
+        "mode": "pick", "which": "primary",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["rows_written"] == 2
+    db_session.expire_all()
+    assert _value(db_session, fvs[("CTH", 1)]) == "10000001"
+    assert _value(db_session, fvs[("CTH", 2)]) == "10000002"
+
+
+def test_a_line_with_nothing_on_the_chosen_side_is_still_left_alone(client, db_session):
+    """The protection the old guard was reaching for, stated correctly. Line 2's document is
+    blank, so picking Document must leave line 2 as it was rather than emptying it on the
+    strength of a choice made on line 1."""
+    job, fvs = _setup(client, db_session, lines=2)
+    fvs[("CTH", 2)].extracted_value = "77777777"
+    fvs[("Document CTH", 2)].extracted_value = ""
+    db_session.commit()
+
+    r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": fvs[("Dump CTH Number", 1)].custom_field_id,
+        "mode": "pick", "which": "other",
+    })
+    assert r.json()["rows_written"] == 1
+    db_session.expire_all()
+    assert _value(db_session, fvs[("CTH", 1)]) == "20000001"
+    assert _value(db_session, fvs[("CTH", 2)]) == "77777777"
