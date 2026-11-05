@@ -11,6 +11,7 @@ import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
 import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
+import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
 import { useAuth } from "../../auth/useAuth";
 import type { JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
 
@@ -203,16 +204,22 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
     { value: "P", label: "Prior" },
     { value: "N", label: "Normal" },
   ],
+  // The real ICEGATE BE Type codes - single capital letters, exactly as the reference sheet
+  // the user supplied lists them. The PREVIOUS list here was wrong: multi-character made-up
+  // codes ("SEZ-Z", "SEZ-M", ...) and an "I"/"In-Bond" option that isn't one of the real eight
+  // at all, with "W" (Warehouse) missing entirely - any job that picked anything but H or X
+  // would have saved an invalid BE Type for customs filing. The stored VALUE is the bare
+  // letter (what the Excel export's GENERAL!C/BETypeCode column needs); the LABEL is the
+  // descriptive text so the operator can actually tell the options apart.
   BETypeCode: [
-    { value: "H", label: "Home" },
-    { value: "I", label: "In-Bond" },
-    { value: "X", label: "Ex-Bond" },
-    { value: "SEZ-Z", label: "SEZ-Z | SEZ Bill of Entry" },
-    { value: "SEZ-M", label: "SEZ-M | DTA Sales-Manufacturing" },
-    { value: "SEZ-T", label: "SEZ-T | DTA Sales-Trading" },
-    { value: "SEZ-V", label: "SEZ-V | Movement of Goods" },
-    { value: "SEZ-S", label: "SEZ-S | DTA Clearance of Goods" },
-    { value: "SEZ-W", label: "SEZ-W | SEZ to Customs Bonded Warehouse" },
+    { value: "H", label: "H - Home Consumption" },
+    { value: "W", label: "W - Ware House" },
+    { value: "X", label: "X - Ex-bond BE" },
+    { value: "Z", label: "Z - SEZ BE (FTA - SEZ)" },
+    { value: "T", label: "T - SEZ (DTA Sales - Trading)" },
+    { value: "M", label: "M - SEZ (DTA Sales - Manufacturing)" },
+    { value: "V", label: "V - SEZ Goods Movement (Manufacturing Goods)" },
+    { value: "S", label: "S - SEZ (DTA Sales - Stock Clearance of BEs filed prior to ICES implementation)" },
   ],
   // ISO 6346 size/type codes - the same closed list app.core.llm's classify_container_type_code
   // constrains its own AI fallback to, so a wrong read is always pickable from here instead of
@@ -253,29 +260,29 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // only the dropdown's own option list is narrowed by just the first key, so the operator can
 // still correct the mode by picking the other code for the same city.
 const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
-  CustomsHouseCode: "port_of_entry",
-  // Same shape as CustomsHouseCode: a forwarder's own branch list only ever matters once you
-  // know WHICH forwarder (ERP Quotation Name / Erp Entry Name) - AIT's own branches, not
-  // Kuehne+Nagel's. Reference table seeded from the Super Admin's own "Billing customers"
-  // sheet (Organization -> branch code, one row per branch).
+  // A forwarder's own branch list only ever matters once you know WHICH forwarder (ERP
+  // Quotation Name / Erp Entry Name) - AIT's own branches, not Kuehne+Nagel's. Reference table
+  // seeded from the Super Admin's own "Billing customers" sheet (Organization -> branch code,
+  // one row per branch).
   branch_name: "Erp Entry Name",
 };
 // Of the fields above, these offer EVERY row their reference table holds instead of only the
 // rows matching the filter field's current value. The entry above is still what makes their
-// options get fetched at all - only the NARROWING is skipped.
-//
-// CustomsHouseCode by request. Its whole table is 21 rows (18 distinct codes), so there is no
-// readability argument for cutting it down, and narrowing to the port_of_entry read off the
-// document hid every other code - including the two cases that actually matter: the entry is
-// filed under a different customs house than the port on the paperwork, and nothing was read
-// at all, which left the dropdown completely empty with no way to pick anything.
-const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set(["CustomsHouseCode"]);
+// options get fetched at all - only the NARROWING is skipped. Empty for now (CustomsHouseCode
+// used to be the one entry here, before it moved to COMBOBOX_REFERENCE_FIELD_LABELS below,
+// whose own box is never narrowed in the first place) - kept around for whichever FILTER_BY
+// field needs this treatment next.
+const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set<string>([]);
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
 // brand-new typed value - unlike that one, this never replaces free text with a closed
 // <select>: the operator can pick a known name or type one that's not there yet, and either
 // way the save path (correct_field_value) remembers it so it shows up next time too.
-const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage"]);
+//
+// CustomsHouseCode moved here by request: it used to render as a forced <select> PLUS a
+// separate "search the full list" box underneath it (SEARCHABLE_REFERENCE_FIELD_LABELS) - two
+// stacked controls for one field. One typeable, searchable box replaces both.
+const COMBOBOX_REFERENCE_FIELD_LABELS = new Set(["Erp Entry Name", "insurance_percentage", "CustomsHouseCode"]);
 // "ERP Quotation Address" - 4S Logistics only, UI-only (no JobFieldValue, no export mapping,
 // no ERP script reads it - see check_jfv_exists.py). A read-only wide box shown right after
 // "ERP Quotation Branch" in the "ERP Reference Mapping" card, resolved two-key (ERP Quotation
@@ -324,7 +331,7 @@ const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
 // treatment. Its paired branch field ("ERP Importer Address / Branch Code") is NOT listed
 // here: it is narrowed to one consignee's own branches instead (see consigneeBranchOptions
 // below), which a flat, ungated search box can't do.
-const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name", "CustomsHouseCode"]);
+const SEARCHABLE_REFERENCE_FIELD_LABELS = new Set(["Shipment Port Code", "ERP Consignee Name"]);
 // Picking a row in one of those searches also ANSWERS other fields, straight off the same row.
 // A world-port row is (country, place, code) - so choosing "CHINA SHEKOU(CNSHK)" has already
 // told us the country and the city, and making the operator retype both from the same document
@@ -359,7 +366,6 @@ const FULL_WIDTH_FIELD_LABELS = new Set([
 const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
   "ERP Consignee Name": "Search by consignee to find or correct the match…",
-  CustomsHouseCode: "Search the full list to find or correct the code…",
 };
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
@@ -371,6 +377,16 @@ function countryCodeFormatError(raw: string): string | null {
   return /^[A-Za-z]{2,3}$/.test(v)
     ? null
     : "Shipment Country Code must be 2-3 letters only (e.g. IN, IND) - no numbers, symbols, or longer codes.";
+}
+// CustomsHouseCode: 5 letters then 1 digit ("INKAT1") - the standard Indian customs house
+// code shape. Format-only, same reasoning as Shipment Country Code above.
+const CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS = new Set(["CustomsHouseCode"]);
+function customsHouseCodeFormatError(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
+  return /^[A-Za-z]{5}[0-9]$/.test(v)
+    ? null
+    : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
 }
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
@@ -3610,8 +3626,10 @@ export function JobRunPage() {
               </Card>
 
               {groupedAdditionalDetailsFields.map(({ heading, items }) => {
-                // Bill of Entry Type defaults to Advance (pre-selected, not auto-saved - see
-                // ExtractedField's own defaultValue prop). When Advance is in effect - either
+                // Bill of Entry Type defaults to Advance, and BE Type to Home (H) - both
+                // pre-selected, not auto-saved (see ExtractedField's own defaultValue prop), by
+                // request: Home is overwhelmingly the common case, so the operator corrects the
+                // rare job instead of picking it every time. When Advance is in effect - either
                 // already saved, or still just this default - there is no Master Bill of
                 // Lading yet either, so MBL No defaults to "NO MBL" instead of a blank box.
                 const advanceFv = job.field_values.find(
@@ -3649,9 +3667,11 @@ export function JobRunPage() {
                         const defaultValue =
                           fv.label_name === "AdvancePriorNormal"
                             ? "A"
-                            : fv.label_name === "MBL No" && advanceValue === "A"
-                              ? "NO MBL"
-                              : undefined;
+                            : fv.label_name === "BETypeCode"
+                              ? "H"
+                              : fv.label_name === "MBL No" && advanceValue === "A"
+                                ? "NO MBL"
+                                : undefined;
                         const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
                         let comboOptions: string[] | undefined;
                         if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
@@ -4647,6 +4667,9 @@ function ExtractedField({
   onBeforeSave,
   onDraftChange,
   transformBeforeSave,
+  neverEdited,
+  digitsOnly,
+  carryToAllRows,
   id,
 }: {
   fv: JobFieldValue;
@@ -4719,6 +4742,26 @@ function ExtractedField({
     country?: string;
     onPick: (value: string) => Promise<void>;
   };
+  /** Never show the "edited" badge, however the value got there. For a field whose value is
+   *  WRITTEN BY SOMETHING ELSE on the same card - the CTH and RITC No. that a Dump/Document
+   *  pick fills in - every single value is a "correction" in the database sense, so the badge
+   *  lit up permanently on a field the operator had never typed into. Same reasoning as the
+   *  origin "fixed" exemption just below, which it sits alongside rather than replaces. */
+  neverEdited?: boolean;
+  /** Carries a typed value to every OTHER product line, and draws its own "only this line"
+   *  escape hatch next to the label. An invoice's lines are usually all the same commodity,
+   *  so the CTH is usually the same eight digits on every one of them, and typing it a
+   *  hundred and forty-four times is a hundred and forty-four chances to fat-finger a customs
+   *  code. `previous` is what this box held BEFORE the edit, which is what lets the carry
+   *  skip a line somebody has already given a different code of its own (see
+   *  applyCthValueToAllRows). Undefined on every field that is not a per-line code. */
+  carryToAllRows?: (value: string, previous: string) => Promise<void>;
+  /** Digits only, exactly this many of them. A CTH is eight digits - not "up to eight", so a
+   *  shorter one is an UNFINISHED code rather than a different one, and is kept in the box
+   *  without being saved until it is whole. Filtered on the way IN as well, because a paste
+   *  out of a spreadsheet routinely carries "8482 4000 90" or "8482400090.0" and keeping just
+   *  the digits is what the operator meant every time. */
+  digitsOnly?: number;
   /** Runs before a save reaches the server - resolve false to cancel the save outright (the
    *  draft stays as typed, nothing is sent). Insurance Rate (%) uses this to require an
    *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
@@ -4797,6 +4840,13 @@ function ExtractedField({
 
   const dirty = draft !== current;
 
+  // "Only this line": the escape hatch from the carry-across, and the same idea the
+  // Dump/Document picker above this field carries. Carrying a typed code to every line is
+  // right for the common invoice, where every line is the same commodity; it is wrong for
+  // the one line that differs. Resets whenever the card is re-rendered, because it describes
+  // one edit rather than a setting.
+  const [soloEdit, setSoloEdit] = useState(false);
+
   const saveValue = async (value: string) => {
     if (readOnly) return;
     const transformed = transformBeforeSave ? transformBeforeSave(value) : value;
@@ -4807,8 +4857,17 @@ function ExtractedField({
     setSaving(true);
     setFailed(false);
     try {
+      // Read BEFORE the write: once correctFieldValue lands, this box's own old value is
+      // gone, and it is the only way to tell a line that was merely following this one along
+      // from a line somebody deliberately set to something else.
+      const previous = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
       await jobsApi.correctFieldValue(fv.id, transformed);
-      await reload();
+      if (carryToAllRows && !soloEdit) {
+        // Does its own reload at the end, covering this row too.
+        await carryToAllRows(transformed, previous);
+      } else {
+        await reload();
+      }
     } catch {
       setFailed(true);
     } finally {
@@ -4818,6 +4877,11 @@ function ExtractedField({
 
   const commit = async () => {
     if (!dirty || readOnly) return;
+    // An incomplete tariff heading is not a different code, it is an unfinished one - and one
+    // of those reached five product lines on JOB-3151A3 before anybody noticed. The box keeps
+    // what was typed so the operator can finish it; nothing goes to the database until it is
+    // whole. Clearing the box entirely is still allowed.
+    if (digitsOnly && draft !== "" && draft.length !== digitsOnly) return;
     await saveValue(draft);
   };
 
@@ -4845,7 +4909,8 @@ function ExtractedField({
   // Every other field is untouched - a document mark the operator really did correct still
   // shows the badge, and so does an AI or lookup field (origin "computed"/"reference").
   const corrected =
-    fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
+    !neverEdited
+    && fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
   return (
     <div id={id} className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
@@ -4872,15 +4937,45 @@ function ExtractedField({
         {failed && (
           <span className="shrink-0 text-[10px] text-rose-600">could not save</span>
         )}
+        {/* Pushed to the right, so it sits where the picker's own "only this line" sits and
+            reads as the same control rather than a second, different one. */}
+        {carryToAllRows && !readOnly && (
+          <button
+            type="button"
+            onClick={() => setSoloEdit((v) => !v)}
+            title={
+              soloEdit
+                ? "This line only \u2014 every other product keeps its own code"
+                : "Normally, typing here fills every product. Press to change just this one."
+            }
+            className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              soloEdit
+                ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            }`}
+          >
+            {soloEdit ? "\u270e only this line" : "only this line"}
+          </button>
+        )}
       </div>
       <div
         className="relative"
-        // Closes the combo dropdown only once focus leaves this WHOLE box - the main input,
-        // the panel's own search box, and every suggestion button all live inside this div, so
-        // moving focus between them (e.g. clicking into the search box) never closes it early.
+        // Commits/closes the combo dropdown only once focus leaves this WHOLE box - the main
+        // input, the panel's own search box, and every suggestion button all live inside this
+        // div, so moving focus between them (e.g. the search box's own autoFocus stealing focus
+        // the instant the panel opens) never counts as leaving the field. Found live: a combo
+        // field that had failed its own format validation (CustomsHouseCode) re-ran that
+        // validation - and re-showed the alert - the moment the operator clicked back in to
+        // keep typing, because the search box's autoFocus blurred the main input before a single
+        // new character landed, and blur used to commit unconditionally on the input itself.
         onBlur={(e) => {
-          if (comboOptions && !e.currentTarget.contains(e.relatedTarget as Node)) {
-            setComboOpen(false);
+          if (!comboOptions || e.currentTarget.contains(e.relatedTarget as Node)) return;
+          setComboOpen(false);
+          if (comboPickOnly) {
+            setDraft(current);
+            onDraftChange?.(current);
+          } else {
+            void commit();
           }
         }}
       >
@@ -5032,9 +5127,14 @@ function ExtractedField({
             <input
               value={draft}
               readOnly={readOnly}
+              inputMode={digitsOnly ? "numeric" : undefined}
+              maxLength={digitsOnly ?? undefined}
               onChange={(e) => {
-                setDraft(e.target.value);
-                onDraftChange?.(e.target.value);
+                const next = digitsOnly
+                  ? e.target.value.replace(/\D/g, "").slice(0, digitsOnly)
+                  : e.target.value;
+                setDraft(next);
+                onDraftChange?.(next);
               }}
               onFocus={() => {
                 onFocusField?.(fv);
@@ -5043,17 +5143,14 @@ function ExtractedField({
                   setComboOpen(true);
                 }
               }}
-              // Blur still saves, as a safety net for anyone who types and tabs away - closing
-              // the combo dropdown itself is handled by the wrapping div above, not here, so a
-              // click into the panel's own search box (below) doesn't count as leaving the box.
-              // comboPickOnly fields are the exception: only a clicked result ever saves (see
-              // the button below), so typed-and-unpicked text just reverts instead of saving.
+              // Blur still saves, as a safety net for anyone who types and tabs away. For a
+              // comboOptions field, commit/revert is handled by the WRAPPING div's own onBlur
+              // instead (see its comment) - this input's own blur fires the instant the combo
+              // panel's search box steals focus via its autoFocus, which is not really leaving
+              // the field, so this must not commit here or it re-validates/re-saves on every
+              // click back into an already-failed field before a new keystroke ever lands.
               onBlur={() => {
-                if (comboOptions && comboPickOnly) {
-                  setDraft(current);
-                  onDraftChange?.(current);
-                  return;
-                }
+                if (comboOptions) return;
                 void commit();
               }}
               onKeyDown={(e) => {
@@ -5358,6 +5455,20 @@ function InsuranceModeField({
  *  eight, which is why a shorter one is flagged rather than accepted as a different code. */
 const CTH_LENGTH = 8;
 
+/** How many product cards are built at once.
+ *
+ * Each card carries roughly twenty-three editable boxes, so a 144-line invoice is about
+ * 3,300 of them - and the screen stayed on "Loading…" while every one was built, before any
+ * of it could be painted. Nothing was broken and nothing errored; the page was simply doing
+ * a few seconds of work with nothing to show for it. Small jobs were always fine, which is
+ * exactly the shape of a volume problem rather than a bug.
+ *
+ * Twenty-five appears almost at once, and the rest arrive a press at a time. Deliberately
+ * NOT virtualised scrolling: a half-filled CTH box that unmounts when it scrolls out of view
+ * takes its unsaved draft with it, and these boxes are how a customs code gets typed. Cards
+ * already built stay built. */
+const PRODUCTS_PER_PAGE = 25;
+
 function DualSourcePicker({
   primary,
   other,
@@ -5381,7 +5492,8 @@ function DualSourcePicker({
    *  custom_field_id of its own (should not happen for a real pairing). */
   applyToAllRows?: (which: "primary" | "other") => Promise<void>;
   /** CTH layout only: carries a typed value to every other product line that has not been
-   *  given its own (see commitCth). `previous` is what this box held before the edit, which
+   *  given its own (see commitPrimary). `previous` is what this box held before the edit,
+   *  which
    *  is how a line that merely followed the old value is told apart from one somebody
    *  deliberately set to something different. */
   applyValueToAllRows?: (
@@ -5397,20 +5509,39 @@ function DualSourcePicker({
   }
   const primaryValue = ownPrimaryValueRef.current;
 
-  const [selected, setSelected] = useState<"primary" | "other" | null>(() => {
-    const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-    // primary's OWN raw computed value - UNLIKE primaryValue above, this is never touched by
-    // picking "other" (which only ever overwrites corrected_value, so exports still read the
-    // chosen value under primary's own name). Using primaryValue here was the bug: after
-    // picking "other" once, every later reload re-mounts with primaryValue ALREADY equal to
-    // otherValue (since that pick wrote it there), permanently hiding the choice from then on -
-    // primary.extracted_value survives that write untouched, so it stays a reliable "would
-    // primary and other have coincided anyway, with nothing ever picked" check.
-    const rawPrimaryValue = (primary.extracted_value ?? "").trim();
-    return current === otherValue && otherValue !== "" && rawPrimaryValue !== otherValue
-      ? "other"
-      : "primary";
-  });
+  const currentPrimary = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
+  // What the big CTH box currently holds - the ANSWER, which is the only thing a tick writes.
+  const answerValue = (
+    syncTargets[0]?.corrected_value ?? syncTargets[0]?.extracted_value ?? ""
+  ).trim();
+
+  // WHICH candidate the answer currently matches, read off the values on every render rather
+  // than frozen when the card first mounted.
+  //
+  // This was a useState initialiser, and an initialiser runs exactly once. Picking a side on
+  // one line carries that choice to every other line and reloads - the database was right, and
+  // the other cards even showed the new value - but their tick never moved, because those cards
+  // were already mounted and the initialiser never ran again. "I press the document CTH and the
+  // other products do not select it" was this, not a carry that failed to happen.
+  //
+  // It is read off the ANSWER box and not off the dump box, because a tick no longer writes
+  // into the dump box at all. A code typed straight into the big box matches neither candidate,
+  // and then NEITHER ticks - which is the honest answer: the operator overrode both.
+  const derivedSelected: "primary" | "other" | null =
+    answerValue === ""
+      ? null
+      : answerValue === currentPrimary
+        ? "primary"
+        : answerValue === otherValue
+          ? "other"
+          : null;
+  // An optimistic override, so the tick moves on the click instead of after the round trip.
+  // Cleared the moment the real values change underneath, handing it back to the derivation.
+  const [pickedOverride, setPickedOverride] =
+    useState<"primary" | "other" | null | undefined>(undefined);
+  useEffect(() => setPickedOverride(undefined), [answerValue, currentPrimary, otherValue]);
+  const selected = pickedOverride !== undefined ? pickedOverride : derivedSelected;
+  const setSelected = setPickedOverride;
 
   // Each box is independently editable (not just pickable) - sometimes NEITHER the dump
   // lookup nor the document read is right, and the operator needs to type the real answer in
@@ -5420,6 +5551,26 @@ function DualSourcePicker({
   const [primaryDraft, setPrimaryDraft] = useState(primaryValue);
   const [otherDraft, setOtherDraft] = useState(otherValue);
   useEffect(() => setOtherDraft(otherValue), [otherValue]);
+
+  // The dump box needs no special display handling any more: nothing writes into it except an
+  // operator typing in it, so what it holds IS the customer's master code. The workaround that
+  // used to live here - showing extracted_value because a tick had overwritten the box - went
+  // away with the overwrite.
+
+  // "Only this line": the escape hatch from the carry-across.
+  //
+  // Carrying a pick, or a typed code, to every line is right for the common invoice, where
+  // every line is the same commodity. It is wrong for the one line that differs - and when
+  // all the lines already share a value, changing any one of them would take the other four
+  // with it, since they all look like lines that were merely following along.
+  //
+  // So it is a deliberate, per-line choice rather than a guess. Switched on, this card saves
+  // its own value and touches nothing else; every other line keeps what it has. It resets
+  // when the card is re-rendered from scratch, because it describes one edit, not a setting.
+  //
+  // Declared up here, above the `if (!other)` bail-out further down, because it is a hook:
+  // behind that return it would be a conditional one.
+  const [soloEdit, setSoloEdit] = useState(false);
 
   // CTH layout only: follow a value written from ANOTHER product line's box.
   //
@@ -5460,14 +5611,15 @@ function DualSourcePicker({
       // Clicking the already-selected box again unselects it - clears the saved answer so
       // the operator can pick again or type a fresh value, instead of being stuck once either
       // side has been chosen.
+      // Unticking clears the ANSWER, so the operator can pick again or type their own. The
+      // two candidate boxes keep their readings - they are what the document and the sheet
+      // said, and that does not stop being true because nothing is chosen yet.
       setSaving(true);
       try {
-        await jobsApi.correctFieldValue(primary.id, "");
         for (const target of syncTargets) {
           await jobsApi.correctFieldValue(target.id, "");
         }
         setSelected(null);
-        setPrimaryDraft("");
         await reload();
       } finally {
         setSaving(false);
@@ -5477,35 +5629,61 @@ function DualSourcePicker({
     const value = which === "primary" ? primaryValue : otherValue;
     setSaving(true);
     try {
-      await jobsApi.correctFieldValue(primary.id, value);
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
       setSelected(which);
-      // Ripples to every OTHER product line's own copy of this pairing (each keeping its OWN
-      // values) - applyToAllRows does its own reload at the end covering this row too, so skip
-      // the separate reload() below when it ran.
-      if (applyToAllRows) {
+      // Held back by "only this line": an operator who has said this one product is
+      // different means it about WHICH SOURCE is right, as much as about a value they typed.
+      if (applyToAllRows && !soloEdit) {
+        // ONE request for the whole job, this line included. The bulk pass writes this row
+        // exactly as the single calls below would - sending both meant two extra round trips
+        // of pure duplication before anything changed on screen.
         await applyToAllRows(which);
       } else {
+        for (const target of syncTargets) {
+          await jobsApi.correctFieldValue(target.id, value);
+        }
         await reload();
       }
+      // Hand the tick back to the stored values now the write has been and gone. The optimistic
+      // one exists only to cover the round trip; left standing afterwards it reports a choice
+      // the database may not have taken, which is exactly how an empty pick looked like it had
+      // worked. If the write landed, the derivation agrees and nothing moves.
+      setPickedOverride(undefined);
     } finally {
       setSaving(false);
     }
   };
 
   // Editing primary's OWN box: it is unconditionally the field exports actually read, so a
-  // direct correction always carries the synced fields (RITC, etc.) along with it, same as
-  // picking it would.
+  // direct correction always carries the synced fields (CTH, RITC, etc.) along with it, the
+  // same as picking it would.
+  //
+  // On a CTH pairing it ALSO carries to every other product line, unless "only this line" is
+  // on. An invoice's lines are usually all the same commodity, so the code is usually the
+  // same eight digits on every one of them, and typing it twelve times is twelve chances to
+  // fat-finger a customs code. applyValueToAllRows only fills lines that are EMPTY or still
+  // carry the value this box held before the edit, so a line somebody has already given a
+  // different code of its own keeps it.
   const commitPrimary = async () => {
-    if (readOnly || primaryDraft === primaryValue) return;
+    if (readOnly || saving || primaryDraft === primaryValue) return;
+    // Never save a half-typed heading. A CTH is eight digits; six is not a different code, it
+    // is an unfinished one - and an unfinished one reached five product lines on JOB-3151A3
+    // before anybody noticed. The box keeps what was typed so the operator can finish it;
+    // nothing goes to the database until it is whole.
+    if (isCthPairing && primaryDraft !== "" && primaryDraft.length !== CTH_LENGTH) return;
     setSaving(true);
     try {
-      await jobsApi.correctFieldValue(primary.id, primaryDraft);
+      const previous = primaryValue;
       ownPrimaryValueRef.current = primaryDraft;
-      for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
-      await reload();
+      if (isCthPairing && applyValueToAllRows && primary.custom_field_id && !soloEdit) {
+        // One request for every line, this one included: the bulk pass fills any line still
+        // carrying `previous` - which is exactly what this box held a moment ago - and leaves
+        // a line that has a code of its own well alone.
+        await applyValueToAllRows(primary.custom_field_id, primaryDraft, previous);
+      } else {
+        await jobsApi.correctFieldValue(primary.id, primaryDraft);
+        for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
+        await reload();
+      }
     } finally {
       setSaving(false);
     }
@@ -5537,247 +5715,72 @@ function DualSourcePicker({
         : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-400"
     } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`;
 
-  // A pairing that feeds a field actually called CTH gets a different, simpler shape: ONE
-  // box, which IS the CTH, with what the document read shown underneath as a reference.
-  //
-  // The two checkboxes made sense when neither source was privileged, but for the CTH they
-  // are not equal: the reference sheet is the customer's own declared code, the document's
-  // is whatever the supplier happened to print. Asking an operator to choose between them on
-  // every product line, when the answer is almost always the sheet, is a decision they have
-  // to make hundreds of times and get right every time.
-  //
-  // Only this case changes. A pairing that syncs somewhere else (Bhuvaneswari's, which feeds
-  // RITC No. and has no CTH field at all) keeps the picker exactly as it was - those two
-  // sources really are alternatives there, and silently picking one for them would be
-  // choosing a customs code on their behalf.
-  const cthTarget = syncTargets.find(
-    (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
-  );
-
   // Eight digits, and only eight. A CTH shorter than that is an incomplete tariff heading,
   // not a different one - found live on JOB-3151A3, where "1231342" (seven) had been typed
-  // and then carried onto a second product line before anything noticed.
+  // and then carried onto a second product line before anything noticed. Only meaningful on
+  // a CTH pairing; a pairing that feeds something else may carry a code of any length.
   const cthIncomplete =
-    primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
+    isCthPairing && primaryDraft.length > 0 && primaryDraft.length < CTH_LENGTH;
 
-  // "Only this line": the escape hatch from the carry-across.
+  // Both sources are shown, and the operator picks between them.
   //
-  // Carrying a typed code to every line is right for the common invoice, where every line is
-  // the same commodity. It is wrong for the one line that differs - and when all the lines
-  // already share a value, editing any one of them would take the other four with it, since
-  // they all look like lines that were merely following along.
+  // This was briefly ONE box - the dump's value, with the document's reading printed
+  // underneath as a note - on the grounds that the sheet is the customer's own declared code
+  // while the document's is only whatever the supplier happened to print. The people filing
+  // on it asked for the two tick-boxes back: a note is something to read, and what they want
+  // is something to CHOOSE, with the chosen source visible on the line at a glance.
   //
-  // So it is a deliberate, per-line choice rather than a guess. Switched on, this box saves
-  // its own value and touches nothing else; every other line keeps what it has. It resets
-  // when the card is re-rendered from scratch, because it describes one edit, not a setting.
-  const [soloEdit, setSoloEdit] = useState(false);
-
-  /** Saving a CTH, and carrying it to the other product lines.
-   *
-   * An invoice's lines are usually all the same commodity, so the CTH is usually the same
-   * eight digits on every one of them - typing it twelve times is twelve chances to fat-finger
-   * a customs code.
-   *
-   * It only fills lines that are EMPTY or still carry the value this box held before the
-   * edit. A line somebody has already given a different code keeps it, so the mixed-commodity
-   * invoice (where line 7 genuinely differs) is not quietly flattened by someone correcting
-   * line 1 afterwards. That is the whole reason it is not a blunt "set them all".
-   */
-  const commitCth = async (valueOverride?: string) => {
-    // Takes the value explicitly when called from onChange: setPrimaryDraft has not landed
-    // in state yet on that same tick, so reading primaryDraft there would save the digit
-    // BEFORE the one just typed.
-    const value = valueOverride ?? primaryDraft;
-    if (readOnly || saving || value === primaryValue) return;
-    // Never save a half-typed heading. A CTH is eight digits; six is not a different code,
-    // it is an unfinished one - and an unfinished one reached five product lines on
-    // JOB-3151A3 before anybody noticed. The box keeps what was typed so the operator can
-    // finish it; nothing goes to the database until it is whole.
-    if (value !== "" && value.length !== CTH_LENGTH) return;
-    setSaving(true);
-    try {
-      const previous = primaryValue;
-      await jobsApi.correctFieldValue(primary.id, value);
-      ownPrimaryValueRef.current = value;
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
-      if (applyValueToAllRows && primary.custom_field_id && !soloEdit) {
-        await applyValueToAllRows(primary.custom_field_id, value, previous);
-      } else {
-        await reload();
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (cthTarget) {
-    return (
-      <div>
-        {/* Exactly the markup every other small field label uses (see ExtractedField) -
-            same size, weight and colour, and the same rose asterisk. It looked like a
-            different kind of thing sitting among them before, which is misleading: it is an
-            ordinary mandatory field and should read as one.
-
-            Always marked required: a Bill of Entry cannot be filed without a CTH. */}
-        <div className="mb-1 flex items-center justify-between gap-1.5">
-          {/* The class list is ExtractedField's own, copied verbatim rather than tidied.
-              It carries two conflicting pairs - font-semibold/font-medium and
-              text-slate-900/text-slate-500 - and Tailwind settles those by stylesheet order,
-              not by the order they appear here, so what actually renders is semibold and
-              slate-900. Writing out only the "tidy" half produced a visibly lighter label
-              sitting next to identical ones. Kept character-for-character so the two cannot
-              drift apart again if that conflict is ever cleaned up. */}
-          <p className="truncate font-semibold text-slate-900 dark:text-slate-100 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            CTH
-            <span className="text-rose-600 dark:text-rose-400" aria-label="Mandatory">*</span>
-            <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
-              (8-Digit Code)
-            </span>
-            {/* WHICH key of the customer's sheet produced the code - on the heading line, by
-                request, so it reads as part of what this field IS rather than as another note
-                stacked under the box. Matched on the part number it is the precise answer;
-                matched only on the wording it is worth a second look, and on these invoices
-                the part code is often blank so wording was the only thing that could have
-                matched at all. Shown only when the value really did come from the sheet that
-                way (see JobFieldValueOut.lookup_source) - never over a code typed by hand. */}
-            {primary.lookup_source && (
-              <span className="ml-1 font-normal text-slate-400 dark:text-slate-500">
-                (From dump :{" "}
-                <span className="font-semibold text-slate-500 dark:text-slate-400">
-                  {primary.lookup_source}
-                </span>
-                )
-              </span>
-            )}
-          </p>
-          {/* Only offered when there is something to protect - on a single-line invoice
-              there are no other lines to spare, and the button would be a choice with no
-              consequence either way. */}
-          {!readOnly && (applyValueToAllRows !== undefined) && (
-            <button
-              type="button"
-              onClick={() => setSoloEdit((v) => !v)}
-              title={
-                soloEdit
-                  ? "This line only — other products keep their own CTH"
-                  : "Normally, typing here fills every product. Press to change just this one."
-              }
-              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                soloEdit
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
-                  : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
-              }`}
-            >
-              {soloEdit ? "✎ only this line" : "only this line"}
-            </button>
-          )}
-        </div>
-        <input
-          type="text"
-          value={primaryDraft}
-          readOnly={readOnly}
-          // A CTH is exactly eight digits. Anything else is not a tariff heading, so the
-          // field refuses it rather than accepting it and failing later at the ERP - where
-          // the operator has moved on and no longer has the invoice in front of them.
-          //
-          // Filtered on the way IN rather than validated on the way out: a paste from a
-          // spreadsheet routinely carries "8482 4000 90" or "8482400090.0", and silently
-          // keeping the digits is what the operator meant every time.
-          inputMode="numeric"
-          maxLength={CTH_LENGTH}
-          onChange={(e) => {
-            const next = e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH);
-            setPrimaryDraft(next);
-            // Saved and carried to the other product lines the moment it is whole, rather
-            // than waiting for the field to lose focus. A CTH is a fixed eight digits, so
-            // "eight entered" is a reliable finished signal - unlike an ordinary text field,
-            // where only leaving it says the typing is done.
-            //
-            // Without this an operator types the code, sees the line below still empty,
-            // and reasonably concludes it did not work: the save was waiting for a click
-            // they had no reason to make.
-            if (next.length === CTH_LENGTH) void commitCth(next);
-          }}
-          onBlur={() => void commitCth()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-          // Blank when the reference sheet does not carry this part, on purpose - the
-          // document's own reading is shown underneath to copy from, but nothing is filled in
-          // on the operator's behalf. A code nobody confirmed should not be able to reach
-          // customs just because somebody clicked past it.
-          //
-          // "dump" names WHICH source came up empty. "not found" alone invited the reading
-          // that nothing anywhere has a CTH, when the document's own value may be sitting
-          // right below.
-          placeholder="dump not found — type the CTH"
-          className={`w-full rounded-lg border px-2 py-1 text-xs placeholder:italic focus:outline-none ${
-            flagged
-              ? "border-rose-300 bg-rose-50 text-rose-900 placeholder:text-rose-400 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
-              : "border-indigo-300 bg-indigo-50 text-indigo-900 placeholder:text-slate-400 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
-          } ${readOnly ? "cursor-default" : "focus:border-indigo-400"}`}
-        />
-        {/* What the DOCUMENT read, under the box. Bracketed and muted so it reads as a note
-            about where a number could come from, not as a second value for this field - it
-            is there to check the reference sheet against, and to copy from when the sheet
-            has nothing. Always shown, including when the document gave nothing, because
-            "the document has none either" is the thing an operator needs to know before
-            typing one in by hand. */}
-        {cthIncomplete && (
-          <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-            {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
-          </p>
-        )}
-        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-          (Document CTH :{" "}
-          {otherValue ? (
-            <span className="font-mono text-slate-600 dark:text-slate-300">{otherValue}</span>
-          ) : (
-            <span className="italic">Not Found</span>
-          )}
-          )
-        </p>
-        {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
-      </div>
-    );
-  }
+  // What the single box was right about is kept rather than thrown away with it: the
+  // eight-digit guard above, and the carry-across to the other product lines with "only this
+  // line" to escape it.
 
   return (
     <div>
-      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-        {primary.picker_heading?.trim() || "Pick which one is right for this line"}
-      </p>
+      <div className="mb-1 flex items-center justify-between gap-1.5">
+        <p className="truncate text-[11px] font-medium uppercase tracking-wider text-slate-400">
+          {primary.picker_heading?.trim() || "Pick which one is right for this line"}
+          {/* The CTH field itself is hidden on this card - the picker is what writes it - so
+              its "mandatory and still blank" state has to surface HERE, or a job sits blocked
+              from approval by a red field nobody can see. */}
+          {flagged && (
+            <span className="ml-1 text-rose-600 dark:text-rose-400" aria-label="Mandatory">
+              *
+            </span>
+          )}
+        </p>
+        {/* Only offered when there are other lines to protect - on a single-line invoice this
+            would be a choice with no consequence either way. */}
+        {!readOnly && applyToAllRows !== undefined && (
+          <button
+            type="button"
+            onClick={() => setSoloEdit((v) => !v)}
+            title={
+              soloEdit
+                ? "This line only \u2014 every other product keeps its own code"
+                : "Normally, picking or typing here fills every product. Press to change just this one."
+            }
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              soloEdit
+                ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            }`}
+          >
+            {soloEdit ? "\u270e only this line" : "only this line"}
+          </button>
+        )}
+      </div>
       <div className="flex flex-col gap-1.5">
         <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
           <input
             type="checkbox"
-            checked={selected === "primary"}
-            disabled={readOnly || saving}
-            onChange={() => void choose("primary")}
-          />
-          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            {primary.label_name}
-          </span>
-          <input
-            type="text"
-            value={primaryDraft}
-            readOnly={readOnly}
-            onChange={(e) => setPrimaryDraft(e.target.value)}
-            onBlur={commitPrimary}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-            placeholder="—"
-            className={boxClass("primary")}
-          />
-        </label>
-        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
-          <input
-            type="checkbox"
             checked={selected === "other"}
-            disabled={readOnly || saving}
+            // An empty box is not a candidate. Ticking one used to LOOK like it worked - the
+            // tick moved, because it moves optimistically - while the save skipped the line
+            // and nothing was written, on this product or any other. Reported as "I pressed
+            // document CTH and it changed only this one, and the other product is still the
+            // dump". Nothing had changed anywhere; only the tick had moved.
+            disabled={readOnly || saving || !otherValue}
+            title={!otherValue ? "Nothing read on this side for this line - there is no code here to choose" : undefined}
             onChange={() => void choose("other")}
           />
           <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
@@ -5796,7 +5799,75 @@ function DualSourcePicker({
             className={boxClass("other")}
           />
         </label>
+        <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
+          <input
+            type="checkbox"
+            checked={selected === "primary"}
+            disabled={readOnly || saving || !primaryDraft}
+            title={!primaryDraft ? "Nothing read on this side for this line - there is no code here to choose" : undefined}
+            onChange={() => void choose("primary")}
+          />
+          <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {primary.label_name}
+          </span>
+          <input
+            type="text"
+            value={primaryDraft}
+            readOnly={readOnly}
+            // A CTH is exactly eight digits, so a paste of "8482 4000 90" or "8482400090.0"
+            // out of a spreadsheet keeps its digits and drops the rest - silently keeping the
+            // digits is what the operator meant every time. Filtered on the way IN rather
+            // than validated on the way out, and only on a CTH pairing: a pairing that feeds
+            // something else may legitimately carry a code with letters in it.
+            inputMode={isCthPairing ? "numeric" : undefined}
+            maxLength={isCthPairing ? CTH_LENGTH : undefined}
+            onChange={(e) =>
+              setPrimaryDraft(
+                isCthPairing
+                  ? e.target.value.replace(/\D/g, "").slice(0, CTH_LENGTH)
+                  : e.target.value,
+              )
+            }
+            onBlur={commitPrimary}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+            className={boxClass("primary")}
+          />
+        </label>
+        {/* WHICH key of the customer's sheet produced this code, directly under the box it
+            came from rather than adrift at the bottom of the card. Matched on the part number
+            it is the precise answer; matched only on the wording it is worth a second look -
+            and on these invoices the part code is often blank, so the wording was the only
+            thing that could have matched at all. Shown only when the value really did come
+            from the sheet that way (see JobFieldValueOut.lookup_source), never over a code
+            typed by hand and never when the sheet had nothing for this line. */}
+        {primary.lookup_source === "Previous entry" ? (
+          /* NOT from the customer's sheet. The sheet had nothing for this line, so the code
+             came from what an operator typed for this same part once before - a real answer,
+             but a colleague's answer, not the customer's own declared classification. Said
+             plainly and in amber because the box it sits under is labelled "Dump CTH Number",
+             and without this it reads as the dump's word. Found on a Foxconn heat exchanger
+             whose code was in no row of a 32,248-row master. */
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            (not from the dump — entered by hand for this part before)
+          </p>
+        ) : primary.lookup_source ? (
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] text-slate-400 dark:text-slate-500">
+            (matched on{" "}
+            <span className="font-medium text-slate-500 dark:text-slate-400">
+              {primary.lookup_source}
+            </span>
+            )
+          </p>
+        ) : null}
       </div>
+      {cthIncomplete && (
+        <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+          {primaryDraft.length} of {CTH_LENGTH} digits — not saved until all {CTH_LENGTH}
+        </p>
+      )}
       {saving && <p className="mt-1 text-[10px] text-slate-400">saving…</p>}
     </div>
   );
@@ -6026,7 +6097,10 @@ function ExtractionReview({
       // invalid value (ExtractedField's onBeforeSave), but a value saved before that existed,
       // or written some other way, is still caught here rather than silently approved.
       const invalidFormat = pool.filter(
-        (fv) => COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null,
+        (fv) =>
+          (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
+          (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
+            customsHouseCodeFormatError(fv.value ?? "") !== null),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6077,6 +6151,69 @@ function ExtractionReview({
           );
           return;
         }
+      }
+      // Ordinary per-row table fields - an invoice's own line items (Quantity, Description,
+      // ...), one row per product. Found live: a mandatory per-row field left blank on just
+      // ONE row out of 20 products let the Invoice get approved and the job move straight to
+      // the next page anyway, since `pool` above only ever looks at row_index == null fields
+      // and the standalone check just above this is container-specific. self_filled excluded -
+      // a reference-sheet lookup (CTH) already has its own, job-wide gate on the Dump Data /
+      // extraction stage; hidden_from_capture excluded - that field renders nowhere on this
+      // screen, so blocking on it would ask for something there is no box to type into.
+      // ...EXCEPT the answer field of a picker pairing, which is mandatory like any other box.
+      //
+      // "CTH" is self_filled (kind="lookup"), so the exclusion above swallowed it and a
+      // document could be approved with that box reading "not found" while every other
+      // mandatory field on the line was enforced. Reported from the floor exactly that way:
+      // "all mandatory field is working except the cth field".
+      //
+      // Only the ANSWER, never the candidates. The measurements say why: of 240 "Dump CTH
+      // Number" rows on this box, 215 are empty - the customer's sheet genuinely has no row
+      // for most of these parts - so requiring the candidates too would block almost every
+      // document on something no operator can supply. The candidates are evidence and may be
+      // empty; the answer is the declaration and may not. Same rule the backend's own submit
+      // gate uses for a sync target.
+      const answerFieldIds = new Set<string>();
+      for (const fv of job.field_values) {
+        for (const id of fv.sync_field_ids ?? []) answerFieldIds.add(id);
+      }
+      // A per-row CUSTOM field has no document of its own - job_document_id is null on every
+      // one of them, CTH included - so filtering on `job_document_id === active.id` alone drops
+      // them before any other rule gets a look. That is why making CTH mandatory above did
+      // nothing on its own: the row never reached the test.
+      //
+      // Pulled in by LINE instead: whichever document carries product lines (the invoice) also
+      // owns the custom fields sitting on those same lines, which is exactly where the operator
+      // sees them - on the product card, under that document. A document with no product lines
+      // of its own (a bill of lading) matches nothing here and is not blocked by them.
+      const linesOnThisDocument = new Set(
+        job.field_values
+          .filter((fv) => fv.row_index != null && fv.job_document_id === active.id)
+          .map((fv) => fv.row_index),
+      );
+      const productRows = job.field_values.filter(
+        (fv) =>
+          fv.row_index != null &&
+          (fv.job_document_id === active.id ||
+            (fv.job_document_id == null && linesOnThisDocument.has(fv.row_index))) &&
+          !fv.standalone_multi_value &&
+          (fv.self_filled !== true ||
+            (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
+          !fv.hidden_from_capture,
+      );
+      const missingProductFields = productRows.filter(
+        (fv) => fv.mandatory !== false && !(fv.value ?? "").trim(),
+      );
+      if (missingProductFields.length) {
+        blockApproval(
+          `This document can't be approved yet. ${missingProductFields.length} product line field${
+            missingProductFields.length === 1 ? "" : "s"
+          } still need${missingProductFields.length === 1 ? "s" : ""} a value: ${
+            [...new Set(missingProductFields.map((fv) => fv.label_name))].join(", ")
+          }.`,
+          missingProductFields.map((fv) => fv.id),
+        );
+        return;
       }
     }
     setApproveError(null);
@@ -6437,24 +6574,7 @@ function ExtractionReview({
   // correcting one line afterwards (typing a new value directly, or picking the other side
   // back just for that line) never touches the rest again.
   const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
-    for (const [n] of lineRows) {
-      const rowFields = lookedUpByRow.get(n) ?? [];
-      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
-      const primary = byCF.get(customFieldId);
-      if (!primary || !primary.paired_custom_field_id) continue;
-      const other = byCF.get(primary.paired_custom_field_id);
-      const otherVal = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
-      if (!other || !otherVal) continue; // nothing to pick between on this line
-      const primaryVal = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-      const value = which === "primary" ? primaryVal : otherVal;
-      await jobsApi.correctFieldValue(primary.id, value);
-      const syncTargets = (primary.sync_field_ids ?? [])
-        .map((id) => byCF.get(id))
-        .filter((fv): fv is JobFieldValue => !!fv);
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
-    }
+    await jobsApi.carryAcrossRows(jobId, { custom_field_id: customFieldId, mode: "pick", which });
     await reload();
   };
 
@@ -6463,6 +6583,14 @@ function ExtractionReview({
   // subtotal band, a header repeated on page 2, a note inside the goods table. Those demand
   // a CTH and a quantity like any real line and block submission over paperwork that does
   // not exist, and re-extracting the whole document was the only way out.
+  // How many product cards are currently built. Grows on request, never shrinks, so a card
+  // an operator has already typed into is never taken away from under them.
+  const [shownProducts, setShownProducts] = useState(PRODUCTS_PER_PAGE);
+  // Back to the first page when the operator switches to a different document - its own
+  // lines are a different list, and carrying the previous document's count over would build
+  // a hundred cards of a document nobody has looked at yet.
+  useEffect(() => setShownProducts(PRODUCTS_PER_PAGE), [activeFileId]);
+
   const [deletingRow, setDeletingRow] = useState<number | null>(null);
   const handleDeleteRow = async (rowIndex: number) => {
     if (!active) return;
@@ -6504,22 +6632,9 @@ function ExtractionReview({
   const applyCthValueToAllRows = async (
     customFieldId: string, value: string, previous: string,
   ) => {
-    for (const [n] of lineRows) {
-      const rowFields = lookedUpByRow.get(n) ?? [];
-      const byCF = new Map(rowFields.map((fv) => [fv.custom_field_id, fv] as const));
-      const primary = byCF.get(customFieldId);
-      if (!primary) continue;
-      const current = (primary.corrected_value ?? primary.extracted_value ?? "").trim();
-      if (current === value) continue;                     // already right, nothing to write
-      if (current !== "" && current !== previous.trim()) continue;  // its own, deliberate code
-      await jobsApi.correctFieldValue(primary.id, value);
-      const syncTargets = (primary.sync_field_ids ?? [])
-        .map((id) => byCF.get(id))
-        .filter((fv): fv is JobFieldValue => !!fv);
-      for (const target of syncTargets) {
-        await jobsApi.correctFieldValue(target.id, value);
-      }
-    }
+    await jobsApi.carryAcrossRows(jobId, {
+      custom_field_id: customFieldId, mode: "value", value, previous,
+    });
     await reload();
   };
 
@@ -6530,6 +6645,9 @@ function ExtractionReview({
   // "Combine fields" modal entirely (confirmed with the user) - saving there recomputes this
   // job immediately too, via the jobId passed below, so the change is visible right away.
   const [compositeOpen, setCompositeOpen] = useState(false);
+  // Apply All Product Units - bulk-set a per-row "unit" field (PCS/BOX/KG/...) across some or
+  // all of this document's product lines at once. See ProductQuantityUnitsModal.
+  const [unitsOpen, setUnitsOpen] = useState(false);
   const jobConsigneeFv = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "consignee_full_name",
   );
@@ -6795,10 +6913,20 @@ function ExtractionReview({
                                 }
                                 return true;
                               }
+                            : CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? async (value: string) => {
+                                const err = customsHouseCodeFormatError(value);
+                                if (err) {
+                                  window.alert(err);
+                                  return false;
+                                }
+                                return true;
+                              }
                             : undefined
                         }
                         transformBeforeSave={
-                          COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                          COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
+                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
@@ -6885,17 +7013,26 @@ function ExtractionReview({
                       {lineRows.length}
                     </p>
                     {!readOnly && !docIsStandalone && (
-                      <button
-                        type="button"
-                        onClick={() => setCompositeOpen(true)}
-                        className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
-                      >
-                        🧩 Combine fields
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setUnitsOpen(true)}
+                          className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        >
+                          📏 Apply All Product Units
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCompositeOpen(true)}
+                          className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
+                        >
+                          🧩 Combine fields
+                        </button>
+                      </div>
                     )}
                   </div>
                   <div className="flex flex-col gap-2">
-                    {lineRows.map(([n, cells]) => {
+                    {lineRows.slice(0, shownProducts).map(([n, cells]) => {
                       // A field keyed on a standalone mark (ContainerTypeCode, keyed on
                       // container_type) belongs on THAT mark's own card (Container Detail),
                       // never a product card and vice versa - see standalone_multi_value's
@@ -6926,28 +7063,54 @@ function ExtractionReview({
                       // (no such field on this row at all) is the one real case with nothing to
                       // pair against - that falls through to `rest` as an ordinary field.
                       const pairedIds = new Set<string>();
-                      pairs.forEach(({ primary, other, syncTargets }) => {
+                      pairs.forEach(({ primary, other }) => {
                         if (!other) return;
                         pairedIds.add(primary.id);
                         pairedIds.add(other.id);
-                        // A pairing that feeds a field called CTH draws ONE box, and that box
-                        // IS the CTH (see DualSourcePicker). Leaving the CTH field in `rest`
-                        // as well would put the same value in two boxes on the same card, and
-                        // only one of them would carry the sync when edited.
-                        const cth = syncTargets.find(
-                          (t) => (t.label_name ?? "").trim().toUpperCase() === "CTH",
-                        );
-                        if (cth) pairedIds.add(cth.id);
+                        // The CTH itself stays VISIBLE, as its own box among the other fields,
+                        // exactly as RITC No. is on the template whose pairing feeds that
+                        // instead. It is what the picker WRITES: the operator ticks a source and
+                        // watches the real customs code land in it, so hiding it took away the
+                        // only confirmation that ticking had done anything at all.
+                        //
+                        // It was hidden while the picker was a single box that WAS the CTH,
+                        // where showing it again really would have been the same value twice.
+                        // With two tick-boxes above it that no longer holds - neither of them is
+                        // the CTH, they are the two candidates for it.
                       });
-                      const rest = lookedUp.filter((fv) => !pairedIds.has(fv.id));
-                      // Purely a backing flag for product_description/Combined Description's own
-                      // red highlight below - never a field of its own on screen (see
-                      // TRANSLATED_FLAG_SOURCE_LABELS).
-                      const languageFlag = cells.find((fv) => fv.label_name === "Product Description Language");
-                      const isNonEnglish = (
-                        (languageFlag?.corrected_value ?? languageFlag?.extracted_value ?? "").trim().toUpperCase()
-                        === "NON-ENGLISH"
+                      // Sorted, because the order these arrive in is not stable from one row
+                      // to the next: CTH sat left of Combined Product Description on product 2
+                      // and right of it on product 3, so a column an operator had just learned
+                      // to look at moved under them on every card. Nothing here carries a
+                      // configured display order to honour, so any FIXED order beats an
+                      // incidental one; the id is only a tie-break so two fields sharing a
+                      // label can never swap either.
+                      const rest = lookedUp
+                        .filter((fv) => !pairedIds.has(fv.id))
+                        .slice()
+                        .sort(
+                          (a, b) =>
+                            (a.label_name ?? "").localeCompare(b.label_name ?? "", undefined, {
+                              sensitivity: "base",
+                            }) || a.id.localeCompare(b.id),
+                        );
+                      // Everything a Dump/Document pick WRITES - the CTH itself and whatever
+                      // else the pairing syncs (RITC No.). Picking is the normal way these get
+                      // their value, so a "corrected" flag on them says nothing about whether a
+                      // human disagreed with a reading, which is the only thing the badge is
+                      // for.
+                      const pickerWrittenIds = new Set<string>(
+                        pairs.flatMap(({ other, syncTargets }) =>
+                          other ? syncTargets.map((t) => t.id) : [],
+                        ),
                       );
+                      // "Product Description Language" is still extracted (product_description's
+                      // own prompt now refuses to translate and looks for an English column on
+                      // the same row instead - see that prompt's own LANGUAGE paragraph), but it
+                      // no longer drives a UI flag of its own: a translated-and-flagged value
+                      // used to be the thing wrong with this field, and there is nothing left to
+                      // warn about once nothing is ever translated. Still never shown as its own
+                      // box on screen.
                       const visibleCells = cells.filter((fv) => fv.label_name !== "Product Description Language");
                       return (
                         <div
@@ -6988,11 +7151,11 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "product_description")}
+                                flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
                                     ? "Mandatory — needs a value before this document can be approved."
-                                    : "Not originally in English — translated."
+                                    : undefined
                                 }
                               />
                             ))}
@@ -7007,11 +7170,30 @@ function ExtractionReview({
                                 fv={fv}
                                 readOnly={readOnly}
                                 reload={reload}
-                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "Combined Description")}
+                                neverEdited={pickerWrittenIds.has(fv.id)}
+                                digitsOnly={
+                                  (fv.label_name ?? "").trim().toUpperCase() === "CTH"
+                                    ? CTH_LENGTH
+                                    : undefined
+                                }
+                                // Typed by hand, the CTH fills every other product line, the
+                                // same way picking Dump/Document above it already does. Only
+                                // this field: every other box on the card describes ONE
+                                // product and must never reach another.
+                                carryToAllRows={
+                                  (fv.label_name ?? "").trim().toUpperCase() === "CTH"
+                                    && fv.custom_field_id
+                                    ? (value, previous) =>
+                                        applyCthValueToAllRows(
+                                          fv.custom_field_id!, value, previous,
+                                        )
+                                    : undefined
+                                }
+                                flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
                                     ? "Mandatory — needs a value before this document can be approved."
-                                    : "Not originally in English — translated."
+                                    : undefined
                                 }
                                 small
                                 tone="reference"
@@ -7053,6 +7235,32 @@ function ExtractionReview({
                         </div>
                       );
                     })}
+                    {/* Only when there is something left to show. The count is spelled out
+                        because "Show more" alone gives no sense of whether that is two more
+                        cards or another hundred. */}
+                    {lineRows.length > shownProducts && (
+                      <div className="flex items-center justify-center gap-2 py-2">
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                          Showing {shownProducts} of {lineRows.length} products
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setShownProducts((n) => n + PRODUCTS_PER_PAGE)
+                          }
+                          className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                        >
+                          Show {Math.min(PRODUCTS_PER_PAGE, lineRows.length - shownProducts)} more
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShownProducts(lineRows.length)}
+                          className="rounded-md px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                        >
+                          Show all {lineRows.length}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -7088,6 +7296,12 @@ function ExtractionReview({
         defaultConsignee={jobConsignee}
         jobId={jobId}
         onSaved={() => { void reload(); }}
+      />
+      <ProductQuantityUnitsModal
+        open={unitsOpen}
+        onClose={() => setUnitsOpen(false)}
+        lineRows={lineRows}
+        onApplied={reload}
       />
       {insurancePopup && (
         <InsuranceCertificatePopup

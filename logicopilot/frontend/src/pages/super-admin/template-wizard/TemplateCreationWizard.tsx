@@ -100,6 +100,12 @@ export function TemplateCreationWizard() {
   const [moveError, setMoveError] = useState<string | null>(null);
   const [moveSaved, setMoveSaved] = useState(false);
 
+  // Group settings (editing an existing template only) — change its mode.
+  const [moveMode, setMoveMode] = useState("");
+  const [modeBusy, setModeBusy] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+  const [modeSaved, setModeSaved] = useState(false);
+
   // Step 1
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState("");
@@ -107,22 +113,23 @@ export function TemplateCreationWizard() {
   const [mode, setMode] = useState("");
   const [decls, setDecls] = useState([{ name: "", doc_type: "BL", is_required: true }]);
 
+  // Shared
+  const [group, setGroup] = useState<TemplateGroupDetail | null>(null);
+  const [activeDocId, setActiveDocId] = useState<string>("");
+
   // The picked tenant's own licensed modes, or every mode when they aren't restricted —
   // same "empty = unrestricted" rule the backend applies.
   const availableModes = useMemo(() => {
-    const t = tenants.find((x) => x.id === tenantId);
+    const id = editing ? group?.tenant_id : tenantId;
+    const t = tenants.find((x) => x.id === id);
     return t?.allowed_modes?.length ? t.allowed_modes : [...MODES];
-  }, [tenants, tenantId]);
+  }, [tenants, tenantId, editing, group?.tenant_id]);
 
   // A mode picked for a different tenant (or none yet) can be outside this one's licensed
   // list — clear it rather than silently submit something the tenant isn't allowed.
   useEffect(() => {
     if (mode && !availableModes.includes(mode)) setMode("");
   }, [availableModes]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Shared
-  const [group, setGroup] = useState<TemplateGroupDetail | null>(null);
-  const [activeDocId, setActiveDocId] = useState<string>("");
 
   // Step 2
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -370,6 +377,7 @@ export function TemplateCreationWizard() {
           setGroup(g);
           setActiveDocId(g.documents[0]?.id ?? "");
           setMoveTenantId(g.tenant_id);
+          setMoveMode(g.mode ?? "");
           setStep(3);
         })
         .catch(() => setError("Failed to load the template to edit."));
@@ -435,6 +443,22 @@ export function TemplateCreationWizard() {
       setMoveError(errText(err, "Could not move this template to that tenant."));
     } finally {
       setMoveBusy(false);
+    }
+  }
+
+  async function saveGroupMode() {
+    if (!group || !moveMode || moveMode === group.mode) return;
+    setModeBusy(true);
+    setModeError(null);
+    setModeSaved(false);
+    try {
+      const g = await api.setGroupMode(group.id, moveMode);
+      setGroup((prev) => (prev ? { ...prev, mode: g.mode } : prev));
+      setModeSaved(true);
+    } catch (err) {
+      setModeError(errText(err, "Could not update the mode for this template."));
+    } finally {
+      setModeBusy(false);
     }
   }
 
@@ -1082,21 +1106,43 @@ export function TemplateCreationWizard() {
                 </Button>
               </div>
             )}
-            {editing ? (
-              <Input label="What is this template for?" value={group?.mode ?? ""} disabled readOnly />
-            ) : (
-              <Select label="What is this template for?" value={mode} onChange={(e) => setMode(e.target.value)}>
-                <option value="">Pick a mode…</option>
-                {availableModes.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </Select>
-            )}
-            {!editing && tenants.find((t) => t.id === tenantId)?.allowed_modes?.length ? (
+            <Select
+              label="What is this template for?"
+              value={editing ? moveMode : mode}
+              onChange={(e) => {
+                if (editing) {
+                  setMoveMode(e.target.value);
+                  setModeSaved(false);
+                  setModeError(null);
+                } else {
+                  setMode(e.target.value);
+                }
+              }}
+            >
+              {!editing && <option value="">Pick a mode…</option>}
+              {availableModes.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </Select>
+            {tenants.find((t) => t.id === (editing ? group?.tenant_id : tenantId))?.allowed_modes?.length ? (
               <p className="-mt-2 text-xs text-slate-400 dark:text-slate-500">
                 Only showing modes this client is licensed for.
               </p>
             ) : null}
+            {editing && modeError && <p className="-mt-2 text-xs text-rose-600 dark:text-rose-400">{modeError}</p>}
+            {editing && modeSaved && <p className="-mt-2 text-xs text-emerald-600 dark:text-emerald-400">Mode updated.</p>}
+            {editing && (
+              <div className="-mt-2 flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={saveGroupMode}
+                  isLoading={modeBusy}
+                  disabled={!moveMode || moveMode === group?.mode}
+                >
+                  Save mode
+                </Button>
+              </div>
+            )}
             <Input
               label="Template set name"
               value={editing ? group?.name ?? "" : groupName}

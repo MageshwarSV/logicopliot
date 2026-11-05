@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { JobActivityChart } from "../../components/JobActivityChart";
 import { useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
@@ -6,11 +6,32 @@ import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import * as emailApi from "../../api/email";
 
+/** First/last calendar day of a "YYYY-MM" month, as the "YYYY-MM-DD" strings
+ *  JobCategoryCountFilters already expects (see JobsPage.tsx's own quickRange usage). */
+function monthBounds(month: string): { dateFrom: string; dateTo: string } {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate(); // day 0 of next month = this month's last day
+  return { dateFrom: `${month}-01`, dateTo: `${month}-${String(lastDay).padStart(2, "0")}` };
+}
+
 export function OperatorDashboard() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [checkingMail, setCheckingMail] = useState(false);
   const [mailMsg, setMailMsg] = useState<string | null>(null);
+  // Keeps the sidebar's New/Missing/Failed/Submitted/Verified badges scoped to whatever month
+  // (and operator) the Job Activity chart below is currently showing - see JobActivityChart's
+  // own onViewChange docstring for why this exists. null until the chart's first mount-time
+  // callback arrives, during which the sidebar briefly shows its old unscoped (all-time) count.
+  const [chartView, setChartView] = useState<{ month: string; assignedTo: string } | null>(null);
+  const handleChartViewChange = useCallback(
+    (view: { month: string; assignedTo: string }) => setChartView(view),
+    [],
+  );
+  const categoryCountFilters = useMemo(() => {
+    if (!chartView) return undefined;
+    return { ...monthBounds(chartView.month), assignedTo: chartView.assignedTo || undefined };
+  }, [chartView]);
 
   async function checkEmail() {
     setCheckingMail(true);
@@ -39,6 +60,7 @@ export function OperatorDashboard() {
     <AppShell
       title="User"
       subtitle="Process transactions: upload, verify, and submit ERP entries."
+      categoryCountFilters={categoryCountFilters}
       actions={
         <div className="flex gap-2">
           <Button size="sm" variant="secondary" onClick={checkEmail} isLoading={checkingMail}>✉ Check Email</Button>
@@ -53,7 +75,7 @@ export function OperatorDashboard() {
         </div>
       )}
 
-      <JobActivityChart />
+      <JobActivityChart onViewChange={handleChartViewChange} />
     </AppShell>
   );
 }

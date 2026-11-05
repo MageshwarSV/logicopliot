@@ -86,6 +86,34 @@ def _padded_slots(match_values) -> list[str]:
     return values
 
 
+def reference_key(match_values) -> tuple[str, str, str, str]:
+    """The key lookup_reference matches on, as a tuple - so a caller holding a whole job's
+    worth of rows in memory can key them the same way a single query does."""
+    return tuple(_padded_slots(match_values))  # type: ignore[return-value]
+
+
+def reference_map_for(db: Session, custom_field_id: str) -> dict[tuple, str]:
+    """Every exact-match row this field has learned, keyed as reference_key keys a lookup.
+
+    lookup_reference is one query per line, which is right where it is called from (extraction
+    handles one line at a time) and wrong for reading a whole job: labelling the boxes on a
+    144-line invoice would be 144 round trips. One query, then dictionary hits.
+
+    Exact rows only. A fuzzy field resolves through a different path entirely, and guessing
+    here about which stored row "probably" produced a value would be the opposite of the point
+    - this exists to say truthfully where a value came from.
+    """
+    return {
+        (r.match_value_1 or "", r.match_value_2 or "", r.match_value_3 or "",
+         r.match_value_4 or ""): r.resolved_value
+        for r in db.query(CustomFieldReferenceValue).filter(
+            CustomFieldReferenceValue.custom_field_id == custom_field_id,
+            CustomFieldReferenceValue.mark_id.is_(None),
+        ).all()
+        if r.resolved_value
+    }
+
+
 def _owner_filter(custom_field_id: str | None, mark_id: str | None):
     # Exactly one of the two is ever set (see the model's check constraint) - filtering on
     # both columns at once, rather than picking whichever id was passed, is what keeps a

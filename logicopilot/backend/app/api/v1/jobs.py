@@ -65,6 +65,7 @@ from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_A
 from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
+    CarryAcrossRows,
     FieldValueCorrect,
     JobActivityChartOut,
     JobActivityDay,
@@ -2113,7 +2114,23 @@ def list_jobs(
     elif category == "missing":
         query = _missing_documents_sql_candidates(query)
 
-    query = query.order_by(Job.created_at.desc())
+    if category in ("submitted", "completed"):
+        # Newest SUBMISSION first, not newest arrival.
+        #
+        # These two screens are about what went to the ERP, and each row already prints that
+        # moment under its own badge - "AI - ERP Submitted / Nov 04, 11:34 AM". Ordering them
+        # by created_at instead put those stamps in no order at all down the page: Nov 03
+        # 5:44pm, then 4:32pm, then 6:26pm, then Nov 04. An operator checking what has just
+        # gone through had to read every row to find it.
+        #
+        # Falls back to created_at for a job finished before completed_at existed (and whose
+        # history was too old to backfill from) - those sort by arrival, as they always did,
+        # rather than sinking to the bottom as NULLs.
+        query = query.order_by(
+            func.coalesce(Job.completed_at, Job.created_at).desc(), Job.created_at.desc()
+        )
+    else:
+        query = query.order_by(Job.created_at.desc())
 
     # "missing" (either as group=missing, the dashboard box, or category=missing, the sidebar
     # link) cannot be a single SQL predicate - see _is_missing_documents. The filters above
@@ -3484,15 +3501,29 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     #
     # cached_mapping, never load_master: this is a request handler, and parsing a not-yet-
     # parsed workbook inline would hang it - see load_master's own docstring.
+    from app.core.reference_cache import reference_key, reference_map_for
+
     lookup_source_by_fv: dict[str, str] = {}
+    # Only the PICKER PRIMARIES - the fields with a paired candidate, i.e. "Dump CTH Number".
+    # lookup_source has exactly one reader in the whole product: the line under that box in the
+    # picker ("matched on Part Code"). It is not stored, not read by the manager app, and left
+    # None by every other endpoint that builds a JobFieldValueOut.
+    #
+    # Without this filter the sheet was searched for EVERY per-row lookup field - on Sea import
+    # that is "CTH" and "ContainerTypeCode" as well as the dump - and the answer for those two
+    # was computed, serialized, and never looked at by anything. Three times the work for one
+    # field's worth of information. On JOB-FC08FF (144 lines, a 32,248-row master) that is 288
+    # searches of the customer's sheet, per page load, thrown away.
     per_row_lookup_cfs = [
         c for c in cf_rows
-        if (c.kind or "") == "lookup" and c.per_row and not getattr(c, "skip_material_master", False)
+        if (c.kind or "") == "lookup" and c.per_row
+        and not getattr(c, "skip_material_master", False)
+        and c.paired_custom_field_id
     ]
     if per_row_lookup_cfs:
         from app.core.material_master import (
-            cached_mapping, cached_mapping_stamp, lookup_accel_for, lookup_cth_with_source,
-            material_from,
+            CTH_SOURCE_REFERENCE, cached_mapping, cached_mapping_stamp, lookup_accel_for,
+            lookup_cth_with_source, material_from,
         )
 
         line_text: dict[tuple[int, int], dict[str, str]] = {}
@@ -3525,6 +3556,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 master,
             )
             key_label = (getattr(c, "lookup_key_label", None) or "").strip()
+            # One query for the whole field, not one per line.
+            ref_map = reference_map_for(db, c.id)
             for fv in rows_for_cf:
                 shown = (fv.corrected_value or fv.extracted_value or "").strip()
                 if not shown:
@@ -3534,11 +3567,24 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 code = (texts.get(key_label, "") if key_label else "") or texts.get(
                     "item_material_code", ""
                 )
+                material = material_from(code, desc)
                 found, source = lookup_cth_with_source(
-                    material_from(code, desc), master, description=desc, accel=accel,
+                    material, master, description=desc, accel=accel,
                 )
                 if source and found and found == shown:
                     lookup_source_by_fv[fv.id] = source
+                    continue
+                # The sheet did not produce what is on screen. Before leaving the box with no
+                # explanation at all, ask the tier that extraction asks second: what an
+                # operator typed for this same part once before. Same two attempts, in the same
+                # order, as the extraction that filled it - [material, desc] then [material]
+                # alone - so this reports what actually happened rather than a guess at it.
+                if ref_map:
+                    for match_values in ([material, desc], [material]):
+                        key = reference_key(match_values)
+                        if any(key) and ref_map.get(key) == shown:
+                            lookup_source_by_fv[fv.id] = CTH_SOURCE_REFERENCE
+                            break
 
     field_values = []
     for fv in fvs:
@@ -4800,6 +4846,30 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             link_groups.union(c.id, c.paired_custom_field_id)
         for sync_id in (c.sync_field_ids or []):
             link_groups.union(c.id, sync_id)
+    # The OTHER half of a picker pairing - "Document CTH", read straight off whatever the
+    # supplier happened to print on the invoice - is a CANDIDATE for the group's answer, not
+    # the answer itself, and nothing exports it: for every live template the entry sheet's CTH
+    # column reads "Dump CTH Number" and its RITC column reads the sync target. So a document
+    # reading nobody ever picked leaves BOTH of those columns blank.
+    #
+    # Letting it answer for the whole group is what allowed a job to be approved, and filed,
+    # with no tariff heading on the line at all: the operator never ticked either box, and
+    # Submit raised nothing because the document had printed a code somewhere on the page.
+    # Picking it is one click, and that click is the whole point of the picker.
+    #
+    # Only the paired candidate is held back. A code typed straight into CTH still answers for
+    # the group, which is the case this grouping was built for in the first place.
+    candidate_only = {c.paired_custom_field_id for c in all_per_row if c.paired_custom_field_id}
+    # The sync TARGET - the big "CTH" box the picker feeds, and the one an operator types into
+    # when neither source is right - has to carry its OWN value. It is what the entry sheet's
+    # second code column reads, and letting a sibling answer for it meant a line could be
+    # approved with that box visibly empty on screen. Asked for directly: "the bigger CTH field
+    # should not submit empty."
+    #
+    # Its siblings may still lean on the group. That is what keeps the dump sheet's own lookup
+    # from having to be retyped by hand to "confirm" a code more authoritative than anything
+    # the operator would type.
+    sync_targets = {sid for c in all_per_row for sid in (c.sync_field_ids or [])}
     if not asked_marks and not asked_customs and not per_row_ids:
         return []
 
@@ -4840,7 +4910,7 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             JobFieldValue.row_index.isnot(None),
         ).all():
             ans = _effective_answer(fv)
-            if ans:
+            if ans and fv.custom_field_id not in candidate_only:
                 key = (link_groups.find(fv.custom_field_id), fv.row_index)
                 group_answer_by_row.setdefault(key, ans)
 
@@ -4849,8 +4919,10 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
             JobFieldValue.custom_field_id.in_(list(per_row_ids)),
             JobFieldValue.row_index.isnot(None),
         ).order_by(JobFieldValue.row_index).all():
-            answered = _effective_answer(fv) or group_answer_by_row.get(
-                (link_groups.find(fv.custom_field_id), fv.row_index), "")
+            answered = _effective_answer(fv)
+            if not answered and fv.custom_field_id not in sync_targets:
+                answered = group_answer_by_row.get(
+                    (link_groups.find(fv.custom_field_id), fv.row_index), "")
             if not answered:
                 unanswered_rows.append(f"{per_row_ids[fv.custom_field_id]} (line {fv.row_index})")
 
@@ -8357,6 +8429,7 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 ]
                 answers = compute_custom_field_per_row(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
+                    field_label=cf.label_name,
                 )
                 for key, answer in zip(line_keys, answers):
                     looked_up[key] = answer
@@ -8453,7 +8526,8 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 # this field was never tied to any mark's line items to begin with.
                 from app.core.llm import compute_custom_field_rows
 
-                rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records)
+                rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records,
+                                                 field_label=cf.label_name)
                 logger.info("%r on job %s: %d row(s) read directly from its own document(s)",
                             cf.label_name, job.reference, len(rows))
                 # Idempotent on the same reasoning as every other write loop in this function -
@@ -8483,7 +8557,8 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
 
             from app.core.llm import compute_custom_field
 
-            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
+                                         field_label=cf.label_name)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
@@ -8713,30 +8788,21 @@ def _line_key_values(db: Session, job_id: str, set_index: int | None, row_index:
     return material_from(code, desc), desc
 
 
-@router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
-def correct_field_value(
-    value_id: str,
-    payload: FieldValueCorrect,
-    db: Session = Depends(get_db),
-    scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
-) -> JobFieldValueOut:
-    fv = scoped_query(db, JobFieldValue, scope).filter(JobFieldValue.id == value_id).first()
-    if fv is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field value not found")
-    # A value on its own carries no owner or mode - only its job does. Loading the job through
-    # the shared helper is what actually enforces an operator's own-job restriction and a
-    # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
-    # either restriction could be bypassed just by knowing/guessing a value's id.
-    _load_job(db, fv.job_id, scope, user)
-    # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
-    # read site in this file already defensively does `.strip()` - this was the one write site
-    # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
-    # value - a CTH/RITC code is the case this was found on - rode uncleaned straight through
-    # to the Excel export and failed the ERP's own upload there, while clearing the cell and
-    # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
-    # behaving differently purely because of what came along with it.
-    fv.corrected_value = (payload.corrected_value or "").strip()
+def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
+    """Write ONE corrected value, and everything that has to happen alongside it.
+
+    Pulled out of correct_field_value so carrying a value across every product line can do
+    exactly what saving one line does - the same un-approval of a document whose mandatory
+    field just went blank, and the same reference learning that remembers a hand-filled code
+    for next time. A bulk path that reimplemented any of that would drift from this one the
+    first time either changed.
+
+    Deliberately does NOT commit. The single-field endpoint commits once for its one value;
+    the bulk endpoint commits ONCE for every line it touched, which is the whole point -
+    carrying a CTH across a 144-line invoice becomes one transaction instead of 144.
+    """
+    value = (value or "").strip()
+    fv.corrected_value = value
     # A mandatory mark cleared back to blank on a document already marked Approved must not
     # leave that badge standing - found live: an operator cleared Vessel Name (and others) on
     # an already-approved Bill of Lading, and it stayed "✓ Approved" with a mandatory field now
@@ -8766,7 +8832,7 @@ def correct_field_value(
         if cf is not None and cf.kind == "lookup":
             material, desc = _line_key_values(
                 db, fv.job_id, fv.set_index, fv.row_index, key_label=cf.lookup_key_label)
-            remember_reference(db, cf.id, [material, desc], payload.corrected_value or "")
+            remember_reference(db, cf.id, [material, desc], value)
         elif cf is not None and cf.ask_operator and cf.label_name != "insurance_percentage":
             # A plain ask_operator field with no extraction of its own (e.g. "Erp Entry Name",
             # purely operator-typed) has nothing else to key on - what was just typed is both
@@ -8779,8 +8845,8 @@ def correct_field_value(
             # An operator picking a different customer's rate for one odd job - or typing an
             # outlier - must never rewrite what every FUTURE job for that same customer gets
             # suggested; only the one job's own saved value changes.
-            remember_reference(db, cf.id, [payload.corrected_value or ""],
-                                payload.corrected_value or "", fuzzy=cf.fuzzy_match)
+            remember_reference(db, cf.id, [value],
+                                value, fuzzy=cf.fuzzy_match)
     # is_target_value (mark or custom field): the reference table had nothing for what this
     # field actually extracted (target_value_raw), now filled in by hand - remember it against
     # THAT raw value, so the same raw extraction is resolved automatically next time instead of
@@ -8806,9 +8872,192 @@ def correct_field_value(
         # (no "||" present) round-trips as the one-element list it always was.
         remember_reference(
             db, custom_field_id=fv.custom_field_id, mark_id=fv.mark_id,
-            match_values=(fv.target_value_raw or "").split("||"), resolved_value=payload.corrected_value or "",
+            match_values=(fv.target_value_raw or "").split("||"), resolved_value=value,
             fuzzy=fuzzy,
         )
+
+
+def _synced_partner_ids(db: Session, cf) -> list[str]:
+    """The fields `cf` feeds. One way only - a diode, as asked for directly.
+
+    The candidate boxes feed the answer box and nothing feeds back:
+
+        Dump CTH Number ---> CTH          a tick, or an edit, flows down
+        Document CTH    ---> CTH
+        CTH             -/-> either       what is typed in the big box stays there
+
+    A brief attempt at making this two-way was wrong, and the reason it looked necessary is
+    worth writing down: the entry sheet's CTH column currently reads "Dump CTH Number", so the
+    answer had to be forced back into that field for the export to see it. That is a mapping
+    problem, not a data-model one. The two small boxes are EVIDENCE - the customer's master
+    sheet on one side, what the supplier printed on the other - and evidence that rewrites
+    itself to match the answer is no longer evidence.
+
+    Never across paired_custom_field_id either, for the same reason.
+    """
+    return [sid for sid in (cf.sync_field_ids or []) if sid != cf.id]
+
+
+def _carry_to_synced_partners(db: Session, fv: JobFieldValue, value: str) -> None:
+    """Write `value` into this line's other boxes that hold the same answer.
+
+    Same line only - (set_index, row_index), not row_index alone, because with three invoices
+    on one job "line 1" is three different products. Does not commit; the caller does.
+    """
+    if not fv.custom_field_id:
+        return
+    from app.models.custom_field import CustomField
+
+    cf = db.get(CustomField, fv.custom_field_id)
+    if cf is None:
+        return
+    partner_ids = _synced_partner_ids(db, cf)
+    if not partner_ids:
+        return
+    targets = db.query(JobFieldValue).filter(
+        JobFieldValue.job_id == fv.job_id,
+        JobFieldValue.custom_field_id.in_(partner_ids),
+        JobFieldValue.row_index == fv.row_index,
+        JobFieldValue.set_index == fv.set_index,
+    ).all()
+    for target in targets:
+        current = (target.corrected_value if target.corrected_value is not None
+                   else target.extracted_value) or ""
+        # Already says the same thing - writing it again would re-record the operator's
+        # placement in the reference learning for no new information.
+        if current.strip() == value.strip():
+            continue
+        _apply_correction(db, target, value)
+
+
+@router.post("/jobs/{job_id}/carry-across-rows")
+def carry_across_rows(
+    job_id: str,
+    payload: CarryAcrossRows,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Carry one operator action across every product line, in ONE request.
+
+    The frontend used to do this itself, a line at a time: for a 144-line invoice that was
+    close to three hundred round trips, sent one after another, and the card sat on "saving…"
+    for about a minute while they drained. Here it is one request, one pass over the rows
+    already in memory, and one commit.
+
+    Every write goes through _apply_correction, exactly as saving a single field does, so the
+    reference learning and the un-approval of a newly-blank mandatory field behave identically
+    whether a value was carried or typed on its own.
+    """
+    from app.models.custom_field import CustomField
+
+    job = _load_job(db, job_id, scope, user)
+    cf = db.get(CustomField, payload.custom_field_id)
+    if cf is None or cf.tenant_id != job.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
+
+    rows: dict[tuple, dict[str, JobFieldValue]] = {}
+    for fv in (
+        db.query(JobFieldValue)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
+        .all()
+    ):
+        if fv.custom_field_id:
+            rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
+
+    sync_ids = _synced_partner_ids(db, cf)
+    previous = (payload.previous or "").strip()
+    written = 0
+
+    for by_cf in rows.values():
+        primary = by_cf.get(cf.id)
+        if primary is None:
+            continue
+
+        if payload.mode == "pick":
+            other = by_cf.get(cf.paired_custom_field_id) if cf.paired_custom_field_id else None
+            other_val = ((other.corrected_value if other else None)
+                         or (other.extracted_value if other else None) or "").strip()
+            # primary's OWN answer, not whatever an earlier pick wrote over it. For a
+            # lookup field extracted_value IS the sheet's answer, and picking the other
+            # side overwrites only corrected_value - so reading extracted FIRST is what
+            # makes picking back restore this line's own dump value instead of handing it
+            # the document value it was just given.
+            #
+            # Falls back to corrected_value when there is no extraction at all: a line
+            # whose real answer was typed by hand lives entirely in corrected_value, and
+            # "restoring" an empty extraction over it would throw that answer away.
+            primary_val = (primary.extracted_value or primary.corrected_value or "").strip()
+            value = primary_val if payload.which == "primary" else other_val
+            # Nothing on the side they PICKED, on this line - leave the line exactly as it is
+            # rather than blanking it out on the strength of a choice made somewhere else.
+            #
+            # This used to test the OTHER side instead, which is wrong twice over. Ticking
+            # "Dump CTH Number" on a job whose document side is blank - and it is blank on
+            # every line of a job whose invoice simply does not print a code - skipped every
+            # row and wrote nothing at all. The operator ticked the box, the tick appeared, and
+            # the CTH stayed empty. Reported as "I have given the tick mark but the value is
+            # not taken in the box".
+            #
+            # The carry-across protection it was reaching for is unchanged, and now says what
+            # it means: a line with nothing on the chosen side keeps what it has.
+            if not value:
+                continue
+            # A tick says WHICH candidate is right, and that is all it says. It does not move
+            # the candidate: the dump box keeps the customer's master code and the document box
+            # keeps what the supplier printed, so the two stay there to be compared on every
+            # line. Only the answer field is written.
+            targets = [by_cf[sid] for sid in sync_ids if sid in by_cf]
+        else:
+            value = (payload.value or "").strip()
+            current = (primary.corrected_value or primary.extracted_value or "").strip()
+            if current == value:
+                continue
+            # Already carries a code of its OWN, deliberately different from the one this box
+            # held before the edit. Correcting line 1 must not flatten line 7.
+            if current != "" and current != previous:
+                continue
+            # A typed value belongs in the box it was typed into, and then flows downstream.
+            targets = [primary] + [by_cf[sid] for sid in sync_ids if sid in by_cf]
+
+        if not targets:
+            continue
+        for target in targets:
+            _apply_correction(db, target, value)
+        written += 1
+
+    db.commit()
+    return {"rows_written": written}
+
+
+@router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
+def correct_field_value(
+    value_id: str,
+    payload: FieldValueCorrect,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> JobFieldValueOut:
+    fv = scoped_query(db, JobFieldValue, scope).filter(JobFieldValue.id == value_id).first()
+    if fv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field value not found")
+    # A value on its own carries no owner or mode - only its job does. Loading the job through
+    # the shared helper is what actually enforces an operator's own-job restriction and a
+    # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
+    # either restriction could be bypassed just by knowing/guessing a value's id.
+    _load_job(db, fv.job_id, scope, user)
+    # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
+    # read site in this file already defensively does `.strip()` - this was the one write site
+    # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
+    # value - a CTH/RITC code is the case this was found on - rode uncleaned straight through
+    # to the Excel export and failed the ERP's own upload there, while clearing the cell and
+    # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
+    # behaving differently purely because of what came along with it.
+    _apply_correction(db, fv, payload.corrected_value or "")
+    # ... and into every box on this line holding the same answer, in both directions. The
+    # frontend already walked the link forwards; nothing walked it back, so typing into the
+    # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
+    _carry_to_synced_partners(db, fv, payload.corrected_value or "")
     db.commit()
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None
@@ -8976,7 +9225,8 @@ def _recompute_per_row_custom_field(
             }
             for i, key in enumerate(line_keys)
         ]
-        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context, records=records)
+        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context,
+                                               records=records, field_label=cf.label_name)
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
         if composite_pieces_override is not None:
@@ -9144,7 +9394,8 @@ def recompute_custom_field(
 
         from app.core.llm import compute_custom_field
 
-        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records)
+        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
+                                     field_label=cf.label_name)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
 

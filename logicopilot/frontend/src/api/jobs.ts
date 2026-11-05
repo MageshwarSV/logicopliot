@@ -582,6 +582,32 @@ export async function setVerificationDecision(
   return data;
 }
 
+/** Carry one operator action across EVERY product line of a job, in a single request.
+ *
+ * `mode: "pick"` switches every line to its OWN value from that side of the pairing - line 7
+ * takes line 7's document reading, not line 1's. `mode: "value"` gives every line that was
+ * merely following along this one typed value, leaving a line with a code of its own alone
+ * (`previous` is what the edited box held before the edit, which is how the two are told
+ * apart).
+ *
+ * This used to be a loop in the page: one request per line plus one per field it syncs to,
+ * close to three hundred on a 144-line invoice, sent one after another. */
+export async function carryAcrossRows(
+  jobId: string,
+  body: {
+    custom_field_id: string;
+    mode: "pick" | "value";
+    which?: "primary" | "other";
+    value?: string;
+    previous?: string;
+  },
+): Promise<{ rows_written: number }> {
+  const { data } = await apiClient.post<{ rows_written: number }>(
+    `/jobs/${jobId}/carry-across-rows`, body,
+  );
+  return data;
+}
+
 export async function correctFieldValue(valueId: string, correctedValue: string): Promise<JobFieldValue> {
   const { data } = await apiClient.patch<JobFieldValue>(`/job-field-values/${valueId}`, {
     corrected_value: correctedValue,

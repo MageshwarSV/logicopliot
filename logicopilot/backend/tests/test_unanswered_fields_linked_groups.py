@@ -62,10 +62,20 @@ def test_a_value_typed_directly_into_the_synced_field_answers_the_whole_group(db
     assert _unanswered_operator_fields(db_session, job) == []
 
 
-def test_a_value_read_onto_document_cth_answers_the_group_even_though_it_is_never_asked(db_session):
-    """"Document CTH" is never itself ask_operator - nobody is ever asked to confirm it - but a
-    real value read straight off the document is just as good an answer for the group as an
-    explicit correction on one of the OTHER two."""
+def test_a_document_reading_nobody_picked_does_NOT_answer_the_group(db_session):
+    """This used to assert the opposite, and the opposite was wrong.
+
+    The premise was that a code read straight off the document is "just as good an answer" as a
+    correction on one of the other two. It is not, because nothing exports it. On every live
+    template the entry sheet's CTH column reads "Dump CTH Number" and its RITC column reads the
+    sync target; "Document CTH" is mapped to no column at all. So a job whose only CTH anywhere
+    is an unpicked document reading went out with BOTH of those columns blank - approved,
+    submitted, and filed with no tariff heading on the line.
+
+    Reported from the floor as "without CTH it was submitting, it is mandatory right". It is,
+    and now it is again. Ticking the box is one click, and making that click is the entire
+    purpose of the picker.
+    """
     tenant = make_tenant(db_session)
     group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
     db_session.add(group)
@@ -74,8 +84,66 @@ def test_a_value_read_onto_document_cth_answers_the_group_even_though_it_is_neve
     dump_cth, document_cth, cth = _make_linked_trio(db_session, tenant, group)
     job = _make_job(db_session, tenant, group)
 
-    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=document_cth.id,
-                                 label_name="Document CTH", row_index=1, extracted_value="85177100"))
+    db_session.add_all([
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=document_cth.id,
+                      label_name="Document CTH", row_index=1, extracted_value="85177100"),
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=dump_cth.id,
+                      label_name="Dump CTH Number", row_index=1, extracted_value=""),
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=cth.id,
+                      label_name="CTH", row_index=1, extracted_value=""),
+    ])
+    db_session.commit()
+
+    missing = _unanswered_operator_fields(db_session, job)
+    assert "Dump CTH Number (line 1)" in missing
+    assert "CTH (line 1)" in missing
+
+
+def test_picking_that_document_reading_then_answers_the_whole_group(db_session):
+    """The other half of the test above: one click, and the job is clear to go.
+
+    Picking the document side writes that code into "Dump CTH Number" (the field the export
+    reads) and into its sync target. That is what turns a candidate into an answer, and it is
+    all the operator has to do.
+    """
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
+    db_session.add(group)
+    db_session.commit()
+    db_session.refresh(group)
+    dump_cth, document_cth, cth = _make_linked_trio(db_session, tenant, group)
+    job = _make_job(db_session, tenant, group)
+
+    db_session.add_all([
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=document_cth.id,
+                      label_name="Document CTH", row_index=1, extracted_value="85177100"),
+        # What the pick writes.
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=dump_cth.id,
+                      label_name="Dump CTH Number", row_index=1, corrected_value="85177100"),
+        JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=cth.id,
+                      label_name="CTH", row_index=1, corrected_value="85177100"),
+    ])
+    db_session.commit()
+
+    assert _unanswered_operator_fields(db_session, job) == []
+
+
+def test_the_dump_sheets_own_reading_still_answers_without_being_retyped(db_session):
+    """Unchanged, and must stay unchanged: "Dump CTH Number" is a lookup off the customer's own
+    material master, more authoritative than anything an operator would type, and the export
+    reads it directly. Requiring it to be retyped to "confirm" it was the busywork that blocked
+    a fourteen-line job for no reason."""
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Sea Import", status="approved")
+    db_session.add(group)
+    db_session.commit()
+    db_session.refresh(group)
+    dump_cth, document_cth, cth = _make_linked_trio(db_session, tenant, group)
+    job = _make_job(db_session, tenant, group)
+
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=dump_cth.id,
+                                 label_name="Dump CTH Number", row_index=1,
+                                 extracted_value="85177100"))
     db_session.commit()
 
     assert _unanswered_operator_fields(db_session, job) == []

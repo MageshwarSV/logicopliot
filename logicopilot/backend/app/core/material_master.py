@@ -25,6 +25,7 @@ The code is cleaned to DIGITS ONLY, first 8 - an export may carry "8517 79 90" o
 and the ERP wants 85177990.
 """
 
+import bisect
 import difflib
 import logging
 from pathlib import Path
@@ -489,8 +490,34 @@ def material_from(code: str, description: str) -> str:
 _DESC_FUZZY_THRESHOLD = 0.80
 
 
+def _length_window(n: int) -> tuple[int, int]:
+    """The only key lengths that can possibly reach the threshold against a description of
+    length `n`, inclusive.
+
+    difflib's own cheapest bound is real_quick_ratio() = 2 * min(la, lb) / (la + lb) - it knows
+    nothing about the characters, only the two lengths, and it is an UPPER bound on the real
+    score. Solving `2 * min(n, L) / (n + L) >= threshold` for L gives this window, so every key
+    outside it would have been rejected by that bound anyway. At 0.80 that is two thirds to one
+    and a half times the description's length, which on a real master is a small slice of it.
+
+    Widened by one at each end on purpose. The exact bounds land on fractions that float
+    arithmetic rounds the wrong way at the boundary - int(2 * 1.2 / 0.8) is 2, not 3 - which
+    would silently drop a key scoring exactly the threshold. The extra candidates a wider
+    window lets through are still checked by real_quick_ratio() itself below, so they cost a
+    few comparisons and change nothing; a key wrongly excluded here would never be compared at
+    all. Caught by the brute-force test that walks every (n, L) pair.
+    """
+    t = _DESC_FUZZY_THRESHOLD
+    if t <= 0:
+        return 0, 1 << 30
+    lo = int(t * n / (2 - t)) - 1
+    hi = int(n * (2 - t) / t) + 1
+    return max(lo, 0), hi
+
+
 def _fuzzy_description_match(
     desc_key: str, master: dict[str, str], cache: dict[str, str] | None = None,
+    accel: "LookupAccel | None" = None,
 ) -> str:
     """One more try for a description that matched nothing exactly - found live: the document's
     own wording is a shorter or differently-worded version of what the customer's own master
@@ -515,10 +542,48 @@ def _fuzzy_description_match(
         return ""
     if cache is not None and desc_key in cache:
         return cache[desc_key]
-    codes = {
-        code for key, code in master.items()
-        if " " in key and difflib.SequenceMatcher(None, desc_key, key).ratio() >= _DESC_FUZZY_THRESHOLD
-    }
+    # difflib's two cheap UPPER BOUNDS on ratio(), cheapest first, before the real thing - the
+    # same ladder difflib.get_close_matches itself climbs. real_quick_ratio() compares only the
+    # two lengths; quick_ratio() only the character counts; ratio() is the O(n*m) one that
+    # actually walks for matching blocks. Both being upper bounds, anything they reject could
+    # never have reached the threshold, so the set collected here is IDENTICAL to the set the
+    # plain comprehension collected - this is purely about not doing the expensive walk tens of
+    # thousands of times for a description that is obviously nothing like this one. At a 0.80
+    # threshold the length bound alone discards every master key shorter than two thirds, or
+    # longer than one and a half times, this description.
+    #
+    # Measured on the real thing (JOB-FC08FF, 144 product lines, a 32,248-row master): the
+    # first load of that job took 199.7s and every later one 0.8s. The memo above is why the
+    # later ones are fast, and why this looked solved - but a memo keyed on desc_key only helps
+    # the SECOND time a description is asked for, and 144 lines means 144 distinct descriptions
+    # each paying a full scan before any of them repeat. After a deploy or a pm2 restart the
+    # first operator to open that job wore the whole three and a half minutes.
+    #
+    # One matcher, reused: building a fresh SequenceMatcher per candidate repeated its setup
+    # once per master key. seq1 stays the description, so the a/b orientation - and therefore
+    # every score - is exactly what it was before.
+    # With an accel, only the keys whose length could possibly reach the threshold - a bisect
+    # into a list sorted once per master version, rather than a lap of the whole sheet per
+    # description. Without one, the full walk, exactly as before.
+    if accel is not None and accel.desc_lengths:
+        lo, hi = _length_window(len(desc_key))
+        start = bisect.bisect_left(accel.desc_lengths, lo)
+        end = bisect.bisect_right(accel.desc_lengths, hi)
+        candidates = accel.desc_entries[start:end]
+    else:
+        candidates = [(k, v) for k, v in master.items() if " " in k]
+
+    matcher = difflib.SequenceMatcher(None)
+    matcher.set_seq1(desc_key)
+    codes: set[str] = set()
+    for key, code in candidates:
+        matcher.set_seq2(key)
+        if (
+            matcher.real_quick_ratio() >= _DESC_FUZZY_THRESHOLD
+            and matcher.quick_ratio() >= _DESC_FUZZY_THRESHOLD
+            and matcher.ratio() >= _DESC_FUZZY_THRESHOLD
+        ):
+            codes.add(code)
     result = codes.pop() if len(codes) == 1 else ""
     if cache is not None:
         cache[desc_key] = result
@@ -532,6 +597,16 @@ def _fuzzy_description_match(
 # on these invoices) the description is the only thing that could have matched at all.
 CTH_SOURCE_PART_CODE = "Part Code"
 CTH_SOURCE_DESCRIPTION = "Description"
+# NOT the customer's sheet at all. A lookup field falls back to what an operator typed for this
+# same part once before (see reference_cache.lookup_reference), and that answer then appears in
+# a box labelled "Dump CTH Number" with nothing to say it did not come from the dump.
+#
+# Found live on JOB-EB4C93: a Foxconn heat exchanger showing 84195099 while the 32,248-row
+# master contained no match for the part code, no match for the description, and no row mapping
+# to that code anywhere. It came from one operator typing it on 11 Oct. The code was right; the
+# box was claiming an authority it did not have, and an operator checking a declaration against
+# "the customer's own sheet" was checking it against a colleague's earlier guess.
+CTH_SOURCE_REFERENCE = "Previous entry"
 
 
 class LookupAccel:
@@ -549,11 +624,19 @@ class LookupAccel:
     on every single poll.
     """
 
-    __slots__ = ("squashed_index", "stem_groups", "fuzzy_memo")
+    __slots__ = ("squashed_index", "stem_groups", "fuzzy_memo", "desc_lengths", "desc_entries")
 
     def __init__(self, master: dict[str, str]):
         squashed_index: dict[str, str] = {}
         stem_groups: dict[str, set[str]] = {}
+        # Description-like keys ordered by LENGTH, so the fuzzy fallback can take a slice
+        # instead of a lap. See _length_window for why a slice is enough.
+        desc: list[tuple[int, str, str]] = [
+            (len(k), k, v) for k, v in master.items() if " " in k
+        ]
+        desc.sort(key=lambda e: e[0])
+        self.desc_lengths = [e[0] for e in desc]
+        self.desc_entries = [(e[1], e[2]) for e in desc]
         for k, v in master.items():
             # setdefault, not assignment - the original loop returned the FIRST key (in
             # iteration/insertion order) whose squashed form matched; keeping only the first
@@ -655,6 +738,7 @@ def lookup_cth_with_source(
     if desc_key:
         fuzzy = _fuzzy_description_match(
             desc_key, master, cache=accel.fuzzy_memo if accel is not None else None,
+            accel=accel,
         )
         if fuzzy:
             return fuzzy, CTH_SOURCE_DESCRIPTION
