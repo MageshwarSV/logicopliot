@@ -648,6 +648,7 @@ def create_custom_field(
         composite_source_labels=payload.composite_source_labels,
         fixed_options=payload.fixed_options,
         display_document_id=payload.display_document_id,
+        standalone_group_heading=payload.standalone_group_heading,
     )
     db.add(cf)
     db.commit()

@@ -348,6 +348,8 @@ export function TemplateCreationWizard() {
   // CustomField.paired_custom_field_id. "" = not paired.
   const [cfPairedFieldId, setCfPairedFieldId] = useState("");
   const [cfPickerHeading, setCfPickerHeading] = useState("");
+  // This field's own section heading on the Job Run page - see CustomField.standalone_group_heading.
+  const [cfSectionHeading, setCfSectionHeading] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
@@ -465,7 +467,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput("");
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -491,6 +493,7 @@ export function TemplateCreationWizard() {
     setCfSyncFieldIds(cf.sync_field_ids ?? []);
     setCfCompositeLabels(cf.composite_source_labels ?? []);
     setCfCompositeFixedInput("");
+    setCfSectionHeading(cf.standalone_group_heading ?? "");
     setError(null);
     setCustomOpen(true);
   }
@@ -533,6 +536,7 @@ export function TemplateCreationWizard() {
         picker_heading: cfPairedFieldId ? cfPickerHeading.trim() || null : null,
         sync_field_ids: cfPairedFieldId ? cfSyncFieldIds : [],
         composite_source_labels: cfKind === "composite" ? cfCompositeLabels : null,
+        standalone_group_heading: cfSectionHeading.trim() || null,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -685,8 +689,9 @@ export function TemplateCreationWizard() {
         ask_operator_hint: askOperator ? askHint.trim() || null : null,
         is_multi_value: multiValue,
         standalone_multi_value: multiValue ? standaloneMultiValue : false,
-        standalone_group_heading:
-          multiValue && standaloneMultiValue ? standaloneHeading.trim() || null : null,
+        // Doubles as the field's own section heading on the Job Run page (any field, not only
+        // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
+        standalone_group_heading: standaloneHeading.trim() || null,
         is_target_value: targetValue,
         fuzzy_match: targetValue ? fuzzyMatch : false,
       });
@@ -799,7 +804,9 @@ export function TemplateCreationWizard() {
         extraction_prompt: editPrompt,
         anchor_variations: editAnchors,
         standalone_multi_value: editStandalone,
-        standalone_group_heading: editStandalone ? editStandaloneHeading.trim() || null : null,
+        // Doubles as the field's own section heading on the Job Run page (any field, not only
+        // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
+        standalone_group_heading: editStandaloneHeading.trim() || null,
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1600,6 +1607,45 @@ export function TemplateCreationWizard() {
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                       />
                     </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Section heading on the job screen (optional)
+                      </label>
+                      <p className="mb-1.5 text-[11px] text-slate-500">
+                        Groups this field with others under one heading, e.g. "HBL & Shipment
+                        Details". For a field marked as its own separate table below, this is
+                        the heading shown over that table instead.
+                      </p>
+                      <div className="flex gap-2">
+                        {(() => {
+                          const existing = [...new Set(
+                            allMarks
+                              .filter((om) => om.document_id === m.document_id)
+                              .map((om) => om.standalone_group_heading?.trim())
+                              .filter((h): h is string => !!h),
+                          )].sort();
+                          return existing.length > 0 ? (
+                            <select
+                              value=""
+                              onChange={(e) => { if (e.target.value) setEditStandaloneHeading(e.target.value); }}
+                              className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                            >
+                              <option value="">Existing…</option>
+                              {existing.map((h) => (
+                                <option key={h} value={h}>{h}</option>
+                              ))}
+                            </select>
+                          ) : null;
+                        })()}
+                        <input
+                          type="text"
+                          value={editStandaloneHeading}
+                          onChange={(e) => setEditStandaloneHeading(e.target.value)}
+                          placeholder={m.label_name}
+                          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
                     {m.is_multi_value && (
                       <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-500/20 dark:bg-violet-500/5">
                         <label className="flex items-start gap-2 text-sm">
@@ -1614,24 +1660,11 @@ export function TemplateCreationWizard() {
                             <span className="text-xs">
                               Tick when these rows are a separate table unrelated to the
                               job's other line items (e.g. a container count on the Bill of
-                              Lading).
+                              Lading). The heading shown over that table is set above, in
+                              "Section heading on the job screen".
                             </span>
                           </span>
                         </label>
-                        {editStandalone && (
-                          <div className="mt-2 pl-6">
-                            <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
-                              Heading on the job screen (optional — e.g. "Container")
-                            </label>
-                            <input
-                              type="text"
-                              value={editStandaloneHeading}
-                              onChange={(e) => setEditStandaloneHeading(e.target.value)}
-                              placeholder={m.label_name}
-                              className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
-                            />
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -2276,6 +2309,43 @@ export function TemplateCreationWizard() {
             placeholder="e.g. bl_number"
           />
           <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Section heading on the job screen (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Groups this field together with others under one heading, e.g. "HBL & Shipment
+              Details" - shown once above every field that shares it. For a field marked as
+              its own separate table below, this is the heading shown over that table instead.
+            </p>
+            <div className="flex gap-2">
+              {activeDoc && activeDoc.marks.some((m) => (m.standalone_group_heading ?? "").trim()) && (
+                <select
+                  value=""
+                  onChange={(e) => { if (e.target.value) setStandaloneHeading(e.target.value); }}
+                  className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  <option value="">Existing…</option>
+                  {[...new Set(
+                    activeDoc.marks
+                      .map((m) => m.standalone_group_heading?.trim())
+                      .filter((h): h is string => !!h),
+                  )]
+                    .sort()
+                    .map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                </select>
+              )}
+              <input
+                type="text"
+                value={standaloneHeading}
+                onChange={(e) => setStandaloneHeading(e.target.value)}
+                placeholder="e.g. HBL & Shipment Details"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+          </div>
+          <div>
             <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Box colour</p>
             <div className="flex gap-2">
               {Object.entries(MARK_COLORS).map(([key, hex]) => (
@@ -2319,22 +2389,10 @@ export function TemplateCreationWizard() {
                   isn't tied to the invoice's own product lines, and there's no reason the two
                   should share a row count). Leave unticked for a field that genuinely
                   describes the SAME line as other per-row fields (CTH, RITC, a part
-                  description).
+                  description). The heading shown over that table is set above, in "Section
+                  heading on the job screen" - it falls back to this field's own name when left
+                  blank.
                 </span>
-                {standaloneMultiValue && (
-                  <div className="mt-2">
-                    <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
-                      Heading on the job screen (optional — e.g. "Container")
-                    </label>
-                    <input
-                      type="text"
-                      value={standaloneHeading}
-                      onChange={(e) => setStandaloneHeading(e.target.value)}
-                      placeholder={labelName || "defaults to the field's own name"}
-                      className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
-                    />
-                  </div>
-                )}
               </span>
             </label>
           )}
@@ -2503,6 +2561,46 @@ export function TemplateCreationWizard() {
       <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={cfEditId ? "Edit custom tag" : "New custom tag"} maxWidth="max-w-lg">
         <div className="space-y-4">
           <Input label="Label" value={cfLabel} onChange={(e) => setCfLabel(e.target.value)} placeholder="e.g. total_net_weight" />
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Section heading on the job screen (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Groups this field together with others under one heading, e.g. "Party Details" -
+              shown once above every field that shares it, on whichever tab/screen this field
+              already renders on.
+            </p>
+            <div className="flex gap-2">
+              {(() => {
+                const existing = [...new Set([
+                  ...(group?.documents.flatMap((d) => d.marks) ?? [])
+                    .map((m) => m.standalone_group_heading?.trim()),
+                  ...(group?.custom_fields ?? [])
+                    .map((c) => c.standalone_group_heading?.trim()),
+                ].filter((h): h is string => !!h))].sort();
+                return existing.length > 0 ? (
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) setCfSectionHeading(e.target.value); }}
+                    className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  >
+                    <option value="">Existing…</option>
+                    {existing.map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                ) : null;
+              })()}
+              <input
+                type="text"
+                value={cfSectionHeading}
+                onChange={(e) => setCfSectionHeading(e.target.value)}
+                placeholder="e.g. Party Details"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+          </div>
 
           <div className="flex gap-2 text-sm">
             <button

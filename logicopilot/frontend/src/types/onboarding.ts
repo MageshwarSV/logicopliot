@@ -137,6 +137,9 @@ export interface CustomField {
   /** Which document's own tab this field is grouped under on the Job Run capture screen,
    *  instead of Additional Details. null = Additional Details. */
   display_document_id?: string | null;
+  /** This field's own section heading on the Job Run page - mirrors FieldMark's own
+   *  standalone_group_heading. null = falls back to the hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
+  standalone_group_heading?: string | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

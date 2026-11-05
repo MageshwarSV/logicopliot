@@ -172,3 +172,9 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36), ForeignKey("template_documents.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Mirrors FieldMark.standalone_group_heading - this field's own section heading on the Job
+    # Run page (e.g. "Party Details"), set once by an admin rather than hardcoded into
+    # JobRunPage.tsx's own FIELD_GROUPS_BY_DOC_TYPE map. None (every field before this existed)
+    # keeps falling back to that hardcoded map, unchanged.
+    standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
+

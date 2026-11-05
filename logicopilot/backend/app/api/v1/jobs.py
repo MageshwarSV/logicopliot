@@ -3478,6 +3478,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
     cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
+    cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3663,7 +3664,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     mark_standalone.get(fv.mark_id, False)
                     or cf_standalone.get(fv.custom_field_id, False)
                 ),
-                standalone_group_heading=mark_group_heading.get(fv.mark_id),
+                standalone_group_heading=(
+                    mark_group_heading.get(fv.mark_id) or cf_group_heading.get(fv.custom_field_id)
+                ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
                 fixed_options=cf_fixed_options.get(fv.custom_field_id),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),

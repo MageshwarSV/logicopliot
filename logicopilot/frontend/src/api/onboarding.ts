@@ -83,6 +83,9 @@ export async function createCustomField(
     fixed_options?: string[] | null;
     /** Which document's own tab to group this field under - omit/null for Additional Details. */
     display_document_id?: string | null;
+    /** This field's own section heading on the Job Run page - omit/null to fall back to the
+     *  hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
+    standalone_group_heading?: string | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -406,6 +409,7 @@ export async function updateCustomField(
     picker_heading: string | null;
     sync_field_ids: string[] | null;
     composite_source_labels: CompositePiece[] | null;
+    standalone_group_heading: string | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

@@ -131,6 +131,9 @@ class CustomFieldOut(BaseModel):
     # under instead of Additional Details. See CustomField.fixed_options/display_document_id.
     fixed_options: list[str] | None = None
     display_document_id: str | None = None
+    # Mirrors FieldMark.standalone_group_heading - this field's own section heading on the Job
+    # Run page, instead of relying only on JobRunPage.tsx's hardcoded FIELD_GROUPS_BY_DOC_TYPE.
+    standalone_group_heading: str | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -167,6 +170,7 @@ class CustomFieldCreate(BaseModel):
     # which document tab it renders under.
     fixed_options: list[str] | None = None
     display_document_id: str | None = None
+    standalone_group_heading: str | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -207,6 +211,7 @@ class CustomFieldEdit(BaseModel):
     # which document tab it renders under.
     fixed_options: list[str] | None = None
     display_document_id: str | None = None
+    standalone_group_heading: str | None = None
 
 
 class DocumentDetailOut(DocumentOut):

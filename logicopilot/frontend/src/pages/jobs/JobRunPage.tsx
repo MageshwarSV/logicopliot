@@ -194,6 +194,22 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     Ins_Currency: "Insurance Currency",
   },
 };
+// Same idea as FIELD_LABEL_OVERRIDES_BY_DOC_TYPE, but scoped to ONE template (keyed by
+// group_id) rather than every template that shares a doc_type - for a rename that should NOT
+// apply platform-wide. "HBL No" -> "HAWB Number" is the first of these: 4S Logistics' Sea
+// Import template (and every other BL-type template) must keep reading "HBL Number", only
+// "Air import (November 5)" reads "HAWB Number" for the exact same underlying field. Checked
+// BEFORE the doc-type-wide map (see fieldLabelOverride below) - a group-specific entry wins,
+// every other group falls through to the doc-type-wide override exactly as before.
+const FIELD_LABEL_OVERRIDES_BY_GROUP: Record<string, Record<string, string>> = {
+  "9b7a9384-4030-4052-ad5c-b33da7bf2912": { "HBL No": "HAWB Number" }, // Air import (November 5)
+};
+function fieldLabelOverride(groupId: string | undefined, docType: string | undefined, label: string): string | undefined {
+  if (groupId && FIELD_LABEL_OVERRIDES_BY_GROUP[groupId]?.[label] !== undefined) {
+    return FIELD_LABEL_OVERRIDES_BY_GROUP[groupId][label];
+  }
+  return docType ? FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[docType]?.[label] : undefined;
+}
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
 const FIELD_HINTS: Record<string, string> = {
@@ -6500,11 +6516,40 @@ function ExtractionReview({
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
   // happen to be stored in. null when this doc_type has no grouping configured (every other
   // template) - the caller then falls back to the plain ungrouped grid, unchanged.
+  //
+  // A template can now set its own per-field heading (FieldMark.standalone_group_heading,
+  // broadened beyond its original standalone-multi-value-only use - see that column's own
+  // comment) through the Template Creation Wizard, with no code change or deploy needed. When
+  // at least one field on this document carries one, that takes over completely for THIS
+  // document - content and order come from what the admin actually configured, not a mix of
+  // two sources of truth. A document where nothing has been set this way yet (every template
+  // that hasn't adopted it) runs the exact old hardcoded-map code, byte-for-byte unchanged.
   const groupedDocFields = useMemo(() => {
     if (!active) return null;
+    const all = [...visibleFields, ...relocatedFields];
+    const hasCustomHeadings = all.some((fv) => (fv.standalone_group_heading ?? "").trim());
+    if (hasCustomHeadings) {
+      const order: string[] = [];
+      const byHeading = new Map<string, JobFieldValue[]>();
+      const other: JobFieldValue[] = [];
+      for (const fv of all) {
+        const heading = fv.standalone_group_heading?.trim();
+        if (!heading) {
+          other.push(fv);
+          continue;
+        }
+        if (!byHeading.has(heading)) {
+          byHeading.set(heading, []);
+          order.push(heading);
+        }
+        byHeading.get(heading)!.push(fv);
+      }
+      const sections = order.map((heading) => ({ heading, items: byHeading.get(heading)! }));
+      if (other.length) sections.push({ heading: "Other", items: other });
+      return sections;
+    }
     const groups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type];
     if (!groups) return null;
-    const all = [...visibleFields, ...relocatedFields];
     const byLabel = new Map(all.map((fv) => [fv.label_name, fv] as const));
     const used = new Set<string>();
     const sections = groups
@@ -6817,8 +6862,8 @@ function ExtractionReview({
                           onToggle={onToggleInsuranceMode}
                           readOnly={readOnly}
                           reload={reload}
-                          labelOverridePercentage={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                          labelOverrideAmount={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.["insurance_amount"]}
+                          labelOverridePercentage={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
+                          labelOverrideAmount={active ? fieldLabelOverride(job?.group_id, active.doc_type, "insurance_amount") : undefined}
                           onBeforeSave={
                             insuranceMode === "percentage" && insurancePercentageFv?.custom_field_id
                               ? () => requireInsuranceCertificate(insurancePercentageFv!.custom_field_id!)
@@ -6915,7 +6960,7 @@ function ExtractionReview({
                         reload={reload}
                         tone={isMark ? "document" : "computed"}
                         onFocusField={isMark ? setFocusedFv : undefined}
-                        labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                        labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
                         options={options}
                         comboOptions={comboOptions}
                         asyncSearchPicker={
@@ -7192,7 +7237,7 @@ function ExtractionReview({
                                 small
                                 tone="document"
                                 onFocusField={setFocusedFv}
-                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
@@ -7239,7 +7284,7 @@ function ExtractionReview({
                                 }
                                 small
                                 tone="reference"
-                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 options={FIELD_SELECT_OPTIONS[fv.label_name]}
                                 multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
                               />
