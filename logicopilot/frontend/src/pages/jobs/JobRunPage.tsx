@@ -5831,7 +5831,17 @@ function DualSourcePicker({
             thing that could have matched at all. Shown only when the value really did come
             from the sheet that way (see JobFieldValueOut.lookup_source), never over a code
             typed by hand and never when the sheet had nothing for this line. */}
-        {primary.lookup_source && (
+        {primary.lookup_source === "Previous entry" ? (
+          /* NOT from the customer's sheet. The sheet had nothing for this line, so the code
+             came from what an operator typed for this same part once before - a real answer,
+             but a colleague's answer, not the customer's own declared classification. Said
+             plainly and in amber because the box it sits under is labelled "Dump CTH Number",
+             and without this it reads as the dump's word. Found on a Foxconn heat exchanger
+             whose code was in no row of a 32,248-row master. */
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            (not from the dump — entered by hand for this part before)
+          </p>
+        ) : primary.lookup_source ? (
           <p className="-mt-0.5 pl-[1.65rem] text-[11px] text-slate-400 dark:text-slate-500">
             (matched on{" "}
             <span className="font-medium text-slate-500 dark:text-slate-400">
@@ -5839,7 +5849,7 @@ function DualSourcePicker({
             </span>
             )
           </p>
-        )}
+        ) : null}
       </div>
       {cthIncomplete && (
         <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">

@@ -597,6 +597,16 @@ def _fuzzy_description_match(
 # on these invoices) the description is the only thing that could have matched at all.
 CTH_SOURCE_PART_CODE = "Part Code"
 CTH_SOURCE_DESCRIPTION = "Description"
+# NOT the customer's sheet at all. A lookup field falls back to what an operator typed for this
+# same part once before (see reference_cache.lookup_reference), and that answer then appears in
+# a box labelled "Dump CTH Number" with nothing to say it did not come from the dump.
+#
+# Found live on JOB-EB4C93: a Foxconn heat exchanger showing 84195099 while the 32,248-row
+# master contained no match for the part code, no match for the description, and no row mapping
+# to that code anywhere. It came from one operator typing it on 11 Oct. The code was right; the
+# box was claiming an authority it did not have, and an operator checking a declaration against
+# "the customer's own sheet" was checking it against a colleague's earlier guess.
+CTH_SOURCE_REFERENCE = "Previous entry"
 
 
 class LookupAccel:

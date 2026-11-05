@@ -177,3 +177,53 @@ def test_a_lookup_field_with_no_picker_is_not_searched_for_at_all(client, db_ses
     assert by_label["CTH"]["lookup_source"]
     # ...and the unpaired one is never searched for, so it says nothing.
     assert by_label["ContainerTypeCode"]["lookup_source"] is None
+
+
+def test_a_code_that_came_from_a_previous_entry_says_so(client, db_session, served_master):
+    """The box is labelled "Dump CTH Number". When the code in it did not come from the dump,
+    it has to say so.
+
+    A lookup field falls back to what an operator typed for this same part once before. That is
+    a real answer and worth keeping - but it is a colleague's answer, not the customer's own
+    declared classification, and shown with no note at all it carries the sheet's authority
+    without the sheet's backing.
+
+    Found on JOB-EB4C93: a Foxconn heat exchanger reading 84195099 while the 32,248-row master
+    held no match for its part code, no match for its description, and no row mapping to that
+    code anywhere. It came from one operator typing it on 11 Oct.
+    """
+    from app.core.reference_cache import remember_reference
+
+    # A line the sheet knows nothing about.
+    tenant, operator, job = _setup(db_session, [("HEAT EXCHANGER", "AMOE_HEX", "84195099")])
+    cf = db_session.query(CustomField).filter(
+        CustomField.group_id == job.group_id, CustomField.label_name == "CTH").one()
+    remember_reference(db_session, cf.id, ["AMOE_HEX", "HEAT EXCHANGER"], "84195099")
+    db_session.commit()
+    login(client, operator.email)
+
+    assert _sources(client, job) == {1: "Previous entry"}
+
+
+def test_the_sheet_still_wins_when_it_has_an_answer(client, db_session, served_master):
+    """A learned row for the same part must never relabel a code the sheet really did produce -
+    the dump is the more authoritative source and says so."""
+    from app.core.reference_cache import remember_reference
+
+    tenant, operator, job = _setup(db_session, [("SOMETHING ELSE", "PART-ONE", "87089900")])
+    cf = db_session.query(CustomField).filter(
+        CustomField.group_id == job.group_id, CustomField.label_name == "CTH").one()
+    remember_reference(db_session, cf.id, ["PART-ONE", "SOMETHING ELSE"], "87089900")
+    db_session.commit()
+    login(client, operator.email)
+
+    assert _sources(client, job) == {1: "Part Code"}
+
+
+def test_a_code_from_neither_source_still_claims_nothing(client, db_session, served_master):
+    """The honesty guard that was already here, unchanged: a code the operator simply typed
+    says nothing at all rather than naming a source it did not come from."""
+    tenant, operator, job = _setup(db_session, [("NOT IN THE SHEET", "NO-SUCH-PART", "99999999")])
+    login(client, operator.email)
+
+    assert _sources(client, job) == {1: None}

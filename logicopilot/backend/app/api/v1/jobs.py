@@ -3501,6 +3501,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     #
     # cached_mapping, never load_master: this is a request handler, and parsing a not-yet-
     # parsed workbook inline would hang it - see load_master's own docstring.
+    from app.core.reference_cache import reference_key, reference_map_for
+
     lookup_source_by_fv: dict[str, str] = {}
     # Only the PICKER PRIMARIES - the fields with a paired candidate, i.e. "Dump CTH Number".
     # lookup_source has exactly one reader in the whole product: the line under that box in the
@@ -3520,8 +3522,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     ]
     if per_row_lookup_cfs:
         from app.core.material_master import (
-            cached_mapping, cached_mapping_stamp, lookup_accel_for, lookup_cth_with_source,
-            material_from,
+            CTH_SOURCE_REFERENCE, cached_mapping, cached_mapping_stamp, lookup_accel_for,
+            lookup_cth_with_source, material_from,
         )
 
         line_text: dict[tuple[int, int], dict[str, str]] = {}
@@ -3554,6 +3556,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 master,
             )
             key_label = (getattr(c, "lookup_key_label", None) or "").strip()
+            # One query for the whole field, not one per line.
+            ref_map = reference_map_for(db, c.id)
             for fv in rows_for_cf:
                 shown = (fv.corrected_value or fv.extracted_value or "").strip()
                 if not shown:
@@ -3563,11 +3567,24 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 code = (texts.get(key_label, "") if key_label else "") or texts.get(
                     "item_material_code", ""
                 )
+                material = material_from(code, desc)
                 found, source = lookup_cth_with_source(
-                    material_from(code, desc), master, description=desc, accel=accel,
+                    material, master, description=desc, accel=accel,
                 )
                 if source and found and found == shown:
                     lookup_source_by_fv[fv.id] = source
+                    continue
+                # The sheet did not produce what is on screen. Before leaving the box with no
+                # explanation at all, ask the tier that extraction asks second: what an
+                # operator typed for this same part once before. Same two attempts, in the same
+                # order, as the extraction that filled it - [material, desc] then [material]
+                # alone - so this reports what actually happened rather than a guess at it.
+                if ref_map:
+                    for match_values in ([material, desc], [material]):
+                        key = reference_key(match_values)
+                        if any(key) and ref_map.get(key) == shown:
+                            lookup_source_by_fv[fv.id] = CTH_SOURCE_REFERENCE
+                            break
 
     field_values = []
     for fv in fvs:
