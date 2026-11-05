@@ -2862,7 +2862,11 @@ export function TemplateCreationWizard() {
             </div>
             {cfInputType !== "text" && (
               <div className="mt-2">
-                <p className="mb-1 text-xs text-slate-500">One choice per line.</p>
+                <p className="mb-1 text-xs text-slate-500">
+                  One choice per line. Type "code:Label" (e.g. "P:Prior") when the saved value
+                  should be shorter than what the operator reads - plain text saves and shows
+                  as typed.
+                </p>
                 <textarea
                   value={cfFixedOptionsText}
                   onChange={(e) => setCfFixedOptionsText(e.target.value)}

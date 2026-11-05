@@ -228,6 +228,17 @@ const FIELD_HINTS: Record<string, string> = {
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
 // (and so what the ERP export reads) - e.g. picking "Transaction" saves "T", not the word.
 type FieldSelectOption = { value: string; label: string };
+// CustomField.fixed_options (admin-typed in the Wizard's Custom Tag modal) is a plain string
+// list - "Chennai" saves and displays as "Chennai", value and label the same, which is right
+// for almost every admin-typed list. Some fields need a short saved CODE with a longer label
+// instead (e.g. Bill of Entry Type's own "P"/"Prior", "N"/"Normal" - the ERP export reads the
+// single-letter code, same as this field's existing hand-coded FIELD_SELECT_OPTIONS entry
+// below). An admin can type "P:Prior" for one of these instead of a plain choice - anything
+// without a colon keeps behaving exactly as before.
+function parseFixedOption(raw: string): FieldSelectOption {
+  const i = raw.indexOf(":");
+  return i === -1 ? { value: raw, label: raw } : { value: raw.slice(0, i).trim(), label: raw.slice(i + 1).trim() };
+}
 const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
     { value: "S", label: "S" },
@@ -3790,7 +3801,7 @@ export function JobRunPage() {
                               labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={
                                 fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
-                                  ? fv.fixed_options.map((v) => ({ value: v, label: v }))
+                                  ? fv.fixed_options.map(parseFixedOption)
                                   : FIELD_SELECT_OPTIONS[fv.label_name]
                               }
                               defaultValue={defaultValue}
@@ -6974,7 +6985,7 @@ function ExtractionReview({
                       fixedChoiceComboOptions = fv.fixed_options;
                       fixedChoiceComboPickOnly = fv.dropdown_style === "search";
                     } else {
-                      options = fv.fixed_options.map((v) => ({ value: v, label: v }));
+                      options = fv.fixed_options.map(parseFixedOption);
                     }
                   }
                   if (dynamicRows !== undefined) {
