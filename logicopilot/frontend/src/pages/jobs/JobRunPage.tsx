@@ -76,12 +76,19 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
 );
-// Of every relocated field above, only these two were reported as showing a second time under
-// Additional Details' "Other" section (both now live on the Invoice tab's own Party Details) -
-// removed by request there, scoped to exactly these two labels. Every other relocated field
-// (insurance_percentage included) is meant to keep showing in Additional Details too.
+// Of every relocated field above, only these were reported as showing a second time under
+// Additional Details' "Other" section - removed by request there, scoped to exactly these
+// labels. Every other relocated field (insurance_percentage included) is meant to keep
+// showing in Additional Details too.
+//   - "ERP Importer Address / Branch Code" / "ERP Consignee Name": now live on the Invoice
+//     tab's own Party Details.
+//   - "ERP Consignee Country": same Invoice tab Party Details card.
+//   - "Destination": a manual-entry field whose own display_document_id already puts it on
+//     the Bill of Lading tab - the operator fills it there, it belongs there once, not again
+//     under Additional Details.
 const DUPLICATED_ADDITIONAL_DETAILS_LABELS = new Set([
-  "ERP Importer Address / Branch Code", "ERP Consignee Name",
+  "ERP Importer Address / Branch Code", "ERP Consignee Name", "ERP Consignee Country",
+  "Destination",
 ]);
 // Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
 // separate, older field from "Consignment Type" (both read the same BL/Freight documents);
@@ -133,6 +140,9 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     container_number: "Container Number",
     container_type: "Container Type",
     ContainerTypeCode: "CTR ISO CODE",
+    // By request: read more naturally on the Bill of Lading tab than their own raw label_name.
+    Destination: "ERP Branch",
+    CustomsHouseCode: "Customs House Code",
   },
   Invoice: {
     "Invoice No": "Invoice Number",
@@ -141,8 +151,15 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     total_quantity: "Total Quantity",
     unit: "Quantity Unit",
     shipper: "Shipper Name",
-    Consignee: "Document Consignee Name",
-    "ERP Importer Address / Branch Code": "ERP Consignee Branch",
+    // By request: this party is the IMPORTER, not the consignee - "Consignee" reads here as a
+    // document term (what the Bill of Lading itself calls the party), it never meant something
+    // different from "Importer" underneath. label_name is unchanged, so nothing that matches
+    // on it (reference search, country-scoping, the Additional Details duplicate-exclusion
+    // list) is affected - this only changes what the operator reads on screen.
+    Consignee: "Document Importer Name",
+    "ERP Consignee Name": "ERP Importer Name",
+    "ERP Consignee Country": "ERP Importer Country",
+    "ERP Importer Address / Branch Code": "ERP Importer Branch",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
@@ -365,7 +382,7 @@ const FULL_WIDTH_FIELD_LABELS = new Set([
 // instead of silently inheriting the wrong one.
 const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
-  "ERP Consignee Name": "Search by consignee to find or correct the match…",
+  "ERP Consignee Name": "Search by importer to find or correct the match…",
 };
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
@@ -387,6 +404,15 @@ function customsHouseCodeFormatError(raw: string): string | null {
   return /^[A-Za-z]{5}[0-9]$/.test(v)
     ? null
     : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
+}
+// Terms of Invoice: exactly 3 letters ("FOB", "CIF") - by request. Lowercase is accepted and
+// upper-cased on save (transformBeforeSave below), same as Shipment Country Code/Customs House
+// Code; only the LENGTH and letters-only shape are enforced here, not which 3 letters.
+const TOI_FORMAT_FIELD_LABELS = new Set(["TOI"]);
+function toiFormatError(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
+  return /^[A-Za-z]{3}$/.test(v) ? null : "Terms of Invoice must be exactly 3 letters (e.g. FOB, CIF).";
 }
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
@@ -4862,6 +4888,11 @@ function ExtractedField({
       // from a line somebody deliberately set to something else.
       const previous = (fv.corrected_value ?? fv.extracted_value ?? "").trim();
       await jobsApi.correctFieldValue(fv.id, transformed);
+      // The box otherwise kept showing exactly what was typed (e.g. "fob") until a full
+      // reload re-synced it from the server - transformBeforeSave's own upper-cased value
+      // (e.g. "FOB") is what was actually saved, so show that immediately rather than make
+      // the operator refresh the page to see it.
+      if (transformed !== value) setDraft(transformed);
       if (carryToAllRows && !soloEdit) {
         // Does its own reload at the end, covering this row too.
         await carryToAllRows(transformed, previous);
@@ -6100,7 +6131,8 @@ function ExtractionReview({
         (fv) =>
           (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
           (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
-            customsHouseCodeFormatError(fv.value ?? "") !== null),
+            customsHouseCodeFormatError(fv.value ?? "") !== null) ||
+          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6922,11 +6954,21 @@ function ExtractionReview({
                                 }
                                 return true;
                               }
+                            : TOI_FORMAT_FIELD_LABELS.has(fv.label_name)
+                            ? async (value: string) => {
+                                const err = toiFormatError(value);
+                                if (err) {
+                                  window.alert(err);
+                                  return false;
+                                }
+                                return true;
+                              }
                             : undefined
                         }
                         transformBeforeSave={
                           COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
-                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name)
+                          CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) ||
+                          TOI_FORMAT_FIELD_LABELS.has(fv.label_name)
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
@@ -7019,14 +7061,14 @@ function ExtractionReview({
                           onClick={() => setUnitsOpen(true)}
                           className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
                         >
-                          📏 Apply All Product Units
+                          📏 Bulk Update PQU
                         </button>
                         <button
                           type="button"
                           onClick={() => setCompositeOpen(true)}
                           className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
                         >
-                          🧩 Combine fields
+                          🧩 Combined Description
                         </button>
                       </div>
                     )}

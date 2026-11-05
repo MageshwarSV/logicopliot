@@ -201,7 +201,7 @@ export function ProductQuantityUnitsModal({ open, onClose, lineRows, onApplied }
   }
 
   return (
-    <Modal open={open} onClose={handleClose} title="Apply All Product Units" maxWidth="max-w-2xl">
+    <Modal open={open} onClose={handleClose} title="Bulk Update PQU" maxWidth="max-w-2xl">
       <div className="flex flex-col gap-5">
         {unitFieldLabel && (
           <p className="text-sm text-slate-500 dark:text-slate-400">
