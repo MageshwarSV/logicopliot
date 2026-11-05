@@ -76,12 +76,19 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
 const ALL_RELOCATED_FIELD_LABELS = new Set(
   Object.values(RELOCATED_FIELD_LABELS_BY_DOC_TYPE).flat(),
 );
-// Of every relocated field above, only these two were reported as showing a second time under
-// Additional Details' "Other" section (both now live on the Invoice tab's own Party Details) -
-// removed by request there, scoped to exactly these two labels. Every other relocated field
-// (insurance_percentage included) is meant to keep showing in Additional Details too.
+// Of every relocated field above, only these were reported as showing a second time under
+// Additional Details' "Other" section - removed by request there, scoped to exactly these
+// labels. Every other relocated field (insurance_percentage included) is meant to keep
+// showing in Additional Details too.
+//   - "ERP Importer Address / Branch Code" / "ERP Consignee Name": now live on the Invoice
+//     tab's own Party Details.
+//   - "ERP Consignee Country": same Invoice tab Party Details card.
+//   - "Destination": a manual-entry field whose own display_document_id already puts it on
+//     the Bill of Lading tab - the operator fills it there, it belongs there once, not again
+//     under Additional Details.
 const DUPLICATED_ADDITIONAL_DETAILS_LABELS = new Set([
-  "ERP Importer Address / Branch Code", "ERP Consignee Name",
+  "ERP Importer Address / Branch Code", "ERP Consignee Name", "ERP Consignee Country",
+  "Destination",
 ]);
 // Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
 // separate, older field from "Consignment Type" (both read the same BL/Freight documents);
