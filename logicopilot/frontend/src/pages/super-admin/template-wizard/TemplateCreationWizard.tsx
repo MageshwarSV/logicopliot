@@ -356,6 +356,9 @@ export function TemplateCreationWizard() {
   const [cfSectionHeading, setCfSectionHeading] = useState("");
   // What the operator sees instead of this field's own label - see CustomField.display_label.
   const [cfDisplayLabel, setCfDisplayLabel] = useState("");
+  // Which document's own tab this field shows under instead of Additional Details - see
+  // CustomField.display_document_id. "" = Additional Details (today's only behavior).
+  const [cfDisplayDocumentId, setCfDisplayDocumentId] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
@@ -473,7 +476,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel("");
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -501,6 +504,7 @@ export function TemplateCreationWizard() {
     setCfCompositeFixedInput("");
     setCfSectionHeading(cf.standalone_group_heading ?? "");
     setCfDisplayLabel(cf.display_label ?? "");
+    setCfDisplayDocumentId(cf.display_document_id ?? "");
     setError(null);
     setCustomOpen(true);
   }
@@ -545,6 +549,7 @@ export function TemplateCreationWizard() {
         composite_source_labels: cfKind === "composite" ? cfCompositeLabels : null,
         standalone_group_heading: cfSectionHeading.trim() || null,
         display_label: cfDisplayLabel.trim() || null,
+        display_document_id: cfDisplayDocumentId || null,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -2624,6 +2629,28 @@ export function TemplateCreationWizard() {
               placeholder="e.g. ERP Importer Name"
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Which screen shows this field?
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Additional Details (the default) is its own screen, common to the whole job. Pick
+              a document instead to show it right there on that document's own tab - e.g. a
+              field the operator should see and fill in while looking at the Bill of Lading,
+              not later on a separate screen.
+            </p>
+            <select
+              value={cfDisplayDocumentId}
+              onChange={(e) => setCfDisplayDocumentId(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            >
+              <option value="">Additional Details</option>
+              {(group?.documents ?? []).map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
           </div>
 
           <div>
