@@ -6165,10 +6165,25 @@ function ExtractionReview({
       for (const fv of job.field_values) {
         for (const id of fv.sync_field_ids ?? []) answerFieldIds.add(id);
       }
+      // A per-row CUSTOM field has no document of its own - job_document_id is null on every
+      // one of them, CTH included - so filtering on `job_document_id === active.id` alone drops
+      // them before any other rule gets a look. That is why making CTH mandatory above did
+      // nothing on its own: the row never reached the test.
+      //
+      // Pulled in by LINE instead: whichever document carries product lines (the invoice) also
+      // owns the custom fields sitting on those same lines, which is exactly where the operator
+      // sees them - on the product card, under that document. A document with no product lines
+      // of its own (a bill of lading) matches nothing here and is not blocked by them.
+      const linesOnThisDocument = new Set(
+        job.field_values
+          .filter((fv) => fv.row_index != null && fv.job_document_id === active.id)
+          .map((fv) => fv.row_index),
+      );
       const productRows = job.field_values.filter(
         (fv) =>
           fv.row_index != null &&
-          fv.job_document_id === active.id &&
+          (fv.job_document_id === active.id ||
+            (fv.job_document_id == null && linesOnThisDocument.has(fv.row_index))) &&
           !fv.standalone_multi_value &&
           (fv.self_filled !== true ||
             (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
