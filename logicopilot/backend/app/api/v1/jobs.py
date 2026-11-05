@@ -1968,6 +1968,21 @@ def job_category_counts(
     if hi is not None:
         base = base.filter(Job.created_at < hi)
 
+    # ERP Submitted and ERP Verified are windowed on WHEN THEY WENT TO THE ERP, not on when
+    # the job arrived - the same stamp their badge prints, the same one their list is ordered
+    # by, and now the same one the list filters on. Counting them on arrival while the list
+    # filtered on submission would put a number in the sidebar that disagrees with the rows
+    # underneath it, which is the exact complaint the Job Activity chart already had to fix.
+    #
+    # Coalesced to arrival for a job finished before completed_at existed, matching the
+    # ordering, so a job can never fall out of both windows and vanish from the count.
+    erp_base = _jobs_visible_query(db, scope, user)
+    _erp_when = func.coalesce(Job.completed_at, Job.created_at)
+    if lo is not None:
+        erp_base = erp_base.filter(_erp_when >= lo)
+    if hi is not None:
+        erp_base = erp_base.filter(_erp_when < hi)
+
     def _extra(j: Job) -> bool:
         return _job_passes_extra_filters(
             db, j, assigned_to=assigned_to, customer=customer,
@@ -1983,8 +1998,8 @@ def job_category_counts(
     # a document is never counted here.
     new_candidates = base.filter(_category_condition("new")).all()
     failed_candidates = base.filter(_category_condition("failed")).all()
-    submitted_candidates = base.filter(_category_condition("submitted")).all()
-    completed_candidates = base.filter(_category_condition("completed")).all()
+    submitted_candidates = erp_base.filter(_category_condition("submitted")).all()
+    completed_candidates = erp_base.filter(_category_condition("completed")).all()
 
     # Batched ONCE across both candidate sets, instead of _is_missing_documents' own two lazy-
     # loads running once per candidate (found live 2026-11-03 jamming the whole site - this

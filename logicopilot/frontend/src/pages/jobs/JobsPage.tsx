@@ -721,6 +721,22 @@ export function JobsPage() {
     return Number.isNaN(d.getTime()) ? "" : localDayKey(d);
   }
 
+  /** WHICH date this screen is about.
+   *
+   * ERP Submitted and ERP Verified are read as "what went to the ERP, and when" - the stamp
+   * printed under the status badge, which is completed_at. Every other screen is about when
+   * the job arrived. The server already orders those two by that stamp (coalesce of
+   * completed_at and created_at), but the filter below was still reading created_at alone, so
+   * "Today" on ERP Submitted hid a job submitted this afternoon that had arrived yesterday -
+   * exactly the row an operator opens that screen to find.
+   *
+   * Falls back to arrival for a job finished before completed_at existed, the same coalesce
+   * the ordering uses, so the two can never disagree about which rows belong in a window. */
+  const rowDate = (j: Job): string | null | undefined =>
+    category === "submitted" || category === "completed"
+      ? (j.completed_at ?? j.created_at)
+      : j.created_at;
+
   // Jobs arrive newest-first (the server sorts by created_at desc). The quick/date-range,
   // customer and status filters below are applied client-side, on top of whatever has been
   // fetched so far — the server-side pagination knows nothing about them. Without this guard,
@@ -736,9 +752,12 @@ export function JobsPage() {
   // so it is deliberately left to page normally.
   const pastDateWindow = useMemo(() => {
     if (!quickRange.from || jobs.length === 0) return false;
-    const oldest = dayKey(jobs[jobs.length - 1]?.created_at);
+    // The same date the filter uses, or this shortcut decides the search has gone far enough
+    // back by one measure while the filter is still looking by another.
+    const last = jobs[jobs.length - 1];
+    const oldest = last ? dayKey(rowDate(last)) : "";
     return oldest !== "" && oldest < quickRange.from;
-  }, [jobs, quickRange.from]);
+  }, [jobs, quickRange.from, category]);
 
   const visibleJobs = useMemo(() => {
     return jobs.filter((j) => {
@@ -747,12 +766,12 @@ export function JobsPage() {
       if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
       if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
       if (shipmentType !== QUICK_ALL && (j.mode ?? "") !== shipmentType) return false;
-      const d = dayKey(j.created_at);
+      const d = dayKey(rowDate(j));
       if (quickRange.from && d && d < quickRange.from) return false;
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange]);
+  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
 
   const columns: Column<Job>[] = [
     {

@@ -25,7 +25,15 @@ set -euo pipefail
 # Wherever this checkout happens to be, rather than a path baked in for one box.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$ROOT/logicopilot"
-BRANCH="${DEPLOY_BRANCH:-main}"
+# Whatever branch this checkout is ON, not a hardcoded one. SIT tracks main and production
+# tracks production, and a script that assumed main fetched the wrong branch on production and
+# stopped at "Not possible to fast-forward" - correctly refusing, but only after looking like
+# the deploy had broken. DEPLOY_BRANCH still overrides. A detached HEAD has no branch name, so
+# that falls back to main rather than trying to merge a ref called "HEAD".
+BRANCH="${DEPLOY_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}"
+if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
+  BRANCH=main
+fi
 # Same on UAT and SIT today. Overridable so a box that differs needs no edit here:
 #   BACKEND_PORT=31299 ./deploy.sh
 BACKEND_PORT="${BACKEND_PORT:-30299}"
