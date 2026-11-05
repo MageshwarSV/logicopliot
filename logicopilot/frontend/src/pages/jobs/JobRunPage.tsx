@@ -7104,14 +7104,13 @@ function ExtractionReview({
                           other ? syncTargets.map((t) => t.id) : [],
                         ),
                       );
-                      // Purely a backing flag for product_description/Combined Description's own
-                      // red highlight below - never a field of its own on screen (see
-                      // TRANSLATED_FLAG_SOURCE_LABELS).
-                      const languageFlag = cells.find((fv) => fv.label_name === "Product Description Language");
-                      const isNonEnglish = (
-                        (languageFlag?.corrected_value ?? languageFlag?.extracted_value ?? "").trim().toUpperCase()
-                        === "NON-ENGLISH"
-                      );
+                      // "Product Description Language" is still extracted (product_description's
+                      // own prompt now refuses to translate and looks for an English column on
+                      // the same row instead - see that prompt's own LANGUAGE paragraph), but it
+                      // no longer drives a UI flag of its own: a translated-and-flagged value
+                      // used to be the thing wrong with this field, and there is nothing left to
+                      // warn about once nothing is ever translated. Still never shown as its own
+                      // box on screen.
                       const visibleCells = cells.filter((fv) => fv.label_name !== "Product Description Language");
                       return (
                         <div
@@ -7152,11 +7151,11 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "product_description")}
+                                flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
                                     ? "Mandatory — needs a value before this document can be approved."
-                                    : "Not originally in English — translated."
+                                    : undefined
                                 }
                               />
                             ))}
@@ -7190,11 +7189,11 @@ function ExtractionReview({
                                         )
                                     : undefined
                                 }
-                                flagged={missingRequiredIds.has(fv.id) || (isNonEnglish && fv.label_name === "Combined Description")}
+                                flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
                                     ? "Mandatory — needs a value before this document can be approved."
-                                    : "Not originally in English — translated."
+                                    : undefined
                                 }
                                 small
                                 tone="reference"
