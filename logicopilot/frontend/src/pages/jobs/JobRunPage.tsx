@@ -140,6 +140,9 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     container_number: "Container Number",
     container_type: "Container Type",
     ContainerTypeCode: "CTR ISO CODE",
+    // By request: read more naturally on the Bill of Lading tab than their own raw label_name.
+    Destination: "ERP Branch",
+    CustomsHouseCode: "Customs House Code",
   },
   Invoice: {
     "Invoice No": "Invoice Number",
@@ -148,8 +151,15 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     total_quantity: "Total Quantity",
     unit: "Quantity Unit",
     shipper: "Shipper Name",
-    Consignee: "Document Consignee Name",
-    "ERP Importer Address / Branch Code": "ERP Consignee Branch",
+    // By request: this party is the IMPORTER, not the consignee - "Consignee" reads here as a
+    // document term (what the Bill of Lading itself calls the party), it never meant something
+    // different from "Importer" underneath. label_name is unchanged, so nothing that matches
+    // on it (reference search, country-scoping, the Additional Details duplicate-exclusion
+    // list) is affected - this only changes what the operator reads on screen.
+    Consignee: "Document Importer Name",
+    "ERP Consignee Name": "ERP Importer Name",
+    "ERP Consignee Country": "ERP Importer Country",
+    "ERP Importer Address / Branch Code": "ERP Importer Branch",
     CountryOfOriginCode: "Country of Origin Code",
     TOI: "Terms of Invoice",
     product_description: "Product Description",
@@ -372,7 +382,7 @@ const FULL_WIDTH_FIELD_LABELS = new Set([
 // instead of silently inheriting the wrong one.
 const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
-  "ERP Consignee Name": "Search by consignee to find or correct the match…",
+  "ERP Consignee Name": "Search by importer to find or correct the match…",
 };
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
