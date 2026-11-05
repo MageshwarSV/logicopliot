@@ -204,7 +204,16 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
 const FIELD_LABEL_OVERRIDES_BY_GROUP: Record<string, Record<string, string>> = {
   "9b7a9384-4030-4052-ad5c-b33da7bf2912": { "HBL No": "HAWB Number" }, // Air import (November 5)
 };
-function fieldLabelOverride(groupId: string | undefined, docType: string | undefined, label: string): string | undefined {
+// `displayLabel` (FieldMark/CustomField.display_label, set per-field by an admin through the
+// Template Creation Wizard - no deploy needed) wins when set; otherwise falls back to the two
+// hardcoded frontend maps exactly as before, so no existing template's display changes.
+function fieldLabelOverride(
+  displayLabel: string | null | undefined,
+  groupId: string | undefined,
+  docType: string | undefined,
+  label: string,
+): string | undefined {
+  if (displayLabel && displayLabel.trim()) return displayLabel.trim();
   if (groupId && FIELD_LABEL_OVERRIDES_BY_GROUP[groupId]?.[label] !== undefined) {
     return FIELD_LABEL_OVERRIDES_BY_GROUP[groupId][label];
   }
@@ -6862,8 +6871,8 @@ function ExtractionReview({
                           onToggle={onToggleInsuranceMode}
                           readOnly={readOnly}
                           reload={reload}
-                          labelOverridePercentage={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
-                          labelOverrideAmount={active ? fieldLabelOverride(job?.group_id, active.doc_type, "insurance_amount") : undefined}
+                          labelOverridePercentage={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                          labelOverrideAmount={active ? fieldLabelOverride(insuranceAmountFv?.display_label, job?.group_id, active.doc_type, "insurance_amount") : undefined}
                           onBeforeSave={
                             insuranceMode === "percentage" && insurancePercentageFv?.custom_field_id
                               ? () => requireInsuranceCertificate(insurancePercentageFv!.custom_field_id!)
@@ -6960,7 +6969,7 @@ function ExtractionReview({
                         reload={reload}
                         tone={isMark ? "document" : "computed"}
                         onFocusField={isMark ? setFocusedFv : undefined}
-                        labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
+                        labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                         options={options}
                         comboOptions={comboOptions}
                         asyncSearchPicker={
@@ -7237,7 +7246,7 @@ function ExtractionReview({
                                 small
                                 tone="document"
                                 onFocusField={setFocusedFv}
-                                labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
+                                labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
@@ -7284,7 +7293,7 @@ function ExtractionReview({
                                 }
                                 small
                                 tone="reference"
-                                labelOverride={active ? fieldLabelOverride(job?.group_id, active.doc_type, fv.label_name) : undefined}
+                                labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 options={FIELD_SELECT_OPTIONS[fv.label_name]}
                                 multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
                               />

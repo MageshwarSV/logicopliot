@@ -3462,6 +3462,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_group_heading: dict[str, str | None] = {
         m.id: m.standalone_group_heading for tdoc in group.documents for m in tdoc.marks
     }
+    mark_display_label: dict[str, str | None] = {
+        m.id: m.display_label for tdoc in group.documents for m in tdoc.marks
+    }
     # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
     # THAT mark's own card (Container Detail), not the product line-item cards - same
     # screen-placement rule an AI field ticked multi_value_from_document already gets,
@@ -3479,6 +3482,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
     cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
     cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
+    cf_display_label = {c.id: c.display_label for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3666,6 +3670,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 ),
                 standalone_group_heading=(
                     mark_group_heading.get(fv.mark_id) or cf_group_heading.get(fv.custom_field_id)
+                ),
+                display_label=(
+                    mark_display_label.get(fv.mark_id) or cf_display_label.get(fv.custom_field_id)
                 ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
                 fixed_options=cf_fixed_options.get(fv.custom_field_id),

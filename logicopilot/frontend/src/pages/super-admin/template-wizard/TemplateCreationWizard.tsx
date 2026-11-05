@@ -152,6 +152,9 @@ export function TemplateCreationWizard() {
   const [standaloneMultiValue, setStandaloneMultiValue] = useState(false);
   // Standalone only: what the job screen heads this group of rows with, e.g. "Container".
   const [standaloneHeading, setStandaloneHeading] = useState("");
+  // What the OPERATOR sees instead of this field's own name, when it should read
+  // differently - e.g. label_name stays "HBL No", display label shows "HAWB Number".
+  const [displayLabel, setDisplayLabel] = useState("");
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -316,6 +319,7 @@ export function TemplateCreationWizard() {
   const [newAnchor, setNewAnchor] = useState("");
   const [editStandalone, setEditStandalone] = useState(false);
   const [editStandaloneHeading, setEditStandaloneHeading] = useState("");
+  const [editDisplayLabel, setEditDisplayLabel] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -350,6 +354,8 @@ export function TemplateCreationWizard() {
   const [cfPickerHeading, setCfPickerHeading] = useState("");
   // This field's own section heading on the Job Run page - see CustomField.standalone_group_heading.
   const [cfSectionHeading, setCfSectionHeading] = useState("");
+  // What the operator sees instead of this field's own label - see CustomField.display_label.
+  const [cfDisplayLabel, setCfDisplayLabel] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
@@ -467,7 +473,7 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading("");
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -494,6 +500,7 @@ export function TemplateCreationWizard() {
     setCfCompositeLabels(cf.composite_source_labels ?? []);
     setCfCompositeFixedInput("");
     setCfSectionHeading(cf.standalone_group_heading ?? "");
+    setCfDisplayLabel(cf.display_label ?? "");
     setError(null);
     setCustomOpen(true);
   }
@@ -537,6 +544,7 @@ export function TemplateCreationWizard() {
         sync_field_ids: cfPairedFieldId ? cfSyncFieldIds : [],
         composite_source_labels: cfKind === "composite" ? cfCompositeLabels : null,
         standalone_group_heading: cfSectionHeading.trim() || null,
+        display_label: cfDisplayLabel.trim() || null,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -665,6 +673,7 @@ export function TemplateCreationWizard() {
     setMultiValue(false);
     setStandaloneMultiValue(false);
     setStandaloneHeading("");
+    setDisplayLabel("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -694,6 +703,7 @@ export function TemplateCreationWizard() {
         standalone_group_heading: standaloneHeading.trim() || null,
         is_target_value: targetValue,
         fuzzy_match: targetValue ? fuzzyMatch : false,
+        display_label: displayLabel.trim() || null,
       });
 
       if (verify) {
@@ -786,6 +796,7 @@ export function TemplateCreationWizard() {
     setNewAnchor("");
     setEditStandalone(!!m.standalone_multi_value);
     setEditStandaloneHeading(m.standalone_group_heading ?? "");
+    setEditDisplayLabel(m.display_label ?? "");
     setError(null);
   }
 
@@ -807,6 +818,7 @@ export function TemplateCreationWizard() {
         // Doubles as the field's own section heading on the Job Run page (any field, not only
         // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
         standalone_group_heading: editStandaloneHeading.trim() || null,
+        display_label: editDisplayLabel.trim() || null,
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1576,6 +1588,23 @@ export function TemplateCreationWizard() {
                   <div className="mt-3 space-y-3">
                     <Input label="Field name" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
                     <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Display label shown to the operator (optional)
+                      </label>
+                      <p className="mb-1.5 text-[11px] text-slate-500">
+                        What the operator reads on screen, when it should differ from the field
+                        name above - e.g. field name stays "HBL No", this shows "HAWB Number".
+                        Leave blank to show the field name as-is.
+                      </p>
+                      <input
+                        type="text"
+                        value={editDisplayLabel}
+                        onChange={(e) => setEditDisplayLabel(e.target.value)}
+                        placeholder={m.label_name}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                    </div>
+                    <div>
                       <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">Anchor variations (labels this field can appear under)</p>
                       <div className="flex flex-wrap gap-1.5">
                         {editAnchors.map((v, i) => (
@@ -2310,6 +2339,24 @@ export function TemplateCreationWizard() {
           />
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Display label shown to the operator (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              What the operator actually reads on screen, when it should differ from the field
+              name above - e.g. field name stays "HBL No" (what extraction/export use
+              internally), while this shows "HAWB Number" instead. Leave blank to show the
+              field name as-is.
+            </p>
+            <input
+              type="text"
+              value={displayLabel}
+              onChange={(e) => setDisplayLabel(e.target.value)}
+              placeholder="e.g. HAWB Number"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
               Section heading on the job screen (optional)
             </label>
             <p className="mb-1.5 text-xs text-slate-500">
@@ -2561,6 +2608,23 @@ export function TemplateCreationWizard() {
       <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={cfEditId ? "Edit custom tag" : "New custom tag"} maxWidth="max-w-lg">
         <div className="space-y-4">
           <Input label="Label" value={cfLabel} onChange={(e) => setCfLabel(e.target.value)} placeholder="e.g. total_net_weight" />
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Display label shown to the operator (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              What the operator reads on screen, when it should differ from the label above.
+              Leave blank to show the label as-is.
+            </p>
+            <input
+              type="text"
+              value={cfDisplayLabel}
+              onChange={(e) => setCfDisplayLabel(e.target.value)}
+              placeholder="e.g. ERP Importer Name"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
 
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">

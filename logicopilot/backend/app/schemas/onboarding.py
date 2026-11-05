@@ -66,6 +66,7 @@ class MarkOut(BaseModel):
     standalone_group_heading: str | None = None
     is_target_value: bool = False
     fuzzy_match: bool = False
+    display_label: str | None = None
 
 
 class CrossDocLinkOut(BaseModel):
@@ -134,6 +135,8 @@ class CustomFieldOut(BaseModel):
     # Mirrors FieldMark.standalone_group_heading - this field's own section heading on the Job
     # Run page, instead of relying only on JobRunPage.tsx's hardcoded FIELD_GROUPS_BY_DOC_TYPE.
     standalone_group_heading: str | None = None
+    # Mirrors FieldMark.display_label - what the operator sees, when different from label_name.
+    display_label: str | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -171,6 +174,7 @@ class CustomFieldCreate(BaseModel):
     fixed_options: list[str] | None = None
     display_document_id: str | None = None
     standalone_group_heading: str | None = None
+    display_label: str | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -212,6 +216,7 @@ class CustomFieldEdit(BaseModel):
     fixed_options: list[str] | None = None
     display_document_id: str | None = None
     standalone_group_heading: str | None = None
+    display_label: str | None = None
 
 
 class DocumentDetailOut(DocumentOut):
@@ -261,6 +266,7 @@ class MarkCreate(BaseModel):
     standalone_group_heading: str | None = None
     is_target_value: bool = False
     fuzzy_match: bool = False
+    display_label: str | None = None
 
 
 class MarkCorrect(BaseModel):
@@ -283,6 +289,7 @@ class MarkEdit(BaseModel):
     standalone_group_heading: str | None = None
     is_target_value: bool | None = None
     fuzzy_match: bool | None = None
+    display_label: str | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the
     # text it found around the box, and the value inside it. On a two-column layout the words
     # beside a value are not its caption, so both can come out wrong: a Gross Weight box that

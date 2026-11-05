@@ -35,6 +35,10 @@ export interface Mark {
    *  group of rows, e.g. "Container" — wordable per tenant/template. Falls back to the
    *  field's own label_name when blank. */
   standalone_group_heading?: string | null;
+  /** What the operator sees instead of label_name, when it should read differently - set
+   *  once by an admin rather than a frontend code change. null = falls back to whatever
+   *  JobRunPage.tsx's own hardcoded label-override maps already show. */
+  display_label?: string | null;
   /** The extracted value is looked up in its own reference table (keyed on itself); a
    *  match replaces it, no match returns empty. */
   is_target_value?: boolean;
@@ -140,6 +144,8 @@ export interface CustomField {
   /** This field's own section heading on the Job Run page - mirrors FieldMark's own
    *  standalone_group_heading. null = falls back to the hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
   standalone_group_heading?: string | null;
+  /** What the operator sees instead of label_name - mirrors Mark.display_label. */
+  display_label?: string | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

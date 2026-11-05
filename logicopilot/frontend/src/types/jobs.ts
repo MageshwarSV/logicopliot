@@ -178,6 +178,9 @@ export interface JobFieldValue {
   /** standalone_multi_value only: heading to show above this group (e.g. "Container"),
    *  wordable per tenant/template. Falls back to label_name when null/blank. */
   standalone_group_heading?: string | null;
+  /** What the operator sees instead of label_name, set by an admin - checked ahead of
+   *  JobRunPage.tsx's own hardcoded label-override maps. null/blank falls back to those. */
+  display_label?: string | null;
   /** This value is never shown on the job screen (product card or Dump Data) - it is still
    *  computed and written on every row exactly as normal, purely for something else to read
    *  later (e.g. an ERP script's own field mapping). See CustomField.hidden_from_capture. */

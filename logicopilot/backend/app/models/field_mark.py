@@ -70,6 +70,14 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # the field's own label_name when blank.
     standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # What the OPERATOR sees on the job screen, when it should read differently from
+    # label_name - e.g. label_name stays "HBL No" (what extraction/matching/the Excel export
+    # all key on, unchanged), while one tenant's template shows "HAWB Number" instead. None
+    # (every field before this existed) falls back to whatever JobRunPage.tsx's own hardcoded
+    # FIELD_LABEL_OVERRIDES_BY_DOC_TYPE/BY_GROUP maps already show, unchanged - this is a NEW,
+    # higher-priority source on top of those, not a replacement for them.
+    display_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # This mark is extracted normally, then its OWN raw value is looked up in a reference
     # table keyed on itself (see CustomFieldReferenceValue.mark_id) - a match replaces the
     # extraction with the table's stored value, no match returns empty rather than the raw

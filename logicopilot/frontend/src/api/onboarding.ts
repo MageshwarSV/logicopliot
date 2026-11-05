@@ -86,6 +86,9 @@ export async function createCustomField(
     /** This field's own section heading on the Job Run page - omit/null to fall back to the
      *  hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
     standalone_group_heading?: string | null;
+    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
+     *  label-override maps. */
+    display_label?: string | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -281,6 +284,9 @@ export async function createMark(
     standalone_multi_value?: boolean;
     /** standalone_multi_value only: heading shown above this group, e.g. "Container". */
     standalone_group_heading?: string | null;
+    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
+     *  label-override maps. */
+    display_label?: string | null;
     /** Look the extracted value up in its own reference table; a match replaces it, no
      *  match returns empty. */
     is_target_value?: boolean;
@@ -313,6 +319,7 @@ export async function editMark(
     value_format_hint: string;
     standalone_multi_value: boolean;
     standalone_group_heading: string | null;
+    display_label: string | null;
   }>,
 ): Promise<Mark> {
   const { data } = await apiClient.patch<Mark>(`/marks/${markId}`, patch);
@@ -410,6 +417,7 @@ export async function updateCustomField(
     sync_field_ids: string[] | null;
     composite_source_labels: CompositePiece[] | null;
     standalone_group_heading: string | null;
+    display_label: string | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

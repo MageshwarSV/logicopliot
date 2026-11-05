@@ -178,3 +178,9 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # keeps falling back to that hardcoded map, unchanged.
     standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Mirrors FieldMark.display_label - what the operator sees, when it should read
+    # differently from label_name, set once by an admin instead of a frontend code change.
+    # None (every field before this existed) falls back to whatever JobRunPage.tsx's own
+    # hardcoded label-override maps already show, unchanged.
+    display_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+

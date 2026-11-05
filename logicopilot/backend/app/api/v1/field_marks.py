@@ -130,6 +130,7 @@ def create_mark(
         standalone_group_heading=payload.standalone_group_heading,
         is_target_value=payload.is_target_value,
         fuzzy_match=payload.fuzzy_match,
+        display_label=payload.display_label,
     )
     db.add(mark)
     db.commit()
@@ -649,6 +650,7 @@ def create_custom_field(
         fixed_options=payload.fixed_options,
         display_document_id=payload.display_document_id,
         standalone_group_heading=payload.standalone_group_heading,
+        display_label=payload.display_label,
     )
     db.add(cf)
     db.commit()
