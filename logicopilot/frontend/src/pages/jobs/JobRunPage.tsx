@@ -7061,14 +7061,14 @@ function ExtractionReview({
                           onClick={() => setUnitsOpen(true)}
                           className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
                         >
-                          📏 Apply All Product Units
+                          📏 Bulk Update PQU
                         </button>
                         <button
                           type="button"
                           onClick={() => setCompositeOpen(true)}
                           className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 hover:bg-teal-100 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-300 dark:hover:bg-teal-500/20"
                         >
-                          🧩 Combine fields
+                          🧩 Combined Description
                         </button>
                       </div>
                     )}
