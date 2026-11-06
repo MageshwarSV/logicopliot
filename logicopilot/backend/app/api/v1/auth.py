@@ -16,7 +16,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.refresh_token import RefreshToken
-from app.models.user import User
+from app.models.user import GK2, MANAGER, OPERATOR, TENANT_ADMIN, User
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -110,6 +110,24 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is disabled")
+    # An operator/GK2/manager's own account can be active while the tenant that manages them
+    # has nobody left to do it - every one of that tenant's own Tenant Admin accounts disabled.
+    # Blocked here rather than left to work: a tenant with no active admin has no one to
+    # reassign/approve/unblock these users' jobs if something goes wrong, and no one to turn
+    # access back off for someone who should have lost it. Fine as long as at least ONE tenant
+    # admin for this tenant is still active - this is about a tenant with NONE left, not about
+    # which specific admin happened to create this user.
+    if user.role in (OPERATOR, GK2, MANAGER) and user.tenant_id:
+        has_active_admin = db.query(User).filter(
+            User.tenant_id == user.tenant_id,
+            User.role == TENANT_ADMIN,
+            User.is_active.is_(True),
+        ).first() is not None
+        if not has_active_admin:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your tenant's admin account is disabled. Contact support to regain access.",
+            )
 
     user.last_login_at = datetime.now(timezone.utc)
     db.add(user)
