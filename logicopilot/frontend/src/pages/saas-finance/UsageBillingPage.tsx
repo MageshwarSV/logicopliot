@@ -92,13 +92,14 @@ export function SaasFinanceUsageBillingPage() {
       {!loading && usage && (
         <>
           {usage.pages_original !== null ? (
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-8">
+            <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
               <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
               <StatCard icon={<FolderIcon />} tone="blue" label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
               <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
               <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
               <StatCard icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Pages" value={(usage.deleted_pages ?? 0).toLocaleString()} />
               <StatCard icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
               <StatCard
                 icon={<LayersIcon />}

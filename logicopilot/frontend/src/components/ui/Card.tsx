@@ -30,14 +30,14 @@ export function StatCard({
   labelExtra?: ReactNode;
 }) {
   return (
-    <Card className="flex items-center gap-4 p-5">
+    <Card className="flex h-full min-h-[92px] items-center gap-4 p-5">
       {icon && (
         <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${STAT_CARD_TONES[tone]}`}>
           {icon}
         </div>
       )}
       <div>
-        <p className="flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
+        <p className="flex flex-wrap items-center gap-x-1 text-sm leading-tight text-slate-500 dark:text-slate-400">
           {label}
           {labelExtra}
         </p>

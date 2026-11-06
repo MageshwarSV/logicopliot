@@ -167,6 +167,11 @@ export interface BillingUsage {
    *  null on a finalized response, same reason as above. */
   active_jobs_billed: number | null;
   deleted_jobs_billed: number | null;
+  /** Original Pages minus whatever is still classified/unclassified live - a page billed once
+   *  and later removed (a duplicate/wrong upload deleted, with no rerun to replace it) stays
+   *  billed forever, but isn't counted as classified or unclassified anywhere any more. null on
+   *  a finalized response, same reason as above. */
+  deleted_pages: number | null;
   platform_fee: number;
   /** platform_fee_billed_days < platform_fee_month_days means this month's fee was pro-rated
    *  (a go-live date fell partway through it). Equal means a normal, full-month charge. */
