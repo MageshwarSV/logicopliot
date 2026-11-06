@@ -170,57 +170,65 @@ def _job_billing_query(
     search: str | None = None, shipment_type: str | None = None,
     date_from: date | None = None, date_to: date | None = None,
 ):
-    """Shared aggregate query behind list_job_billing/list_job_billing_export - finds which jobs
-    had at least one billing event this period (plus their period-local reference/shipment-type
-    snapshot, used for search/filter and as the fallback label for a since-deleted job), before
-    pagination/row-resolution. date_from/date_to further narrow by each job's own earliest
-    billing event this period - defaulting to the full period when omitted.
+    """Shared query behind list_job_billing/list_job_billing_export - finds which jobs belong to
+    this period, by each job's own REAL start time: the live Job.created_at when the job still
+    exists, else the ledger's own earliest billing-event time for a since-deleted job (there is
+    no other record of a deleted job's start). This is the exact value shown in the table's own
+    "Job Start Time" column and what it sorts by - picking a month, or narrowing with the date
+    range picker, filters by that same real start time, so what you see is what you asked for:
+    a job whose Job Start Time doesn't fall in the window you picked is deliberately excluded,
+    not included because it merely had unrelated billing activity (e.g. a rerun, or this
+    session's one-time backfill) land inside that window.
 
     Does NOT compute original_pages/rerun_pages - see _resolve_job_billing_rows, which sums
     those ALL-TIME per job (not scoped to this period) because "Original Pages" means every
-    page this job has ever had OCR'd for it (e.g. "how many pages came in by email"), regardless
-    of which month's bill a job happens to still have activity in. A job first processed in an
-    earlier month and only touched again this period (a late rerun, or a backfilled straggler
-    page) would otherwise show a misleadingly small Original Pages count here."""
+    page this job has ever had OCR'd for it (e.g. "how many pages came in by email"), independent
+    of which period its Job Start Time falls into."""
     start_dt, end_dt = _month_bounds(period_start)
 
-    agg = (
+    ledger = (
         db.query(
-            BillablePageEvent.job_id,
+            BillablePageEvent.job_id.label("job_id"),
             func.max(BillablePageEvent.job_reference).label("job_reference"),
             func.max(BillablePageEvent.shipment_type).label("shipment_type"),
-            func.min(BillablePageEvent.created_at).label("started_at"),
+            func.min(BillablePageEvent.created_at).label("ledger_started_at"),
         )
-        .filter(
-            BillablePageEvent.tenant_id == tenant_id,
-            BillablePageEvent.created_at >= start_dt, BillablePageEvent.created_at < end_dt,
-        )
+        .filter(BillablePageEvent.tenant_id == tenant_id)
         .group_by(BillablePageEvent.job_id)
+        .subquery()
+    )
+    real_started_at = func.coalesce(Job.created_at, ledger.c.ledger_started_at)
+
+    q = (
+        db.query(
+            ledger.c.job_id, ledger.c.job_reference, ledger.c.shipment_type,
+            real_started_at.label("started_at"),
+        )
+        .outerjoin(Job, Job.id == ledger.c.job_id)
+        .filter(real_started_at >= start_dt, real_started_at < end_dt)
     )
     if search:
-        agg = agg.having(func.max(BillablePageEvent.job_reference).ilike(f"%{search}%"))
+        q = q.filter(ledger.c.job_reference.ilike(f"%{search}%"))
     if shipment_type:
-        agg = agg.having(func.max(BillablePageEvent.shipment_type) == shipment_type)
+        q = q.filter(ledger.c.shipment_type == shipment_type)
     if date_from:
-        agg = agg.having(
-            func.min(BillablePageEvent.created_at)
-            >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
-        )
+        q = q.filter(real_started_at >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc))
     if date_to:
         exclusive_end = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc) + timedelta(days=1)
-        agg = agg.having(func.min(BillablePageEvent.created_at) < exclusive_end)
-    return agg
+        q = q.filter(real_started_at < exclusive_end)
+    return q
 
 
 def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow]:
-    """Turn grouped ledger rows into JobBillingRow: status/started_at come from the live Job row
-    when one still exists, else "deleted" and the ledger's own earliest event time; classified/
-    unclassified counts are read live, same as compute_usage's own fields; original_pages/
-    rerun_pages are each job's ALL-TIME ledger totals (see _job_billing_query's own docstring
-    for why this is deliberately not scoped to the period that selected these jobs)."""
+    """Turn query rows into JobBillingRow: status comes from the live Job row when one still
+    exists, else "deleted"; started_at is already each row's real start time (see
+    _job_billing_query's own docstring); classified/unclassified counts are read live, same as
+    compute_usage's own fields; original_pages/rerun_pages are each job's ALL-TIME ledger
+    totals (see _job_billing_query's own docstring for why this is deliberately not scoped to
+    the period that selected these jobs)."""
     job_ids = [r.job_id for r in agg_rows]
     jobs_by_id = (
-        {j.id: j for j in db.query(Job.id, Job.status, Job.created_at).filter(Job.id.in_(job_ids)).all()}
+        {j.id: j for j in db.query(Job.id, Job.status).filter(Job.id.in_(job_ids)).all()}
         if job_ids else {}
     )
 
@@ -270,7 +278,7 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
         rows.append(JobBillingRow(
             job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
             status=live.status if live else "deleted",
-            started_at=live.created_at if live else r.started_at,
+            started_at=r.started_at,
             original_pages=orig, rerun_pages=rerun,
             final_classified_pages=classified_by_job.get(r.job_id, 0),
             final_unclassified_pages=unclassified_by_job.get(r.job_id, 0),
@@ -284,13 +292,15 @@ def list_job_billing(
     date_from: date | None = None, date_to: date | None = None,
     page: int = 1, page_size: int = 10,
 ) -> tuple[list[JobBillingRow], int]:
-    """Per-job breakdown for the Billing & Usage page's own job table - one row per job billed
-    THIS period (by event date, same scoping as compute_usage), whether or not that job still
-    exists. job_reference/shipment_type come from the ledger's own snapshot (survives a later
-    hard delete - see BillablePageEvent's own docstring).
+    """Per-job breakdown for the Billing & Usage page's own job table - one row per job whose
+    REAL start time (live Job.created_at, or the ledger's own earliest event for a since-deleted
+    job) falls in this period - a DIFFERENT scoping from compute_usage's own active_jobs_billed/
+    deleted_jobs_billed (which count by billing-EVENT date instead), see _job_billing_query's
+    own docstring for why. job_reference/shipment_type come from the ledger's own snapshot
+    (survives a later hard delete - see BillablePageEvent's own docstring).
 
     Returns (rows, total_matching_jobs) - total is BEFORE pagination, for the caller's own page
-    count."""
+    count. Rows are returned newest-started-first."""
     all_rows = _job_billing_query(
         db, tenant_id, period_start,
         search=search, shipment_type=shipment_type, date_from=date_from, date_to=date_to,
