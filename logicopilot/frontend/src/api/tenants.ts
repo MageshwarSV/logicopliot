@@ -246,6 +246,11 @@ export interface JobBillingRow {
   rerun_pages: number;
   final_classified_pages: number;
   final_unclassified_pages: number;
+  /** original_pages minus whatever is still classified/unclassified live - a page billed once
+   *  (real OCR cost incurred) and later removed (a duplicate/wrong upload deleted, with no
+   *  rerun to replace it) stays billed forever, but is no longer counted as classified or
+   *  unclassified anywhere. Never negative. */
+  deleted_pages: number;
   total_billed: number;
 }
 

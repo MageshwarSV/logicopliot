@@ -163,6 +163,13 @@ class JobBillingRow(NamedTuple):
     # function's own docstring for why these are not guaranteed to equal original_pages.
     final_classified_pages: int
     final_unclassified_pages: int
+    # original_pages minus whatever of it is still accounted for live (classified +
+    # unclassified) - a page that was billed once (real OCR cost incurred) and later removed
+    # (a duplicate/wrong upload deleted, with no rerun to replace it) stays billed forever, by
+    # design - see record_billable_pages' own docstring - but is no longer counted as
+    # classified or unclassified anywhere. Never negative: a rerun's own extra pages land in
+    # rerun_pages, not here, so they can't make this go below zero.
+    deleted_pages: int
 
 
 def _job_billing_query(
@@ -275,13 +282,16 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
     for r in agg_rows:
         live = jobs_by_id.get(r.job_id)
         orig, rerun = pages_by_job.get(r.job_id, (0, 0))
+        classified = classified_by_job.get(r.job_id, 0)
+        unclassified = unclassified_by_job.get(r.job_id, 0)
         rows.append(JobBillingRow(
             job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
             status=live.status if live else "deleted",
             started_at=r.started_at,
             original_pages=orig, rerun_pages=rerun,
-            final_classified_pages=classified_by_job.get(r.job_id, 0),
-            final_unclassified_pages=unclassified_by_job.get(r.job_id, 0),
+            final_classified_pages=classified,
+            final_unclassified_pages=unclassified,
+            deleted_pages=max(0, orig - classified - unclassified),
         ))
     return rows
 
