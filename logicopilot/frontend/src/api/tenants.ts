@@ -266,6 +266,10 @@ export interface JobBillingPage {
   page_size: number;
 }
 
+/** Which StatCard was clicked on the Billing & Usage page - narrows the Job Details table to
+ *  just the jobs that number is counting. Keep in sync with backend.billing.HIGHLIGHTS. */
+export type JobBillingHighlight = "deleted_jobs" | "unclassified" | "deleted_pages" | "rerun";
+
 export interface JobBillingFilters {
   month?: string;
   search?: string;
@@ -273,6 +277,7 @@ export interface JobBillingFilters {
   /** YYYY-MM-DD. Narrows within the selected month - omit for the full month. */
   dateFrom?: string;
   dateTo?: string;
+  highlight?: JobBillingHighlight | null;
 }
 
 function billingJobsParams(filters: JobBillingFilters) {
@@ -282,6 +287,7 @@ function billingJobsParams(filters: JobBillingFilters) {
     shipment_type: filters.shipmentType || undefined,
     date_from: filters.dateFrom || undefined,
     date_to: filters.dateTo || undefined,
+    highlight: filters.highlight || undefined,
   };
 }
 

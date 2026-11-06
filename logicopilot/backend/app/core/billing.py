@@ -326,10 +326,30 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
     return rows
 
 
+HIGHLIGHTS = ("deleted_jobs", "unclassified", "deleted_pages", "rerun")
+
+
+def _apply_highlight(rows: list[JobBillingRow], highlight: str | None) -> list[JobBillingRow]:
+    """Narrows an already-resolved row list to whichever stat card the Billing & Usage page's
+    own row of StatCards was clicked - clicking one filters the Job Details table below to just
+    the jobs that number is counting, so "how many" and "which ones" are never more than one
+    click apart. None (Total Jobs, or clicking the active one again) means no filter."""
+    if highlight == "deleted_jobs":
+        return [r for r in rows if r.status == "deleted"]
+    if highlight == "unclassified":
+        return [r for r in rows if r.final_unclassified_pages > 0]
+    if highlight == "deleted_pages":
+        return [r for r in rows if r.deleted_pages > 0]
+    if highlight == "rerun":
+        return [r for r in rows if r.rerun_pages > 0]
+    return rows
+
+
 def list_job_billing(
     db: Session, tenant_id: str, period_start: date, *,
     search: str | None = None, shipment_type: str | None = None,
     date_from: date | None = None, date_to: date | None = None,
+    highlight: str | None = None,
     page: int = 1, page_size: int = 10,
 ) -> tuple[list[JobBillingRow], int]:
     """Per-job breakdown for the Billing & Usage page's own job table - one row per job whose
@@ -339,31 +359,38 @@ def list_job_billing(
     own docstring for why. job_reference/shipment_type come from the ledger's own snapshot
     (survives a later hard delete - see BillablePageEvent's own docstring).
 
-    Returns (rows, total_matching_jobs) - total is BEFORE pagination, for the caller's own page
-    count. Rows are returned newest-started-first."""
-    all_rows = _job_billing_query(
+    highlight: one of HIGHLIGHTS, or None for no extra filter - see _apply_highlight. Resolved
+    (not just queried) before pagination, since classified/unclassified/rerun/deleted_pages are
+    all computed per-job, not plain SQL columns a WHERE could filter before counting/paginating.
+
+    Returns (rows, total_matching_jobs) - total is BEFORE pagination (but AFTER highlight), for
+    the caller's own page count. Rows are returned newest-started-first."""
+    agg_rows = _job_billing_query(
         db, tenant_id, period_start,
         search=search, shipment_type=shipment_type, date_from=date_from, date_to=date_to,
     ).all()
-    total = len(all_rows)
-    all_rows.sort(key=lambda r: r.started_at, reverse=True)
-    page_rows = all_rows[(page - 1) * page_size: (page - 1) * page_size + page_size]
-    return _resolve_job_billing_rows(db, page_rows), total
+    rows = _apply_highlight(_resolve_job_billing_rows(db, agg_rows), highlight)
+    rows.sort(key=lambda r: r.started_at, reverse=True)
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size: (page - 1) * page_size + page_size]
+    return page_rows, total
 
 
 def list_job_billing_export(
     db: Session, tenant_id: str, period_start: date, *,
     search: str | None = None, shipment_type: str | None = None,
     date_from: date | None = None, date_to: date | None = None,
+    highlight: str | None = None,
 ) -> list[JobBillingRow]:
     """Same filters as list_job_billing, with no pagination - every matching row, for the
     "Export" button's CSV download."""
-    all_rows = _job_billing_query(
+    agg_rows = _job_billing_query(
         db, tenant_id, period_start,
         search=search, shipment_type=shipment_type, date_from=date_from, date_to=date_to,
     ).all()
+    all_rows = _apply_highlight(_resolve_job_billing_rows(db, agg_rows), highlight)
     all_rows.sort(key=lambda r: r.started_at, reverse=True)
-    return _resolve_job_billing_rows(db, all_rows)
+    return all_rows
 
 
 def record_billable_pages(

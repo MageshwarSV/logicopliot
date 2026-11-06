@@ -19,7 +19,7 @@ const STAT_CARD_TONES = {
 } as const;
 
 export function StatCard({
-  label, value, icon, tone = "indigo", labelExtra, valueCaption,
+  label, value, icon, tone = "indigo", labelExtra, valueCaption, onClick, active,
 }: {
   label: string;
   value: string | number;
@@ -31,9 +31,31 @@ export function StatCard({
   /** Small caption under the value, e.g. "(1,126 + 5)" - kept off the label line so a long
    *  label plus a caption never wrap into each other in a narrow card. */
   valueCaption?: ReactNode;
+  /** Makes the card a filter toggle - e.g. "show me just the jobs this number is counting."
+   *  Omit for a plain, non-interactive stat. */
+  onClick?: () => void;
+  /** Highlights the card as the currently-applied filter. Ignored without onClick. */
+  active?: boolean;
 }) {
   return (
-    <Card className="flex h-full min-h-[92px] items-center gap-4 p-5">
+    <Card
+      className={`flex h-full min-h-[92px] items-center gap-4 p-5 ${
+        onClick ? "cursor-pointer transition-colors hover:border-slate-300 dark:hover:border-slate-700" : ""
+      } ${active ? "ring-2 ring-indigo-500 dark:ring-indigo-400" : ""}`}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
       {icon && (
         <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${STAT_CARD_TONES[tone]}`}>
           {icon}

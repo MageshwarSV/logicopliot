@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.billing import (
-    calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
+    HIGHLIGHTS, calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
     list_job_billing, list_job_billing_export,
 )
 from app.core.deps import get_current_user, get_db, require_role
@@ -498,6 +498,7 @@ def list_billing_jobs(
     shipment_type: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    highlight: str | None = None,
     page: int = 1,
     page_size: int = 10,
     db: Session = Depends(get_db),
@@ -506,14 +507,21 @@ def list_billing_jobs(
     """The Billing & Usage page's own per-job table - one row per job billed in the given month
     (by event date, same scoping as get_billing_usage), whether or not that job still exists.
     date_from/date_to (YYYY-MM-DD) further narrow by each job's own earliest billing event this
-    period - a separate, finer-grained filter from `month`, not a replacement for it. Only ever
-    reads the live current month's state - there is no per-job breakdown stored on a finalized
-    Invoice, so this always reflects "right now," even when `month` names an already-finalized
-    past period. Super Admin may view any tenant; a Tenant Admin only their own."""
+    period - a separate, finer-grained filter from `month`, not a replacement for it. `highlight`
+    (one of billing.HIGHLIGHTS) narrows further to just the jobs behind one of the page's own
+    StatCards - clicking Deleted Pages, Rerun Pages, Final Unclassified or Deleted Jobs. Only
+    ever reads the live current month's state - there is no per-job breakdown stored on a
+    finalized Invoice, so this always reflects "right now," even when `month` names an already-
+    finalized past period. Super Admin may view any tenant; a Tenant Admin only their own."""
     _require_billing_read_access(user, tenant_id)
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if highlight is not None and highlight not in HIGHLIGHTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"highlight must be one of: {', '.join(HIGHLIGHTS)}",
+        )
 
     period_start = _parse_period_start(month)
     from_date = _parse_optional_date(date_from, "date_from")
@@ -523,7 +531,7 @@ def list_billing_jobs(
     page_size = max(1, min(page_size, 100))
     rows, total = list_job_billing(
         db, tenant_id, period_start, search=search, shipment_type=shipment_type,
-        date_from=from_date, date_to=to_date, page=page, page_size=page_size,
+        date_from=from_date, date_to=to_date, highlight=highlight, page=page, page_size=page_size,
     )
     return JobBillingPageOut(
         items=[
@@ -550,6 +558,7 @@ def export_billing_jobs(
     shipment_type: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    highlight: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -559,6 +568,11 @@ def export_billing_jobs(
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if highlight is not None and highlight not in HIGHLIGHTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"highlight must be one of: {', '.join(HIGHLIGHTS)}",
+        )
 
     period_start = _parse_period_start(month)
     from_date = _parse_optional_date(date_from, "date_from")
@@ -566,7 +580,7 @@ def export_billing_jobs(
 
     rows = list_job_billing_export(
         db, tenant_id, period_start, search=search, shipment_type=shipment_type,
-        date_from=from_date, date_to=to_date,
+        date_from=from_date, date_to=to_date, highlight=highlight,
     )
 
     buffer = io.StringIO()

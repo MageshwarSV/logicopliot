@@ -6,9 +6,16 @@ import { DataTable, type Column } from "../ui/DataTable";
 import { Pagination } from "../ui/Pagination";
 import { SearchIcon, DownloadIcon } from "../ui/icons";
 import * as tenantsApi from "../../api/tenants";
-import type { JobBillingRow, ShipmentTypeUsage } from "../../api/tenants";
+import type { JobBillingHighlight, JobBillingRow, ShipmentTypeUsage } from "../../api/tenants";
 
 const PAGE_SIZE = 10;
+
+const HIGHLIGHT_LABELS: Record<JobBillingHighlight, string> = {
+  deleted_jobs: "Deleted Jobs",
+  unclassified: "Final Unclassified",
+  deleted_pages: "Deleted Pages",
+  rerun: "Rerun Pages",
+};
 
 function monthBounds(month: string): { from: string; to: string } {
   const [y, m] = month.split("-").map(Number);
@@ -67,12 +74,18 @@ export function JobBillingTable({
   month,
   shipmentTypes,
   onJobClick,
+  highlight,
+  onClearHighlight,
 }: {
   tenantId: string;
   month: string;
   /** Options for the Shipment Type filter - reuse whatever this month's usage already named. */
   shipmentTypes: ShipmentTypeUsage[];
   onJobClick?: (jobId: string) => void;
+  /** Set by a StatCard click on the parent page - narrows the table to just those jobs. */
+  highlight?: JobBillingHighlight | null;
+  /** Clears the parent's highlight state - wired to the chip's own × and to Page 1 resets. */
+  onClearHighlight?: () => void;
 }) {
   const defaultBounds = useMemo(() => monthBounds(month), [month]);
 
@@ -101,7 +114,7 @@ export function JobBillingTable({
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, shipmentType, dateFrom, dateTo]);
+  }, [debouncedSearch, shipmentType, dateFrom, dateTo, highlight]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,7 +123,7 @@ export function JobBillingTable({
     tenantsApi
       .listBillingJobs(
         tenantId,
-        { month, search: debouncedSearch, shipmentType, dateFrom, dateTo },
+        { month, search: debouncedSearch, shipmentType, dateFrom, dateTo, highlight },
         page,
         PAGE_SIZE,
       )
@@ -128,13 +141,13 @@ export function JobBillingTable({
     return () => {
       cancelled = true;
     };
-  }, [tenantId, month, debouncedSearch, shipmentType, dateFrom, dateTo, page]);
+  }, [tenantId, month, debouncedSearch, shipmentType, dateFrom, dateTo, highlight, page]);
 
   async function handleExport() {
     setExporting(true);
     try {
       const blob = await tenantsApi.exportBillingJobs(tenantId, {
-        month, search: debouncedSearch, shipmentType, dateFrom, dateTo,
+        month, search: debouncedSearch, shipmentType, dateFrom, dateTo, highlight,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -189,7 +202,24 @@ export function JobBillingTable({
   return (
     <Card className="p-5">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="font-semibold text-slate-900 dark:text-slate-50">Job Details</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="font-semibold text-slate-900 dark:text-slate-50">Job Details</h2>
+          {highlight && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 py-1 pl-3 pr-1.5 text-xs font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">
+              {HIGHLIGHT_LABELS[highlight]}
+              {onClearHighlight && (
+                <button
+                  type="button"
+                  onClick={onClearHighlight}
+                  aria-label="Clear filter"
+                  className="flex h-4 w-4 items-center justify-center rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-500/20"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
