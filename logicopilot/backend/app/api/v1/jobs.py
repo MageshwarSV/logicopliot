@@ -6668,11 +6668,12 @@ def _classify_and_place_files(
                     extra_raw.append(ocr_page_image(png).get("text", ""))
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
-        # Billed the same way as the initial OCR pass above - these pages past the <=6-page cap
-        # are only ever rendered and OCR'd here, the first time a claim actually needs them, so
-        # this IS their one OCR pass, whatever this function's own docstring's idempotency note
-        # says about a second call being a no-op (it never re-runs this block for the same item).
-        record_billable_pages(db, job, item["real_page_count"] - already)
+        # Billed the same way as the initial OCR pass above (real text only) - these pages past
+        # the <=6-page cap are only ever rendered and OCR'd here, the first time a claim
+        # actually needs them, so this IS their one OCR pass, whatever this function's own
+        # docstring's idempotency note says about a second call being a no-op (it never re-runs
+        # this block for the same item).
+        record_billable_pages(db, job, sum(1 for t in extra_raw if t.strip()))
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
@@ -6718,15 +6719,17 @@ def _classify_and_place_files(
                         t = ""
                     raw_pages.append(t)
                 # Billed HERE, not when (or if) a page ends up in a real document - every page
-                # in this loop was just rendered and sent to Document AI, which costs the same
-                # whether it goes on to classify correctly, lands in Unclassified, or this whole
-                # run is a reclassify re-processing pages already billed once before. By request:
-                # the cost is the OCR pass itself, not the outcome, and a reclassify is its own
-                # fresh processing cost too, not a free re-run. Every later call site that used
-                # to bill once a page became part of a real document (the cluster write below,
-                # and both assign_unclassified_page branches further down) no longer does, so a
-                # page is billed exactly once per OCR pass, never twice for the same pass.
-                record_billable_pages(db, job, page_count)
+                # with real OCR text in this loop was just sent to Document AI, which costs the
+                # same whether it goes on to classify correctly, lands in Unclassified, or this
+                # whole run is a reclassify re-processing pages already billed once before. By
+                # request: the cost is the OCR pass itself, not the outcome, and a reclassify is
+                # its own fresh processing cost too, not a free re-run. A page with NO text at
+                # all (a blank separator page, say) is not billed - nothing was really read off
+                # it. Every later call site that used to bill once a page became part of a real
+                # document (the cluster write below, and both assign_unclassified_page branches
+                # further down) no longer does, so a page is billed exactly once per OCR pass,
+                # never twice for the same pass.
+                record_billable_pages(db, job, sum(1 for t in raw_pages if t.strip()))
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and
                 # "invoice", which is how one 2-page bill of lading came to match every slot on
