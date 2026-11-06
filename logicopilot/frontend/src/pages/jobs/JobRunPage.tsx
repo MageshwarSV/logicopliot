@@ -380,6 +380,28 @@ const MULTILINE_FIELD_LABELS = new Set([
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
+// Dummy placeholder, by request - a plain Shipper/Seller/None radio shown beside these two
+// fields only, local to this render (never saved, never read back). No behavior is wired to
+// it yet; what it should actually do is still to be decided.
+const DUMMY_SHIPPER_SELLER_RADIO_LABELS = new Set(["shipper", "Sold By / Buyer Name"]);
+function DummyShipperSellerRadio() {
+  const [choice, setChoice] = useState<"Shipper" | "Seller" | "None">("Shipper");
+  return (
+    <div className="mt-1 flex items-center gap-4 text-sm text-slate-700 dark:text-slate-300">
+      {(["Shipper", "Seller", "None"] as const).map((opt) => (
+        <label key={opt} className="flex items-center gap-1.5">
+          <input
+            type="radio"
+            name="dummy-shipper-seller"
+            checked={choice === opt}
+            onChange={() => setChoice(opt)}
+          />
+          {opt}
+        </label>
+      ))}
+    </div>
+  );
+}
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
 // ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
@@ -500,7 +522,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     {
       heading: "Party Details",
       labels: [
-        "shipper", "Shipper Address", "Sold By / Buyer", "Sold By / Buyer Address", "Consignee",
+        "shipper", "Shipper Address", "Sold By / Buyer Name", "Sold By / Buyer Name Address", "Consignee",
         "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
       ],
     },
@@ -7163,6 +7185,7 @@ function ExtractionReview({
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
                       />
+                      {DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name) && <DummyShipperSellerRadio />}
                       {showSearchFallback && (
                         <ReferenceSearchPicker
                           jobId={jobId}
