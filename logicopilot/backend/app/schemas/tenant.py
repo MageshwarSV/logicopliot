@@ -179,6 +179,7 @@ class JobBillingRowOut(BaseModel):
     rerun_pages: int
     final_classified_pages: int
     final_unclassified_pages: int
+    deleted_pages: int  # original_pages minus whatever is still classified/unclassified live
     total_billed: int  # original_pages + rerun_pages
 
 

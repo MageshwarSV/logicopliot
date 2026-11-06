@@ -168,6 +168,17 @@ export function JobBillingTable({
     { header: "Original Pages", render: (r) => r.original_pages.toLocaleString() },
     { header: "Final Classified", render: (r) => r.final_classified_pages.toLocaleString() },
     { header: "Final Unclassified", render: (r) => r.final_unclassified_pages.toLocaleString() },
+    {
+      header: "Deleted Pages",
+      render: (r) =>
+        r.deleted_pages > 0 ? (
+          <span className="text-rose-600 dark:text-rose-400" title="Billed once, then removed without a rerun - a duplicate or wrong upload deleted after processing.">
+            {r.deleted_pages.toLocaleString()}
+          </span>
+        ) : (
+          <span className="text-slate-400">0</span>
+        ),
+    },
     { header: "Rerun Pages", render: (r) => r.rerun_pages.toLocaleString() },
     {
       header: "Total (Billed)",
