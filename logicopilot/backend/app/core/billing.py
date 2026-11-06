@@ -170,10 +170,18 @@ def _job_billing_query(
     search: str | None = None, shipment_type: str | None = None,
     date_from: date | None = None, date_to: date | None = None,
 ):
-    """Shared aggregate query behind list_job_billing/list_job_billing_export - one grouped row
-    per job billed this period, before pagination/row-resolution. date_from/date_to further
-    narrow by each job's own earliest billing event this period (the same value exposed as
-    started_at for a since-deleted job) - defaulting to the full period when omitted."""
+    """Shared aggregate query behind list_job_billing/list_job_billing_export - finds which jobs
+    had at least one billing event this period (plus their period-local reference/shipment-type
+    snapshot, used for search/filter and as the fallback label for a since-deleted job), before
+    pagination/row-resolution. date_from/date_to further narrow by each job's own earliest
+    billing event this period - defaulting to the full period when omitted.
+
+    Does NOT compute original_pages/rerun_pages - see _resolve_job_billing_rows, which sums
+    those ALL-TIME per job (not scoped to this period) because "Original Pages" means every
+    page this job has ever had OCR'd for it (e.g. "how many pages came in by email"), regardless
+    of which month's bill a job happens to still have activity in. A job first processed in an
+    earlier month and only touched again this period (a late rerun, or a backfilled straggler
+    page) would otherwise show a misleadingly small Original Pages count here."""
     start_dt, end_dt = _month_bounds(period_start)
 
     agg = (
@@ -182,12 +190,6 @@ def _job_billing_query(
             func.max(BillablePageEvent.job_reference).label("job_reference"),
             func.max(BillablePageEvent.shipment_type).label("shipment_type"),
             func.min(BillablePageEvent.created_at).label("started_at"),
-            func.sum(
-                func.coalesce(BillablePageEvent.page_count, 0)
-            ).filter(BillablePageEvent.is_rerun.is_(False)).label("original_pages"),
-            func.sum(
-                func.coalesce(BillablePageEvent.page_count, 0)
-            ).filter(BillablePageEvent.is_rerun.is_(True)).label("rerun_pages"),
         )
         .filter(
             BillablePageEvent.tenant_id == tenant_id,
@@ -213,12 +215,32 @@ def _job_billing_query(
 def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow]:
     """Turn grouped ledger rows into JobBillingRow: status/started_at come from the live Job row
     when one still exists, else "deleted" and the ledger's own earliest event time; classified/
-    unclassified counts are read live, same as compute_usage's own fields."""
+    unclassified counts are read live, same as compute_usage's own fields; original_pages/
+    rerun_pages are each job's ALL-TIME ledger totals (see _job_billing_query's own docstring
+    for why this is deliberately not scoped to the period that selected these jobs)."""
     job_ids = [r.job_id for r in agg_rows]
     jobs_by_id = (
         {j.id: j for j in db.query(Job.id, Job.status, Job.created_at).filter(Job.id.in_(job_ids)).all()}
         if job_ids else {}
     )
+
+    pages_by_job: dict[str, tuple[int, int]] = {}
+    if job_ids:
+        for jid, orig, rerun in (
+            db.query(
+                BillablePageEvent.job_id,
+                func.sum(
+                    func.coalesce(BillablePageEvent.page_count, 0)
+                ).filter(BillablePageEvent.is_rerun.is_(False)),
+                func.sum(
+                    func.coalesce(BillablePageEvent.page_count, 0)
+                ).filter(BillablePageEvent.is_rerun.is_(True)),
+            )
+            .filter(BillablePageEvent.job_id.in_(job_ids))
+            .group_by(BillablePageEvent.job_id)
+            .all()
+        ):
+            pages_by_job[jid] = (orig or 0, rerun or 0)
 
     from app.models.job import JobDocument, UnmatchedUploadPage
 
@@ -244,11 +266,12 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
     rows = []
     for r in agg_rows:
         live = jobs_by_id.get(r.job_id)
+        orig, rerun = pages_by_job.get(r.job_id, (0, 0))
         rows.append(JobBillingRow(
             job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
             status=live.status if live else "deleted",
             started_at=live.created_at if live else r.started_at,
-            original_pages=r.original_pages or 0, rerun_pages=r.rerun_pages or 0,
+            original_pages=orig, rerun_pages=rerun,
             final_classified_pages=classified_by_job.get(r.job_id, 0),
             final_unclassified_pages=unclassified_by_job.get(r.job_id, 0),
         ))
