@@ -95,6 +95,7 @@ export async function createCustomField(
     validation_pattern?: string | null;
     validation_uppercase?: boolean;
     validation_message?: string | null;
+    full_width?: boolean;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -297,6 +298,8 @@ export async function createMark(
     validation_pattern?: string | null;
     validation_uppercase?: boolean;
     validation_message?: string | null;
+    /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
+    full_width?: boolean;
     /** Look the extracted value up in its own reference table; a match replaces it, no
      *  match returns empty. */
     is_target_value?: boolean;
@@ -333,6 +336,7 @@ export async function editMark(
     validation_pattern: string | null;
     validation_uppercase: boolean;
     validation_message: string | null;
+    full_width: boolean;
   }>,
 ): Promise<Mark> {
   const { data } = await apiClient.patch<Mark>(`/marks/${markId}`, patch);
@@ -437,6 +441,7 @@ export async function updateCustomField(
     validation_pattern: string | null;
     validation_uppercase: boolean;
     validation_message: string | null;
+    full_width: boolean;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

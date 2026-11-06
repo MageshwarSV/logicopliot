@@ -201,6 +201,9 @@ export function TemplateCreationWizard() {
   const [validationCustom, setValidationCustom] = useState("");
   const [validationUppercase, setValidationUppercase] = useState(false);
   const [validationMessage, setValidationMessage] = useState("");
+  // Spans the full row on the job screen instead of sharing it with whatever sits beside it -
+  // see FieldMark.full_width's own docstring.
+  const [fullWidth, setFullWidth] = useState(false);
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -371,6 +374,7 @@ export function TemplateCreationWizard() {
   const [editValidationCustom, setEditValidationCustom] = useState("");
   const [editValidationUppercase, setEditValidationUppercase] = useState(false);
   const [editValidationMessage, setEditValidationMessage] = useState("");
+  const [editFullWidth, setEditFullWidth] = useState(false);
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -412,6 +416,7 @@ export function TemplateCreationWizard() {
   const [cfValidationCustom, setCfValidationCustom] = useState("");
   const [cfValidationUppercase, setCfValidationUppercase] = useState(false);
   const [cfValidationMessage, setCfValidationMessage] = useState("");
+  const [cfFullWidth, setCfFullWidth] = useState(false);
   // Which document's own tab this field shows under instead of Additional Details - see
   // CustomField.display_document_id. "" = Additional Details (today's only behavior).
   const [cfDisplayDocumentId, setCfDisplayDocumentId] = useState("");
@@ -542,6 +547,7 @@ export function TemplateCreationWizard() {
     setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
     setCfInputType("text"); setCfFixedOptionsText("");
     setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
+    setCfFullWidth(false);
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -584,6 +590,7 @@ export function TemplateCreationWizard() {
     setCfValidationCustom(cfParsedValidation.custom);
     setCfValidationUppercase(!!cf.validation_uppercase);
     setCfValidationMessage(cf.validation_message ?? "");
+    setCfFullWidth(!!cf.full_width);
     setError(null);
     setCustomOpen(true);
   }
@@ -641,6 +648,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(cfValidationMode, cfValidationLength, cfValidationCustom),
         validation_uppercase: cfValidationUppercase,
         validation_message: cfValidationMessage.trim() || null,
+        full_width: cfFullWidth,
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -771,6 +779,7 @@ export function TemplateCreationWizard() {
     setStandaloneHeading("");
     setDisplayLabel("");
     setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
+    setFullWidth(false);
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -804,6 +813,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(validationMode, validationLength, validationCustom),
         validation_uppercase: validationUppercase,
         validation_message: validationMessage.trim() || null,
+        full_width: fullWidth,
       });
 
       if (verify) {
@@ -903,6 +913,7 @@ export function TemplateCreationWizard() {
     setEditValidationCustom(parsedValidation.custom);
     setEditValidationUppercase(!!m.validation_uppercase);
     setEditValidationMessage(m.validation_message ?? "");
+    setEditFullWidth(!!m.full_width);
     setError(null);
   }
 
@@ -928,6 +939,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(editValidationMode, editValidationLength, editValidationCustom),
         validation_uppercase: editValidationUppercase,
         validation_message: editValidationMessage.trim() || null,
+        full_width: editFullWidth,
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1770,6 +1782,10 @@ export function TemplateCreationWizard() {
                         <input type="checkbox" checked={editValidationUppercase} onChange={(e) => setEditValidationUppercase(e.target.checked)} />
                         Convert to UPPERCASE automatically on save
                       </label>
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editFullWidth} onChange={(e) => setEditFullWidth(e.target.checked)} />
+                        Full width on the job screen (instead of sharing the row)
+                      </label>
                     </div>
                     <div>
                       <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">Anchor variations (labels this field can appear under)</p>
@@ -2579,6 +2595,10 @@ export function TemplateCreationWizard() {
               <input type="checkbox" checked={validationUppercase} onChange={(e) => setValidationUppercase(e.target.checked)} />
               Convert to UPPERCASE automatically on save
             </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={fullWidth} onChange={(e) => setFullWidth(e.target.checked)} />
+              Full width on the job screen (instead of sharing the row)
+            </label>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2951,6 +2971,10 @@ export function TemplateCreationWizard() {
             <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={cfValidationUppercase} onChange={(e) => setCfValidationUppercase(e.target.checked)} />
               Convert to UPPERCASE automatically on save
+            </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={cfFullWidth} onChange={(e) => setCfFullWidth(e.target.checked)} />
+              Full width on the job screen (instead of sharing the row)
             </label>
           </div>
 

@@ -3474,6 +3474,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_validation_message: dict[str, str | None] = {
         m.id: m.validation_message for tdoc in group.documents for m in tdoc.marks
     }
+    mark_full_width: dict[str, bool] = {
+        m.id: m.full_width for tdoc in group.documents for m in tdoc.marks
+    }
     # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
     # THAT mark's own card (Container Detail), not the product line-item cards - same
     # screen-placement rule an AI field ticked multi_value_from_document already gets,
@@ -3496,6 +3499,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
     cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
     cf_display_label = {c.id: c.display_label for c in cf_rows}
+    cf_full_width = {c.id: c.full_width for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3702,6 +3706,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 dropdown_style=cf_dropdown_style.get(fv.custom_field_id),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                full_width=(
+                    mark_full_width.get(fv.mark_id, False)
+                    or cf_full_width.get(fv.custom_field_id, False)
+                ),
             )
         )
 
@@ -9214,6 +9222,7 @@ def correct_field_value(
         value=fv.value,
         is_custom=bool(fv.custom_field_id),
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
+        full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
         mark_y=mark.y if mark else None,
@@ -9418,6 +9427,7 @@ def _recompute_per_row_custom_field(
             origin="computed", set_index=row.set_index, row_index=row.row_index,
             hidden_from_capture=cf.hidden_from_capture,
             mandatory=bool(cf.ask_operator_required),
+            full_width=bool(cf.full_width),
         ))
     return results
 
@@ -9558,6 +9568,7 @@ def recompute_custom_field(
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
         origin="computed", hidden_from_capture=cf.hidden_from_capture,
         mandatory=bool(cf.ask_operator_required),
+        full_width=bool(cf.full_width),
     )]
 
 
@@ -9963,6 +9974,7 @@ def recompute_mark(
             found_page=existing.found_page, found_x=existing.found_x, found_y=existing.found_y,
             found_width=existing.found_width, found_height=existing.found_height,
             mandatory=bool(mark.ask_operator_required),
+            full_width=bool(mark.full_width),
         ))
     return results
 

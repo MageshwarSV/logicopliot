@@ -141,6 +141,10 @@ export interface JobFieldValue {
    *  said honestly: a value the operator typed, one learned from an earlier correction rather
    *  than read off the sheet, or a sheet not parsed into the cache yet. */
   lookup_source?: string | null;
+  /** Admin-settable - spans the full row in the job screen's two-column field grid instead of
+   *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing
+   *  behavior for every field that predates this. */
+  full_width?: boolean;
   /** 1-based line-item row, when this field repeats. */
   row_index?: number | null;
   /** FieldMark's static, one-time-drawn template position — NOT used for the highlight

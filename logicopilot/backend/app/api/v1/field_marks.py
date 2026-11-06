@@ -136,6 +136,7 @@ def create_mark(
         validation_pattern=payload.validation_pattern,
         validation_uppercase=payload.validation_uppercase,
         validation_message=payload.validation_message,
+        full_width=payload.full_width,
     )
     db.add(mark)
     db.commit()
@@ -684,6 +685,7 @@ def create_custom_field(
         validation_pattern=payload.validation_pattern,
         validation_uppercase=payload.validation_uppercase,
         validation_message=payload.validation_message,
+        full_width=payload.full_width,
     )
     db.add(cf)
     db.commit()

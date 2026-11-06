@@ -110,4 +110,11 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # a material code or CTH, which is why this is opt-in per field, not a global behavior.
     fuzzy_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Spans the full row in the job screen's two-column field grid instead of sharing it with
+    # whatever sits beside it - admin-settable per field, replacing the old
+    # FULL_WIDTH_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback,
+    # so a field already relying on it is unaffected). False (half width) is today's existing
+    # behavior for every field that predates this column.
+    full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     document: Mapped["TemplateDocument"] = relationship(back_populates="marks")

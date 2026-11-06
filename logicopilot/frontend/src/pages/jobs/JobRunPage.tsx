@@ -408,6 +408,10 @@ const titleCasePlace = (text: string): string =>
 // which split each box's width in half - the document's own long company names (e.g.
 // "FLEXTRONICS INTERNATIONAL MANAGEMENT SERVICES LIMITED") were getting cut off mid-word.
 // Each of these three now spans the full row on its own, by request.
+//
+// Superseded by FieldMark.full_width/CustomField.full_width (an admin-settable per-field
+// toggle through the Template Creation Wizard, no deploy needed) for every field going
+// forward - kept here only as a fallback for these three, which predate that column.
 const FULL_WIDTH_FIELD_LABELS = new Set([
   "Consignee", "ERP Consignee Name", "ERP Importer Address / Branch Code",
 ]);
@@ -7055,7 +7059,11 @@ function ExtractionReview({
                     <div
                       key={fv.id}
                       id={`field-${fv.id}`}
-                      className={FULL_WIDTH_FIELD_LABELS.has(fv.label_name) ? "sm:col-span-2" : undefined}
+                      className={
+                        FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
+                          ? "sm:col-span-2"
+                          : undefined
+                      }
                     >
                       <ExtractedField
                         fv={fv}

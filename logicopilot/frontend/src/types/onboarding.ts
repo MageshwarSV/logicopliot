@@ -52,6 +52,8 @@ export interface Mark {
   /** is_target_value only: match on the same real-world thing despite OCR/formatting noise
    *  ("KUEHNE + NAGEL PVT. LTD." vs "KUEHNE+NAGEL") instead of requiring identical text. */
   fuzzy_match?: boolean;
+  /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
+  full_width?: boolean;
 }
 
 export interface TemplateDocument {
@@ -160,6 +162,8 @@ export interface CustomField {
   validation_pattern?: string | null;
   validation_uppercase?: boolean;
   validation_message?: string | null;
+  /** Mirrors Mark.full_width. */
+  full_width?: boolean;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

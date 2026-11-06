@@ -279,6 +279,10 @@ class JobFieldValueOut(BaseModel):
     # be said honestly: an operator's own typed value, a value learned from an earlier
     # correction rather than read off the sheet, or a sheet not parsed into the cache yet.
     lookup_source: str | None = None
+    # Admin-settable - spans the full row in the job screen's two-column field grid instead of
+    # sharing it with whatever sits beside it. See FieldMark.full_width's own docstring. False
+    # (half width) is today's existing behavior for every field that predates this column.
+    full_width: bool = False
 
 
 class VerificationRow(BaseModel):
