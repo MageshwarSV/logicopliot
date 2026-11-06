@@ -3480,6 +3480,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_multiline: dict[str, bool] = {
         m.id: m.multiline for tdoc in group.documents for m in tdoc.marks
     }
+    mark_field_order: dict[str, int | None] = {
+        m.id: m.field_order for tdoc in group.documents for m in tdoc.marks
+    }
     # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
     # THAT mark's own card (Container Detail), not the product line-item cards - same
     # screen-placement rule an AI field ticked multi_value_from_document already gets,
@@ -3504,6 +3507,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_display_label = {c.id: c.display_label for c in cf_rows}
     cf_full_width = {c.id: c.full_width for c in cf_rows}
     cf_multiline = {c.id: c.multiline for c in cf_rows}
+    cf_field_order = {c.id: c.field_order for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3717,6 +3721,14 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 multiline=(
                     mark_multiline.get(fv.mark_id, False)
                     or cf_multiline.get(fv.custom_field_id, False)
+                ),
+                # Not `or` - field_order=0 is a real, meaningful value ("first"), and 0 is
+                # falsy, so `0 or cf_value` would wrongly fall through to the custom-field side
+                # even when the mark's own 0 is the one that should win.
+                field_order=(
+                    mark_field_order.get(fv.mark_id)
+                    if mark_field_order.get(fv.mark_id) is not None
+                    else cf_field_order.get(fv.custom_field_id)
                 ),
             )
         )
@@ -9232,6 +9244,7 @@ def correct_field_value(
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
         full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
         multiline=bool(owner_for_mandatory and owner_for_mandatory.multiline),
+        field_order=owner_for_mandatory.field_order if owner_for_mandatory else None,
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
         mark_y=mark.y if mark else None,
@@ -9438,6 +9451,7 @@ def _recompute_per_row_custom_field(
             mandatory=bool(cf.ask_operator_required),
             full_width=bool(cf.full_width),
             multiline=bool(cf.multiline),
+            field_order=cf.field_order,
         ))
     return results
 
@@ -9580,6 +9594,7 @@ def recompute_custom_field(
         mandatory=bool(cf.ask_operator_required),
         full_width=bool(cf.full_width),
         multiline=bool(cf.multiline),
+        field_order=cf.field_order,
     )]
 
 
@@ -9987,6 +10002,7 @@ def recompute_mark(
             mandatory=bool(mark.ask_operator_required),
             full_width=bool(mark.full_width),
             multiline=bool(mark.multiline),
+            field_order=mark.field_order,
         ))
     return results
 

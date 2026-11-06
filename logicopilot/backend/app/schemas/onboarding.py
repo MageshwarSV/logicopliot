@@ -72,6 +72,7 @@ class MarkOut(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    field_order: int | None = None
 
 
 class CrossDocLinkOut(BaseModel):
@@ -149,6 +150,7 @@ class CustomFieldOut(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    field_order: int | None = None
 
 
 class CustomFieldCreate(BaseModel):
@@ -193,6 +195,7 @@ class CustomFieldCreate(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    field_order: int | None = None
 
 
 class CustomFieldEdit(BaseModel):
@@ -241,6 +244,7 @@ class CustomFieldEdit(BaseModel):
     validation_message: str | None = None
     full_width: bool | None = None
     multiline: bool | None = None
+    field_order: int | None = None
 
 
 class DocumentDetailOut(DocumentOut):
@@ -296,6 +300,7 @@ class MarkCreate(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    field_order: int | None = None
 
 
 class MarkCorrect(BaseModel):
@@ -324,6 +329,7 @@ class MarkEdit(BaseModel):
     validation_message: str | None = None
     full_width: bool | None = None
     multiline: bool | None = None
+    field_order: int | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the
     # text it found around the box, and the value inside it. On a two-column layout the words
     # beside a value are not its caption, so both can come out wrong: a Gross Weight box that

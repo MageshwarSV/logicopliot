@@ -138,6 +138,7 @@ def create_mark(
         validation_message=payload.validation_message,
         full_width=payload.full_width,
         multiline=payload.multiline,
+        field_order=payload.field_order,
     )
     db.add(mark)
     db.commit()
@@ -688,6 +689,7 @@ def create_custom_field(
         validation_message=payload.validation_message,
         full_width=payload.full_width,
         multiline=payload.multiline,
+        field_order=payload.field_order,
     )
     db.add(cf)
     db.commit()

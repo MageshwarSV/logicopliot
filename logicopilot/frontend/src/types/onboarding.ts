@@ -56,6 +56,8 @@ export interface Mark {
   full_width?: boolean;
   /** Renders as a multi-line, auto-growing box instead of a single-line box. */
   multiline?: boolean;
+  /** Where this field sits, lowest-first, among its siblings under the same section heading. */
+  field_order?: number | null;
 }
 
 export interface TemplateDocument {
@@ -168,6 +170,8 @@ export interface CustomField {
   full_width?: boolean;
   /** Mirrors Mark.multiline. */
   multiline?: boolean;
+  /** Mirrors Mark.field_order. */
+  field_order?: number | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */

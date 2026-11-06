@@ -149,6 +149,9 @@ export interface JobFieldValue {
    *  scrolled sideways through. Undefined/false = single line, today's existing behavior for
    *  every field that predates this. */
   multiline?: boolean;
+  /** Admin-settable - where this field sits, lowest-first, among its siblings under the same
+   *  section heading. null/undefined falls back to the old hardcoded label-order list. */
+  field_order?: number | null;
   /** 1-based line-item row, when this field repeats. */
   row_index?: number | null;
   /** FieldMark's static, one-time-drawn template position — NOT used for the highlight

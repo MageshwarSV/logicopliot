@@ -490,7 +490,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   BL: [
     {
       heading: "HBL & Shipment Details",
-      labels: ["HBL No", "HBL Date", "vessel_name", "voyage_number", "Consignment Type"],
+      labels: [
+        "HBL No", "HBL Date", "MAWB Number", "MAWB Date", "vessel_name", "voyage_number",
+        "Consignment Type",
+      ],
     },
     {
       heading: "Port & Transport Details",
@@ -6664,8 +6667,12 @@ function ExtractionReview({
       // reading in that section's own curated order - both which section comes first, and which
       // field comes first within it - instead of whatever order the fields happen to be stored
       // in. A genuinely new heading an admin makes up later (matching nothing hardcoded) has no
-      // such precedent to follow, so it falls back to natural/first-seen order - a reasonable
-      // default until reordering is itself something the Wizard offers.
+      // such precedent to follow, so it falls back to natural/first-seen order.
+      //
+      // An explicit FieldMark.field_order/CustomField.field_order (admin-settable through the
+      // Wizard, no deploy needed) always wins over both of those when set, on a per-field
+      // basis - a field moved this way sorts by its own number among its heading's siblings,
+      // whatever the old hardcoded list or natural order would otherwise have put it at.
       const hardcodedGroups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type] ?? [];
       const headingRank = new Map(hardcodedGroups.map((g, i) => [g.heading, i]));
       const labelRankByHeading = new Map(
@@ -6675,12 +6682,11 @@ function ExtractionReview({
       const sections = order.map((heading) => {
         const items = byHeading.get(heading)!;
         const labelRank = labelRankByHeading.get(heading);
-        if (labelRank) {
-          items.sort(
-            (a, b) =>
-              (labelRank.get(a.label_name) ?? Infinity) - (labelRank.get(b.label_name) ?? Infinity),
-          );
-        }
+        items.sort((a, b) => {
+          const aKey = a.field_order ?? labelRank?.get(a.label_name) ?? Infinity;
+          const bKey = b.field_order ?? labelRank?.get(b.label_name) ?? Infinity;
+          return aKey - bKey;
+        });
         return { heading, items };
       });
       if (other.length) sections.push({ heading: "Other", items: other });

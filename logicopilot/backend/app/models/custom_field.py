@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -211,4 +211,7 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Mirrors FieldMark.multiline - see its own docstring. Admin-settable replacement for the
     # MULTILINE_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
     multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Mirrors FieldMark.field_order - see its own docstring.
+    field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

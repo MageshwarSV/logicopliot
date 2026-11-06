@@ -124,4 +124,12 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # today's existing behavior for every field that predates this column.
     multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Where this field sits, lowest-first, among the other fields under the SAME section
+    # heading on the job screen - admin-settable, so reordering never needs a deploy. None
+    # (every field that predates this column) falls back to whatever position the old hardcoded
+    # FIELD_GROUPS_BY_DOC_TYPE label-order list in JobRunPage.tsx already gives it (unchanged),
+    # or last, for a field that list never mentioned. Only meaningful relative to sibling
+    # fields sharing the same heading - not a global ordering.
+    field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     document: Mapped["TemplateDocument"] = relationship(back_populates="marks")

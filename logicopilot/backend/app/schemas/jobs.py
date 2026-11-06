@@ -287,6 +287,10 @@ class JobFieldValueOut(BaseModel):
     # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
     # is today's existing behavior for every field that predates this column.
     multiline: bool = False
+    # Admin-settable - where this field sits, lowest-first, among its siblings under the same
+    # section heading. See FieldMark.field_order's own docstring. None falls back to whatever
+    # position the old hardcoded FIELD_GROUPS_BY_DOC_TYPE label-order list already gives it.
+    field_order: int | None = None
 
 
 class VerificationRow(BaseModel):

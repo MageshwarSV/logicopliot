@@ -207,6 +207,9 @@ export function TemplateCreationWizard() {
   // Renders as a multi-line, auto-growing box instead of a single-line box - see
   // FieldMark.multiline's own docstring.
   const [multiline, setMultiline] = useState(false);
+  // Where this field sits among its siblings under the same heading - see
+  // FieldMark.field_order's own docstring. "" = unset, falls back to the old hardcoded order.
+  const [fieldOrder, setFieldOrder] = useState("");
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -379,6 +382,7 @@ export function TemplateCreationWizard() {
   const [editValidationMessage, setEditValidationMessage] = useState("");
   const [editFullWidth, setEditFullWidth] = useState(false);
   const [editMultiline, setEditMultiline] = useState(false);
+  const [editFieldOrder, setEditFieldOrder] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -422,6 +426,7 @@ export function TemplateCreationWizard() {
   const [cfValidationMessage, setCfValidationMessage] = useState("");
   const [cfFullWidth, setCfFullWidth] = useState(false);
   const [cfMultiline, setCfMultiline] = useState(false);
+  const [cfFieldOrder, setCfFieldOrder] = useState("");
   // Which document's own tab this field shows under instead of Additional Details - see
   // CustomField.display_document_id. "" = Additional Details (today's only behavior).
   const [cfDisplayDocumentId, setCfDisplayDocumentId] = useState("");
@@ -552,7 +557,7 @@ export function TemplateCreationWizard() {
     setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
     setCfInputType("text"); setCfFixedOptionsText("");
     setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
-    setCfFullWidth(false); setCfMultiline(false);
+    setCfFullWidth(false); setCfMultiline(false); setCfFieldOrder("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -597,6 +602,7 @@ export function TemplateCreationWizard() {
     setCfValidationMessage(cf.validation_message ?? "");
     setCfFullWidth(!!cf.full_width);
     setCfMultiline(!!cf.multiline);
+    setCfFieldOrder(cf.field_order != null ? String(cf.field_order) : "");
     setError(null);
     setCustomOpen(true);
   }
@@ -656,6 +662,7 @@ export function TemplateCreationWizard() {
         validation_message: cfValidationMessage.trim() || null,
         full_width: cfFullWidth,
         multiline: cfMultiline,
+        field_order: cfFieldOrder.trim() === "" ? null : Number(cfFieldOrder),
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -786,7 +793,7 @@ export function TemplateCreationWizard() {
     setStandaloneHeading("");
     setDisplayLabel("");
     setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
-    setFullWidth(false); setMultiline(false);
+    setFullWidth(false); setMultiline(false); setFieldOrder("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -822,6 +829,7 @@ export function TemplateCreationWizard() {
         validation_message: validationMessage.trim() || null,
         full_width: fullWidth,
         multiline: multiline,
+        field_order: fieldOrder.trim() === "" ? null : Number(fieldOrder),
       });
 
       if (verify) {
@@ -923,6 +931,7 @@ export function TemplateCreationWizard() {
     setEditValidationMessage(m.validation_message ?? "");
     setEditFullWidth(!!m.full_width);
     setEditMultiline(!!m.multiline);
+    setEditFieldOrder(m.field_order != null ? String(m.field_order) : "");
     setError(null);
   }
 
@@ -950,6 +959,7 @@ export function TemplateCreationWizard() {
         validation_message: editValidationMessage.trim() || null,
         full_width: editFullWidth,
         multiline: editMultiline,
+        field_order: editFieldOrder.trim() === "" ? null : Number(editFieldOrder),
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1800,6 +1810,16 @@ export function TemplateCreationWizard() {
                         <input type="checkbox" checked={editMultiline} onChange={(e) => setEditMultiline(e.target.checked)} />
                         Multi-line, auto-growing box (for a full address, say)
                       </label>
+                      <label className="mt-2 block text-xs text-slate-700 dark:text-slate-300">
+                        Order within its section (blank = default)
+                        <input
+                          type="number"
+                          value={editFieldOrder}
+                          onChange={(e) => setEditFieldOrder(e.target.value)}
+                          placeholder="e.g. 0, 1, 2…"
+                          className="mt-1 block w-28 rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900"
+                        />
+                      </label>
                     </div>
                     <div>
                       <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">Anchor variations (labels this field can appear under)</p>
@@ -2617,6 +2637,16 @@ export function TemplateCreationWizard() {
               <input type="checkbox" checked={multiline} onChange={(e) => setMultiline(e.target.checked)} />
               Multi-line, auto-growing box (for a full address, say)
             </label>
+            <label className="mt-2 block text-sm text-slate-700 dark:text-slate-300">
+              Order within its section (blank = default)
+              <input
+                type="number"
+                value={fieldOrder}
+                onChange={(e) => setFieldOrder(e.target.value)}
+                placeholder="e.g. 0, 1, 2…"
+                className="mt-1 block w-32 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
+              />
+            </label>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2997,6 +3027,16 @@ export function TemplateCreationWizard() {
             <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={cfMultiline} onChange={(e) => setCfMultiline(e.target.checked)} />
               Multi-line, auto-growing box (for a full address, say)
+            </label>
+            <label className="mt-2 block text-sm text-slate-700 dark:text-slate-300">
+              Order within its section (blank = default)
+              <input
+                type="number"
+                value={cfFieldOrder}
+                onChange={(e) => setCfFieldOrder(e.target.value)}
+                placeholder="e.g. 0, 1, 2…"
+                className="mt-1 block w-32 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
+              />
             </label>
           </div>
 
