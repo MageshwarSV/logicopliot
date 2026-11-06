@@ -461,6 +461,7 @@ def get_billing_usage(
         final_unclassified_pages=usage.final_unclassified_pages,
         active_jobs_billed=usage.active_jobs_billed,
         deleted_jobs_billed=usage.deleted_jobs_billed,
+        deleted_pages=usage.deleted_pages,
         platform_fee=bill.platform_fee,
         platform_fee_billed_days=bill.platform_fee_billed_days,
         platform_fee_month_days=bill.platform_fee_month_days,

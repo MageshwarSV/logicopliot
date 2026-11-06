@@ -56,6 +56,10 @@ class UsageResult(NamedTuple):
     # answers "of what we billed this period, what's still here," not "what got created here."
     active_jobs_billed: int = 0
     deleted_jobs_billed: int = 0
+    # pages_original minus whatever of it is still accounted for live (final_classified_pages +
+    # final_unclassified_pages) - see JobBillingRow.deleted_pages' own docstring for the exact
+    # same idea at the per-job level. Never negative.
+    deleted_pages: int = 0
 
 
 def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResult:
@@ -147,6 +151,7 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
         final_unclassified_pages=final_unclassified_pages,
         active_jobs_billed=len(still_exist),
         deleted_jobs_billed=len(billed_job_ids) - len(still_exist),
+        deleted_pages=max(0, pages_original - final_classified_pages - final_unclassified_pages),
     )
 
 

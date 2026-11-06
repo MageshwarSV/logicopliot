@@ -149,6 +149,10 @@ class BillingUsageOut(BaseModel):
     # date). None on a finalized response, same reason as above.
     active_jobs_billed: int | None = None
     deleted_jobs_billed: int | None = None
+    # pages_original minus whatever is still classified/unclassified live - see
+    # JobBillingRowOut.deleted_pages' own docstring for the same idea per job. None on a
+    # finalized response, same reason as above.
+    deleted_pages: int | None = None
 
     platform_fee: float
     platform_fee_billed_days: int
