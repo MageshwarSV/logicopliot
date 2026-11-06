@@ -6,7 +6,7 @@ import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import {
-  DocumentIcon, FolderIcon, TrashIcon, LayersIcon,
+  DocumentIcon, TrashIcon, LayersIcon,
   CheckCircleIcon, ExclamationTriangleIcon, ArrowPathIcon,
 } from "../../components/ui/icons";
 import { DonutChart } from "../../components/charts/DonutChart";
@@ -94,7 +94,6 @@ export function SaasFinanceUsageBillingPage() {
           {usage.pages_original !== null ? (
             <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
-              <StatCard icon={<FolderIcon />} tone="blue" label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
               <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
               <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
