@@ -117,4 +117,11 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # behavior for every field that predates this column.
     full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Renders as a multi-line, auto-growing box (wraps onto as many lines as the value needs,
+    # taller as the value gets longer) instead of a single-line box the operator scrolls
+    # sideways through - admin-settable per field, replacing the old MULTILINE_FIELD_LABELS
+    # hardcoded list in JobRunPage.tsx (kept there too, as a fallback). False (single line) is
+    # today's existing behavior for every field that predates this column.
+    multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     document: Mapped["TemplateDocument"] = relationship(back_populates="marks")

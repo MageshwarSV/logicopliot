@@ -283,6 +283,10 @@ class JobFieldValueOut(BaseModel):
     # sharing it with whatever sits beside it. See FieldMark.full_width's own docstring. False
     # (half width) is today's existing behavior for every field that predates this column.
     full_width: bool = False
+    # Admin-settable - renders as a multi-line, auto-growing box instead of a single-line box
+    # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
+    # is today's existing behavior for every field that predates this column.
+    multiline: bool = False
 
 
 class VerificationRow(BaseModel):

@@ -145,6 +145,10 @@ export interface JobFieldValue {
    *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing
    *  behavior for every field that predates this. */
   full_width?: boolean;
+  /** Admin-settable - renders as a multi-line, auto-growing box instead of a single-line box
+   *  scrolled sideways through. Undefined/false = single line, today's existing behavior for
+   *  every field that predates this. */
+  multiline?: boolean;
   /** 1-based line-item row, when this field repeats. */
   row_index?: number | null;
   /** FieldMark's static, one-time-drawn template position — NOT used for the highlight

@@ -370,6 +370,10 @@ const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
 };
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
+//
+// Superseded by FieldMark.multiline/CustomField.multiline (an admin-settable per-field toggle
+// through the Template Creation Wizard, no deploy needed) for every field going forward - kept
+// here only as a fallback for these three, which predate that column.
 const MULTILINE_FIELD_LABELS = new Set([
   "Supplier Address", "Shipper Address", "Combined Description",
 ]);
@@ -496,7 +500,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     {
       heading: "Party Details",
       labels: [
-        "shipper", "Shipper Address", "Consignee",
+        "shipper", "Shipper Address", "Sold By / Buyer", "Sold By / Buyer Address", "Consignee",
         "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
       ],
     },
@@ -4860,6 +4864,18 @@ function ExtractedField({
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
+  // multiline only: grows the box's own height to fit the content instead of a fixed row
+  // count - a short value stays compact, a long wrapped address gets as many lines as it
+  // actually needs. Measures the real rendered height (scrollHeight) rather than guessing a
+  // line count from character width, so it tracks the box's own current width (half or full)
+  // correctly either way.
+  const multilineRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = multilineRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const [comboOpen, setComboOpen] = useState(false);
@@ -5138,16 +5154,20 @@ function ExtractedField({
           </select>
         ) : multiline ? (
           <textarea
+            ref={multilineRef}
             value={draft}
             readOnly={readOnly}
-            rows={3}
+            rows={2}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={() => onFocusField?.(fv)}
             // Blur still saves, as a safety net for anyone who types and tabs away - same
             // pattern as the single-line input below.
             onBlur={commit}
             placeholder="not found"
-            className={`${boxClassName} resize-y`}
+            // Grows to fit its own content (see the scrollHeight effect above) - resize-y is
+            // still there so an operator can stretch it further by hand if they want, but
+            // nothing has to drag it open just to see a long address's last line.
+            className={`${boxClassName} resize-y overflow-hidden`}
           />
         ) : asyncSearchPicker ? (
           <>
@@ -7129,7 +7149,7 @@ function ExtractionReview({
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
-                        multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                        multiline={MULTILINE_FIELD_LABELS.has(fv.label_name) || !!fv.multiline}
                         wrapLabel={WRAP_LABEL_FIELD_LABELS.has(fv.label_name)}
                         note={
                           isMark && from && from !== fv.document_name
@@ -7398,7 +7418,7 @@ function ExtractionReview({
                                 tone="reference"
                                 labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 options={FIELD_SELECT_OPTIONS[fv.label_name]}
-                                multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                                multiline={MULTILINE_FIELD_LABELS.has(fv.label_name) || !!fv.multiline}
                               />
                             ))}
                           </div>

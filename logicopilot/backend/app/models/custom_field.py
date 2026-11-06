@@ -208,3 +208,7 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # FULL_WIDTH_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
     full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Mirrors FieldMark.multiline - see its own docstring. Admin-settable replacement for the
+    # MULTILINE_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
+    multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+

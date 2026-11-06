@@ -54,6 +54,8 @@ export interface Mark {
   fuzzy_match?: boolean;
   /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
   full_width?: boolean;
+  /** Renders as a multi-line, auto-growing box instead of a single-line box. */
+  multiline?: boolean;
 }
 
 export interface TemplateDocument {
@@ -164,6 +166,8 @@ export interface CustomField {
   validation_message?: string | null;
   /** Mirrors Mark.full_width. */
   full_width?: boolean;
+  /** Mirrors Mark.multiline. */
+  multiline?: boolean;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */
