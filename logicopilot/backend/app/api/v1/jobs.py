@@ -1070,7 +1070,9 @@ def _job_category(job: Job) -> str:
     return "new"
 
 
-def _start_extraction_background(job_id: str, only_job_document_id: str | None = None) -> None:
+def _start_extraction_background(
+    job_id: str, only_job_document_id: str | None = None, *, is_rerun: bool = False,
+) -> None:
     """Run extraction off the request thread, so an upload or the Extract button returns at
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
     session resume in main.py: the request's session closes when the endpoint returns, long
@@ -1090,7 +1092,7 @@ def _start_extraction_background(job_id: str, only_job_document_id: str | None =
             job2 = db2.get(Job, job_id)
             if job2 is None:
                 return
-            run_extraction(db2, job2, only_job_document_id=only_job_document_id)
+            run_extraction(db2, job2, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
         except Exception:  # noqa: BLE001
             logger.exception("background extraction failed for job %s", job_id)
             db2.rollback()
@@ -1106,7 +1108,9 @@ def _start_extraction_background(job_id: str, only_job_document_id: str | None =
     submit_extraction(_go)
 
 
-def _begin_extraction(db: Session, job: Job, only_job_document_id: str | None = None) -> None:
+def _begin_extraction(
+    db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
+) -> None:
     """Common start-of-extraction bookkeeping for the auto-trigger, the Extract button and
     Re-run extraction alike: clear any earlier approvals — a fresh read can change the very
     values that were approved, on Data Extraction and on Data Validation both — then hand off
@@ -1138,7 +1142,7 @@ def _begin_extraction(db: Session, job: Job, only_job_document_id: str | None = 
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage="Data Validation", note="Extraction started — back to Data Validation for review"))
     db.commit()
-    _start_extraction_background(job.id, only_job_document_id=only_job_document_id)
+    _start_extraction_background(job.id, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
 
 
 def _maybe_auto_extract(db: Session, job: Job) -> None:
@@ -7678,13 +7682,23 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
     return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
 
 
-def run_extraction(db: Session, job: Job, only_job_document_id: str | None = None) -> None:
+def run_extraction(
+    db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
+) -> None:
     """Extract every marked field for a job's uploaded documents and set status to
     'extracted'. Reusable by the operator's Extract button AND the email auto-pull.
 
     `only_job_document_id` re-reads just ONE document - for when a single file changed (a page
     cut out, a page added, a reupload) and re-reading all four is work nobody asked for. Every
     other document keeps the values it already has; only this one is sent to the model again.
+
+    is_rerun: True only when this is a deliberate "Re-run extraction" press (job.status was
+    already past "draft" when the operator pressed it - see extract_job) - billed as a rerun
+    event for however many pages are about to be re-sent to the extraction model, same
+    record_billable_pages call every other re-processing cost uses. False (the default, the
+    auto-trigger and a job's own first manual Extract press) stays unbilled: OCR is already
+    billed at classification time, and reading it once to get any value at all out of a page
+    that was already paid for is not a cost worth charging for a second time.
 
     What is NOT scoped, deliberately: every tenant CUSTOM field is still recomputed in full.
     They have no job_document_id of their own, and a field with no source_document_ids reads
@@ -7718,6 +7732,18 @@ def run_extraction(db: Session, job: Job, only_job_document_id: str | None = Non
                 .filter(JobDocument.job_id == job.id)
                 .order_by(JobDocument.file_index).all()):
         docs_by_tdoc.setdefault(_jd.template_document_id, []).append(_jd)
+
+    if is_rerun and group is not None:
+        # Same documents the real extraction loop below will actually read (same skip
+        # conditions: no file, no marks defined, or scoped to a different document) - billed
+        # once, up front, so the cost is recorded even if a later per-document call fails.
+        rerun_pages = sum(
+            jd.page_count or 0
+            for tdoc in group.documents if tdoc.marks
+            for jd in docs_by_tdoc.get(tdoc.id, [])
+            if jd.file_path and (not only_job_document_id or jd.id == only_job_document_id)
+        )
+        record_billable_pages(db, job, rerun_pages, is_rerun=True)
 
     # A "Re-run extraction" re-reads the documents, it does not mean "and throw away
     # whatever a human already typed" - the ERP rerun button's own tooltip already promises
@@ -8928,7 +8954,12 @@ def extract_job(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="That document is not on this job any more.",
             )
-    _begin_extraction(db, job, only_job_document_id=job_document_id)
+    # A job already past its first pass (anything but "draft") means this press is a genuine
+    # "Re-run extraction", not the job's own first Extract - billed accordingly, see
+    # run_extraction's own docstring. Read before _begin_extraction flips status to
+    # "extracting" below.
+    is_rerun = job.status != "draft"
+    _begin_extraction(db, job, only_job_document_id=job_document_id, is_rerun=is_rerun)
     db.refresh(job)
     return _build_detail(db, job)
 
