@@ -6653,7 +6653,7 @@ UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"}
 def _classify_and_place_files(
     db: Session, job: Job, group: "TemplateGroup", candidates: list[dict],
     extraction_engine: str, vision_engine_model: str,
-    files: list[tuple[str, bytes]], debug: bool = False,
+    files: list[tuple[str, bytes]], debug: bool = False, is_rerun: bool = False,
 ) -> dict:
     """Shared core of Smart Upload: classify `files` (already read into memory, any ZIPs
     already unpacked) against `candidates` and place each into the right document slot(s) on
@@ -6663,6 +6663,11 @@ def _classify_and_place_files(
     (re-runs this on a job's own already-uploaded files, in place, once a classifier fix needs
     to be applied retroactively) - identical logic either way, just a different source for
     `files`.
+
+    is_rerun: passed straight through to every record_billable_pages call this function makes -
+    False for smart_upload's own call (a job's first time through this pipeline), True for
+    reclassify_documents' (an explicit re-run of pages already billed once). See
+    BillablePageEvent.is_rerun's own docstring.
     """
     import uuid
 
@@ -6740,7 +6745,9 @@ def _classify_and_place_files(
         # actually needs them, so this IS their one OCR pass, whatever this function's own
         # docstring's idempotency note says about a second call being a no-op (it never re-runs
         # this block for the same item).
-        record_billable_pages(db, job, sum(1 for t in extra_raw if t.strip()))
+        record_billable_pages(
+            db, job, sum(1 for t in extra_raw if t.strip()), is_rerun=is_rerun,
+        )
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
@@ -6796,7 +6803,9 @@ def _classify_and_place_files(
                 # document (the cluster write below, and both assign_unclassified_page branches
                 # further down) no longer does, so a page is billed exactly once per OCR pass,
                 # never twice for the same pass.
-                record_billable_pages(db, job, sum(1 for t in raw_pages if t.strip()))
+                record_billable_pages(
+                    db, job, sum(1 for t in raw_pages if t.strip()), is_rerun=is_rerun,
+                )
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and
                 # "invoice", which is how one 2-page bill of lading came to match every slot on
@@ -7344,6 +7353,7 @@ def reclassify_documents(
 
     return run_queued(lambda: _classify_and_place_files(
         db, job, group, candidates, extraction_engine, vision_engine_model, files, debug=False,
+        is_rerun=True,
     ))
 
 

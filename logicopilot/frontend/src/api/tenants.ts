@@ -152,6 +152,21 @@ export interface BillingUsage {
   total_jobs: number;
   total_pages: number;
   by_shipment_type: ShipmentTypeUsage[];
+  /** Of total_pages: first-time processing vs an explicit reclassify-triggered re-run. null on
+   *  a finalized (past-month, from a stored Invoice) response - older invoices never recorded
+   *  this breakdown. */
+  pages_original: number | null;
+  pages_rerun: number | null;
+  /** Read live from current job/document state, not the permanent ledger, so this can drift
+   *  slightly from pages_original if a page was deleted afterward without a matching rerun.
+   *  null on a finalized response, same reason as above. */
+  final_classified_pages: number | null;
+  final_unclassified_pages: number | null;
+  /** Of the jobs billed THIS period (by event date, not job creation date - a different
+   *  scoping from total_jobs above), how many still exist vs have been hard-deleted since.
+   *  null on a finalized response, same reason as above. */
+  active_jobs_billed: number | null;
+  deleted_jobs_billed: number | null;
   platform_fee: number;
   /** platform_fee_billed_days < platform_fee_month_days means this month's fee was pro-rated
    *  (a go-live date fell partway through it). Equal means a normal, full-month charge. */

@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -32,3 +32,10 @@ class BillablePageEvent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     job_reference: Mapped[str] = mapped_column(String(255), nullable=False)
     shipment_type: Mapped[str] = mapped_column(String(50), nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # True only for an explicit admin re-run of an already-processed job's classification
+    # (reclassify_documents) - a genuinely fresh re-read of pages already billed once before,
+    # not just a job's own normal multi-pass OCR (a large file split across an initial pass and
+    # a later extension past the per-file cap is still ONE original pass, not a rerun). False
+    # for every other call site: Smart Upload, email-pulled jobs, and a manual upload/re-upload
+    # on Document Capture are all still "first time this content was billed", by request.
+    is_rerun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

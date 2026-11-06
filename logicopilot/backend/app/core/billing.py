@@ -9,6 +9,7 @@ import calendar
 from datetime import date, datetime, timezone
 from typing import NamedTuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.billable_page_event import BillablePageEvent
@@ -34,6 +35,27 @@ class UsageResult(NamedTuple):
     total_jobs: int
     total_pages: int
     by_shipment_type: dict[str, dict[str, int]]
+    # Of total_pages: billed as a job's own first-time processing vs an explicit
+    # reclassify_documents re-run - see BillablePageEvent.is_rerun's own docstring.
+    # pages_original + pages_rerun always equals total_pages.
+    pages_original: int = 0
+    pages_rerun: int = 0
+    # Of every job with at least one billing event THIS PERIOD (by event date, same scoping as
+    # total_pages - not total_jobs above, which counts by the job's own creation date instead),
+    # how many currently still have real content in a document slot vs still sitting in the
+    # Unclassified pile. Read live, not from the ledger (the ledger only ever recorded how many
+    # pages were processed, never where they ended up) - so this can drift from pages_original
+    # if a page was deleted afterward without a matching rerun. final_classified_pages +
+    # final_unclassified_pages is normally close to pages_original, not guaranteed identical.
+    final_classified_pages: int = 0
+    final_unclassified_pages: int = 0
+    # Of that same set of billed-this-period jobs, how many still exist vs have been hard-
+    # deleted since (DELETE /jobs/{id} removes the row entirely - see BillablePageEvent's own
+    # docstring for why the ledger has to survive that). Deliberately a DIFFERENT count from
+    # total_jobs above (which is scoped by job creation date, not billing-event date) - this
+    # answers "of what we billed this period, what's still here," not "what got created here."
+    active_jobs_billed: int = 0
+    deleted_jobs_billed: int = 0
 
 
 def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResult:
@@ -70,7 +92,10 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
         by_type.setdefault(shipment_type, {"jobs": 0, "pages": 0})["jobs"] += 1
 
     events = (
-        db.query(BillablePageEvent.shipment_type, BillablePageEvent.page_count)
+        db.query(
+            BillablePageEvent.job_id, BillablePageEvent.shipment_type,
+            BillablePageEvent.page_count, BillablePageEvent.is_rerun,
+        )
         .filter(
             BillablePageEvent.tenant_id == tenant_id,
             BillablePageEvent.created_at >= start_dt, BillablePageEvent.created_at < end_dt,
@@ -78,21 +103,69 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
         .all()
     )
     total_pages = 0
-    for shipment_type, page_count in events:
-        by_type.setdefault(shipment_type, {"jobs": 0, "pages": 0})["pages"] += page_count or 0
-        total_pages += page_count or 0
+    pages_original = 0
+    pages_rerun = 0
+    billed_job_ids: set[str] = set()
+    for event_job_id, shipment_type, page_count, is_rerun in events:
+        page_count = page_count or 0
+        by_type.setdefault(shipment_type, {"jobs": 0, "pages": 0})["pages"] += page_count
+        total_pages += page_count
+        if is_rerun:
+            pages_rerun += page_count
+        else:
+            pages_original += page_count
+        billed_job_ids.add(event_job_id)
 
-    return UsageResult(total_jobs=len(job_group), total_pages=total_pages, by_shipment_type=by_type)
+    # Of the jobs this period actually billed for (by event date, not creation date - see
+    # UsageResult's own docstring), how many still exist, and - for those - how many of their
+    # pages are currently sitting in a real document slot vs still unresolved in Unclassified.
+    # Read live, deliberately: the ledger only ever recorded that pages WERE processed, never
+    # where they ended up.
+    from app.models.job import JobDocument, UnmatchedUploadPage
+
+    still_exist = {
+        row.id for row in db.query(Job.id).filter(Job.id.in_(billed_job_ids)).all()
+    } if billed_job_ids else set()
+    final_classified_pages = 0
+    final_unclassified_pages = 0
+    if still_exist:
+        final_classified_pages = (
+            db.query(func.coalesce(func.sum(JobDocument.page_count), 0))
+            .filter(JobDocument.job_id.in_(still_exist), JobDocument.file_path.isnot(None))
+            .scalar() or 0
+        )
+        final_unclassified_pages = (
+            db.query(func.count(UnmatchedUploadPage.id))
+            .filter(UnmatchedUploadPage.job_id.in_(still_exist))
+            .scalar() or 0
+        )
+
+    return UsageResult(
+        total_jobs=len(job_group), total_pages=total_pages, by_shipment_type=by_type,
+        pages_original=pages_original, pages_rerun=pages_rerun,
+        final_classified_pages=final_classified_pages,
+        final_unclassified_pages=final_unclassified_pages,
+        active_jobs_billed=len(still_exist),
+        deleted_jobs_billed=len(billed_job_ids) - len(still_exist),
+    )
 
 
-def record_billable_pages(db: Session, job: Job, page_count: int) -> None:
+def record_billable_pages(
+    db: Session, job: Job, page_count: int, *, is_rerun: bool = False,
+) -> None:
     """Write one permanent ledger row the moment pages are actually processed - call this at
-    every _render_pages() call site, right after page_count is computed (email-pulled job
-    creation, a manual upload/re-upload on Document Capture, Smart Upload, and assigning a
-    staged Unclassified page to a slot), in the same transaction as the JobDocument write so
-    both commit or roll back together. A page_count of 0 writes nothing - there is nothing
-    billable about an empty/failed read. Snapshots job_reference and shipment_type now, since
-    the job (or its template group) can be changed or deleted later."""
+    every page-OCR call site (email-pulled job creation, a manual upload/re-upload on Document
+    Capture, Smart Upload's own classification pass, and reclassify_documents), in the same
+    transaction as the JobDocument/staging write so both commit or roll back together. A
+    page_count of 0 writes nothing - there is nothing billable about an empty/failed read.
+    Snapshots job_reference and shipment_type now, since the job (or its template group) can be
+    changed or deleted later.
+
+    is_rerun: True only for reclassify_documents - an explicit admin re-run of an already-
+    processed job's classification, genuinely re-reading pages already billed once before.
+    False (the default) covers everything else, including a large file's own multi-pass OCR
+    past the per-file cap - that is still ONE original pass, not a rerun, even though it writes
+    more than one ledger row for the same job. See BillablePageEvent.is_rerun's own docstring."""
     if not page_count:
         return
     shipment_type = UNASSIGNED_SHIPMENT_TYPE
@@ -102,7 +175,7 @@ def record_billable_pages(db: Session, job: Job, page_count: int) -> None:
             shipment_type = group.mode
     db.add(BillablePageEvent(
         tenant_id=job.tenant_id, job_id=job.id, job_reference=job.reference,
-        shipment_type=shipment_type, page_count=page_count,
+        shipment_type=shipment_type, page_count=page_count, is_rerun=is_rerun,
     ))
 
 

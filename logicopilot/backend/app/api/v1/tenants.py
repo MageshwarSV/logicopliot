@@ -448,6 +448,11 @@ def get_billing_usage(
             ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
             for k, v in sorted(usage.by_shipment_type.items())
         ],
+        pages_original=usage.pages_original, pages_rerun=usage.pages_rerun,
+        final_classified_pages=usage.final_classified_pages,
+        final_unclassified_pages=usage.final_unclassified_pages,
+        active_jobs_billed=usage.active_jobs_billed,
+        deleted_jobs_billed=usage.deleted_jobs_billed,
         platform_fee=bill.platform_fee,
         platform_fee_billed_days=bill.platform_fee_billed_days,
         platform_fee_month_days=bill.platform_fee_month_days,
