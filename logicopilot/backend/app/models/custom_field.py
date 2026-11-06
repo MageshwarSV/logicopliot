@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -9,6 +9,11 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 # lived only in the edit route fell out of step the moment "lookup" was added: the route dropped
 # the value, answered 200, and the screen quietly did nothing.
 CUSTOM_FIELD_KINDS = ("hardcoded", "ai", "lookup", "composite")
+
+# fixed_options only - see CustomField.dropdown_style's own docstring. Kept here, next to the
+# column, for the same reason CUSTOM_FIELD_KINDS is - a whitelist checked only in one of the
+# two write routes (create/edit) falls out of step the moment the other one changes.
+DROPDOWN_STYLES = ("plain", "search", "search_free")
 
 
 class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -163,6 +168,14 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # these choices instead of a free-text box. None (every field before this existed, and
     # every ordinary ask_operator field) means plain free text, unchanged.
     fixed_options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # fixed_options only: how it renders on the Job Run screen - None/"plain" (every field
+    # before this existed) is a plain closed <select>, exactly as before; "search" is a
+    # searchable combobox that still only accepts one of these values; "search_free" is the
+    # same searchable combobox, but typing something not in the list still saves it. Set once
+    # in the Wizard's Custom Tag modal, same no-deploy idea as standalone_group_heading/
+    # display_label below - a long fixed_options list (a country list, say) reads better
+    # searchable than scrolled through a plain <select>.
+    dropdown_style: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Which document's own tab this field is grouped under on the Job Run capture screen,
     # instead of Additional Details (None = Additional Details, today's only behavior for
     # every field that predates this). Generalizes what JobRunPage.tsx's own
@@ -171,4 +184,34 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     display_document_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("template_documents.id", ondelete="SET NULL"), nullable=True
     )
+
+    # Mirrors FieldMark.standalone_group_heading - this field's own section heading on the Job
+    # Run page (e.g. "Party Details"), set once by an admin rather than hardcoded into
+    # JobRunPage.tsx's own FIELD_GROUPS_BY_DOC_TYPE map. None (every field before this existed)
+    # keeps falling back to that hardcoded map, unchanged.
+    standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Mirrors FieldMark.display_label - what the operator sees, when it should read
+    # differently from label_name, set once by an admin instead of a frontend code change.
+    # None (every field before this existed) falls back to whatever JobRunPage.tsx's own
+    # hardcoded label-override maps already show, unchanged.
+    display_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Mirrors FieldMark.validation_pattern/validation_uppercase/validation_message - see those
+    # columns' own docstrings. Purely client-side, same as every format check already hand-
+    # coded into JobRunPage.tsx (CustomsHouseCode's own 5-letters-then-1-digit shape included).
+    validation_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_uppercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Mirrors FieldMark.full_width - see its own docstring. Admin-settable replacement for the
+    # FULL_WIDTH_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
+    full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Mirrors FieldMark.multiline - see its own docstring. Admin-settable replacement for the
+    # MULTILINE_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
+    multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Mirrors FieldMark.field_order - see its own docstring.
+    field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

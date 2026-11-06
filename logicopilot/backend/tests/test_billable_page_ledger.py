@@ -1,4 +1,4 @@
-"""BillablePageEvent: a durable, append-only ledger of pages actually processed, written at
+﻿"""BillablePageEvent: a durable, append-only ledger of pages actually processed, written at
 every _render_pages() call site so a later delete (of a single page, or the whole job) can
 never erase AI-processing cost that was already incurred. See app/core/billing.py's
 record_billable_pages/compute_usage and app/models/billable_page_event.py's own docstring for
@@ -164,7 +164,7 @@ def test_smart_upload_writes_a_ledger_event_per_matched_file(client, db_session)
     login(client, op.email)
 
     with patch("app.api.v1.jobs.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.api.v1.jobs.assign_documents_detailed",
+         patch("app.core.classifier_air_import.assign_documents_detailed",
                return_value=[[{"key": tdoc.id, "pages": [1, 2], "evidence": "e"}]]):
         resp = client.post(
             f"/api/v1/jobs/{job.id}/smart-upload",

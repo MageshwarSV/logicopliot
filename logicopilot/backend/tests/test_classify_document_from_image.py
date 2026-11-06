@@ -1,4 +1,4 @@
-"""classify_document_from_image - the vision-engine counterpart to classify_document, used
+﻿"""classify_document_from_image - the vision-engine counterpart to classify_document, used
 only when the extraction_engine system setting is "gpt5_mini_vision". Mirrors
 classify_document's evidence-or-discard discipline exactly, but reads ONLY the page-1 image,
 never OCR text - and must never claim any page other than 1, since page 1 is the only page
@@ -6,8 +6,8 @@ it is ever shown (the documented v1 scope limitation)."""
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from app.core.classifier import (
-    AIServiceUnavailable,
+from app.core.classifier_common import AIServiceUnavailable
+from app.core.classifier_sea_import import (
     assign_documents_detailed,
     classify_document,
     classify_document_from_image,
@@ -39,7 +39,7 @@ def _fake_match_response(key="inv", evidence="Invoice No: INV-123, Total Payable
 
 
 def test_returns_empty_when_no_image_path_given_without_calling_openai():
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         result = classify_document_from_image("scan.png", None, CANDIDATES, "gpt-5-mini")
     assert result == []
@@ -47,7 +47,7 @@ def test_returns_empty_when_no_image_path_given_without_calling_openai():
 
 
 def test_returns_empty_when_the_image_file_does_not_exist():
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls, \
          patch("pathlib.Path.exists", return_value=False):
         result = classify_document_from_image(
@@ -60,7 +60,7 @@ def test_calls_openai_with_the_given_model_and_an_image_content_block(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
     client = _fake_match_response()
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         result = classify_document_from_image("invoice.pdf", img, CANDIDATES, "gpt-5-mini")
 
@@ -86,7 +86,7 @@ def test_never_claims_any_page_other_than_1_even_if_the_model_tries_to(tmp_path)
     )
     client = MagicMock()
     client.chat.completions.create.return_value = fake_response
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         result = classify_document_from_image("invoice.pdf", img, CANDIDATES, "gpt-5-mini")
     assert result == [{"key": "inv", "pages": [1], "evidence": "Invoice No: INV-123",
@@ -97,7 +97,7 @@ def test_a_match_with_no_real_evidence_is_dropped(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
     client = _fake_match_response(evidence="x")
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         result = classify_document_from_image("invoice.pdf", img, CANDIDATES, "gpt-5-mini")
     assert result == []
@@ -111,7 +111,7 @@ def test_an_api_error_raises_ai_service_unavailable_not_a_silent_empty_result(tm
     client = MagicMock()
     client.chat.completions.create.side_effect = APIError(
         "rate limited", request=MagicMock(), body=None)
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=client):
         try:
             classify_document_from_image("invoice.pdf", img, CANDIDATES, "gpt-5-mini")
@@ -129,8 +129,8 @@ def _file(name, text="", image=None):
 
 
 def test_default_engine_uses_the_text_reader_exactly_as_before():
-    with patch("app.core.classifier.classify_document", return_value=[]) as mock_text, \
-         patch("app.core.classifier.classify_document_from_image") as mock_vision:
+    with patch("app.core.classifier_sea_import.classify_document", return_value=[]) as mock_text, \
+         patch("app.core.classifier_sea_import.classify_document_from_image") as mock_vision:
         assign_documents_detailed([_file("a.pdf", text="some text")], CANDIDATES)
     mock_text.assert_called_once()
     mock_vision.assert_not_called()
@@ -139,8 +139,8 @@ def test_default_engine_uses_the_text_reader_exactly_as_before():
 def test_vision_engine_uses_the_image_reader_with_the_given_model(tmp_path):
     img = tmp_path / "page_1.png"
     img.write_bytes(b"\x89PNG\r\n")
-    with patch("app.core.classifier.classify_document") as mock_text, \
-         patch("app.core.classifier.classify_document_from_image", return_value=[]) as mock_vision:
+    with patch("app.core.classifier_sea_import.classify_document") as mock_text, \
+         patch("app.core.classifier_sea_import.classify_document_from_image", return_value=[]) as mock_vision:
         assign_documents_detailed(
             [_file("a.pdf", image=img)], CANDIDATES,
             engine="gpt5_mini_vision", vision_model="gpt-5-mini",

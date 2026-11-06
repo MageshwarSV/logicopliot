@@ -63,7 +63,7 @@ def test_email_pull_reaches_assign_documents_detailed_with_per_page_vision(db_se
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "bill of lading", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]) as mock_assign:
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="vis-op@zoho.com", mail_app_password="x",
@@ -85,7 +85,7 @@ def test_email_pull_under_the_vision_engine_also_passes_per_page_vision(db_sessi
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "bill of lading", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]) as mock_assign:
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="vis-op2@zoho.com", mail_app_password="x",

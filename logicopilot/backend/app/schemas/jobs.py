@@ -252,6 +252,10 @@ class JobFieldValueOut(BaseModel):
     # from FieldMark.standalone_group_heading - wordable per tenant/template. None/blank
     # falls back to the field's own label_name.
     standalone_group_heading: str | None = None
+    # What the operator sees instead of label_name, from FieldMark.display_label /
+    # CustomField.display_label - set once by an admin, checked ahead of JobRunPage.tsx's own
+    # hardcoded FIELD_LABEL_OVERRIDES_BY_DOC_TYPE/BY_GROUP maps. None/blank falls back to those.
+    display_label: str | None = None
     # Denormalized from CustomField.hidden_from_capture's own docstring - this value is never
     # shown on the job screen (product card or Dump Data), only ever written for something
     # else to read later. True only for a custom field; a mark-sourced value is always False.
@@ -260,6 +264,13 @@ class JobFieldValueOut(BaseModel):
     # dropdown of exactly these choices instead of a free-text box. None = free text,
     # unchanged for every field that predates this.
     fixed_options: list[str] | None = None
+    # fixed_options only: null/"plain" | "search" | "search_free" - see CustomField.dropdown_style.
+    dropdown_style: str | None = None
+    # Admin-settable format check + auto-uppercase - see FieldMark.validation_pattern's own
+    # docstring. Purely client-side; nothing enforced server-side by this field.
+    validation_pattern: str | None = None
+    validation_uppercase: bool = False
+    validation_message: str | None = None
     # Which document's own tab to group this field under instead of Additional Details -
     # None (every field that predates this) means Additional Details, today's only behavior.
     display_document_id: str | None = None
@@ -268,6 +279,18 @@ class JobFieldValueOut(BaseModel):
     # be said honestly: an operator's own typed value, a value learned from an earlier
     # correction rather than read off the sheet, or a sheet not parsed into the cache yet.
     lookup_source: str | None = None
+    # Admin-settable - spans the full row in the job screen's two-column field grid instead of
+    # sharing it with whatever sits beside it. See FieldMark.full_width's own docstring. False
+    # (half width) is today's existing behavior for every field that predates this column.
+    full_width: bool = False
+    # Admin-settable - renders as a multi-line, auto-growing box instead of a single-line box
+    # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
+    # is today's existing behavior for every field that predates this column.
+    multiline: bool = False
+    # Admin-settable - where this field sits, lowest-first, among its siblings under the same
+    # section heading. See FieldMark.field_order's own docstring. None falls back to whatever
+    # position the old hardcoded FIELD_GROUPS_BY_DOC_TYPE label-order list already gives it.
+    field_order: int | None = None
 
 
 class VerificationRow(BaseModel):

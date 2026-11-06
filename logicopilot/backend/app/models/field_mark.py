@@ -70,6 +70,32 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # the field's own label_name when blank.
     standalone_group_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # What the OPERATOR sees on the job screen, when it should read differently from
+    # label_name - e.g. label_name stays "HBL No" (what extraction/matching/the Excel export
+    # all key on, unchanged), while one tenant's template shows "HAWB Number" instead. None
+    # (every field before this existed) falls back to whatever JobRunPage.tsx's own hardcoded
+    # FIELD_LABEL_OVERRIDES_BY_DOC_TYPE/BY_GROUP maps already show, unchanged - this is a NEW,
+    # higher-priority source on top of those, not a replacement for them.
+    display_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Admin-settable format check, purely client-side (same enforcement point the earlier
+    # hand-coded checks already used - ExtractedField's onBeforeSave, and the document-approval
+    # gate's own invalidFormat check - nothing new is enforced server-side). A regex BODY, not
+    # anchored - the frontend always tests it as `^(?:pattern)$` against the trimmed value, so
+    # an admin typing "[A-Za-z]{3}" (not "^[A-Za-z]{3}$") still gets a whole-value match. None
+    # (every field before this existed, and the hand-coded TOI/CustomsHouseCode/Shipment
+    # Country Code checks already in JobRunPage.tsx) means no format restriction from this
+    # mechanism - those three keep working exactly as they do today until someone moves them
+    # over to this column too.
+    validation_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Auto-convert to UPPERCASE on save, independent of validation_pattern (a field can have
+    # one, both, or neither) - same idea as Shipment Country Code's own existing hand-coded
+    # uppercase-on-save.
+    validation_uppercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Shown when validation_pattern fails. None = a generic auto-worded message naming the
+    # field.
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # This mark is extracted normally, then its OWN raw value is looked up in a reference
     # table keyed on itself (see CustomFieldReferenceValue.mark_id) - a match replaces the
     # extraction with the table's stored value, no match returns empty rather than the raw
@@ -83,5 +109,27 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Off by default - a near-miss here is fine for a freight forwarder's name, but never for
     # a material code or CTH, which is why this is opt-in per field, not a global behavior.
     fuzzy_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Spans the full row in the job screen's two-column field grid instead of sharing it with
+    # whatever sits beside it - admin-settable per field, replacing the old
+    # FULL_WIDTH_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback,
+    # so a field already relying on it is unaffected). False (half width) is today's existing
+    # behavior for every field that predates this column.
+    full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Renders as a multi-line, auto-growing box (wraps onto as many lines as the value needs,
+    # taller as the value gets longer) instead of a single-line box the operator scrolls
+    # sideways through - admin-settable per field, replacing the old MULTILINE_FIELD_LABELS
+    # hardcoded list in JobRunPage.tsx (kept there too, as a fallback). False (single line) is
+    # today's existing behavior for every field that predates this column.
+    multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Where this field sits, lowest-first, among the other fields under the SAME section
+    # heading on the job screen - admin-settable, so reordering never needs a deploy. None
+    # (every field that predates this column) falls back to whatever position the old hardcoded
+    # FIELD_GROUPS_BY_DOC_TYPE label-order list in JobRunPage.tsx already gives it (unchanged),
+    # or last, for a field that list never mentioned. Only meaningful relative to sibling
+    # fields sharing the same heading - not a global ordering.
+    field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     document: Mapped["TemplateDocument"] = relationship(back_populates="marks")

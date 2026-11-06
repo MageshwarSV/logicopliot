@@ -133,6 +133,23 @@ class BillingUsageOut(BaseModel):
     total_pages: int
     by_shipment_type: list[ShipmentTypeUsageOut]
 
+    # Of total_pages: this job's own first-time processing vs an explicit reclassify-triggered
+    # re-run - see BillablePageEvent.is_rerun's own docstring. None on a finalized (past-month,
+    # read from a stored Invoice) response - that breakdown was never recorded on older
+    # invoices, only on the live ledger this field is computed from.
+    pages_original: int | None = None
+    pages_rerun: int | None = None
+    # Read live from current job/document state, not the permanent ledger - see
+    # UsageResult.final_classified_pages' own docstring for why these can drift slightly from
+    # pages_original. None on a finalized response, same reason as above.
+    final_classified_pages: int | None = None
+    final_unclassified_pages: int | None = None
+    # Of the jobs billed this period, how many still exist vs have been hard-deleted since -
+    # a different count from total_jobs above (scoped by billing-event date, not job creation
+    # date). None on a finalized response, same reason as above.
+    active_jobs_billed: int | None = None
+    deleted_jobs_billed: int | None = None
+
     platform_fee: float
     platform_fee_billed_days: int
     platform_fee_month_days: int
@@ -147,6 +164,29 @@ class BillingUsageOut(BaseModel):
     gst_percent: float
     gst_amount: float
     total_amount: float
+
+
+class JobBillingRowOut(BaseModel):
+    """One row of the Billing & Usage page's own per-job table - see
+    app.core.billing.JobBillingRow's own docstring for exactly what each field means and where
+    it comes from (the permanent ledger vs the job's own current live state)."""
+    job_id: str
+    job_reference: str
+    shipment_type: str
+    status: str
+    started_at: str  # ISO 8601
+    original_pages: int
+    rerun_pages: int
+    final_classified_pages: int
+    final_unclassified_pages: int
+    total_billed: int  # original_pages + rerun_pages
+
+
+class JobBillingPageOut(BaseModel):
+    items: list[JobBillingRowOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class InvoiceOut(BaseModel):

@@ -1,19 +1,21 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
+import {
+  DocumentIcon, FolderIcon, TrashIcon, LayersIcon,
+  CheckCircleIcon, ExclamationTriangleIcon, ArrowPathIcon,
+} from "../../components/ui/icons";
+import { DonutChart } from "../../components/charts/DonutChart";
+import { ShipmentBarChart, ShipmentPieChart } from "../../components/charts/ShipmentCharts";
+import { JobBillingTable } from "../../components/billing/JobBillingTable";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
-import type { BillingUsage, Invoice, ShipmentTypeUsage } from "../../api/tenants";
+import type { BillingUsage, Invoice } from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
-
-const PALETTE = ["#6366f1", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#f43f5e", "#84cc16", "#a855f7"];
-
-function colorFor(index: number): string {
-  return PALETTE[index % PALETTE.length];
-}
 
 function formatInr(n: number): string {
   return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -33,111 +35,6 @@ function shiftMonth(month: string, delta: number): string {
   const [y, m] = month.split("-").map(Number);
   const d = new Date(y, m - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-/** Pages by shipment type — each bar answers "which document type is actually driving the
- *  AI-processing bill this month," the number the tiered rate is computed from. */
-function ShipmentBarChart({ data }: { data: ShipmentTypeUsage[] }) {
-  const width = 560;
-  const height = 220;
-  const padding = { top: 10, right: 10, bottom: 36, left: 10 };
-  const plotW = width - padding.left - padding.right;
-  const plotH = height - padding.top - padding.bottom;
-  const max = Math.max(1, ...data.map((d) => d.pages));
-  const gap = 16;
-  const barW = data.length > 0 ? Math.max(8, plotW / data.length - gap) : 0;
-
-  if (data.length === 0) {
-    return (
-      <div className="flex h-[220px] items-center justify-center text-sm text-slate-400">
-        No pages processed this period.
-      </div>
-    );
-  }
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label="Pages by shipment type">
-      {data.map((d, i) => {
-        const barH = (d.pages / max) * plotH;
-        const x = padding.left + i * (plotW / data.length) + gap / 2;
-        const y = padding.top + (plotH - barH);
-        return (
-          <g key={d.shipment_type}>
-            <rect x={x} y={y} width={barW} height={Math.max(barH, 1)} fill={colorFor(i)} rx={4}>
-              <title>{`${d.shipment_type}: ${d.pages.toLocaleString()} pages`}</title>
-            </rect>
-            <text x={x + barW / 2} y={padding.top + plotH - barH - 6} textAnchor="middle" fontSize={11} fontWeight={600} fill="currentColor" className="text-slate-600 dark:text-slate-300">
-              {d.pages.toLocaleString()}
-            </text>
-            <text x={x + barW / 2} y={height - 14} textAnchor="middle" fontSize={10} fill="currentColor" className="text-slate-400">
-              {d.shipment_type.length > 14 ? `${d.shipment_type.slice(0, 13)}…` : d.shipment_type}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-/** Job distribution by shipment type — of everything run this month, what share is which kind. */
-function ShipmentPieChart({ data }: { data: ShipmentTypeUsage[] }) {
-  const total = data.reduce((sum, d) => sum + d.jobs, 0);
-  const size = 180;
-  const r = 80;
-  const cx = size / 2;
-  const cy = size / 2;
-
-  if (total === 0) {
-    return (
-      <div className="flex h-[180px] items-center justify-center text-sm text-slate-400">
-        No jobs this period.
-      </div>
-    );
-  }
-
-  let angle = -90;
-  const arcs = data
-    .filter((d) => d.jobs > 0)
-    .map((d, i) => {
-      const fraction = d.jobs / total;
-      const startAngle = angle;
-      const endAngle = angle + fraction * 360;
-      angle = endAngle;
-      const toXY = (deg: number): [number, number] => {
-        const rad = (deg * Math.PI) / 180;
-        return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-      };
-      const [x1, y1] = toXY(startAngle);
-      const [x2, y2] = toXY(endAngle);
-      const largeArc = fraction > 0.5 ? 1 : 0;
-      const path =
-        fraction >= 0.9999
-          ? `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} Z`
-          : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
-      return { ...d, path, fraction, color: colorFor(i) };
-    });
-
-  return (
-    <div className="flex flex-col items-center gap-5 sm:flex-row">
-      <svg viewBox={`0 0 ${size} ${size}`} className="h-40 w-40 shrink-0" role="img" aria-label="Job distribution">
-        {arcs.map((a) => (
-          <path key={a.shipment_type} d={a.path} fill={a.color}>
-            <title>{`${a.shipment_type}: ${a.jobs.toLocaleString()} (${(a.fraction * 100).toFixed(1)}%)`}</title>
-          </path>
-        ))}
-      </svg>
-      <div className="flex flex-col gap-2">
-        {data.map((d, i) => (
-          <div key={d.shipment_type} className="flex items-center gap-2 text-sm">
-            <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: colorFor(i) }} />
-            <span className="text-slate-700 dark:text-slate-300">{d.shipment_type}</span>
-            <span className="font-medium text-slate-900 dark:text-slate-100">{d.jobs.toLocaleString()}</span>
-            <span className="text-xs text-slate-400">({total > 0 ? Math.round((d.jobs / total) * 100) : 0}%)</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function StatusPill({ status }: { status: "unpaid" | "paid" }) {
@@ -161,6 +58,7 @@ function StatusPill({ status }: { status: "unpaid" | "paid" }) {
  *  already-raised invoice. */
 export function BillingUsagePage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const isSuperAdmin = user?.role === "super_admin";
 
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -273,12 +171,40 @@ export function BillingUsagePage() {
 
       {!loading && usage && (
         <>
-          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <StatCard label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
-            <StatCard label="Total Pages" value={usage.total_pages.toLocaleString()} />
-            <StatCard label="Usage Charges" value={formatInr(usage.usage_charges)} />
-            <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
-          </div>
+          {usage.pages_original !== null ? (
+            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8">
+              <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
+              <StatCard icon={<FolderIcon />} tone="blue" label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
+              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
+              <StatCard
+                icon={<LayersIcon />}
+                tone="indigo"
+                label="Total Pages (Billed)"
+                value={usage.total_pages.toLocaleString()}
+                labelExtra={
+                  <span className="text-[10px] font-normal text-slate-400">
+                    ({usage.pages_original.toLocaleString()} + {(usage.pages_rerun ?? 0).toLocaleString()})
+                  </span>
+                }
+              />
+            </div>
+          ) : (
+            <>
+              <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
+                <StatCard icon={<LayersIcon />} tone="blue" label="Total Pages" value={usage.total_pages.toLocaleString()} />
+                <StatCard label="Usage Charges" value={formatInr(usage.usage_charges)} />
+                <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
+              </div>
+              <p className="mb-6 text-xs text-slate-400">
+                Classified / Unclassified / Rerun breakdown is not available for this already-finalized month.
+              </p>
+            </>
+          )}
 
           <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
             <Card className="p-5">
@@ -287,9 +213,29 @@ export function BillingUsagePage() {
             </Card>
             <Card className="p-5">
               <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Job Distribution</h2>
-              <ShipmentPieChart data={usage.by_shipment_type} />
+              {usage.pages_original !== null ? (
+                <>
+                  <DonutChart active={usage.active_jobs_billed ?? 0} deleted={usage.deleted_jobs_billed ?? 0} />
+                  <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                    Deleted jobs are included in page counts and billing.
+                  </p>
+                </>
+              ) : (
+                <ShipmentPieChart data={usage.by_shipment_type} />
+              )}
             </Card>
           </div>
+
+          {tenantId && (
+            <div className="mb-6">
+              <JobBillingTable
+                tenantId={tenantId}
+                month={month}
+                shipmentTypes={usage.by_shipment_type}
+                onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
+              />
+            </div>
+          )}
 
           <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
             <Card className="p-5">

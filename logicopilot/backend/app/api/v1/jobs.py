@@ -30,7 +30,7 @@ from app.core.deps import (
     require_write_access,
     scoped_query,
 )
-from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
+from app.core.classifier_common import AIServiceUnavailable, classifier_module
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
 from app.core.page_filter import (
@@ -3462,6 +3462,27 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_group_heading: dict[str, str | None] = {
         m.id: m.standalone_group_heading for tdoc in group.documents for m in tdoc.marks
     }
+    mark_display_label: dict[str, str | None] = {
+        m.id: m.display_label for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_validation_pattern: dict[str, str | None] = {
+        m.id: m.validation_pattern for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_validation_uppercase: dict[str, bool] = {
+        m.id: m.validation_uppercase for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_validation_message: dict[str, str | None] = {
+        m.id: m.validation_message for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_full_width: dict[str, bool] = {
+        m.id: m.full_width for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_multiline: dict[str, bool] = {
+        m.id: m.multiline for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_field_order: dict[str, int | None] = {
+        m.id: m.field_order for tdoc in group.documents for m in tdoc.marks
+    }
     # A lookup field keyed on a standalone mark's own label (container_type, say) belongs on
     # THAT mark's own card (Container Detail), not the product line-item cards - same
     # screen-placement rule an AI field ticked multi_value_from_document already gets,
@@ -3477,7 +3498,16 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # A "Manual Entry" field's own closed dropdown choices and which document tab it is
     # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
+    cf_dropdown_style = {c.id: c.dropdown_style for c in cf_rows}
+    cf_validation_pattern = {c.id: c.validation_pattern for c in cf_rows}
+    cf_validation_uppercase = {c.id: c.validation_uppercase for c in cf_rows}
+    cf_validation_message = {c.id: c.validation_message for c in cf_rows}
     cf_display_document_id = {c.id: c.display_document_id for c in cf_rows}
+    cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
+    cf_display_label = {c.id: c.display_label for c in cf_rows}
+    cf_full_width = {c.id: c.full_width for c in cf_rows}
+    cf_multiline = {c.id: c.multiline for c in cf_rows}
+    cf_field_order = {c.id: c.field_order for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
     # Found live: "ERP Consignee Name" (added mid-session, ask_operator_required=True) never
@@ -3663,11 +3693,43 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     mark_standalone.get(fv.mark_id, False)
                     or cf_standalone.get(fv.custom_field_id, False)
                 ),
-                standalone_group_heading=mark_group_heading.get(fv.mark_id),
+                standalone_group_heading=(
+                    mark_group_heading.get(fv.mark_id) or cf_group_heading.get(fv.custom_field_id)
+                ),
+                display_label=(
+                    mark_display_label.get(fv.mark_id) or cf_display_label.get(fv.custom_field_id)
+                ),
+                validation_pattern=(
+                    mark_validation_pattern.get(fv.mark_id) or cf_validation_pattern.get(fv.custom_field_id)
+                ),
+                validation_uppercase=(
+                    mark_validation_uppercase.get(fv.mark_id, False)
+                    or cf_validation_uppercase.get(fv.custom_field_id, False)
+                ),
+                validation_message=(
+                    mark_validation_message.get(fv.mark_id) or cf_validation_message.get(fv.custom_field_id)
+                ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
                 fixed_options=cf_fixed_options.get(fv.custom_field_id),
+                dropdown_style=cf_dropdown_style.get(fv.custom_field_id),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                full_width=(
+                    mark_full_width.get(fv.mark_id, False)
+                    or cf_full_width.get(fv.custom_field_id, False)
+                ),
+                multiline=(
+                    mark_multiline.get(fv.mark_id, False)
+                    or cf_multiline.get(fv.custom_field_id, False)
+                ),
+                # Not `or` - field_order=0 is a real, meaningful value ("first"), and 0 is
+                # falsy, so `0 or cf_value` would wrongly fall through to the custom-field side
+                # even when the mark's own 0 is the one that should win.
+                field_order=(
+                    mark_field_order.get(fv.mark_id)
+                    if mark_field_order.get(fv.mark_id) is not None
+                    else cf_field_order.get(fv.custom_field_id)
+                ),
             )
         )
 
@@ -6591,7 +6653,7 @@ UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"}
 def _classify_and_place_files(
     db: Session, job: Job, group: "TemplateGroup", candidates: list[dict],
     extraction_engine: str, vision_engine_model: str,
-    files: list[tuple[str, bytes]], debug: bool = False,
+    files: list[tuple[str, bytes]], debug: bool = False, is_rerun: bool = False,
 ) -> dict:
     """Shared core of Smart Upload: classify `files` (already read into memory, any ZIPs
     already unpacked) against `candidates` and place each into the right document slot(s) on
@@ -6601,12 +6663,22 @@ def _classify_and_place_files(
     (re-runs this on a job's own already-uploaded files, in place, once a classifier fix needs
     to be applied retroactively) - identical logic either way, just a different source for
     `files`.
+
+    is_rerun: passed straight through to every record_billable_pages call this function makes -
+    False for smart_upload's own call (a job's first time through this pipeline), True for
+    reclassify_documents' (an explicit re-run of pages already billed once). See
+    BillablePageEvent.is_rerun's own docstring.
     """
     import uuid
 
     import fitz  # PyMuPDF
 
     from app.core import doc_sets, office_convert
+
+    # This group's own shipping mode (Sea Import / Air Import / Sea Export / Air Export) picks
+    # which classifier module actually does the work below - see classifier_module's own
+    # docstring for why each mode is kept fully separate.
+    clf = classifier_module(group.mode)
 
     if not files:
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
@@ -6673,7 +6745,9 @@ def _classify_and_place_files(
         # actually needs them, so this IS their one OCR pass, whatever this function's own
         # docstring's idempotency note says about a second call being a no-op (it never re-runs
         # this block for the same item).
-        record_billable_pages(db, job, sum(1 for t in extra_raw if t.strip()))
+        record_billable_pages(
+            db, job, sum(1 for t in extra_raw if t.strip()), is_rerun=is_rerun,
+        )
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
@@ -6729,7 +6803,9 @@ def _classify_and_place_files(
                 # document (the cluster write below, and both assign_unclassified_page branches
                 # further down) no longer does, so a page is billed exactly once per OCR pass,
                 # never twice for the same pass.
-                record_billable_pages(db, job, sum(1 for t in raw_pages if t.strip()))
+                record_billable_pages(
+                    db, job, sum(1 for t in raw_pages if t.strip()), is_rerun=is_rerun,
+                )
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and
                 # "invoice", which is how one 2-page bill of lading came to match every slot on
@@ -6794,7 +6870,7 @@ def _classify_and_place_files(
         db.commit()
 
         claims_per_file = (
-            assign_documents_detailed(
+            clf.assign_documents_detailed(
                 prepared, candidates, engine=extraction_engine, vision_model=vision_engine_model,
                 # Classify every page on its own instead of page 1 alone, fixing a
                 # combined/multi-page file sometimes assigning the wrong page to the wrong
@@ -6840,6 +6916,12 @@ def _classify_and_place_files(
             claimed_pages = {p for c in strong_claims for p in c["pages"]}
             for i, row in enumerate(unmatched_rows, start=1):
                 if row is not None and i in claimed_pages:
+                    # The staging copy made for this page (see the persist loop above) is
+                    # now redundant too - a claimed page lives on in its real JobDocument,
+                    # so the copy under unmatched/ must go with the row, not outlive it as
+                    # an orphaned file nothing ever points to again.
+                    if row.image_path:
+                        Path(row.image_path).unlink(missing_ok=True)
                     db.delete(row)
             result_by_item_id[id(item)] = {"filename": item["name"], "matched": []}
             if debug:
@@ -6865,8 +6947,76 @@ def _classify_and_place_files(
                 ):
                     before = len(item["kept_pages"])
                     _extend_kept_pages_for_item(item)
-                    if len(item["kept_pages"]) > before:
-                        claim_pages = claim_pages + list(range(before + 1, len(item["kept_pages"]) + 1))
+                    extended_pages = list(range(before + 1, len(item["kept_pages"]) + 1))
+                    if extended_pages:
+                        # Found live, JOB-5E6FC2: blindly trusting that every remaining real
+                        # page continues THIS claim silently swallowed an unrelated Air
+                        # Waybill, a freight forwarder's own Tax Invoice, and a page of
+                        # carrier Terms & Conditions into the Invoice slot - all three just
+                        # happened to sit past the <=6-page classification cap on a file
+                        # whose real Invoice content also reached that same cap. Re-classify
+                        # the newly OCR'd pages on their own before trusting any of them: a
+                        # page confirmed as the SAME key extends the claim; a page confirmed
+                        # as a DIFFERENT candidate's key (the Air Waybill, say) gets its own
+                        # document in its own slot instead (see other_claims below); only a
+                        # page matching neither is staged as a genuine Unclassified page for
+                        # an operator to place by hand - never kept as "more of the same
+                        # document" purely because it comes after the cap.
+                        non_blank = [p for p in extended_pages if item["kept_pages"][p - 1].strip()]
+                        extension_text = "\n\n".join(
+                            f"=== PAGE {n} ===\n{item['kept_pages'][p - 1]}"
+                            for n, p in enumerate(non_blank, start=1)
+                        )
+                        extension_claims = (
+                            clf.classify_document(item["name"], extension_text, None, candidates)
+                            if extension_text.strip() else []
+                        )
+                        confirmed: set[int] = set()
+                        other_claims: list[dict] = []
+                        for ec in extension_claims:
+                            if ec.get("source") == "ai_second":
+                                continue
+                            mapped = [non_blank[p - 1] for p in ec["pages"]
+                                      if 1 <= p <= len(non_blank)]
+                            if not mapped:
+                                continue
+                            if ec["key"] == claim["key"]:
+                                confirmed |= set(mapped)
+                            else:
+                                # A genuinely different document living past the cap on the
+                                # SAME file - an Air Waybill or a separate Tax Invoice tacked
+                                # onto an Invoice attachment, say. It has real evidence for its
+                                # own candidate slot, so it gets its own document there instead
+                                # of either being swallowed into this claim or going unplaced.
+                                other_claims.append({**ec, "pages": mapped})
+                                confirmed |= set(mapped)
+                        claim_pages = claim_pages + sorted(confirmed - {p for oc in other_claims for p in oc["pages"]})
+                        for oc in other_claims:
+                            other_doc_type = key_doc_type.get(oc["key"])
+                            other_number = None
+                            if other_doc_type in doc_sets.GROUPABLE_DOC_TYPES:
+                                other_text = "\n".join(
+                                    item["kept_pages"][p - 1] for p in oc["pages"]
+                                    if 1 <= p <= len(item["kept_pages"]))
+                                other_number = doc_sets.extract_invoice_number_from_text(
+                                    other_doc_type, other_text)
+                            pending.append({"item": item, "claim": oc, "key": oc["key"],
+                                            "number": other_number})
+                        for p in extended_pages:
+                            page_text = item["kept_pages"][p - 1]
+                            if p in confirmed or not page_text.strip():
+                                continue
+                            orig_idx = (item["kept_original"][p - 1]
+                                        if p - 1 < len(item["kept_original"]) else p)
+                            src_png = item["fdir"] / "pages" / f"page_{orig_idx}.png"
+                            dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                            if src_png.exists():
+                                shutil.copy(src_png, dest)
+                            db.add(UnmatchedUploadPage(
+                                tenant_id=job.tenant_id, job_id=job.id,
+                                original_filename=item["name"][:255], page_number=p,
+                                image_path=str(dest), ocr_text=page_text,
+                            ))
                 # A combined multi-invoice file (several separate invoices back to back) looks
                 # like ONE claim to the classifier - every page equally looks like "an Invoice
                 # page", so there is nothing here for it to use to tell them apart up front.
@@ -7203,6 +7353,7 @@ def reclassify_documents(
 
     return run_queued(lambda: _classify_and_place_files(
         db, job, group, candidates, extraction_engine, vision_engine_model, files, debug=False,
+        is_rerun=True,
     ))
 
 
@@ -9127,6 +9278,9 @@ def correct_field_value(
         value=fv.value,
         is_custom=bool(fv.custom_field_id),
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
+        full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
+        multiline=bool(owner_for_mandatory and owner_for_mandatory.multiline),
+        field_order=owner_for_mandatory.field_order if owner_for_mandatory else None,
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
         mark_y=mark.y if mark else None,
@@ -9331,6 +9485,9 @@ def _recompute_per_row_custom_field(
             origin="computed", set_index=row.set_index, row_index=row.row_index,
             hidden_from_capture=cf.hidden_from_capture,
             mandatory=bool(cf.ask_operator_required),
+            full_width=bool(cf.full_width),
+            multiline=bool(cf.multiline),
+            field_order=cf.field_order,
         ))
     return results
 
@@ -9471,6 +9628,9 @@ def recompute_custom_field(
         corrected_value=existing.corrected_value, value=existing.value, is_custom=True,
         origin="computed", hidden_from_capture=cf.hidden_from_capture,
         mandatory=bool(cf.ask_operator_required),
+        full_width=bool(cf.full_width),
+        multiline=bool(cf.multiline),
+        field_order=cf.field_order,
     )]
 
 
@@ -9876,6 +10036,9 @@ def recompute_mark(
             found_page=existing.found_page, found_x=existing.found_x, found_y=existing.found_y,
             found_width=existing.found_width, found_height=existing.found_height,
             mandatory=bool(mark.ask_operator_required),
+            full_width=bool(mark.full_width),
+            multiline=bool(mark.multiline),
+            field_order=mark.field_order,
         ))
     return results
 

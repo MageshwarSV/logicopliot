@@ -1,4 +1,4 @@
-"""Word/Excel files uploaded through Smart Upload are converted to PDF before classification
+﻿"""Word/Excel files uploaded through Smart Upload are converted to PDF before classification
 ever sees them (see app.core.office_convert). The actual LibreOffice conversion needs the
 `soffice` binary, which this suite's own environment does not carry - so convert_word_to_pdf/
 convert_excel_sheets_to_pdfs are mocked here (same reasoning test_smart_upload.py already
@@ -47,7 +47,7 @@ def test_word_document_is_converted_then_classified(client, db_session, tmp_path
     login(client, op.email)
 
     with _mock_ocr(), _mock_word_conversion(tmp_path), \
-         patch("app.api.v1.jobs.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[_claim(docs["Invoice"].id, [1])]]) as mock_classify:
         resp = _upload(client, job.id, [
             ("quotation.docx", b"not a real docx - never read, conversion is mocked",
@@ -76,7 +76,7 @@ def test_excel_workbook_splits_into_one_classification_candidate_per_sheet(clien
     ]
     with _mock_ocr(), \
          _mock_excel_conversion(tmp_path, {"Invoice": "INVOICE SHEET", "Packing List": "PACKING LIST SHEET"}), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims) as mock_classify:
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims) as mock_classify:
         resp = _upload(client, job.id, [
             ("shipment.xlsx", b"not a real xlsx - never read, conversion is mocked",
              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -109,7 +109,7 @@ def test_conversion_failure_is_reported_not_silently_dropped(client, db_session)
     with _mock_ocr(), \
          patch("app.core.office_convert.convert_word_to_pdf",
                side_effect=OfficeConversionFailed("could not read this file")), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=[]) as mock_classify:
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[]) as mock_classify:
         resp = _upload(client, job.id, [
             ("broken.docx", b"garbage", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         ])
@@ -158,7 +158,7 @@ def test_genuinely_unsupported_extension_is_untouched_by_the_office_conversion_p
     op = make_user(db_session, role="operator", tenant=tenant, email="unsupported@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed") as mock_classify:
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed") as mock_classify:
         resp = _upload(client, job.id, [("data.csv", b"a,b,c\n1,2,3", "text/csv")])
 
     assert resp.status_code == 200, resp.text

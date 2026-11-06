@@ -1,4 +1,4 @@
-"""Invoice/PackingList documents are grouped or split by the invoice number printed on them
+﻿"""Invoice/PackingList documents are grouped or split by the invoice number printed on them
 (app.core.doc_sets.extract_invoice_number_from_text + same_number), not by which uploaded
 file they arrived in or how many files were uploaded - items 2 and 3 of the requested feature
 list. OCR and classification are mocked (same reasoning as test_smart_upload.py); `side_effect`
@@ -24,7 +24,7 @@ def test_two_separate_invoice_files_with_same_number_merge_into_one_document(cli
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])]]
     with _ocr("COMMERCIAL INVOICE\nInvoice No: INV-0505\nFirst page",
               "Invoice No: INV-0505\nContinuation / second page"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("inv_part1.pdf", _pdf_bytes(1), "application/pdf"),
             ("inv_part2.pdf", _pdf_bytes(1), "application/pdf"),
@@ -49,7 +49,7 @@ def test_two_separate_invoice_files_with_different_numbers_stay_separate(client,
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])]]
     with _ocr("Invoice No: INV-0505", "Invoice No: INV-0777"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("inv_a.pdf", _pdf_bytes(1), "application/pdf"),
             ("inv_b.pdf", _pdf_bytes(1), "application/pdf"),
@@ -72,7 +72,7 @@ def test_one_combined_file_with_two_invoice_numbers_splits_by_number(client, db_
 
     claims = [[_claim(docs["Invoice"].id, [1]), _claim(docs["Invoice"].id, [2])]]
     with _ocr("Invoice No: INV-0100", "Invoice No: INV-0200"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("combo.pdf", _pdf_bytes(2), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -92,7 +92,7 @@ def test_packing_lists_are_grouped_by_invoice_number_too(client, db_session):
     claims = [[_claim(docs["PackingList"].id, [1])], [_claim(docs["PackingList"].id, [1])]]
     with _ocr("PACKING LIST\nInvoice No: INV-0505\npage 1 of 2",
               "Invoice No: INV-0505\npage 2 of 2"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("pl_1.pdf", _pdf_bytes(1), "application/pdf"),
             ("pl_2.pdf", _pdf_bytes(1), "application/pdf"),
@@ -116,7 +116,7 @@ def test_invoice_and_packing_list_never_merge_across_slots(client, db_session):
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["PackingList"].id, [1])]]
     with _ocr("Invoice No: INV-0505", "Invoice No: INV-0505"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("inv.pdf", _pdf_bytes(1), "application/pdf"),
             ("pl.pdf", _pdf_bytes(1), "application/pdf"),
@@ -141,7 +141,7 @@ def test_abbreviated_invoice_number_still_matches_full_form(client, db_session):
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])]]
     with _ocr("Invoice No: 0505", "Invoice No: INV-000505"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("short.pdf", _pdf_bytes(1), "application/pdf"),
             ("full.pdf", _pdf_bytes(1), "application/pdf"),
@@ -173,7 +173,7 @@ def test_mixed_pdf_and_image_with_same_number_does_not_crash_and_stays_separate(
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])]]
     with _ocr("Invoice No: INV-0505", "Invoice No: INV-0505"), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("inv.pdf", _pdf_bytes(1), "application/pdf"),
             ("inv_photo.png", png_bytes, "image/png"),

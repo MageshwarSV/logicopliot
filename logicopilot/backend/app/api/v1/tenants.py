@@ -1,11 +1,17 @@
+import csv
+import io
 import secrets
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.billing import calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized
+from app.core.billing import (
+    calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
+    list_job_billing, list_job_billing_export,
+)
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.modes import MODES
 from app.core.openai_pool import (
@@ -27,6 +33,8 @@ from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
     BillingUsageOut,
     InvoiceOut,
+    JobBillingPageOut,
+    JobBillingRowOut,
     MarkInvoicePaid,
     ShipmentTypeUsageOut,
     TenantBillingConfigOut,
@@ -448,6 +456,11 @@ def get_billing_usage(
             ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
             for k, v in sorted(usage.by_shipment_type.items())
         ],
+        pages_original=usage.pages_original, pages_rerun=usage.pages_rerun,
+        final_classified_pages=usage.final_classified_pages,
+        final_unclassified_pages=usage.final_unclassified_pages,
+        active_jobs_billed=usage.active_jobs_billed,
+        deleted_jobs_billed=usage.deleted_jobs_billed,
         platform_fee=bill.platform_fee,
         platform_fee_billed_days=bill.platform_fee_billed_days,
         platform_fee_month_days=bill.platform_fee_month_days,
@@ -455,6 +468,123 @@ def get_billing_usage(
         tier1_amount=bill.tier1_amount, tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages,
         tier2_amount=bill.tier2_amount, usage_charges=bill.usage_charges, subtotal=bill.subtotal,
         gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
+    )
+
+
+def _parse_period_start(month: str | None) -> date:
+    if month:
+        try:
+            return date.fromisoformat(f"{month}-01")
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="month must be YYYY-MM")
+    return datetime.now(timezone.utc).date().replace(day=1)
+
+
+def _parse_optional_date(value: str | None, field_name: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be YYYY-MM-DD")
+
+
+@router.get("/{tenant_id}/billing/jobs", response_model=JobBillingPageOut)
+def list_billing_jobs(
+    tenant_id: str,
+    month: str | None = None,
+    search: str | None = None,
+    shipment_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> JobBillingPageOut:
+    """The Billing & Usage page's own per-job table - one row per job billed in the given month
+    (by event date, same scoping as get_billing_usage), whether or not that job still exists.
+    date_from/date_to (YYYY-MM-DD) further narrow by each job's own earliest billing event this
+    period - a separate, finer-grained filter from `month`, not a replacement for it. Only ever
+    reads the live current month's state - there is no per-job breakdown stored on a finalized
+    Invoice, so this always reflects "right now," even when `month` names an already-finalized
+    past period. Super Admin may view any tenant; a Tenant Admin only their own."""
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    period_start = _parse_period_start(month)
+    from_date = _parse_optional_date(date_from, "date_from")
+    to_date = _parse_optional_date(date_to, "date_to")
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    rows, total = list_job_billing(
+        db, tenant_id, period_start, search=search, shipment_type=shipment_type,
+        date_from=from_date, date_to=to_date, page=page, page_size=page_size,
+    )
+    return JobBillingPageOut(
+        items=[
+            JobBillingRowOut(
+                job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
+                status=r.status, started_at=r.started_at.isoformat(),
+                original_pages=r.original_pages, rerun_pages=r.rerun_pages,
+                final_classified_pages=r.final_classified_pages,
+                final_unclassified_pages=r.final_unclassified_pages,
+                total_billed=r.original_pages + r.rerun_pages,
+            )
+            for r in rows
+        ],
+        total=total, page=page, page_size=page_size,
+    )
+
+
+@router.get("/{tenant_id}/billing/jobs/export")
+def export_billing_jobs(
+    tenant_id: str,
+    month: str | None = None,
+    search: str | None = None,
+    shipment_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """CSV download of the same rows list_billing_jobs shows, with the same filters and no
+    pagination - the "Export" button on the Billing & Usage page's Job Details table."""
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    period_start = _parse_period_start(month)
+    from_date = _parse_optional_date(date_from, "date_from")
+    to_date = _parse_optional_date(date_to, "date_to")
+
+    rows = list_job_billing_export(
+        db, tenant_id, period_start, search=search, shipment_type=shipment_type,
+        date_from=from_date, date_to=to_date,
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "Job Number", "Shipment Type", "Status", "Job Start Time",
+        "Original Pages", "Final Classified", "Final Unclassified", "Rerun Pages", "Total Billed",
+    ])
+    for r in rows:
+        writer.writerow([
+            r.job_reference, r.shipment_type, r.status, r.started_at.isoformat(),
+            r.original_pages, r.final_classified_pages, r.final_unclassified_pages,
+            r.rerun_pages, r.original_pages + r.rerun_pages,
+        ])
+    buffer.seek(0)
+    filename = f"billing-jobs-{tenant_id}-{period_start.strftime('%Y-%m')}.csv"
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

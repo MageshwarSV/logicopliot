@@ -451,7 +451,7 @@ def _identifiers_for(db: Session, group: TemplateGroup) -> dict:
          Weakest, and offered only alongside 1 or 2 - a template called "seq" would otherwise
          invite a match on nothing.
     """
-    from app.core.classifier import IDENTIFYING_FIELDS
+    from app.core.classifier_common import IDENTIFYING_FIELDS
     from app.models.custom_field import CustomField
     from app.models.field_mark import FieldMark
     from app.models.template_document import TemplateDocument
@@ -1078,7 +1078,7 @@ def _process_one_message(
     scheduler is also mid-way through).
     """
     from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
-    from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, identify_customer
+    from app.core.classifier_common import AIServiceUnavailable, classifier_module, identify_customer
     from app.core.custom_page_filter import filter_pages_with_custom
     from app.core.docai import ocr_page_image
     from app.core.page_filter import claim_fingerprint, extract_pdf_pages, kept_page_to_original
@@ -1526,7 +1526,7 @@ def _process_one_message(
         # Shares the same cap as extraction (see extraction_queue's own docstring) -
         # classification makes the identical kind of slow OpenAI call and was found holding
         # the same kind of resource open on 2026-11-03, just never through this queue before.
-        claims_per_file = run_queued(lambda: assign_documents_detailed(
+        claims_per_file = run_queued(lambda: classifier_module(group.mode).assign_documents_detailed(
             prepared, cand_slots, engine=extraction_engine,
             vision_model=vision_engine_model,
             # Classify every page from its own image instead of page 1 alone, same

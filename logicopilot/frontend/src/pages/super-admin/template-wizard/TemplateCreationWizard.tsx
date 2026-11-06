@@ -25,6 +25,46 @@ function errText(err: unknown, fallback: string): string {
   return fallback;
 }
 
+// Admin-settable field validation (FieldMark/CustomField.validation_pattern) - the Wizard only
+// ever stores/reads a plain regex BODY (JobRunPage.tsx tests it as `^(?:pattern)$`), but offers
+// a friendlier picker than "type your own regex" for the shapes that come up constantly (a
+// fixed number of letters/digits, like Terms of Invoice's "exactly 3 letters"). "Custom" covers
+// anything that doesn't fit that shape (e.g. Customs House Code's "5 letters then 1 digit").
+type ValidationMode = "none" | "letters" | "digits" | "alnum" | "custom";
+const VALIDATION_CHAR_CLASS: Record<Exclude<ValidationMode, "none" | "custom">, string> = {
+  letters: "A-Za-z",
+  digits: "0-9",
+  alnum: "A-Za-z0-9",
+};
+function buildValidationPattern(mode: ValidationMode, length: string, custom: string): string | null {
+  if (mode === "none") return null;
+  if (mode === "custom") return custom.trim() || null;
+  const charClass = VALIDATION_CHAR_CLASS[mode];
+  const len = length.trim();
+  return len ? `[${charClass}]{${len}}` : `[${charClass}]+`;
+}
+/** Reverses buildValidationPattern for editing an existing field - a pattern that doesn't
+ *  match one of the three basic shapes (e.g. hand-typed, or Customs House Code's compound
+ *  shape) falls back to "custom" with the raw pattern shown as-is, never silently discarded. */
+function parseValidationPattern(pattern: string | null | undefined): { mode: ValidationMode; length: string; custom: string } {
+  if (!pattern) return { mode: "none", length: "", custom: "" };
+  const m = /^\[(A-Za-z0-9|A-Za-z|0-9)\](?:\{(\d+)\}|(\+))$/.exec(pattern);
+  if (m) {
+    const mode: ValidationMode = m[1] === "A-Za-z0-9" ? "alnum" : m[1] === "A-Za-z" ? "letters" : "digits";
+    return { mode, length: m[2] ?? "", custom: "" };
+  }
+  return { mode: "custom", length: "", custom: pattern };
+}
+function validationModeLabel(mode: ValidationMode): string {
+  return mode === "letters" ? "letters" : mode === "digits" ? "digits" : "characters";
+}
+function defaultValidationMessage(label: string, mode: ValidationMode, length: string): string {
+  const kind = validationModeLabel(mode);
+  return length.trim()
+    ? `${label} must be exactly ${length.trim()} ${kind}.`
+    : `${label} must contain only ${kind}.`;
+}
+
 /** One sheet being filled, as the wizard holds it while it is edited. */
 type SheetPlanUi = {
   sheet: string;
@@ -152,6 +192,24 @@ export function TemplateCreationWizard() {
   const [standaloneMultiValue, setStandaloneMultiValue] = useState(false);
   // Standalone only: what the job screen heads this group of rows with, e.g. "Container".
   const [standaloneHeading, setStandaloneHeading] = useState("");
+  // What the OPERATOR sees instead of this field's own name, when it should read
+  // differently - e.g. label_name stays "HBL No", display label shows "HAWB Number".
+  const [displayLabel, setDisplayLabel] = useState("");
+  // Admin-settable format check - see FieldMark.validation_pattern/validation_uppercase.
+  const [validationMode, setValidationMode] = useState<ValidationMode>("none");
+  const [validationLength, setValidationLength] = useState("");
+  const [validationCustom, setValidationCustom] = useState("");
+  const [validationUppercase, setValidationUppercase] = useState(false);
+  const [validationMessage, setValidationMessage] = useState("");
+  // Spans the full row on the job screen instead of sharing it with whatever sits beside it -
+  // see FieldMark.full_width's own docstring.
+  const [fullWidth, setFullWidth] = useState(false);
+  // Renders as a multi-line, auto-growing box instead of a single-line box - see
+  // FieldMark.multiline's own docstring.
+  const [multiline, setMultiline] = useState(false);
+  // Where this field sits among its siblings under the same heading - see
+  // FieldMark.field_order's own docstring. "" = unset, falls back to the old hardcoded order.
+  const [fieldOrder, setFieldOrder] = useState("");
   // Tick: the extracted value is looked up in its own reference table (keyed on itself) -
   // a match replaces it, no match returns empty instead of the raw extraction.
   const [targetValue, setTargetValue] = useState(false);
@@ -316,6 +374,15 @@ export function TemplateCreationWizard() {
   const [newAnchor, setNewAnchor] = useState("");
   const [editStandalone, setEditStandalone] = useState(false);
   const [editStandaloneHeading, setEditStandaloneHeading] = useState("");
+  const [editDisplayLabel, setEditDisplayLabel] = useState("");
+  const [editValidationMode, setEditValidationMode] = useState<ValidationMode>("none");
+  const [editValidationLength, setEditValidationLength] = useState("");
+  const [editValidationCustom, setEditValidationCustom] = useState("");
+  const [editValidationUppercase, setEditValidationUppercase] = useState(false);
+  const [editValidationMessage, setEditValidationMessage] = useState("");
+  const [editFullWidth, setEditFullWidth] = useState(false);
+  const [editMultiline, setEditMultiline] = useState(false);
+  const [editFieldOrder, setEditFieldOrder] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
   const [customOpen, setCustomOpen] = useState(false);
@@ -348,6 +415,28 @@ export function TemplateCreationWizard() {
   // CustomField.paired_custom_field_id. "" = not paired.
   const [cfPairedFieldId, setCfPairedFieldId] = useState("");
   const [cfPickerHeading, setCfPickerHeading] = useState("");
+  // This field's own section heading on the Job Run page - see CustomField.standalone_group_heading.
+  const [cfSectionHeading, setCfSectionHeading] = useState("");
+  // What the operator sees instead of this field's own label - see CustomField.display_label.
+  const [cfDisplayLabel, setCfDisplayLabel] = useState("");
+  const [cfValidationMode, setCfValidationMode] = useState<ValidationMode>("none");
+  const [cfValidationLength, setCfValidationLength] = useState("");
+  const [cfValidationCustom, setCfValidationCustom] = useState("");
+  const [cfValidationUppercase, setCfValidationUppercase] = useState(false);
+  const [cfValidationMessage, setCfValidationMessage] = useState("");
+  const [cfFullWidth, setCfFullWidth] = useState(false);
+  const [cfMultiline, setCfMultiline] = useState(false);
+  const [cfFieldOrder, setCfFieldOrder] = useState("");
+  // Which document's own tab this field shows under instead of Additional Details - see
+  // CustomField.display_document_id. "" = Additional Details (today's only behavior).
+  const [cfDisplayDocumentId, setCfDisplayDocumentId] = useState("");
+  // What the operator types/picks into - see CustomField.fixed_options/dropdown_style.
+  // "text" = free text (fixed_options null). "select" = plain closed dropdown (dropdown_style
+  // null/"plain"). "search" = searchable, still pick-only. "search_free" = searchable, but a
+  // typed value not in the list still saves.
+  const [cfInputType, setCfInputType] = useState<"text" | "select" | "search" | "search_free">("text");
+  // One choice per line - parsed into CustomField.fixed_options on save.
+  const [cfFixedOptionsText, setCfFixedOptionsText] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
   // kind="composite": ordered label_names of other fields on the same product line, joined
   // with a single space to become this field's own value - see CustomField.composite_source_labels.
@@ -465,7 +554,10 @@ export function TemplateCreationWizard() {
   function openCustom() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
-    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput("");
+    setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
+    setCfInputType("text"); setCfFixedOptionsText("");
+    setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
+    setCfFullWidth(false); setCfMultiline(false); setCfFieldOrder("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
   }
@@ -491,6 +583,26 @@ export function TemplateCreationWizard() {
     setCfSyncFieldIds(cf.sync_field_ids ?? []);
     setCfCompositeLabels(cf.composite_source_labels ?? []);
     setCfCompositeFixedInput("");
+    setCfSectionHeading(cf.standalone_group_heading ?? "");
+    setCfDisplayLabel(cf.display_label ?? "");
+    setCfDisplayDocumentId(cf.display_document_id ?? "");
+    setCfInputType(
+      !cf.fixed_options?.length
+        ? "text"
+        : cf.dropdown_style === "search" || cf.dropdown_style === "search_free"
+          ? cf.dropdown_style
+          : "select",
+    );
+    setCfFixedOptionsText((cf.fixed_options ?? []).join("\n"));
+    const cfParsedValidation = parseValidationPattern(cf.validation_pattern);
+    setCfValidationMode(cfParsedValidation.mode);
+    setCfValidationLength(cfParsedValidation.length);
+    setCfValidationCustom(cfParsedValidation.custom);
+    setCfValidationUppercase(!!cf.validation_uppercase);
+    setCfValidationMessage(cf.validation_message ?? "");
+    setCfFullWidth(!!cf.full_width);
+    setCfMultiline(!!cf.multiline);
+    setCfFieldOrder(cf.field_order != null ? String(cf.field_order) : "");
     setError(null);
     setCustomOpen(true);
   }
@@ -510,6 +622,10 @@ export function TemplateCreationWizard() {
     if (cfKind === "ai" && !cfPrompt.trim()) { setError("Describe what the AI should compute."); return; }
     if (cfKind === "composite" && cfCompositeLabels.length === 0) {
       setError("Choose at least one piece to combine.");
+      return;
+    }
+    if (cfInputType !== "text" && !cfFixedOptionsText.split("\n").some((v) => v.trim())) {
+      setError("Enter at least one choice, one per line, or switch the input type back to Input box.");
       return;
     }
     setCfSaving(true); setError(null);
@@ -533,6 +649,20 @@ export function TemplateCreationWizard() {
         picker_heading: cfPairedFieldId ? cfPickerHeading.trim() || null : null,
         sync_field_ids: cfPairedFieldId ? cfSyncFieldIds : [],
         composite_source_labels: cfKind === "composite" ? cfCompositeLabels : null,
+        standalone_group_heading: cfSectionHeading.trim() || null,
+        display_label: cfDisplayLabel.trim() || null,
+        display_document_id: cfDisplayDocumentId || null,
+        fixed_options:
+          cfInputType === "text"
+            ? null
+            : cfFixedOptionsText.split("\n").map((v) => v.trim()).filter(Boolean),
+        dropdown_style: cfInputType === "text" || cfInputType === "select" ? null : cfInputType,
+        validation_pattern: buildValidationPattern(cfValidationMode, cfValidationLength, cfValidationCustom),
+        validation_uppercase: cfValidationUppercase,
+        validation_message: cfValidationMessage.trim() || null,
+        full_width: cfFullWidth,
+        multiline: cfMultiline,
+        field_order: cfFieldOrder.trim() === "" ? null : Number(cfFieldOrder),
       };
       const saved = cfEditId
         ? await api.updateCustomField(cfEditId, payload)
@@ -661,6 +791,9 @@ export function TemplateCreationWizard() {
     setMultiValue(false);
     setStandaloneMultiValue(false);
     setStandaloneHeading("");
+    setDisplayLabel("");
+    setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
+    setFullWidth(false); setMultiline(false); setFieldOrder("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -685,10 +818,18 @@ export function TemplateCreationWizard() {
         ask_operator_hint: askOperator ? askHint.trim() || null : null,
         is_multi_value: multiValue,
         standalone_multi_value: multiValue ? standaloneMultiValue : false,
-        standalone_group_heading:
-          multiValue && standaloneMultiValue ? standaloneHeading.trim() || null : null,
+        // Doubles as the field's own section heading on the Job Run page (any field, not only
+        // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
+        standalone_group_heading: standaloneHeading.trim() || null,
         is_target_value: targetValue,
         fuzzy_match: targetValue ? fuzzyMatch : false,
+        display_label: displayLabel.trim() || null,
+        validation_pattern: buildValidationPattern(validationMode, validationLength, validationCustom),
+        validation_uppercase: validationUppercase,
+        validation_message: validationMessage.trim() || null,
+        full_width: fullWidth,
+        multiline: multiline,
+        field_order: fieldOrder.trim() === "" ? null : Number(fieldOrder),
       });
 
       if (verify) {
@@ -781,6 +922,16 @@ export function TemplateCreationWizard() {
     setNewAnchor("");
     setEditStandalone(!!m.standalone_multi_value);
     setEditStandaloneHeading(m.standalone_group_heading ?? "");
+    setEditDisplayLabel(m.display_label ?? "");
+    const parsedValidation = parseValidationPattern(m.validation_pattern);
+    setEditValidationMode(parsedValidation.mode);
+    setEditValidationLength(parsedValidation.length);
+    setEditValidationCustom(parsedValidation.custom);
+    setEditValidationUppercase(!!m.validation_uppercase);
+    setEditValidationMessage(m.validation_message ?? "");
+    setEditFullWidth(!!m.full_width);
+    setEditMultiline(!!m.multiline);
+    setEditFieldOrder(m.field_order != null ? String(m.field_order) : "");
     setError(null);
   }
 
@@ -799,7 +950,16 @@ export function TemplateCreationWizard() {
         extraction_prompt: editPrompt,
         anchor_variations: editAnchors,
         standalone_multi_value: editStandalone,
-        standalone_group_heading: editStandalone ? editStandaloneHeading.trim() || null : null,
+        // Doubles as the field's own section heading on the Job Run page (any field, not only
+        // a standalone multi-value one) - see JobRunPage.tsx's groupedDocFields.
+        standalone_group_heading: editStandaloneHeading.trim() || null,
+        display_label: editDisplayLabel.trim() || null,
+        validation_pattern: buildValidationPattern(editValidationMode, editValidationLength, editValidationCustom),
+        validation_uppercase: editValidationUppercase,
+        validation_message: editValidationMessage.trim() || null,
+        full_width: editFullWidth,
+        multiline: editMultiline,
+        field_order: editFieldOrder.trim() === "" ? null : Number(editFieldOrder),
       });
       await reloadGroup(group.id);
       setEditMarkId(null);
@@ -1569,6 +1729,99 @@ export function TemplateCreationWizard() {
                   <div className="mt-3 space-y-3">
                     <Input label="Field name" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
                     <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Display label shown to the operator (optional)
+                      </label>
+                      <p className="mb-1.5 text-[11px] text-slate-500">
+                        What the operator reads on screen, when it should differ from the field
+                        name above - e.g. field name stays "HBL No", this shows "HAWB Number".
+                        Leave blank to show the field name as-is.
+                      </p>
+                      <input
+                        type="text"
+                        value={editDisplayLabel}
+                        onChange={(e) => setEditDisplayLabel(e.target.value)}
+                        placeholder={m.label_name}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Validation (optional)
+                      </label>
+                      <div className="grid grid-cols-3 gap-2 text-sm">
+                        {([
+                          { key: "none", label: "No restriction" },
+                          { key: "letters", label: "Letters only" },
+                          { key: "digits", label: "Digits only" },
+                          { key: "alnum", label: "Letters & digits" },
+                          { key: "custom", label: "Custom pattern" },
+                        ] as const).map((opt) => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => setEditValidationMode(opt.key)}
+                            className={`rounded-lg border px-2 py-1.5 text-left text-xs font-medium ${
+                              editValidationMode === opt.key
+                                ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                                : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(editValidationMode === "letters" || editValidationMode === "digits" || editValidationMode === "alnum") && (
+                        <input
+                          type="text"
+                          value={editValidationLength}
+                          onChange={(e) => setEditValidationLength(e.target.value.replace(/\D/g, ""))}
+                          placeholder="Exact length (optional, e.g. 3)"
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      {editValidationMode === "custom" && (
+                        <input
+                          type="text"
+                          value={editValidationCustom}
+                          onChange={(e) => setEditValidationCustom(e.target.value)}
+                          placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      {editValidationMode !== "none" && (
+                        <input
+                          type="text"
+                          value={editValidationMessage}
+                          onChange={(e) => setEditValidationMessage(e.target.value)}
+                          placeholder={defaultValidationMessage(m.label_name, editValidationMode, editValidationLength)}
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editValidationUppercase} onChange={(e) => setEditValidationUppercase(e.target.checked)} />
+                        Convert to UPPERCASE automatically on save
+                      </label>
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editFullWidth} onChange={(e) => setEditFullWidth(e.target.checked)} />
+                        Full width on the job screen (instead of sharing the row)
+                      </label>
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editMultiline} onChange={(e) => setEditMultiline(e.target.checked)} />
+                        Multi-line, auto-growing box (for a full address, say)
+                      </label>
+                      <label className="mt-2 block text-xs text-slate-700 dark:text-slate-300">
+                        Order within its section (blank = default)
+                        <input
+                          type="number"
+                          value={editFieldOrder}
+                          onChange={(e) => setEditFieldOrder(e.target.value)}
+                          placeholder="e.g. 0, 1, 2…"
+                          className="mt-1 block w-28 rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900"
+                        />
+                      </label>
+                    </div>
+                    <div>
                       <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">Anchor variations (labels this field can appear under)</p>
                       <div className="flex flex-wrap gap-1.5">
                         {editAnchors.map((v, i) => (
@@ -1600,6 +1853,45 @@ export function TemplateCreationWizard() {
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                       />
                     </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                        Section heading on the job screen (optional)
+                      </label>
+                      <p className="mb-1.5 text-[11px] text-slate-500">
+                        Groups this field with others under one heading, e.g. "HBL & Shipment
+                        Details". For a field marked as its own separate table below, this is
+                        the heading shown over that table instead.
+                      </p>
+                      <div className="flex gap-2">
+                        {(() => {
+                          const existing = [...new Set(
+                            allMarks
+                              .filter((om) => om.document_id === m.document_id)
+                              .map((om) => om.standalone_group_heading?.trim())
+                              .filter((h): h is string => !!h),
+                          )].sort();
+                          return existing.length > 0 ? (
+                            <select
+                              value=""
+                              onChange={(e) => { if (e.target.value) setEditStandaloneHeading(e.target.value); }}
+                              className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                            >
+                              <option value="">Existing…</option>
+                              {existing.map((h) => (
+                                <option key={h} value={h}>{h}</option>
+                              ))}
+                            </select>
+                          ) : null;
+                        })()}
+                        <input
+                          type="text"
+                          value={editStandaloneHeading}
+                          onChange={(e) => setEditStandaloneHeading(e.target.value)}
+                          placeholder={m.label_name}
+                          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
                     {m.is_multi_value && (
                       <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-500/20 dark:bg-violet-500/5">
                         <label className="flex items-start gap-2 text-sm">
@@ -1614,24 +1906,11 @@ export function TemplateCreationWizard() {
                             <span className="text-xs">
                               Tick when these rows are a separate table unrelated to the
                               job's other line items (e.g. a container count on the Bill of
-                              Lading).
+                              Lading). The heading shown over that table is set above, in
+                              "Section heading on the job screen".
                             </span>
                           </span>
                         </label>
-                        {editStandalone && (
-                          <div className="mt-2 pl-6">
-                            <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
-                              Heading on the job screen (optional — e.g. "Container")
-                            </label>
-                            <input
-                              type="text"
-                              value={editStandaloneHeading}
-                              onChange={(e) => setEditStandaloneHeading(e.target.value)}
-                              placeholder={m.label_name}
-                              className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
-                            />
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -2276,6 +2555,137 @@ export function TemplateCreationWizard() {
             placeholder="e.g. bl_number"
           />
           <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Display label shown to the operator (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              What the operator actually reads on screen, when it should differ from the field
+              name above - e.g. field name stays "HBL No" (what extraction/export use
+              internally), while this shows "HAWB Number" instead. Leave blank to show the
+              field name as-is.
+            </p>
+            <input
+              type="text"
+              value={displayLabel}
+              onChange={(e) => setDisplayLabel(e.target.value)}
+              placeholder="e.g. HAWB Number"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Validation (optional)
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              {([
+                { key: "none", label: "No restriction" },
+                { key: "letters", label: "Letters only" },
+                { key: "digits", label: "Digits only" },
+                { key: "alnum", label: "Letters & digits" },
+                { key: "custom", label: "Custom pattern" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setValidationMode(opt.key)}
+                  className={`rounded-lg border px-2 py-1.5 text-left font-medium ${
+                    validationMode === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {(validationMode === "letters" || validationMode === "digits" || validationMode === "alnum") && (
+              <input
+                type="text"
+                value={validationLength}
+                onChange={(e) => setValidationLength(e.target.value.replace(/\D/g, ""))}
+                placeholder="Exact length (optional, e.g. 3)"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {validationMode === "custom" && (
+              <input
+                type="text"
+                value={validationCustom}
+                onChange={(e) => setValidationCustom(e.target.value)}
+                placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {validationMode !== "none" && (
+              <input
+                type="text"
+                value={validationMessage}
+                onChange={(e) => setValidationMessage(e.target.value)}
+                placeholder={defaultValidationMessage(labelName || "This field", validationMode, validationLength)}
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={validationUppercase} onChange={(e) => setValidationUppercase(e.target.checked)} />
+              Convert to UPPERCASE automatically on save
+            </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={fullWidth} onChange={(e) => setFullWidth(e.target.checked)} />
+              Full width on the job screen (instead of sharing the row)
+            </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={multiline} onChange={(e) => setMultiline(e.target.checked)} />
+              Multi-line, auto-growing box (for a full address, say)
+            </label>
+            <label className="mt-2 block text-sm text-slate-700 dark:text-slate-300">
+              Order within its section (blank = default)
+              <input
+                type="number"
+                value={fieldOrder}
+                onChange={(e) => setFieldOrder(e.target.value)}
+                placeholder="e.g. 0, 1, 2…"
+                className="mt-1 block w-32 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
+              />
+            </label>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Section heading on the job screen (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Groups this field together with others under one heading, e.g. "HBL & Shipment
+              Details" - shown once above every field that shares it. For a field marked as
+              its own separate table below, this is the heading shown over that table instead.
+            </p>
+            <div className="flex gap-2">
+              {activeDoc && activeDoc.marks.some((m) => (m.standalone_group_heading ?? "").trim()) && (
+                <select
+                  value=""
+                  onChange={(e) => { if (e.target.value) setStandaloneHeading(e.target.value); }}
+                  className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  <option value="">Existing…</option>
+                  {[...new Set(
+                    activeDoc.marks
+                      .map((m) => m.standalone_group_heading?.trim())
+                      .filter((h): h is string => !!h),
+                  )]
+                    .sort()
+                    .map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                </select>
+              )}
+              <input
+                type="text"
+                value={standaloneHeading}
+                onChange={(e) => setStandaloneHeading(e.target.value)}
+                placeholder="e.g. HBL & Shipment Details"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+          </div>
+          <div>
             <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Box colour</p>
             <div className="flex gap-2">
               {Object.entries(MARK_COLORS).map(([key, hex]) => (
@@ -2319,22 +2729,10 @@ export function TemplateCreationWizard() {
                   isn't tied to the invoice's own product lines, and there's no reason the two
                   should share a row count). Leave unticked for a field that genuinely
                   describes the SAME line as other per-row fields (CTH, RITC, a part
-                  description).
+                  description). The heading shown over that table is set above, in "Section
+                  heading on the job screen" - it falls back to this field's own name when left
+                  blank.
                 </span>
-                {standaloneMultiValue && (
-                  <div className="mt-2">
-                    <label className="mb-1 block text-xs font-medium text-violet-700 dark:text-violet-300">
-                      Heading on the job screen (optional — e.g. "Container")
-                    </label>
-                    <input
-                      type="text"
-                      value={standaloneHeading}
-                      onChange={(e) => setStandaloneHeading(e.target.value)}
-                      placeholder={labelName || "defaults to the field's own name"}
-                      className="w-full rounded-md border border-violet-200 px-2 py-1 text-sm dark:border-violet-500/30 dark:bg-slate-900"
-                    />
-                  </div>
-                )}
               </span>
             </label>
           )}
@@ -2503,6 +2901,206 @@ export function TemplateCreationWizard() {
       <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={cfEditId ? "Edit custom tag" : "New custom tag"} maxWidth="max-w-lg">
         <div className="space-y-4">
           <Input label="Label" value={cfLabel} onChange={(e) => setCfLabel(e.target.value)} placeholder="e.g. total_net_weight" />
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              What does the operator type/pick into this field?
+            </label>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {([
+                { key: "text", label: "Input box", hint: "Free text" },
+                { key: "select", label: "Dropdown", hint: "Pick only, short list" },
+                { key: "search", label: "Dropdown with search", hint: "Pick only, long list" },
+                { key: "search_free", label: "Editable dropdown", hint: "Pick, or type a new value" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setCfInputType(opt.key)}
+                  className={`rounded-lg border px-3 py-2 text-left font-medium ${
+                    cfInputType === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                  <span className="block text-[11px] font-normal text-slate-400">{opt.hint}</span>
+                </button>
+              ))}
+            </div>
+            {cfInputType !== "text" && (
+              <div className="mt-2">
+                <p className="mb-1 text-xs text-slate-500">
+                  One choice per line. Type "code:Label" (e.g. "P:Prior") when the saved value
+                  should be shorter than what the operator reads - plain text saves and shows
+                  as typed.
+                </p>
+                <textarea
+                  value={cfFixedOptionsText}
+                  onChange={(e) => setCfFixedOptionsText(e.target.value)}
+                  rows={4}
+                  placeholder={"Bangalore\nChennai\nCochin"}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Display label shown to the operator (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              What the operator reads on screen, when it should differ from the label above.
+              Leave blank to show the label as-is.
+            </p>
+            <input
+              type="text"
+              value={cfDisplayLabel}
+              onChange={(e) => setCfDisplayLabel(e.target.value)}
+              placeholder="e.g. ERP Importer Name"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Validation (optional)
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              {([
+                { key: "none", label: "No restriction" },
+                { key: "letters", label: "Letters only" },
+                { key: "digits", label: "Digits only" },
+                { key: "alnum", label: "Letters & digits" },
+                { key: "custom", label: "Custom pattern" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setCfValidationMode(opt.key)}
+                  className={`rounded-lg border px-2 py-1.5 text-left font-medium ${
+                    cfValidationMode === opt.key
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                      : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {(cfValidationMode === "letters" || cfValidationMode === "digits" || cfValidationMode === "alnum") && (
+              <input
+                type="text"
+                value={cfValidationLength}
+                onChange={(e) => setCfValidationLength(e.target.value.replace(/\D/g, ""))}
+                placeholder="Exact length (optional, e.g. 3)"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {cfValidationMode === "custom" && (
+              <input
+                type="text"
+                value={cfValidationCustom}
+                onChange={(e) => setCfValidationCustom(e.target.value)}
+                placeholder="Regex pattern, e.g. [A-Za-z]{5}[0-9]"
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-mono dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            {cfValidationMode !== "none" && (
+              <input
+                type="text"
+                value={cfValidationMessage}
+                onChange={(e) => setCfValidationMessage(e.target.value)}
+                placeholder={defaultValidationMessage(cfLabel || "This field", cfValidationMode, cfValidationLength)}
+                className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            )}
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={cfValidationUppercase} onChange={(e) => setCfValidationUppercase(e.target.checked)} />
+              Convert to UPPERCASE automatically on save
+            </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={cfFullWidth} onChange={(e) => setCfFullWidth(e.target.checked)} />
+              Full width on the job screen (instead of sharing the row)
+            </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={cfMultiline} onChange={(e) => setCfMultiline(e.target.checked)} />
+              Multi-line, auto-growing box (for a full address, say)
+            </label>
+            <label className="mt-2 block text-sm text-slate-700 dark:text-slate-300">
+              Order within its section (blank = default)
+              <input
+                type="number"
+                value={cfFieldOrder}
+                onChange={(e) => setCfFieldOrder(e.target.value)}
+                placeholder="e.g. 0, 1, 2…"
+                className="mt-1 block w-32 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900"
+              />
+            </label>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Which screen shows this field?
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Additional Details (the default) is its own screen, common to the whole job. Pick
+              a document instead to show it right there on that document's own tab - e.g. a
+              field the operator should see and fill in while looking at the Bill of Lading,
+              not later on a separate screen.
+            </p>
+            <select
+              value={cfDisplayDocumentId}
+              onChange={(e) => setCfDisplayDocumentId(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            >
+              <option value="">Additional Details</option>
+              {(group?.documents ?? []).map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+              Section heading on the job screen (optional)
+            </label>
+            <p className="mb-1.5 text-xs text-slate-500">
+              Groups this field together with others under one heading, e.g. "Party Details" -
+              shown once above every field that shares it, on whichever tab/screen this field
+              already renders on.
+            </p>
+            <div className="flex gap-2">
+              {(() => {
+                const existing = [...new Set([
+                  ...(group?.documents.flatMap((d) => d.marks) ?? [])
+                    .map((m) => m.standalone_group_heading?.trim()),
+                  ...(group?.custom_fields ?? [])
+                    .map((c) => c.standalone_group_heading?.trim()),
+                ].filter((h): h is string => !!h))].sort();
+                return existing.length > 0 ? (
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) setCfSectionHeading(e.target.value); }}
+                    className="w-40 shrink-0 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  >
+                    <option value="">Existing…</option>
+                    {existing.map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                ) : null;
+              })()}
+              <input
+                type="text"
+                value={cfSectionHeading}
+                onChange={(e) => setCfSectionHeading(e.target.value)}
+                placeholder="e.g. Party Details"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+          </div>
 
           <div className="flex gap-2 text-sm">
             <button

@@ -81,8 +81,23 @@ export async function createCustomField(
     composite_source_labels?: CompositePiece[] | null;
     /** A "Manual Entry" field's own closed dropdown choices - omit/null for free text. */
     fixed_options?: string[] | null;
+    /** fixed_options only: "plain" | "search" | "search_free" - omit/null for "plain". */
+    dropdown_style?: string | null;
     /** Which document's own tab to group this field under - omit/null for Additional Details. */
     display_document_id?: string | null;
+    /** This field's own section heading on the Job Run page - omit/null to fall back to the
+     *  hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
+    standalone_group_heading?: string | null;
+    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
+     *  label-override maps. */
+    display_label?: string | null;
+    /** Admin-settable format check, tested as `^(?:pattern)$` - omit/null for no restriction. */
+    validation_pattern?: string | null;
+    validation_uppercase?: boolean;
+    validation_message?: string | null;
+    full_width?: boolean;
+    multiline?: boolean;
+    field_order?: number | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
   const { data } = await apiClient.post(`/template-groups/${groupId}/custom-fields`, payload);
@@ -278,6 +293,17 @@ export async function createMark(
     standalone_multi_value?: boolean;
     /** standalone_multi_value only: heading shown above this group, e.g. "Container". */
     standalone_group_heading?: string | null;
+    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
+     *  label-override maps. */
+    display_label?: string | null;
+    /** Admin-settable format check, tested as `^(?:pattern)$` - omit/null for no restriction. */
+    validation_pattern?: string | null;
+    validation_uppercase?: boolean;
+    validation_message?: string | null;
+    /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
+    full_width?: boolean;
+    multiline?: boolean;
+    field_order?: number | null;
     /** Look the extracted value up in its own reference table; a match replaces it, no
      *  match returns empty. */
     is_target_value?: boolean;
@@ -310,6 +336,13 @@ export async function editMark(
     value_format_hint: string;
     standalone_multi_value: boolean;
     standalone_group_heading: string | null;
+    display_label: string | null;
+    validation_pattern: string | null;
+    validation_uppercase: boolean;
+    validation_message: string | null;
+    full_width: boolean;
+    multiline: boolean;
+    field_order: number | null;
   }>,
 ): Promise<Mark> {
   const { data } = await apiClient.patch<Mark>(`/marks/${markId}`, patch);
@@ -406,6 +439,17 @@ export async function updateCustomField(
     picker_heading: string | null;
     sync_field_ids: string[] | null;
     composite_source_labels: CompositePiece[] | null;
+    standalone_group_heading: string | null;
+    display_label: string | null;
+    fixed_options: string[] | null;
+    dropdown_style: string | null;
+    display_document_id: string | null;
+    validation_pattern: string | null;
+    validation_uppercase: boolean;
+    validation_message: string | null;
+    full_width: boolean;
+    multiline: boolean;
+    field_order: number | null;
   }>,
 ) {
   const { data } = await apiClient.patch(`/custom-fields/${fieldId}`, patch);

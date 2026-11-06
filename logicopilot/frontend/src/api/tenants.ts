@@ -152,6 +152,21 @@ export interface BillingUsage {
   total_jobs: number;
   total_pages: number;
   by_shipment_type: ShipmentTypeUsage[];
+  /** Of total_pages: first-time processing vs an explicit reclassify-triggered re-run. null on
+   *  a finalized (past-month, from a stored Invoice) response - older invoices never recorded
+   *  this breakdown. */
+  pages_original: number | null;
+  pages_rerun: number | null;
+  /** Read live from current job/document state, not the permanent ledger, so this can drift
+   *  slightly from pages_original if a page was deleted afterward without a matching rerun.
+   *  null on a finalized response, same reason as above. */
+  final_classified_pages: number | null;
+  final_unclassified_pages: number | null;
+  /** Of the jobs billed THIS period (by event date, not job creation date - a different
+   *  scoping from total_jobs above), how many still exist vs have been hard-deleted since.
+   *  null on a finalized response, same reason as above. */
+  active_jobs_billed: number | null;
+  deleted_jobs_billed: number | null;
   platform_fee: number;
   /** platform_fee_billed_days < platform_fee_month_days means this month's fee was pro-rated
    *  (a go-live date fell partway through it). Equal means a normal, full-month charge. */
@@ -217,6 +232,69 @@ export async function markInvoicePaid(tenantId: string, invoiceId: string, paid 
     `/tenants/${tenantId}/billing/invoices/${invoiceId}/mark-paid`,
     { paid },
   );
+  return response.data;
+}
+
+export interface JobBillingRow {
+  job_id: string;
+  job_reference: string;
+  shipment_type: string;
+  /** A live Job.status value, or "deleted" if the job no longer exists. */
+  status: string;
+  started_at: string; // ISO 8601
+  original_pages: number;
+  rerun_pages: number;
+  final_classified_pages: number;
+  final_unclassified_pages: number;
+  total_billed: number;
+}
+
+export interface JobBillingPage {
+  items: JobBillingRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface JobBillingFilters {
+  month?: string;
+  search?: string;
+  shipmentType?: string;
+  /** YYYY-MM-DD. Narrows within the selected month - omit for the full month. */
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+function billingJobsParams(filters: JobBillingFilters) {
+  return {
+    month: filters.month || undefined,
+    search: filters.search || undefined,
+    shipment_type: filters.shipmentType || undefined,
+    date_from: filters.dateFrom || undefined,
+    date_to: filters.dateTo || undefined,
+  };
+}
+
+/** The Billing & Usage page's own per-job table, server-paginated. */
+export async function listBillingJobs(
+  tenantId: string,
+  filters: JobBillingFilters,
+  page: number,
+  pageSize: number,
+): Promise<JobBillingPage> {
+  const response = await apiClient.get<JobBillingPage>(`/tenants/${tenantId}/billing/jobs`, {
+    params: { ...billingJobsParams(filters), page, page_size: pageSize },
+  });
+  return response.data;
+}
+
+/** Downloads the same rows listBillingJobs shows (same filters, no pagination) as a CSV blob -
+ *  the caller turns this into an object-URL download. */
+export async function exportBillingJobs(tenantId: string, filters: JobBillingFilters): Promise<Blob> {
+  const response = await apiClient.get<Blob>(`/tenants/${tenantId}/billing/jobs/export`, {
+    params: billingJobsParams(filters),
+    responseType: "blob",
+  });
   return response.data;
 }
 

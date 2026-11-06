@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -194,6 +194,31 @@ const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> 
     Ins_Currency: "Insurance Currency",
   },
 };
+// Same idea as FIELD_LABEL_OVERRIDES_BY_DOC_TYPE, but scoped to ONE template (keyed by
+// group_id) rather than every template that shares a doc_type - for a rename that should NOT
+// apply platform-wide. "HBL No" -> "HAWB Number" is the first of these: 4S Logistics' Sea
+// Import template (and every other BL-type template) must keep reading "HBL Number", only
+// "Air import (November 5)" reads "HAWB Number" for the exact same underlying field. Checked
+// BEFORE the doc-type-wide map (see fieldLabelOverride below) - a group-specific entry wins,
+// every other group falls through to the doc-type-wide override exactly as before.
+const FIELD_LABEL_OVERRIDES_BY_GROUP: Record<string, Record<string, string>> = {
+  "9b7a9384-4030-4052-ad5c-b33da7bf2912": { "HBL No": "HAWB Number" }, // Air import (November 5)
+};
+// `displayLabel` (FieldMark/CustomField.display_label, set per-field by an admin through the
+// Template Creation Wizard - no deploy needed) wins when set; otherwise falls back to the two
+// hardcoded frontend maps exactly as before, so no existing template's display changes.
+function fieldLabelOverride(
+  displayLabel: string | null | undefined,
+  groupId: string | undefined,
+  docType: string | undefined,
+  label: string,
+): string | undefined {
+  if (displayLabel && displayLabel.trim()) return displayLabel.trim();
+  if (groupId && FIELD_LABEL_OVERRIDES_BY_GROUP[groupId]?.[label] !== undefined) {
+    return FIELD_LABEL_OVERRIDES_BY_GROUP[groupId][label];
+  }
+  return docType ? FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[docType]?.[label] : undefined;
+}
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
 const FIELD_HINTS: Record<string, string> = {
@@ -203,6 +228,17 @@ const FIELD_HINTS: Record<string, string> = {
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
 // (and so what the ERP export reads) - e.g. picking "Transaction" saves "T", not the word.
 type FieldSelectOption = { value: string; label: string };
+// CustomField.fixed_options (admin-typed in the Wizard's Custom Tag modal) is a plain string
+// list - "Chennai" saves and displays as "Chennai", value and label the same, which is right
+// for almost every admin-typed list. Some fields need a short saved CODE with a longer label
+// instead (e.g. Bill of Entry Type's own "P"/"Prior", "N"/"Normal" - the ERP export reads the
+// single-letter code, same as this field's existing hand-coded FIELD_SELECT_OPTIONS entry
+// below). An admin can type "P:Prior" for one of these instead of a plain choice - anything
+// without a colon keeps behaving exactly as before.
+function parseFixedOption(raw: string): FieldSelectOption {
+  const i = raw.indexOf(":");
+  return i === -1 ? { value: raw, label: raw } : { value: raw.slice(0, i).trim(), label: raw.slice(i + 1).trim() };
+}
 const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
     { value: "S", label: "S" },
@@ -334,12 +370,38 @@ const SUGGESTED_VALUE_KEYED_ON_LABEL: Record<string, string> = {
 };
 // A full postal address reads better as a few short lines than as one long line the operator
 // has to scroll sideways through to check - a taller, multi-line box shows it all at a glance.
+//
+// Superseded by FieldMark.multiline/CustomField.multiline (an admin-settable per-field toggle
+// through the Template Creation Wizard, no deploy needed) for every field going forward - kept
+// here only as a fallback for these three, which predate that column.
 const MULTILINE_FIELD_LABELS = new Set([
   "Supplier Address", "Shipper Address", "Combined Description",
 ]);
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
+// Dummy placeholder, by request - a plain Shipper/Seller/None radio shown beside these two
+// fields only, local to this render (never saved, never read back). No behavior is wired to
+// it yet; what it should actually do is still to be decided.
+const DUMMY_SHIPPER_SELLER_RADIO_LABELS = new Set(["shipper", "Sold By / Buyer Name"]);
+function DummyShipperSellerRadio() {
+  const [choice, setChoice] = useState<"Shipper" | "Seller" | "None">("Shipper");
+  return (
+    <div className="flex items-center gap-2.5 text-xs font-normal text-slate-600 dark:text-slate-300">
+      {(["Shipper", "Seller", "None"] as const).map((opt) => (
+        <label key={opt} className="flex items-center gap-1 whitespace-nowrap">
+          <input
+            type="radio"
+            name="dummy-shipper-seller"
+            checked={choice === opt}
+            onChange={() => setChoice(opt)}
+          />
+          {opt}
+        </label>
+      ))}
+    </div>
+  );
+}
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
 // ~72,000-row world port table) - when the automatic lookup (exact, then AI-assisted on the
 // backend) leaves it blank, a manual search-and-pick box shows up right under the normal box
@@ -372,6 +434,10 @@ const titleCasePlace = (text: string): string =>
 // which split each box's width in half - the document's own long company names (e.g.
 // "FLEXTRONICS INTERNATIONAL MANAGEMENT SERVICES LIMITED") were getting cut off mid-word.
 // Each of these three now spans the full row on its own, by request.
+//
+// Superseded by FieldMark.full_width/CustomField.full_width (an admin-settable per-field
+// toggle through the Template Creation Wizard, no deploy needed) for every field going
+// forward - kept here only as a fallback for these three, which predate that column.
 const FULL_WIDTH_FIELD_LABELS = new Set([
   "Consignee", "ERP Consignee Name", "ERP Importer Address / Branch Code",
 ]);
@@ -424,7 +490,10 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   BL: [
     {
       heading: "HBL & Shipment Details",
-      labels: ["HBL No", "HBL Date", "vessel_name", "voyage_number", "Consignment Type"],
+      labels: [
+        "HBL No", "HBL Date", "MAWB Number", "MAWB Date", "vessel_name", "voyage_number",
+        "Consignment Type",
+      ],
     },
     {
       heading: "Port & Transport Details",
@@ -456,7 +525,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     {
       heading: "Party Details",
       labels: [
-        "shipper", "Shipper Address", "Consignee",
+        "shipper", "Shipper Address", "Sold By / Buyer Name", "Sold By / Buyer Name Address", "Consignee",
         "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
       ],
     },
@@ -3700,7 +3769,16 @@ export function JobRunPage() {
                                 : undefined;
                         const filterByLabel = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[fv.label_name];
                         let comboOptions: string[] | undefined;
-                        if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
+                        // Admin-typed fixed choices (CustomField.fixed_options), rendered as a
+                        // searchable combobox when dropdown_style asks for one - see the
+                        // document-tab ExtractedField's own copy of this same logic above for
+                        // the full explanation of the three dropdown_style values.
+                        const fixedChoicesSearchable =
+                          !!fv.fixed_options?.length &&
+                          (fv.dropdown_style === "search" || fv.dropdown_style === "search_free");
+                        if (fixedChoicesSearchable) {
+                          comboOptions = fv.fixed_options!;
+                        } else if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
                           // dedupe() - the reference table is a LEARNED (raw text -> corrected
                           // value) mapping, not a plain list of unique names: the same resolved
                           // value legitimately gets re-learned from several different raw texts
@@ -3755,8 +3833,8 @@ export function JobRunPage() {
                               tone={fv.origin === "computed" ? "computed" : undefined}
                               labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={
-                                fv.fixed_options && fv.fixed_options.length
-                                  ? fv.fixed_options.map((v) => ({ value: v, label: v }))
+                                fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
+                                  ? fv.fixed_options.map(parseFixedOption)
                                   : FIELD_SELECT_OPTIONS[fv.label_name]
                               }
                               defaultValue={defaultValue}
@@ -3767,8 +3845,11 @@ export function JobRunPage() {
                               // with it - typing still filters the dropdown below, but only
                               // clicking a result saves anything; blurring with unpicked typed
                               // text reverts to the last saved value instead of saving it.
+                              // A fixed-choices field set to "search" (not "search_free") gets
+                              // the exact same pick-only treatment, admin-configured instead.
                               comboPickOnly={
-                                fv.label_name === "Erp Entry Name" || fv.label_name === "branch_name"
+                                fv.label_name === "Erp Entry Name" || fv.label_name === "branch_name" ||
+                                (fixedChoicesSearchable && fv.dropdown_style === "search")
                               }
                               onDraftChange={
                                 fv.label_name === "Erp Entry Name"
@@ -4697,6 +4778,7 @@ function ExtractedField({
   digitsOnly,
   carryToAllRows,
   id,
+  headerExtra,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -4805,9 +4887,23 @@ function ExtractedField({
   /** DOM id on the root element - lets a caller scroll/center this exact box into view (see
    *  blockApproval's "drag the user to where the empty field is"). */
   id?: string;
+  /** Shown in the field's own header row, beside its label - not below the box. */
+  headerExtra?: ReactNode;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
+  // multiline only: grows the box's own height to fit the content instead of a fixed row
+  // count - a short value stays compact, a long wrapped address gets as many lines as it
+  // actually needs. Measures the real rendered height (scrollHeight) rather than guessing a
+  // line count from character width, so it tracks the box's own current width (half or full)
+  // correctly either way.
+  const multilineRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = multilineRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const [comboOpen, setComboOpen] = useState(false);
@@ -4875,10 +4971,30 @@ function ExtractedField({
 
   const saveValue = async (value: string) => {
     if (readOnly) return;
-    const transformed = transformBeforeSave ? transformBeforeSave(value) : value;
+    let transformed = transformBeforeSave ? transformBeforeSave(value) : value;
+    // Admin-settable format check + auto-uppercase (FieldMark/CustomField.validation_pattern/
+    // validation_uppercase) - applies to every field everywhere ExtractedField renders, same
+    // enforcement point the earlier hand-coded TOI/CustomsHouseCode/Shipment Country Code
+    // checks already use (onBeforeSave/transformBeforeSave), just driven by real data instead
+    // of a per-field hardcoded check. A caller-provided transformBeforeSave/onBeforeSave (those
+    // three fields, for now) still runs first/instead - this never overrides them.
+    if (fv.validation_uppercase) transformed = transformed.trim().toUpperCase();
     if (onBeforeSave) {
       const proceed = await onBeforeSave(transformed);
       if (!proceed) return;
+    } else if (fv.validation_pattern && transformed.trim()) {
+      // Server-side already rejects an unparseable pattern at save time (see
+      // _check_validation_pattern) - this try/catch only guards against something that was
+      // somehow saved before that check existed, so a bad pattern fails OPEN (nothing blocked)
+      // rather than crashing the save outright.
+      try {
+        if (!new RegExp(`^(?:${fv.validation_pattern})$`).test(transformed.trim())) {
+          window.alert(fv.validation_message || `${fv.label_name} does not match the required format.`);
+          return;
+        }
+      } catch {
+        /* malformed pattern - treat as no restriction */
+      }
     }
     setSaving(true);
     setFailed(false);
@@ -4988,6 +5104,7 @@ function ExtractedField({
             {soloEdit ? "\u270e only this line" : "only this line"}
           </button>
         )}
+        {headerExtra && <div className="ml-auto shrink-0">{headerExtra}</div>}
       </div>
       <div
         className="relative"
@@ -5066,16 +5183,20 @@ function ExtractedField({
           </select>
         ) : multiline ? (
           <textarea
+            ref={multilineRef}
             value={draft}
             readOnly={readOnly}
-            rows={3}
+            rows={2}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={() => onFocusField?.(fv)}
             // Blur still saves, as a safety net for anyone who types and tabs away - same
             // pattern as the single-line input below.
             onBlur={commit}
             placeholder="not found"
-            className={`${boxClassName} resize-y`}
+            // Grows to fit its own content (see the scrollHeight effect above) - resize-y is
+            // still there so an operator can stretch it further by hand if they want, but
+            // nothing has to drag it open just to see a long address's last line.
+            className={`${boxClassName} resize-y overflow-hidden`}
           />
         ) : asyncSearchPicker ? (
           <>
@@ -6132,7 +6253,20 @@ function ExtractionReview({
           (COUNTRY_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) && countryCodeFormatError(fv.value ?? "") !== null) ||
           (CUSTOMS_HOUSE_CODE_FORMAT_FIELD_LABELS.has(fv.label_name) &&
             customsHouseCodeFormatError(fv.value ?? "") !== null) ||
-          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null),
+          (TOI_FORMAT_FIELD_LABELS.has(fv.label_name) && toiFormatError(fv.value ?? "") !== null) ||
+          // Admin-settable format check (see ExtractedField's own saveValue) - a value saved
+          // before this existed, or saved some other way, is still caught here. Fails OPEN on
+          // a malformed pattern, same reasoning as saveValue's own try/catch.
+          (() => {
+            if (!fv.validation_pattern) return false;
+            const v = (fv.value ?? "").trim();
+            if (!v) return false;
+            try {
+              return !new RegExp(`^(?:${fv.validation_pattern})$`).test(v);
+            } catch {
+              return false;
+            }
+          })(),
       );
       if (missing.length || invalidFormat.length) {
         const parts: string[] = [];
@@ -6500,11 +6634,66 @@ function ExtractionReview({
   // grouped the way an operator reads a shipment's paperwork rather than whatever order marks
   // happen to be stored in. null when this doc_type has no grouping configured (every other
   // template) - the caller then falls back to the plain ungrouped grid, unchanged.
+  //
+  // A template can now set its own per-field heading (FieldMark.standalone_group_heading,
+  // broadened beyond its original standalone-multi-value-only use - see that column's own
+  // comment) through the Template Creation Wizard, with no code change or deploy needed. When
+  // at least one field on this document carries one, that takes over completely for THIS
+  // document - content and order come from what the admin actually configured, not a mix of
+  // two sources of truth. A document where nothing has been set this way yet (every template
+  // that hasn't adopted it) runs the exact old hardcoded-map code, byte-for-byte unchanged.
   const groupedDocFields = useMemo(() => {
     if (!active) return null;
+    const all = [...visibleFields, ...relocatedFields];
+    const hasCustomHeadings = all.some((fv) => (fv.standalone_group_heading ?? "").trim());
+    if (hasCustomHeadings) {
+      const order: string[] = [];
+      const byHeading = new Map<string, JobFieldValue[]>();
+      const other: JobFieldValue[] = [];
+      for (const fv of all) {
+        const heading = fv.standalone_group_heading?.trim();
+        if (!heading) {
+          other.push(fv);
+          continue;
+        }
+        if (!byHeading.has(heading)) {
+          byHeading.set(heading, []);
+          order.push(heading);
+        }
+        byHeading.get(heading)!.push(fv);
+      }
+      // A heading that happens to match one of the old hardcoded sections (the backfill that
+      // moved every existing template onto this mechanism copied those headings verbatim) keeps
+      // reading in that section's own curated order - both which section comes first, and which
+      // field comes first within it - instead of whatever order the fields happen to be stored
+      // in. A genuinely new heading an admin makes up later (matching nothing hardcoded) has no
+      // such precedent to follow, so it falls back to natural/first-seen order.
+      //
+      // An explicit FieldMark.field_order/CustomField.field_order (admin-settable through the
+      // Wizard, no deploy needed) always wins over both of those when set, on a per-field
+      // basis - a field moved this way sorts by its own number among its heading's siblings,
+      // whatever the old hardcoded list or natural order would otherwise have put it at.
+      const hardcodedGroups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type] ?? [];
+      const headingRank = new Map(hardcodedGroups.map((g, i) => [g.heading, i]));
+      const labelRankByHeading = new Map(
+        hardcodedGroups.map((g) => [g.heading, new Map(g.labels.map((l, i) => [l, i]))]),
+      );
+      order.sort((a, b) => (headingRank.get(a) ?? Infinity) - (headingRank.get(b) ?? Infinity));
+      const sections = order.map((heading) => {
+        const items = byHeading.get(heading)!;
+        const labelRank = labelRankByHeading.get(heading);
+        items.sort((a, b) => {
+          const aKey = a.field_order ?? labelRank?.get(a.label_name) ?? Infinity;
+          const bKey = b.field_order ?? labelRank?.get(b.label_name) ?? Infinity;
+          return aKey - bKey;
+        });
+        return { heading, items };
+      });
+      if (other.length) sections.push({ heading: "Other", items: other });
+      return sections;
+    }
     const groups = FIELD_GROUPS_BY_DOC_TYPE[active.doc_type];
     if (!groups) return null;
-    const all = [...visibleFields, ...relocatedFields];
     const byLabel = new Map(all.map((fv) => [fv.label_name, fv] as const));
     const used = new Set<string>();
     const sections = groups
@@ -6817,8 +7006,8 @@ function ExtractionReview({
                           onToggle={onToggleInsuranceMode}
                           readOnly={readOnly}
                           reload={reload}
-                          labelOverridePercentage={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
-                          labelOverrideAmount={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.["insurance_amount"]}
+                          labelOverridePercentage={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                          labelOverrideAmount={active ? fieldLabelOverride(insuranceAmountFv?.display_label, job?.group_id, active.doc_type, "insurance_amount") : undefined}
                           onBeforeSave={
                             insuranceMode === "percentage" && insurancePercentageFv?.custom_field_id
                               ? () => requireInsuranceCertificate(insurancePercentageFv!.custom_field_id!)
@@ -6836,11 +7025,24 @@ function ExtractionReview({
                       ? dynamicReferenceOptions[fv.custom_field_id]
                       : undefined;
                   let options: FieldSelectOption[] | undefined = FIELD_SELECT_OPTIONS[fv.label_name];
-                  // A "Manual Entry" field created as a closed dropdown (see
-                  // CustomField.fixed_options) - a mandatory choice from exactly these values,
-                  // never a reference-backed/history combobox.
+                  // A "Manual Entry" field's own admin-typed choices (CustomField.fixed_options),
+                  // rendered one of three ways depending on CustomField.dropdown_style, set once
+                  // in the Wizard's Custom Tag modal - no code change/deploy needed to pick
+                  // between them:
+                  //   null/"plain" (default, same as before this existed) - a plain closed
+                  //     <select>, exactly these values and nothing else.
+                  //   "search"      - a searchable combobox, still pick-only (comboPickOnly).
+                  //   "search_free" - the same searchable combobox, but typing a value that
+                  //     isn't in the list still saves it (comboPickOnly false).
+                  let fixedChoiceComboOptions: string[] | undefined;
+                  let fixedChoiceComboPickOnly = false;
                   if (fv.fixed_options && fv.fixed_options.length) {
-                    options = fv.fixed_options.map((v) => ({ value: v, label: v }));
+                    if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
+                      fixedChoiceComboOptions = fv.fixed_options;
+                      fixedChoiceComboPickOnly = fv.dropdown_style === "search";
+                    } else {
+                      options = fv.fixed_options.map(parseFixedOption);
+                    }
                   }
                   if (dynamicRows !== undefined) {
                     const filterFv = job.field_values.find(
@@ -6887,9 +7089,11 @@ function ExtractionReview({
                   const showSearchFallback =
                     fv.label_name !== "ERP Consignee Name" &&
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
-                  const comboOptions = COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                    ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
-                    : undefined;
+                  const comboOptions = fixedChoiceComboOptions ?? (
+                    COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
+                      ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
+                      : undefined
+                  );
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
                   // ...or, failing that, another field's own value on this same job - see
                   // DEFAULT_FROM_OTHER_FIELD_LABEL. Job-level (row_index == null): these
@@ -6907,7 +7111,11 @@ function ExtractionReview({
                     <div
                       key={fv.id}
                       id={`field-${fv.id}`}
-                      className={FULL_WIDTH_FIELD_LABELS.has(fv.label_name) ? "sm:col-span-2" : undefined}
+                      className={
+                        FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
+                          ? "sm:col-span-2"
+                          : undefined
+                      }
                     >
                       <ExtractedField
                         fv={fv}
@@ -6915,9 +7123,10 @@ function ExtractionReview({
                         reload={reload}
                         tone={isMark ? "document" : "computed"}
                         onFocusField={isMark ? setFocusedFv : undefined}
-                        labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                        labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                         options={options}
                         comboOptions={comboOptions}
+                        comboPickOnly={fixedChoiceComboPickOnly}
                         asyncSearchPicker={
                           fv.label_name === "ERP Consignee Name" && fv.custom_field_id
                             ? {
@@ -6972,7 +7181,7 @@ function ExtractionReview({
                             ? (value: string) => value.trim().toUpperCase()
                             : undefined
                         }
-                        multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                        multiline={MULTILINE_FIELD_LABELS.has(fv.label_name) || !!fv.multiline}
                         wrapLabel={WRAP_LABEL_FIELD_LABELS.has(fv.label_name)}
                         note={
                           isMark && from && from !== fv.document_name
@@ -6984,6 +7193,11 @@ function ExtractionReview({
                         flagNote={missingRequiredIds.has(fv.id) ? "Mandatory — needs a value before this document can be approved." : undefined}
                         onDraftChange={
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
+                        }
+                        headerExtra={
+                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name)
+                            ? <DummyShipperSellerRadio />
+                            : undefined
                         }
                       />
                       {showSearchFallback && (
@@ -7192,7 +7406,7 @@ function ExtractionReview({
                                 small
                                 tone="document"
                                 onFocusField={setFocusedFv}
-                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
@@ -7239,9 +7453,9 @@ function ExtractionReview({
                                 }
                                 small
                                 tone="reference"
-                                labelOverride={active && FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[active.doc_type]?.[fv.label_name]}
+                                labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
                                 options={FIELD_SELECT_OPTIONS[fv.label_name]}
-                                multiline={MULTILINE_FIELD_LABELS.has(fv.label_name)}
+                                multiline={MULTILINE_FIELD_LABELS.has(fv.label_name) || !!fv.multiline}
                               />
                             ))}
                           </div>

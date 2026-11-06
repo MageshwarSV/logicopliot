@@ -1,6 +1,11 @@
 """Standalone classifier test tool - upload any one file and see exactly what the real Smart
-Upload classifier (app.core.classifier.classify_page_image) decides, with full
+Upload classifier (app.core.classifier_sea_import.classify_page_image) decides, with full
 confidence/evidence per page, without creating a job or touching any real data at all.
+
+Always exercises the Sea Import module specifically (see classifier_common.py's own docstring
+for why classification is split one module per shipping mode) - this tool's own default
+candidates already match 4S Logistics' Sea Import template, and it is a debug aid with no real
+job/group in scope to pick a different mode from.
 
 Super-Admin-only, same as every other admin tool in this app - no separate local-only flag:
 runs on UAT using UAT's own already-configured OpenAI key pool (tenant_id=None, the same
@@ -25,7 +30,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Uploa
 from fastapi.responses import HTMLResponse
 
 from app.core import office_convert
-from app.core.classifier import classify_page_image
+from app.core.classifier_sea_import import classify_page_image
 from app.core.config import get_settings
 from app.core.deps import require_role
 from app.models.user import SUPER_ADMIN

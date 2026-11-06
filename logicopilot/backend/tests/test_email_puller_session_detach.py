@@ -1,4 +1,4 @@
-"""Found live in production: every message routed to a single-template mailbox crashed with
+﻿"""Found live in production: every message routed to a single-template mailbox crashed with
 sqlalchemy.orm.exc.DetachedInstanceError the moment the concurrency redesign (_pull_inbox's
 harvest-then-shared-pool split) started handing `ctx` - built in one session, during
 _mailbox_setup - to a worker running on a DIFFERENT, freshly-opened session (see
@@ -77,7 +77,7 @@ def test_process_one_message_does_not_crash_on_a_detached_template_group(db_sess
 
     with patch("app.core.docai.ocr_page_image",
               return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _process_one_message(
             db_session, b"1", raw, ctx,
@@ -116,7 +116,7 @@ def test_process_one_message_preserves_document_order_for_a_detached_group(db_se
     raw = _fake_message("<detach-test-2@example.com>")
     with patch("app.core.docai.ocr_page_image",
               return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc_a.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _process_one_message(
             db_session, b"1", raw, ctx,

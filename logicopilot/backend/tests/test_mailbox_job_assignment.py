@@ -1,4 +1,4 @@
-"""Every new job starts Unassigned, even one pulled from a mailbox explicitly assigned to one
+﻿"""Every new job starts Unassigned, even one pulled from a mailbox explicitly assigned to one
 template (ConnectedMailbox.group_id - see forced_group_id in _pull_one_mailbox) - assignment
 is now always a deliberate action from the Jobs list' own dropdown, never an automatic side
 effect of WHICH MAILBOX it arrived in or the template's pull_operator_id. The one exception:
@@ -69,9 +69,9 @@ def test_job_from_personal_mailbox_starts_unassigned_regardless_of_pull_operator
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email=mailbox_owner.mail_email or "owner@zoho.com",
@@ -108,9 +108,9 @@ def test_job_auto_assigns_when_the_sender_is_themselves_a_registered_operator(db
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email=mailbox_owner.mail_email or "owner@zoho.com",
@@ -143,8 +143,8 @@ def test_single_template_mailbox_routes_without_any_customer_identifier_configur
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some shipment text", "tokens": []}), \
-         patch("app.core.classifier.identify_customer") as mock_identify, \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_common.identify_customer") as mock_identify, \
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="solo-owner@zoho.com", mail_app_password="whatever",
@@ -180,9 +180,9 @@ def test_tenant_assigned_mailbox_with_two_templates_still_requires_content_ident
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                return_value={"keys": [], "reason": "no match", "evidence": ""}) as mock_identify, \
-         patch("app.core.classifier.assign_documents_detailed", return_value=[[]]):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="multi-owner@zoho.com", mail_app_password="whatever",
                                    mail_host="imap.zoho.com")

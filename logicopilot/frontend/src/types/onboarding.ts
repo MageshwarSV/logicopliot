@@ -35,12 +35,29 @@ export interface Mark {
    *  group of rows, e.g. "Container" — wordable per tenant/template. Falls back to the
    *  field's own label_name when blank. */
   standalone_group_heading?: string | null;
+  /** What the operator sees instead of label_name, when it should read differently - set
+   *  once by an admin rather than a frontend code change. null = falls back to whatever
+   *  JobRunPage.tsx's own hardcoded label-override maps already show. */
+  display_label?: string | null;
+  /** Admin-settable format check, tested as `^(?:pattern)$` against the trimmed value -
+   *  purely client-side. null = no restriction. */
+  validation_pattern?: string | null;
+  /** Auto-convert to UPPERCASE on save, independent of validation_pattern. */
+  validation_uppercase?: boolean;
+  /** Shown when validation_pattern fails. null = a generic auto-worded message. */
+  validation_message?: string | null;
   /** The extracted value is looked up in its own reference table (keyed on itself); a
    *  match replaces it, no match returns empty. */
   is_target_value?: boolean;
   /** is_target_value only: match on the same real-world thing despite OCR/formatting noise
    *  ("KUEHNE + NAGEL PVT. LTD." vs "KUEHNE+NAGEL") instead of requiring identical text. */
   fuzzy_match?: boolean;
+  /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
+  full_width?: boolean;
+  /** Renders as a multi-line, auto-growing box instead of a single-line box. */
+  multiline?: boolean;
+  /** Where this field sits, lowest-first, among its siblings under the same section heading. */
+  field_order?: number | null;
 }
 
 export interface TemplateDocument {
@@ -134,9 +151,27 @@ export interface CustomField {
   /** A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
    *  exactly these choices instead of a free-text box. null = free text. */
   fixed_options?: string[] | null;
+  /** fixed_options only: null/"plain" = plain closed select; "search" = searchable, still
+   *  pick-only; "search_free" = searchable, but a typed value not in the list still saves. */
+  dropdown_style?: "plain" | "search" | "search_free" | null;
   /** Which document's own tab this field is grouped under on the Job Run capture screen,
    *  instead of Additional Details. null = Additional Details. */
   display_document_id?: string | null;
+  /** This field's own section heading on the Job Run page - mirrors FieldMark's own
+   *  standalone_group_heading. null = falls back to the hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
+  standalone_group_heading?: string | null;
+  /** What the operator sees instead of label_name - mirrors Mark.display_label. */
+  display_label?: string | null;
+  /** Mirrors Mark.validation_pattern/validation_uppercase/validation_message. */
+  validation_pattern?: string | null;
+  validation_uppercase?: boolean;
+  validation_message?: string | null;
+  /** Mirrors Mark.full_width. */
+  full_width?: boolean;
+  /** Mirrors Mark.multiline. */
+  multiline?: boolean;
+  /** Mirrors Mark.field_order. */
+  field_order?: number | null;
 }
 
 /** One piece of a composite field's value - see CustomField.composite_source_labels. */
