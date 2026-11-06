@@ -13,7 +13,7 @@ import { DonutChart } from "../../components/charts/DonutChart";
 import { ShipmentBarChart, ShipmentPieChart } from "../../components/charts/ShipmentCharts";
 import { JobBillingTable } from "../../components/billing/JobBillingTable";
 import * as tenantsApi from "../../api/tenants";
-import type { BillingUsage } from "../../api/tenants";
+import type { BillingUsage, JobBillingHighlight } from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
 import { currentMonthStr, formatInr, monthLabel, shiftMonth } from "./financeFormat";
 
@@ -31,6 +31,13 @@ export function SaasFinanceUsageBillingPage() {
   const [usage, setUsage] = useState<BillingUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<JobBillingHighlight | null>(null);
+
+  function toggleHighlight(value: JobBillingHighlight) {
+    setHighlight((prev) => (prev === value ? null : value));
+  }
+
+  useEffect(() => setHighlight(null), [tenantId, month]);
 
   useEffect(() => {
     tenantsApi
@@ -93,13 +100,28 @@ export function SaasFinanceUsageBillingPage() {
         <>
           {usage.pages_original !== null ? (
             <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
-              <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard
+                icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()}
+                onClick={() => setHighlight(null)} active={highlight === null}
+              />
+              <StatCard
+                icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()}
+                onClick={() => toggleHighlight("deleted_jobs")} active={highlight === "deleted_jobs"}
+              />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
               <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
-              <StatCard icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
-              <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Pages" value={(usage.deleted_pages ?? 0).toLocaleString()} />
-              <StatCard icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
+              <StatCard
+                icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
+                onClick={() => toggleHighlight("unclassified")} active={highlight === "unclassified"}
+              />
+              <StatCard
+                icon={<TrashIcon />} tone="rose" label="Deleted Pages" value={(usage.deleted_pages ?? 0).toLocaleString()}
+                onClick={() => toggleHighlight("deleted_pages")} active={highlight === "deleted_pages"}
+              />
+              <StatCard
+                icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()}
+                onClick={() => toggleHighlight("rerun")} active={highlight === "rerun"}
+              />
               <StatCard
                 icon={<LayersIcon />}
                 tone="indigo"
@@ -149,6 +171,8 @@ export function SaasFinanceUsageBillingPage() {
                 month={month}
                 shipmentTypes={usage.by_shipment_type}
                 onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
+                highlight={highlight}
+                onClearHighlight={() => setHighlight(null)}
               />
             </div>
           )}
