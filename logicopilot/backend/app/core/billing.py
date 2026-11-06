@@ -150,24 +150,19 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
         final_classified_pages = sum(classified_by_job.values())
         final_unclassified_pages = sum(unclassified_by_job.values())
 
-    # Deleted pages: summed PER JOB using each job's own ALL-TIME original total, not this
-    # period's pages_original - a job active this period can carry live classified content that
-    # was actually billed in an EARLIER period (pages_original here only covers THIS period's
-    # own events), so comparing this period's pages_original against a job's full live state
-    # goes deeply negative and silently clamps to 0, hiding real deletions. See
-    # JobBillingRow.deleted_pages' own docstring for the identical per-job idea this mirrors.
-    deleted_pages = 0
-    if billed_job_ids:
-        all_time_original_by_job = dict(
-            db.query(BillablePageEvent.job_id, func.coalesce(func.sum(BillablePageEvent.page_count), 0))
-            .filter(BillablePageEvent.job_id.in_(billed_job_ids), BillablePageEvent.is_rerun.is_(False))
-            .group_by(BillablePageEvent.job_id)
-            .all()
-        )
-        for job_id, all_time_original in all_time_original_by_job.items():
-            deleted_pages += max(
-                0, all_time_original - classified_by_job.get(job_id, 0) - unclassified_by_job.get(job_id, 0),
-            )
+    # Deleted Pages is scoped differently from every other field above (on purpose, by request):
+    # "how many of THIS MONTH'S OWN JOBS have a page that was billed once and is now gone" - the
+    # same job-by-real-start-time scope list_job_billing's own table already uses, not this
+    # function's own billing-EVENT-date scope. Those two scopes can legitimately disagree (an
+    # old job touched by a rerun/backfill this period counts toward active_jobs_billed/
+    # pages_original above, but was never "this month's job" the way the table means it), and a
+    # tenant reading this page wants Deleted Pages to match what they can count in the table
+    # below, not a number inflated by unrelated older jobs. Every OTHER field here stays
+    # event-date scoped on purpose - see compute_usage's own docstring and calculate_bill's
+    # caller, which must never lose a later-month rerun's cost just because the job it belongs
+    # to started in an earlier, already-finalized month.
+    month_rows = _resolve_job_billing_rows(db, _job_billing_query(db, tenant_id, period_start).all())
+    deleted_pages = sum(r.deleted_pages for r in month_rows)
 
     return UsageResult(
         total_jobs=len(job_group), total_pages=total_pages, by_shipment_type=by_type,
