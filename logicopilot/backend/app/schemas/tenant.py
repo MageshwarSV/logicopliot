@@ -166,6 +166,29 @@ class BillingUsageOut(BaseModel):
     total_amount: float
 
 
+class JobBillingRowOut(BaseModel):
+    """One row of the Billing & Usage page's own per-job table - see
+    app.core.billing.JobBillingRow's own docstring for exactly what each field means and where
+    it comes from (the permanent ledger vs the job's own current live state)."""
+    job_id: str
+    job_reference: str
+    shipment_type: str
+    status: str
+    started_at: str  # ISO 8601
+    original_pages: int
+    rerun_pages: int
+    final_classified_pages: int
+    final_unclassified_pages: int
+    total_billed: int  # original_pages + rerun_pages
+
+
+class JobBillingPageOut(BaseModel):
+    items: list[JobBillingRowOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class InvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

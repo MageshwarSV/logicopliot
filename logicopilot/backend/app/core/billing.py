@@ -150,6 +150,106 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     )
 
 
+class JobBillingRow(NamedTuple):
+    job_id: str
+    job_reference: str
+    shipment_type: str
+    status: str  # a live Job.status value, or "deleted" if the job no longer exists
+    started_at: datetime
+    original_pages: int
+    rerun_pages: int
+    # Read live, same as compute_usage's own final_classified_pages/final_unclassified_pages -
+    # always 0/0 for a deleted job, since there is no live state left to read. See that
+    # function's own docstring for why these are not guaranteed to equal original_pages.
+    final_classified_pages: int
+    final_unclassified_pages: int
+
+
+def list_job_billing(
+    db: Session, tenant_id: str, period_start: date, *,
+    search: str | None = None, shipment_type: str | None = None,
+    page: int = 1, page_size: int = 10,
+) -> tuple[list[JobBillingRow], int]:
+    """Per-job breakdown for the Billing & Usage page's own job table - one row per job billed
+    THIS period (by event date, same scoping as compute_usage), whether or not that job still
+    exists. job_reference/shipment_type come from the ledger's own snapshot (survives a later
+    hard delete - see BillablePageEvent's own docstring); status/started_at come from the live
+    Job row when one still exists, else "deleted" and the ledger's own earliest event time.
+
+    Returns (rows, total_matching_jobs) - total is BEFORE pagination, for the caller's own page
+    count."""
+    start_dt, end_dt = _month_bounds(period_start)
+
+    agg = (
+        db.query(
+            BillablePageEvent.job_id,
+            func.max(BillablePageEvent.job_reference).label("job_reference"),
+            func.max(BillablePageEvent.shipment_type).label("shipment_type"),
+            func.min(BillablePageEvent.created_at).label("started_at"),
+            func.sum(
+                func.coalesce(BillablePageEvent.page_count, 0)
+            ).filter(BillablePageEvent.is_rerun.is_(False)).label("original_pages"),
+            func.sum(
+                func.coalesce(BillablePageEvent.page_count, 0)
+            ).filter(BillablePageEvent.is_rerun.is_(True)).label("rerun_pages"),
+        )
+        .filter(
+            BillablePageEvent.tenant_id == tenant_id,
+            BillablePageEvent.created_at >= start_dt, BillablePageEvent.created_at < end_dt,
+        )
+        .group_by(BillablePageEvent.job_id)
+    )
+    if search:
+        agg = agg.having(func.max(BillablePageEvent.job_reference).ilike(f"%{search}%"))
+    if shipment_type:
+        agg = agg.having(func.max(BillablePageEvent.shipment_type) == shipment_type)
+
+    all_rows = agg.all()
+    total = len(all_rows)
+    all_rows.sort(key=lambda r: r.started_at, reverse=True)
+    page_rows = all_rows[(page - 1) * page_size: (page - 1) * page_size + page_size]
+
+    job_ids = [r.job_id for r in page_rows]
+    jobs_by_id = (
+        {j.id: j for j in db.query(Job.id, Job.status, Job.created_at).filter(Job.id.in_(job_ids)).all()}
+        if job_ids else {}
+    )
+
+    from app.models.job import JobDocument, UnmatchedUploadPage
+
+    classified_by_job: dict[str, int] = {}
+    unclassified_by_job: dict[str, int] = {}
+    live_ids = [jid for jid in job_ids if jid in jobs_by_id]
+    if live_ids:
+        for jid, total_pages_row in (
+            db.query(JobDocument.job_id, func.coalesce(func.sum(JobDocument.page_count), 0))
+            .filter(JobDocument.job_id.in_(live_ids), JobDocument.file_path.isnot(None))
+            .group_by(JobDocument.job_id)
+            .all()
+        ):
+            classified_by_job[jid] = total_pages_row
+        for jid, cnt in (
+            db.query(UnmatchedUploadPage.job_id, func.count(UnmatchedUploadPage.id))
+            .filter(UnmatchedUploadPage.job_id.in_(live_ids))
+            .group_by(UnmatchedUploadPage.job_id)
+            .all()
+        ):
+            unclassified_by_job[jid] = cnt
+
+    rows = []
+    for r in page_rows:
+        live = jobs_by_id.get(r.job_id)
+        rows.append(JobBillingRow(
+            job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
+            status=live.status if live else "deleted",
+            started_at=live.created_at if live else r.started_at,
+            original_pages=r.original_pages or 0, rerun_pages=r.rerun_pages or 0,
+            final_classified_pages=classified_by_job.get(r.job_id, 0),
+            final_unclassified_pages=unclassified_by_job.get(r.job_id, 0),
+        ))
+    return rows, total
+
+
 def record_billable_pages(
     db: Session, job: Job, page_count: int, *, is_rerun: bool = False,
 ) -> None:
