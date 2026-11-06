@@ -30,7 +30,7 @@ from app.core.deps import (
     require_write_access,
     scoped_query,
 )
-from app.core.classifier import AIServiceUnavailable, assign_documents_detailed
+from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, classify_document
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
 from app.core.page_filter import (
@@ -6856,6 +6856,12 @@ def _classify_and_place_files(
             claimed_pages = {p for c in strong_claims for p in c["pages"]}
             for i, row in enumerate(unmatched_rows, start=1):
                 if row is not None and i in claimed_pages:
+                    # The staging copy made for this page (see the persist loop above) is
+                    # now redundant too - a claimed page lives on in its real JobDocument,
+                    # so the copy under unmatched/ must go with the row, not outlive it as
+                    # an orphaned file nothing ever points to again.
+                    if row.image_path:
+                        Path(row.image_path).unlink(missing_ok=True)
                     db.delete(row)
             result_by_item_id[id(item)] = {"filename": item["name"], "matched": []}
             if debug:
@@ -6881,8 +6887,51 @@ def _classify_and_place_files(
                 ):
                     before = len(item["kept_pages"])
                     _extend_kept_pages_for_item(item)
-                    if len(item["kept_pages"]) > before:
-                        claim_pages = claim_pages + list(range(before + 1, len(item["kept_pages"]) + 1))
+                    extended_pages = list(range(before + 1, len(item["kept_pages"]) + 1))
+                    if extended_pages:
+                        # Found live, JOB-5E6FC2: blindly trusting that every remaining real
+                        # page continues THIS claim silently swallowed an unrelated Air
+                        # Waybill, a freight forwarder's own Tax Invoice, and a page of
+                        # carrier Terms & Conditions into the Invoice slot - all three just
+                        # happened to sit past the <=6-page classification cap on a file
+                        # whose real Invoice content also reached that same cap. Re-classify
+                        # the newly OCR'd pages on their own before trusting any of them as a
+                        # continuation; only pages this confirms as the SAME key actually
+                        # extend the claim. Anything else is staged as a genuine Unclassified
+                        # page for an operator to place by hand, exactly like a page the
+                        # classifier never covered at all - never kept as "more of the same
+                        # document" purely because it comes after the cap.
+                        non_blank = [p for p in extended_pages if item["kept_pages"][p - 1].strip()]
+                        extension_text = "\n\n".join(
+                            f"=== PAGE {n} ===\n{item['kept_pages'][p - 1]}"
+                            for n, p in enumerate(non_blank, start=1)
+                        )
+                        extension_claims = (
+                            classify_document(item["name"], extension_text, None, candidates)
+                            if extension_text.strip() else []
+                        )
+                        confirmed: set[int] = set()
+                        for ec in extension_claims:
+                            if ec.get("source") == "ai_second" or ec["key"] != claim["key"]:
+                                continue
+                            confirmed |= {non_blank[p - 1] for p in ec["pages"]
+                                          if 1 <= p <= len(non_blank)}
+                        claim_pages = claim_pages + sorted(confirmed)
+                        for p in extended_pages:
+                            page_text = item["kept_pages"][p - 1]
+                            if p in confirmed or not page_text.strip():
+                                continue
+                            orig_idx = (item["kept_original"][p - 1]
+                                        if p - 1 < len(item["kept_original"]) else p)
+                            src_png = item["fdir"] / "pages" / f"page_{orig_idx}.png"
+                            dest = unmatched_dir / f"{uuid.uuid4()}.png"
+                            if src_png.exists():
+                                shutil.copy(src_png, dest)
+                            db.add(UnmatchedUploadPage(
+                                tenant_id=job.tenant_id, job_id=job.id,
+                                original_filename=item["name"][:255], page_number=p,
+                                image_path=str(dest), ocr_text=page_text,
+                            ))
                 # A combined multi-invoice file (several separate invoices back to back) looks
                 # like ONE claim to the classifier - every page equally looks like "an Invoice
                 # page", so there is nothing here for it to use to tell them apart up front.
