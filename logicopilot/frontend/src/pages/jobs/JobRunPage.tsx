@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -387,9 +387,9 @@ const DUMMY_SHIPPER_SELLER_RADIO_LABELS = new Set(["shipper", "Sold By / Buyer N
 function DummyShipperSellerRadio() {
   const [choice, setChoice] = useState<"Shipper" | "Seller" | "None">("Shipper");
   return (
-    <div className="mt-1 flex items-center gap-4 text-sm text-slate-700 dark:text-slate-300">
+    <div className="flex items-center gap-2.5 text-xs font-normal text-slate-600 dark:text-slate-300">
       {(["Shipper", "Seller", "None"] as const).map((opt) => (
-        <label key={opt} className="flex items-center gap-1.5">
+        <label key={opt} className="flex items-center gap-1 whitespace-nowrap">
           <input
             type="radio"
             name="dummy-shipper-seller"
@@ -4775,6 +4775,7 @@ function ExtractedField({
   digitsOnly,
   carryToAllRows,
   id,
+  headerExtra,
 }: {
   fv: JobFieldValue;
   readOnly: boolean;
@@ -4883,6 +4884,8 @@ function ExtractedField({
   /** DOM id on the root element - lets a caller scroll/center this exact box into view (see
    *  blockApproval's "drag the user to where the empty field is"). */
   id?: string;
+  /** Shown in the field's own header row, beside its label - not below the box. */
+  headerExtra?: ReactNode;
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
@@ -5098,6 +5101,7 @@ function ExtractedField({
             {soloEdit ? "\u270e only this line" : "only this line"}
           </button>
         )}
+        {headerExtra && <div className="ml-auto shrink-0">{headerExtra}</div>}
       </div>
       <div
         className="relative"
@@ -7184,8 +7188,12 @@ function ExtractionReview({
                         onDraftChange={
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
+                        headerExtra={
+                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name)
+                            ? <DummyShipperSellerRadio />
+                            : undefined
+                        }
                       />
-                      {DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name) && <DummyShipperSellerRadio />}
                       {showSearchFallback && (
                         <ReferenceSearchPicker
                           jobId={jobId}
