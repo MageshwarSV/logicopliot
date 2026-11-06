@@ -132,17 +132,42 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     } if billed_job_ids else set()
     final_classified_pages = 0
     final_unclassified_pages = 0
+    classified_by_job: dict[str, int] = {}
+    unclassified_by_job: dict[str, int] = {}
     if still_exist:
-        final_classified_pages = (
-            db.query(func.coalesce(func.sum(JobDocument.page_count), 0))
+        classified_by_job = dict(
+            db.query(JobDocument.job_id, func.coalesce(func.sum(JobDocument.page_count), 0))
             .filter(JobDocument.job_id.in_(still_exist), JobDocument.file_path.isnot(None))
-            .scalar() or 0
+            .group_by(JobDocument.job_id)
+            .all()
         )
-        final_unclassified_pages = (
-            db.query(func.count(UnmatchedUploadPage.id))
+        unclassified_by_job = dict(
+            db.query(UnmatchedUploadPage.job_id, func.count(UnmatchedUploadPage.id))
             .filter(UnmatchedUploadPage.job_id.in_(still_exist))
-            .scalar() or 0
+            .group_by(UnmatchedUploadPage.job_id)
+            .all()
         )
+        final_classified_pages = sum(classified_by_job.values())
+        final_unclassified_pages = sum(unclassified_by_job.values())
+
+    # Deleted pages: summed PER JOB using each job's own ALL-TIME original total, not this
+    # period's pages_original - a job active this period can carry live classified content that
+    # was actually billed in an EARLIER period (pages_original here only covers THIS period's
+    # own events), so comparing this period's pages_original against a job's full live state
+    # goes deeply negative and silently clamps to 0, hiding real deletions. See
+    # JobBillingRow.deleted_pages' own docstring for the identical per-job idea this mirrors.
+    deleted_pages = 0
+    if billed_job_ids:
+        all_time_original_by_job = dict(
+            db.query(BillablePageEvent.job_id, func.coalesce(func.sum(BillablePageEvent.page_count), 0))
+            .filter(BillablePageEvent.job_id.in_(billed_job_ids), BillablePageEvent.is_rerun.is_(False))
+            .group_by(BillablePageEvent.job_id)
+            .all()
+        )
+        for job_id, all_time_original in all_time_original_by_job.items():
+            deleted_pages += max(
+                0, all_time_original - classified_by_job.get(job_id, 0) - unclassified_by_job.get(job_id, 0),
+            )
 
     return UsageResult(
         total_jobs=len(job_group), total_pages=total_pages, by_shipment_type=by_type,
@@ -151,7 +176,7 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
         final_unclassified_pages=final_unclassified_pages,
         active_jobs_billed=len(still_exist),
         deleted_jobs_billed=len(billed_job_ids) - len(still_exist),
-        deleted_pages=max(0, pages_original - final_classified_pages - final_unclassified_pages),
+        deleted_pages=deleted_pages,
     )
 
 
