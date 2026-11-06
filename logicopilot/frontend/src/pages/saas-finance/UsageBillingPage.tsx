@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
+import {
+  DocumentIcon, FolderIcon, TrashIcon, LayersIcon,
+  CheckCircleIcon, ExclamationTriangleIcon, ArrowPathIcon,
+} from "../../components/ui/icons";
+import { DonutChart } from "../../components/charts/DonutChart";
+import { ShipmentBarChart, ShipmentPieChart } from "../../components/charts/ShipmentCharts";
+import { JobBillingTable } from "../../components/billing/JobBillingTable";
 import * as tenantsApi from "../../api/tenants";
 import type { BillingUsage } from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
@@ -16,6 +24,7 @@ import { currentMonthStr, formatInr, monthLabel, shiftMonth } from "./financeFor
  *  as-is, and a few dozen extra lines here is a cheap trade against ever risking a regression
  *  on it. */
 export function SaasFinanceUsageBillingPage() {
+  const navigate = useNavigate();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [month, setMonth] = useState(currentMonthStr());
@@ -82,26 +91,70 @@ export function SaasFinanceUsageBillingPage() {
 
       {!loading && usage && (
         <>
-          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <StatCard label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
-            <StatCard label="Total Pages" value={usage.total_pages.toLocaleString()} />
-            <StatCard label="Usage Charges" value={formatInr(usage.usage_charges)} />
-            <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
-          </div>
-
           {usage.pages_original !== null ? (
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-              <StatCard label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
-              <StatCard label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
-              <StatCard label="Original Pages" value={usage.pages_original.toLocaleString()} />
-              <StatCard label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
-              <StatCard label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
-              <StatCard label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
+            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-8">
+              <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
+              <StatCard icon={<FolderIcon />} tone="blue" label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
+              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
+              <StatCard
+                icon={<LayersIcon />}
+                tone="indigo"
+                label="Total Pages (Billed)"
+                value={usage.total_pages.toLocaleString()}
+                labelExtra={
+                  <span className="text-[10px] font-normal text-slate-400">
+                    ({usage.pages_original.toLocaleString()} + {(usage.pages_rerun ?? 0).toLocaleString()})
+                  </span>
+                }
+              />
             </div>
           ) : (
-            <p className="mb-6 text-xs text-slate-400">
-              Classified / Unclassified / Rerun breakdown is not available for this already-finalized month.
-            </p>
+            <>
+              <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
+                <StatCard icon={<LayersIcon />} tone="blue" label="Total Pages" value={usage.total_pages.toLocaleString()} />
+                <StatCard label="Usage Charges" value={formatInr(usage.usage_charges)} />
+                <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
+              </div>
+              <p className="mb-6 text-xs text-slate-400">
+                Classified / Unclassified / Rerun breakdown is not available for this already-finalized month.
+              </p>
+            </>
+          )}
+
+          <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <Card className="p-5">
+              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Pages by Shipment Type</h2>
+              <ShipmentBarChart data={usage.by_shipment_type} />
+            </Card>
+            <Card className="p-5">
+              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Job Distribution</h2>
+              {usage.pages_original !== null ? (
+                <>
+                  <DonutChart active={usage.active_jobs_billed ?? 0} deleted={usage.deleted_jobs_billed ?? 0} />
+                  <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                    Deleted jobs are included in page counts and billing.
+                  </p>
+                </>
+              ) : (
+                <ShipmentPieChart data={usage.by_shipment_type} />
+              )}
+            </Card>
+          </div>
+
+          {tenantId && (
+            <div className="mb-6">
+              <JobBillingTable
+                tenantId={tenantId}
+                month={month}
+                shipmentTypes={usage.by_shipment_type}
+                onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
+              />
+            </div>
           )}
 
           <Card className="p-5">

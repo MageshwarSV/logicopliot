@@ -6,7 +6,7 @@ instead of on a timer)."""
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
 from sqlalchemy import func
@@ -165,19 +165,15 @@ class JobBillingRow(NamedTuple):
     final_unclassified_pages: int
 
 
-def list_job_billing(
+def _job_billing_query(
     db: Session, tenant_id: str, period_start: date, *,
     search: str | None = None, shipment_type: str | None = None,
-    page: int = 1, page_size: int = 10,
-) -> tuple[list[JobBillingRow], int]:
-    """Per-job breakdown for the Billing & Usage page's own job table - one row per job billed
-    THIS period (by event date, same scoping as compute_usage), whether or not that job still
-    exists. job_reference/shipment_type come from the ledger's own snapshot (survives a later
-    hard delete - see BillablePageEvent's own docstring); status/started_at come from the live
-    Job row when one still exists, else "deleted" and the ledger's own earliest event time.
-
-    Returns (rows, total_matching_jobs) - total is BEFORE pagination, for the caller's own page
-    count."""
+    date_from: date | None = None, date_to: date | None = None,
+):
+    """Shared aggregate query behind list_job_billing/list_job_billing_export - one grouped row
+    per job billed this period, before pagination/row-resolution. date_from/date_to further
+    narrow by each job's own earliest billing event this period (the same value exposed as
+    started_at for a since-deleted job) - defaulting to the full period when omitted."""
     start_dt, end_dt = _month_bounds(period_start)
 
     agg = (
@@ -203,13 +199,22 @@ def list_job_billing(
         agg = agg.having(func.max(BillablePageEvent.job_reference).ilike(f"%{search}%"))
     if shipment_type:
         agg = agg.having(func.max(BillablePageEvent.shipment_type) == shipment_type)
+    if date_from:
+        agg = agg.having(
+            func.min(BillablePageEvent.created_at)
+            >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+        )
+    if date_to:
+        exclusive_end = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc) + timedelta(days=1)
+        agg = agg.having(func.min(BillablePageEvent.created_at) < exclusive_end)
+    return agg
 
-    all_rows = agg.all()
-    total = len(all_rows)
-    all_rows.sort(key=lambda r: r.started_at, reverse=True)
-    page_rows = all_rows[(page - 1) * page_size: (page - 1) * page_size + page_size]
 
-    job_ids = [r.job_id for r in page_rows]
+def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow]:
+    """Turn grouped ledger rows into JobBillingRow: status/started_at come from the live Job row
+    when one still exists, else "deleted" and the ledger's own earliest event time; classified/
+    unclassified counts are read live, same as compute_usage's own fields."""
+    job_ids = [r.job_id for r in agg_rows]
     jobs_by_id = (
         {j.id: j for j in db.query(Job.id, Job.status, Job.created_at).filter(Job.id.in_(job_ids)).all()}
         if job_ids else {}
@@ -237,7 +242,7 @@ def list_job_billing(
             unclassified_by_job[jid] = cnt
 
     rows = []
-    for r in page_rows:
+    for r in agg_rows:
         live = jobs_by_id.get(r.job_id)
         rows.append(JobBillingRow(
             job_id=r.job_id, job_reference=r.job_reference, shipment_type=r.shipment_type,
@@ -247,7 +252,45 @@ def list_job_billing(
             final_classified_pages=classified_by_job.get(r.job_id, 0),
             final_unclassified_pages=unclassified_by_job.get(r.job_id, 0),
         ))
-    return rows, total
+    return rows
+
+
+def list_job_billing(
+    db: Session, tenant_id: str, period_start: date, *,
+    search: str | None = None, shipment_type: str | None = None,
+    date_from: date | None = None, date_to: date | None = None,
+    page: int = 1, page_size: int = 10,
+) -> tuple[list[JobBillingRow], int]:
+    """Per-job breakdown for the Billing & Usage page's own job table - one row per job billed
+    THIS period (by event date, same scoping as compute_usage), whether or not that job still
+    exists. job_reference/shipment_type come from the ledger's own snapshot (survives a later
+    hard delete - see BillablePageEvent's own docstring).
+
+    Returns (rows, total_matching_jobs) - total is BEFORE pagination, for the caller's own page
+    count."""
+    all_rows = _job_billing_query(
+        db, tenant_id, period_start,
+        search=search, shipment_type=shipment_type, date_from=date_from, date_to=date_to,
+    ).all()
+    total = len(all_rows)
+    all_rows.sort(key=lambda r: r.started_at, reverse=True)
+    page_rows = all_rows[(page - 1) * page_size: (page - 1) * page_size + page_size]
+    return _resolve_job_billing_rows(db, page_rows), total
+
+
+def list_job_billing_export(
+    db: Session, tenant_id: str, period_start: date, *,
+    search: str | None = None, shipment_type: str | None = None,
+    date_from: date | None = None, date_to: date | None = None,
+) -> list[JobBillingRow]:
+    """Same filters as list_job_billing, with no pagination - every matching row, for the
+    "Export" button's CSV download."""
+    all_rows = _job_billing_query(
+        db, tenant_id, period_start,
+        search=search, shipment_type=shipment_type, date_from=date_from, date_to=date_to,
+    ).all()
+    all_rows.sort(key=lambda r: r.started_at, reverse=True)
+    return _resolve_job_billing_rows(db, all_rows)
 
 
 def record_billable_pages(

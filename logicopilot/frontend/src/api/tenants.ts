@@ -235,6 +235,69 @@ export async function markInvoicePaid(tenantId: string, invoiceId: string, paid 
   return response.data;
 }
 
+export interface JobBillingRow {
+  job_id: string;
+  job_reference: string;
+  shipment_type: string;
+  /** A live Job.status value, or "deleted" if the job no longer exists. */
+  status: string;
+  started_at: string; // ISO 8601
+  original_pages: number;
+  rerun_pages: number;
+  final_classified_pages: number;
+  final_unclassified_pages: number;
+  total_billed: number;
+}
+
+export interface JobBillingPage {
+  items: JobBillingRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface JobBillingFilters {
+  month?: string;
+  search?: string;
+  shipmentType?: string;
+  /** YYYY-MM-DD. Narrows within the selected month - omit for the full month. */
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+function billingJobsParams(filters: JobBillingFilters) {
+  return {
+    month: filters.month || undefined,
+    search: filters.search || undefined,
+    shipment_type: filters.shipmentType || undefined,
+    date_from: filters.dateFrom || undefined,
+    date_to: filters.dateTo || undefined,
+  };
+}
+
+/** The Billing & Usage page's own per-job table, server-paginated. */
+export async function listBillingJobs(
+  tenantId: string,
+  filters: JobBillingFilters,
+  page: number,
+  pageSize: number,
+): Promise<JobBillingPage> {
+  const response = await apiClient.get<JobBillingPage>(`/tenants/${tenantId}/billing/jobs`, {
+    params: { ...billingJobsParams(filters), page, page_size: pageSize },
+  });
+  return response.data;
+}
+
+/** Downloads the same rows listBillingJobs shows (same filters, no pagination) as a CSV blob -
+ *  the caller turns this into an object-URL download. */
+export async function exportBillingJobs(tenantId: string, filters: JobBillingFilters): Promise<Blob> {
+  const response = await apiClient.get<Blob>(`/tenants/${tenantId}/billing/jobs/export`, {
+    params: billingJobsParams(filters),
+    responseType: "blob",
+  });
+  return response.data;
+}
+
 export async function createTenant(payload: {
   name: string;
   region?: string;
