@@ -6900,11 +6900,12 @@ def _classify_and_place_files(
                         # carrier Terms & Conditions into the Invoice slot - all three just
                         # happened to sit past the <=6-page classification cap on a file
                         # whose real Invoice content also reached that same cap. Re-classify
-                        # the newly OCR'd pages on their own before trusting any of them as a
-                        # continuation; only pages this confirms as the SAME key actually
-                        # extend the claim. Anything else is staged as a genuine Unclassified
-                        # page for an operator to place by hand, exactly like a page the
-                        # classifier never covered at all - never kept as "more of the same
+                        # the newly OCR'd pages on their own before trusting any of them: a
+                        # page confirmed as the SAME key extends the claim; a page confirmed
+                        # as a DIFFERENT candidate's key (the Air Waybill, say) gets its own
+                        # document in its own slot instead (see other_claims below); only a
+                        # page matching neither is staged as a genuine Unclassified page for
+                        # an operator to place by hand - never kept as "more of the same
                         # document" purely because it comes after the cap.
                         non_blank = [p for p in extended_pages if item["kept_pages"][p - 1].strip()]
                         extension_text = "\n\n".join(
@@ -6916,12 +6917,36 @@ def _classify_and_place_files(
                             if extension_text.strip() else []
                         )
                         confirmed: set[int] = set()
+                        other_claims: list[dict] = []
                         for ec in extension_claims:
-                            if ec.get("source") == "ai_second" or ec["key"] != claim["key"]:
+                            if ec.get("source") == "ai_second":
                                 continue
-                            confirmed |= {non_blank[p - 1] for p in ec["pages"]
-                                          if 1 <= p <= len(non_blank)}
-                        claim_pages = claim_pages + sorted(confirmed)
+                            mapped = [non_blank[p - 1] for p in ec["pages"]
+                                      if 1 <= p <= len(non_blank)]
+                            if not mapped:
+                                continue
+                            if ec["key"] == claim["key"]:
+                                confirmed |= set(mapped)
+                            else:
+                                # A genuinely different document living past the cap on the
+                                # SAME file - an Air Waybill or a separate Tax Invoice tacked
+                                # onto an Invoice attachment, say. It has real evidence for its
+                                # own candidate slot, so it gets its own document there instead
+                                # of either being swallowed into this claim or going unplaced.
+                                other_claims.append({**ec, "pages": mapped})
+                                confirmed |= set(mapped)
+                        claim_pages = claim_pages + sorted(confirmed - {p for oc in other_claims for p in oc["pages"]})
+                        for oc in other_claims:
+                            other_doc_type = key_doc_type.get(oc["key"])
+                            other_number = None
+                            if other_doc_type in doc_sets.GROUPABLE_DOC_TYPES:
+                                other_text = "\n".join(
+                                    item["kept_pages"][p - 1] for p in oc["pages"]
+                                    if 1 <= p <= len(item["kept_pages"]))
+                                other_number = doc_sets.extract_invoice_number_from_text(
+                                    other_doc_type, other_text)
+                            pending.append({"item": item, "claim": oc, "key": oc["key"],
+                                            "number": other_number})
                         for p in extended_pages:
                             page_text = item["kept_pages"][p - 1]
                             if p in confirmed or not page_text.strip():
