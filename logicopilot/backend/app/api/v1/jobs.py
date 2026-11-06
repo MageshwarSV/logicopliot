@@ -172,7 +172,7 @@ def _standalone_mark_labels(group: TemplateGroup) -> set[str]:
     off the Bill of Lading, say - rather than one-per-product like the invoice's own line
     items. A lookup field keyed on one of these (CustomField.lookup_key_label) needs exactly
     one slot per ACTUAL row of that mark, never padded out to the job's product count - see
-    both call sites' own comments for the bug this avoids."""
+    each call site's own comments for the bug this avoids."""
     return {
         m.label_name for tdoc in group.documents for m in tdoc.marks if m.standalone_multi_value
     }
@@ -4562,6 +4562,7 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     from app.core.excel_entry import LINE_SET_KEY, SET_VALUES_KEY
     from app.models.custom_field import CustomField
 
+    group = db.get(TemplateGroup, job.group_id)
     job_fvs = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all()
     # A custom field ticked "multiple values in this document" (multi_value_from_document),
     # or a mark ticked "its own table" (standalone_multi_value), reads straight off its own
@@ -4571,6 +4572,7 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     # list to their OWN count instead, is what keeps a CONTAINERS-style sheet from
     # inheriting a stray extra blank row (or losing rows) purely because the invoice
     # happened to have a different number of lines.
+    mark_standalone_labels = _standalone_mark_labels(group)
     standalone_labels = {
         cf.label_name
         for cf in db.query(CustomField).filter(
@@ -4578,13 +4580,20 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
             CustomField.kind == "ai",
             CustomField.multi_value_from_document.is_(True),
         ).all()
-    } | {
-        m.label_name
-        for m in db.query(FieldMark).join(
-            TemplateDocument, TemplateDocument.id == FieldMark.document_id
-        ).filter(
-            TemplateDocument.group_id == job.group_id,
-            FieldMark.standalone_multi_value.is_(True),
+    } | mark_standalone_labels | {
+        # A lookup field keyed on a standalone mark's own label (container_type, say) belongs
+        # to THAT mark's own row count, never the invoice's line count - same reasoning (and
+        # the same bug) _standalone_mark_labels' own docstring already documents at its other
+        # two call sites. Found live, JOB-3B187D: ContainerTypeCode (kind="lookup",
+        # lookup_key_label="container_type") was missing here, so its 4 container-row values
+        # pulled line_keys up to 4 "product" rows instead of the invoice's real 1, padding
+        # three bogus blank rows into the Excel export that then also picked up every
+        # job-level field's value (CETH's hardcoded "NOEXCISE" included).
+        cf.label_name
+        for cf in db.query(CustomField).filter(
+            CustomField.group_id == job.group_id,
+            CustomField.kind == "lookup",
+            CustomField.lookup_key_label.in_(mark_standalone_labels),
         ).all()
     }
     # A line-item field is often marked on TWO documents so the two can be cross-checked.
