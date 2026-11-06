@@ -30,7 +30,7 @@ from app.core.deps import (
     require_write_access,
     scoped_query,
 )
-from app.core.classifier import AIServiceUnavailable, assign_documents_detailed, classify_document
+from app.core.classifier_common import AIServiceUnavailable, classifier_module
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
 from app.core import document_samples
 from app.core.page_filter import (
@@ -6642,6 +6642,11 @@ def _classify_and_place_files(
 
     from app.core import doc_sets, office_convert
 
+    # This group's own shipping mode (Sea Import / Air Import / Sea Export / Air Export) picks
+    # which classifier module actually does the work below - see classifier_module's own
+    # docstring for why each mode is kept fully separate.
+    clf = classifier_module(group.mode)
+
     if not files:
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
@@ -6810,7 +6815,7 @@ def _classify_and_place_files(
         db.commit()
 
         claims_per_file = (
-            assign_documents_detailed(
+            clf.assign_documents_detailed(
                 prepared, candidates, engine=extraction_engine, vision_model=vision_engine_model,
                 # Classify every page on its own instead of page 1 alone, fixing a
                 # combined/multi-page file sometimes assigning the wrong page to the wrong
@@ -6907,7 +6912,7 @@ def _classify_and_place_files(
                             for n, p in enumerate(non_blank, start=1)
                         )
                         extension_claims = (
-                            classify_document(item["name"], extension_text, None, candidates)
+                            clf.classify_document(item["name"], extension_text, None, candidates)
                             if extension_text.strip() else []
                         )
                         confirmed: set[int] = set()

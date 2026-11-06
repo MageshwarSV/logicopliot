@@ -1,4 +1,4 @@
-"""smart_upload picks up the extraction_engine system setting and passes it through to
+﻿"""smart_upload picks up the extraction_engine system setting and passes it through to
 assign_documents_detailed - "ocr_gpt4o_mini" must behave exactly as before this setting
 existed, and flipping it to "gpt5_mini_vision" (now the platform default) must reach the call
 with the configured vision_engine_model."""
@@ -46,7 +46,7 @@ def test_default_engine_reaches_assign_documents_detailed_unchanged(client, db_s
     set_extraction_engine(db_session, "ocr_gpt4o_mini")
 
     with patch("app.api.v1.jobs.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.api.v1.jobs.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": tdoc.id, "pages": [1], "evidence": "e"}]]) as mock_assign:
         resp = client.post(f"/api/v1/jobs/{job.id}/smart-upload",
                            files=[("files", ("inv.pdf", _pdf_bytes(), "application/pdf"))])
@@ -63,7 +63,7 @@ def test_vision_engine_setting_reaches_assign_documents_detailed_with_the_config
     set_extraction_engine(db_session, "gpt5_mini_vision")
 
     with patch("app.api.v1.jobs.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.api.v1.jobs.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": tdoc.id, "pages": [1], "evidence": "e"}]]) as mock_assign:
         resp = client.post(f"/api/v1/jobs/{job.id}/smart-upload",
                            files=[("files", ("inv.pdf", _pdf_bytes(), "application/pdf"))])

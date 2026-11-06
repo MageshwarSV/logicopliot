@@ -68,7 +68,7 @@ def test_an_unclaimed_page_becomes_an_unmatched_upload_page_row(db_session):
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some real page text", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "invoice no 123"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="pages-op@zoho.com", mail_app_password="x",
@@ -104,7 +104,7 @@ def test_nothing_claimed_but_real_text_keeps_the_job_with_both_pages_unclassifie
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some real page text", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed", return_value=[[]]):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="nocla-op@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
@@ -147,7 +147,7 @@ def test_a_weak_ai_second_opinion_claim_never_fills_a_slot_and_stays_unclassifie
     ]]
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some real page text", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed", return_value=claims):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="weak-op@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
@@ -185,7 +185,7 @@ def test_nothing_claimed_and_no_real_text_still_deletes_the_job_as_unrouted(db_s
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed", return_value=[[]]):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="blank-op@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")

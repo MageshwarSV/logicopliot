@@ -1,0 +1,1020 @@
+"""Document classifier — decides which document type an uploaded file is, so a
+manual upload or an email auto-pull can route each file to the right slot.
+
+OCR is done by Document AI (with a vision fallback); the classification decision
+is made by OpenAI from the content (BL / Packing List / Invoice / Freight / Other).
+A single file may be a COMBINED document (e.g. BL+PL) and match multiple types.
+
+This is the AIR EXPORT module - one of four (see classifier_common.py's own docstring, and
+classifier_sea_import.py / classifier_air_import.py / classifier_sea_export.py), each a fully
+independent copy of this same pipeline, kept deliberately separate so that tuning or fixing
+one shipping mode's classification can never change another's. AIServiceUnavailable and the
+customer-identification helpers are the one exception - they live in classifier_common.py,
+shared by all four, because they either behave identically regardless of mode or run before a
+shipment's own mode is even known.
+"""
+
+import base64
+import json
+import logging
+import re
+from pathlib import Path
+
+from app.core.classifier_common import AIServiceUnavailable
+from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Content hints per doc type, to steer the classifier.
+DOC_TYPE_HINTS = {
+    "BL": "bill of lading, sea/air waybill, B/L no, shipper, consignee, notify party, vessel, port of loading/discharge",
+    "PackingList": "packing list, number of packages/cartons, net weight, gross weight, dimensions, marks & numbers",
+    "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code",
+    "Freight": "freight certificate/invoice, freight charges, ocean freight, THC, BAF, freight amount",
+}
+
+# Words a customer uses when NAMING a slot, mapped to the built-in hint for that kind of
+# document. A slot typed "Custom" gets no hint at all otherwise - which is how a slot called
+# "Fright Certificate" (spelt as the customer spells it) ended up described only by its field
+# list and never matched a real freight certificate. Spelling variants are deliberate: these are
+# names people typed, not a controlled vocabulary.
+_NAME_HINTS = (
+    (("freight", "fright", "frieght", "frt"), "Freight"),
+    (("packing", "package", "pacakage", "packging"), "PackingList"),
+    (("lading", "waybill", "b/l", "bl no", "bill of l"), "BL"),
+    (("invoice", "inv "), "Invoice"),
+)
+
+
+def _key_from_name(name: str) -> str | None:
+    """Which of the 4 built-in types this slot's own NAME reads as, or None. Shared by
+    _hint_from_name (the description shown to the model) and _effective_doc_type (which
+    signature table entry a "Custom"-typed slot should still be checked against) - the same
+    slot called "Fright Certificate" must mean the same thing to both, or a slot could get a
+    Freight hint in its description while never actually being checked against the Freight
+    keyword backstop, which is exactly the gap that let a real arrival notice go unrescued."""
+    low = (name or "").lower()
+    for words, key in _NAME_HINTS:
+        if any(w in low for w in words):
+            return key
+    return None
+
+
+def _hint_from_name(name: str) -> str:
+    """The built-in hint for whatever the customer called this slot, or ''."""
+    key = _key_from_name(name)
+    return DOC_TYPE_HINTS.get(key, "") if key else ""
+
+
+def _effective_doc_type(candidate: dict) -> str | None:
+    """Which _TYPE_SIGNATURES entry this slot should be checked against for the keyword
+    backstop - its own structured doc_type when that is already one of the 4 built-in types,
+    otherwise whatever its NAME reads as (a "Custom"-typed slot named "Fright Certificate" is
+    still, for this purpose, a Freight slot - see _key_from_name). A slot whose type is
+    genuinely bespoke and whose name matches nothing returns None, same as before: it is
+    simply never checked, exactly like "BL" (no signature exists) already is not."""
+    doc_type = candidate.get("doc_type")
+    if doc_type in _TYPE_SIGNATURES:
+        return doc_type
+    return _key_from_name(candidate.get("name") or "")
+
+
+# ---------------------------------------------------------------------------------------------
+# A deterministic backstop for a genuinely COMBINED document - one page/file that is truly
+# BOTH an Invoice and a Packing List at once ("SHIPPING INVOICE CUM PACKING LIST" is exactly
+# this, printed as its own title). The model's single classification call sometimes notices
+# only one of the two even when both are plainly there; this checks the page's own text for
+# strong, specific signatures of whichever type it did NOT already find, and adds it - never
+# invents a type from nothing, and never fires on an ordinary single-type document that
+# merely mentions one incidental word (a REQUIRED phrase plus several independent SUPPORTING
+# markers must all be present, the same two-tier principle page_filter's carrier-terms
+# detector already uses).
+# ---------------------------------------------------------------------------------------------
+_TYPE_SIGNATURES: dict[str, dict] = {
+    "PackingList": {
+        # A real combined "Delivery Challan cum Commercial Invoice / Packing Slip" calls
+        # itself a "Packing Slip" and labels its table "PACKING DETAILS" - never the words
+        # "packing list" anywhere on the page.
+        "required": [r"packing\s*list", r"packing\s*slip", r"packing\s*detail"],
+        "supporting": [
+            r"net\s*weight", r"gross\s*weight", r"no\.?\s*(of|&)?\s*(kind\s*of\s*)?pack",
+            r"dimension", r"marks?\s*(&|and)\s*nos?", r"total\s*no\.?\s*of\s*packs?",
+        ],
+        "min_supporting": 2,
+    },
+    "Invoice": {
+        # Same document: its own field label reads "Commercial Inv No / Date", and its title
+        # reads "Commercial Invoice / Packing Slip" - "invoice no" alone matches neither.
+        "required": [r"invoice\s*no", r"inv\s*no", r"commercial\s*invoice", r"tax\s*invoice"],
+        "supporting": [
+            r"invoice\s*date", r"rate\s*in\s*usd", r"unit\s*price", r"amount\s*in\s*usd",
+            r"total\s*(invoice\s*)?value", r"\bhsn\b", r"terms\s*of\s*payment",
+        ],
+        "min_supporting": 2,
+    },
+    "Freight": {
+        # A real freight certificate/invoice states an actual freight CHARGE line, not just
+        # the word "freight" in passing (a bill of lading's own "Freight Payable at
+        # Destination" box, say, is not this). A forwarder's own arrival notice very often
+        # carries this same charge line under its own heading, with no page ever printed
+        # "freight certificate" - so a specific dollar-figure charge line is the required
+        # signal, not the document's own title.
+        "required": [
+            r"ocean\s*freight", r"freight\s*charges?", r"freight\s*amount",
+            r"origin\s*charges", r"destination\s*charges", r"freight\s*certificate",
+            r"freight\s*invoice",
+        ],
+        "supporting": [
+            r"\bthc\b", r"\bbaf\b", r"handling\s*charges", r"chargeable\s*weight",
+            r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}", r"tracking\s*no",
+        ],
+        "min_supporting": 1,
+    },
+}
+
+
+def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
+    """(is_match, how many supporting markers hit) - is_match requires the type's REQUIRED
+    phrase plus at least min_supporting of its supporting markers, both independently."""
+    sig = _TYPE_SIGNATURES.get(doc_type)
+    if not sig or not text:
+        return False, 0
+    if not any(re.search(p, text, re.IGNORECASE) for p in sig["required"]):
+        return False, 0
+    hits = sum(1 for p in sig["supporting"] if re.search(p, text, re.IGNORECASE))
+    return hits >= sig["min_supporting"], hits
+
+
+def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
+                           candidate: dict, already_types: list[str]) -> dict | None:
+    """The regex backstop's fallback for wording it does not recognise: ask the model itself,
+    narrowly, whether this ONE remaining type is ALSO present - separate from the regex word
+    list, so a customer whose document never uses the words "invoice" or "packing list" at all
+    (a despatch note, a delivery challan, whatever their forwarder calls it) still gets caught.
+    Only called when the file already matched something and this specific type is still
+    unclaimed, so it costs nothing for the vast majority of ordinary, single-type documents.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key:
+        return None
+    hint = DOC_TYPE_HINTS.get(candidate["doc_type"]) or _hint_from_name(candidate.get("name") or "")
+    already = ", ".join(already_types) or "another document type"
+    # A real BL/invoice very often prints its own "Freight: USD X" or "Freight Payable at
+    # Destination" line as ONE component of a routine FOB/Freight/Insurance=CIF cost
+    # breakdown, or a payment-terms box - that is not evidence of a SEPARATE freight
+    # certificate/invoice, which is its own dedicated document from the carrier/forwarder
+    # itemizing freight charges (ocean freight, THC, BAF, origin/destination charges), never
+    # just one cost line inside another document's own total. Found live: an ordinary
+    # commercial invoice's own "FREIGHT: USD 2,000.00" line (part of its FOB+Freight+
+    # Insurance=CIF math) got accepted as "this invoice is ALSO a Freight Certificate",
+    # duplicating the whole invoice into that slot.
+    freight_caveat = (
+        "\n\nIMPORTANT: a single freight cost LINE inside this document's own total "
+        "(a BL's \"Freight Payable at Destination\", or an invoice's own FOB/Freight/"
+        "Insurance=CIF breakdown showing \"Freight: USD X\") is NOT evidence of a separate "
+        "Freight Certificate - that is routine content every such document already carries. "
+        "Only answer true if the SAME file ALSO carries a dedicated freight charge "
+        "breakdown in its own right (e.g. ocean freight + THC + BAF + origin/destination "
+        "charges all itemized together, the way a forwarder's own freight invoice or "
+        "arrival notice does) - not merely a routine total this document was always going "
+        "to state anyway."
+        if _effective_doc_type(candidate) == "Freight" else ""
+    )
+    instruction = (
+        f"This file was already found to contain a {already}. Now check independently: does "
+        f"the SAME file ALSO, separately, contain a {candidate['name']} ({candidate['doc_type']})? "
+        "This happens when one page or file legitimately combines two document types at once - "
+        "for example a delivery challan that is also the commercial invoice and packing list "
+        "combined. The exact words \"invoice\" or \"packing list\" may never appear at all, so "
+        "judge by CONTENT, never by exact terminology: an invoice has prices and a total "
+        "payable; a packing list has a per-package weight/dimension breakdown."
+        f"{freight_caveat}\n\n"
+        f"What a {candidate['doc_type']} typically contains: {hint or 'no hint available'}\n\n"
+        f"Filename: {filename}\n\n"
+        'Return JSON: {"present": true/false, "pages": [1], '
+        '"evidence": "the words on the page that make it this type"}. '
+        "A claim you cannot back with an exact quote must be false."
+    )
+    try:
+        from app.core.llm import create_chat_completion_with_retry
+
+        if text and text.strip():
+            content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + text[:9000]
+        elif image_path and image_path.exists():
+            b64 = base64.b64encode(image_path.read_bytes()).decode()
+            content = [
+                {"type": "text", "text": instruction},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]
+        else:
+            return None
+        resp = create_chat_completion_with_retry(
+            timeout=45,
+            model=settings.openai_model,
+            max_tokens=300,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        if not data.get("present"):
+            return None
+        ev = str(data.get("evidence") or "").strip()
+        if len(ev) < 8:
+            return None
+        pages = [int(p) for p in (data.get("pages") or []) if str(p).isdigit()]
+        return {"pages": pages or None, "evidence": ev[:300]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("second-type AI verification failed for %s (%s): %s",
+                       filename, candidate["doc_type"], exc)
+        return None
+
+
+def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
+                                      claims: list[list[dict]]) -> None:
+    """Mutates `claims` in place: for each file, checks whether its own text carries a
+    strong, specific signature of a type this template has a slot for, that the model's own
+    call did not already claim for it. Runs for a file with at least one existing claim (a
+    combined document's SECOND type - covers the same pages already matched, since a combined
+    document's second type lives on the same page, not somewhere else in the file) AND for a
+    file with NO claims at all: a single classification call can simply miss a type that is
+    plainly there (a forwarder's arrival notice stating real freight charges, matched to
+    nothing, was exactly this) - regex evidence does not need the model to have gotten
+    anything else right first. A rescued zero-match file claims every page it has, since
+    there is no partial match to anchor a narrower page range to.
+
+    Regex first (free, instant, and enough for wording already seen); a file that already
+    matched something else but matches nothing by regex for the remaining type falls back to
+    a narrow, targeted AI check (_ai_verify_second_type) - so a genuinely combined document is
+    not missed just because its particular company's wording is not yet in the pattern list.
+    That second-opinion call is deliberately NOT attempted for a zero-match file: its own
+    wording ("this file was already found to contain X, does it ALSO contain Y") assumes an
+    existing match to anchor to, which a zero-match file has none of.
+
+    Signature lookups here go through _effective_doc_type, not a candidate's raw doc_type -
+    a slot typed "Custom" but named "Fright Certificate" must still be checked against the
+    Freight signature, exactly as its own description already gets the Freight hint from that
+    same name (_hint_from_name). Keying this purely off the structured field silently checked
+    nothing for any tenant whose slot was ever set up this way, which is most of them.
+    """
+    key_to_doctype = {c["key"]: _effective_doc_type(c) for c in candidates}
+    cand_by_doctype: dict[str, dict] = {
+        et: c for c in candidates if (et := _effective_doc_type(c)) is not None
+    }
+    doctype_to_keys: dict[str, list[str]] = {}
+    for c in candidates:
+        et = _effective_doc_type(c)
+        if et is not None:
+            doctype_to_keys.setdefault(et, []).append(c["key"])
+
+    for i, (item, ms) in enumerate(zip(files, claims)):
+        text = item.get("text") or ""
+        if not text.strip():
+            continue
+        claimed_doctypes = {key_to_doctype.get(m["key"]) for m in ms}
+        matched_pages = (
+            sorted({p for m in ms for p in m["pages"]})
+            if ms
+            else list(range(1, (item.get("page_count") or 1) + 1))
+        )
+        for doc_type, keys in doctype_to_keys.items():
+            if doc_type in claimed_doctypes:
+                continue
+            # Only types this feature actually covers by regex (PackingList, Invoice,
+            # Freight) - a template's OTHER unclaimed slots (BL, a bespoke Custom type, ...)
+            # have no pattern list to check and must not trigger an AI call just because they
+            # happen to still be unclaimed.
+            if doc_type not in _TYPE_SIGNATURES:
+                continue
+            is_match, hits = _keyword_signature_match(text, doc_type)
+            if is_match:
+                claims[i].append({
+                    "key": keys[0], "pages": matched_pages,
+                    # Deterministic evidence, not a judgement call - see the
+                    # specificity rule, which refuses to strip a claim carrying this.
+                    "source": "signature",
+                    "evidence": f"keyword signature ({hits} supporting markers): the "
+                                f"document's own text carries strong {doc_type} markers "
+                                + ("alongside its other content" if ms else
+                                   "that the model's own classification call missed entirely"),
+                })
+                logger.info(
+                    "classify %s: added %s by keyword backstop (%d supporting markers)%s",
+                    item.get("name"), doc_type, hits,
+                    "" if ms else " - the model's own call matched nothing at all for this file")
+                continue
+
+            if not ms:
+                # No existing match to anchor "does it ALSO contain" to - see the function's
+                # own docstring for why the AI second-opinion call is skipped here.
+                continue
+            verified = _ai_verify_second_type(
+                item.get("name") or "", text, item.get("image"),
+                cand_by_doctype[doc_type], sorted(t for t in claimed_doctypes if t))
+            if verified is None:
+                continue
+            claims[i].append({
+                "key": keys[0], "pages": verified["pages"] or matched_pages,
+                "source": "ai_second",
+                "evidence": f"AI-verified combined document: {verified['evidence']}",
+            })
+            logger.info(
+                "classify %s: added %s by AI second-type verification - the model's own "
+                "call only recognised the other type on this page, and the regex backstop "
+                "did not recognise this wording either",
+                item.get("name"), doc_type)
+
+
+def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | None, candidates: list[dict]) -> list[str]:
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return []
+
+    # Which fields belong to ONE candidate only. A freight certificate slot listing "HBL No,
+    # package_count, Gross Wt, Supplier Name, Supplier Address, Misc Charge Amount, Freight
+    # Amount" reads mostly like a Bill of Lading, because five of those seven are on the BL as
+    # well. The two that are not are the entire point, so they are called out separately -
+    # otherwise a real freight certificate goes unrouted while the description invites a match
+    # on the wrong slot.
+    seen_in: dict[str, int] = {}
+    for c in candidates:
+        for f in set(c.get("fields") or []):
+            seen_in[f] = seen_in.get(f, 0) + 1
+
+    def _describe(c: dict) -> str:
+        parts = []
+        # THE SAMPLE FIRST. When the template was created this customer uploaded a real document
+        # for this slot, so we know exactly what THEIR version looks like - their forwarder's
+        # wording, their layout. That beats any generic description: a freight certificate
+        # headed ARRIVAL NOTICE matches the sample at once and matches the words "freight
+        # certificate" not at all.
+        ref = (c.get("reference") or "").strip()
+        if ref:
+            parts.append("THE CUSTOMER'S OWN SAMPLE of this document, uploaded when their "
+                         f'template was set up: "{ref[:1200]}"')
+        hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
+        if hint:
+            parts.append(f"typical content: {hint}")
+        fields = [f for f in (c.get("fields") or []) if f]
+        only_here = [f for f in fields if seen_in.get(f) == 1]
+        if only_here:
+            parts.append("fields found ONLY on this document: " + ", ".join(only_here[:12]))
+        shared = [f for f in fields if seen_in.get(f, 0) > 1]
+        if shared:
+            parts.append("also carries (shared with other documents, so not distinguishing): "
+                         + ", ".join(shared[:12]))
+        if not parts:
+            return "no content hint available - match on the document name alone"
+        return "; ".join(parts)
+
+    cand_lines = "\n".join(
+        f'- key="{c["key"]}" name="{c["name"]}" type={c["doc_type"]} ({_describe(c)})'
+        for c in candidates
+    )
+    instruction = (
+        "You classify a logistics/customs document. Decide which of the expected document "
+        "types below this file matches, judging mainly by its CONTENT (the filename is a weak "
+        "hint). A single file can be a COMBINED document that matches MORE THAN ONE type — "
+        "either mixed on the same pages, OR different types on different pages (e.g. page 1 is "
+        "a Bill of Lading and page 2 is a Packing List). The text below is labelled per page "
+        "('=== PAGE n ==='); inspect EVERY page and include every type present on ANY page. "
+        "If it matches none, return an empty list.\n\n"
+        "Where a type shows THE CUSTOMER'S OWN SAMPLE, compare against it directly — that is a "
+        "real document of this type from this same customer, so it is the best evidence you "
+        "have. Match on what the document IS, not on what it is titled: a slot called 'Freight "
+        "Certificate' is still the right home for a document headed ARRIVAL NOTICE, if that is "
+        "where this customer's freight charges appear.\n\n"
+        f"Expected types:\n{cand_lines}\n\n"
+        f'Filename: {filename}\n\n'
+        'Return a JSON object: {"keys": [ ...matching key strings... ]}.'
+    )
+    try:
+        from app.core.llm import create_chat_completion_with_retry
+
+        if ocr_text and ocr_text.strip():
+            user_content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + ocr_text[:8000]
+        elif image_b64:
+            user_content = [
+                {"type": "text", "text": instruction},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+            ]
+        else:
+            user_content = instruction
+        resp = create_chat_completion_with_retry(
+            timeout=45,
+            model=settings.openai_model,
+            max_tokens=200,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": user_content}],
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        keys = data.get("keys") or []
+        valid = {c["key"] for c in candidates}
+        kept = [k for k in keys if k in valid]
+        if not kept:
+            # It read the document and matched nothing. Worth saying out loud: the alternative
+            # is an empty slot with no explanation anywhere, which is what made a missing
+            # freight certificate impossible to diagnose.
+            logger.info("classify %s: the analyser matched no slot (it was given %s chars of "
+                        "text, %s candidates)", filename, len(ocr_text or ""), len(candidates))
+        elif len(kept) != len(keys):
+            logger.info("classify %s: dropped %s key(s) the model invented",
+                        filename, len(keys) - len(kept))
+        return kept
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Classification failed for %s: %s", filename, exc)
+        return []
+
+
+def classify_file(filename: str, ocr_text: str | None, image_path: Path | None, candidates: list[dict]) -> list[str]:
+    """Returns the candidate keys this file matches (possibly several for a combined doc)."""
+    image_b64 = None
+    if (not ocr_text or not ocr_text.strip()) and image_path and image_path.exists():
+        image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+    return _classify_via_openai(filename, ocr_text, image_b64, candidates)
+
+
+# ---------------------------------------------------------------------------------------------
+# ASSIGNING FILES TO SLOTS. Classifying each file on its own is not enough, and four real jobs
+# show why: one invoice filled BOTH the Invoice and the Packing List slot, and once the freight
+# slot was described better, one bill of lading filled BOTH the BL and the Freight slot. The
+# real packing list and the real freight certificate were dropped on the floor.
+#
+# The cause was never really the model. Every key it returned was written into a slot, with no
+# requirement that the document type actually be PRESENT and no contest when two files claimed
+# the same slot. A shipment's paperwork is full of near-identical documents - a BL, an arrival
+# notice and a packing list all carry the same B/L number, consignee, weights and package count
+# - so "resembles" has to be separated from "is", and a slot has to go to its best claimant.
+#
+# Two rules, both deterministic, both applied after the model has spoken:
+#
+#   1. EVIDENCE. A match counts only if the model can say which page it is on and quote the
+#      content that makes it that type. No evidence, no match.
+#   2. SPECIFICITY. When several files claim one slot, the file that claimed the FEWEST slots
+#      wins it. A file that says "I am an invoice" beats one that says "I am an invoice and
+#      also a packing list", and the loser keeps whatever else it claimed.
+# ---------------------------------------------------------------------------------------------
+
+
+def _classify_candidate_lines(candidates: list[dict]) -> str:
+    seen_in: dict[str, int] = {}
+    for c in candidates:
+        for f in set(c.get("fields") or []):
+            seen_in[f] = seen_in.get(f, 0) + 1
+
+    def describe(c: dict) -> str:
+        parts = []
+        ref = (c.get("reference") or "").strip()
+        if ref:
+            parts.append("the customer's own sample of this document: " + repr(ref[:900]))
+        hint = DOC_TYPE_HINTS.get(c["doc_type"]) or _hint_from_name(c.get("name") or "")
+        if hint:
+            parts.append(f"typical content: {hint}")
+        fields = [f for f in (c.get("fields") or []) if f]
+        only_here = [f for f in fields if seen_in.get(f) == 1]
+        if only_here:
+            parts.append("content found ONLY on this type: " + ", ".join(only_here[:12]))
+        return "; ".join(parts) or "no hint available"
+
+    return "\n".join(
+        f'- key="{c["key"]}" name="{c["name"]}" type={c["doc_type"]} ({describe(c)})'
+        for c in candidates)
+
+
+def _classification_instruction(filename: str, candidates: list[dict]) -> str:
+    """The document-type decision prompt, shared by the OCR-text reader (classify_document)
+    and the vision reader (classify_document_from_image) - the SLOTS and the reasoning about
+    what distinguishes one document type from another are identical either way; only what
+    the model is shown (text vs. the page image) differs, appended by each caller."""
+    lines = _classify_candidate_lines(candidates)
+    return (
+        "You are sorting the documents in one shipment into the slots below.\n\n"
+        "For the file given, decide which of these document types it ACTUALLY CONTAINS. Judge "
+        "by content; the filename is a weak hint.\n\n"
+        "This is the hard part, so read it carefully. A shipment's paperwork looks alike: a "
+        "bill of lading, an arrival notice and a packing list all carry the same B/L number, "
+        "the same consignee, the same weights and package counts. RESEMBLING a type is not the "
+        "same as BEING it. Return a type only if the document that defines it is present - a "
+        "packing list has a per-package breakdown, an invoice has prices and a total payable, "
+        "a freight certificate has freight charges, a bill of lading is the carrier's contract "
+        "of carriage.\n\n"
+        "ONE SPECIFIC TRAP: a bill of lading or sea waybill is very often followed, in the SAME "
+        "file, by the carrier's OWN continuation page - typically headed \"ATTACHMENT FOR\" or "
+        "\"CONTINUED\" plus that same B/L or waybill number, still on the carrier's letterhead - "
+        "listing marks & numbers, package count and weight against that number. That page's "
+        "content looks exactly like a packing list's (a per-package weight/count breakdown), but "
+        "it is NOT one: it is the carrier's own document, continuing the bill of lading/waybill "
+        "from the page before it. Return that page as part of the SAME bill of lading entry, "
+        "never as a separate Packing List. A genuine packing list is prepared by the shipper, not "
+        "the carrier - it stands as its own document, on its own letterhead, and does not open by "
+        "referencing a B/L or waybill number the way a carrier's continuation page does.\n\n"
+        "ANOTHER SPECIFIC TRAP: a commercial/export INVOICE's own header often prints \"Net "
+        "Weight\" and \"Gross Weight\" FIELDS - sometimes filled in, sometimes left blank - "
+        "right alongside its invoice number, buyer and Incoterm. Printing those two field "
+        "LABELS does not make the page a packing list. A packing list is defined by an actual "
+        "PER-PACKAGE OR PER-LINE breakdown - a table of individual cartons/pieces each with "
+        "their own weight/dimension row, or a marks-and-numbers listing. A page with prices, "
+        "an invoice number, unit values and a total payable is an Invoice ONLY, even when a "
+        "\"Net Weight\"/\"Gross Weight\" field sits on the same page - do not also return "
+        "\"PackingList\" for it on that basis alone.\n\n"
+        "A THIRD SPECIFIC TRAP: a ONE-ROW cargo summary - marks & numbers, a package count, ONE "
+        "gross weight, ONE measurement figure, all on a single line - is NOT, by itself, "
+        "evidence of a packing list. This exact one-row summary is COMMON to many different "
+        "documents in the same shipment's paperwork: a bill of lading's own \"Particulars "
+        "Furnished by Shipper\" box has it, and so, separately, does a forwarder's arrival "
+        "notice, a checklist, or a delivery order - often quoting the very same figures copied "
+        "from one document to another, because they describe the same shipment, not because "
+        "either one IS a packing list. A genuine packing list is defined by a PER-CARTON OR "
+        "PER-LINE breakdown - several rows, each its own package with its own weight - never by "
+        "a single shipment-level total, wherever that total is printed.\n\n"
+        "This cuts BOTH ways: do not return \"PackingList\" for a page on the strength of its "
+        "own one-row cargo summary alone, AND do not use that same one-row summary as evidence "
+        "that a page IS the Bill of Lading either - an arrival notice or checklist carrying the "
+        "identical figures is not the bill of lading just because it repeats them. Identify the "
+        "Bill of Lading itself by ITS OWN distinguishing structure - a Shipper and Consignee "
+        "box, a Notify Party, the carrier's own terms/clauses of carriage, a document actually "
+        "titled Bill of Lading, Sea Waybill or Waybill - never by the cargo summary line alone, "
+        "since other documents in the same shipment routinely repeat that exact line.\n\n"
+        "Return one entry per PHYSICALLY DISTINCT document you find in the file, not one per "
+        "type. A file can hold several documents of the very same type - three invoices scanned "
+        "into one PDF is three entries with key=\"Invoice\", not one entry covering all their "
+        "pages - exactly the same way it can hold different types on different pages (page 1 a "
+        "bill of lading, page 2 a packing list). Two entries may repeat the same key; they must "
+        "never share a page - a page belongs to exactly one document. Tell separate instances "
+        "apart by what actually changes between them (a new invoice/document number, a new "
+        "date, the page restarting a header), not by page count alone. If it is one document, "
+        "return exactly one entry. If it matches none, return an empty list; that is a "
+        "perfectly good answer and far better than a wrong slot.\n\n"
+        "A COMBINED DOCUMENT SPANS ALL ITS OWN PAGES, FOR EVERY TYPE IT MATCHES. A customs "
+        "house agent's own \"Checklist\"/\"Shipping Bill Checklist\" is very often ONE document "
+        "that is both the Invoice and the Packing List at once - a commercial-terms page "
+        "(invoice number, buyer, FOB value) immediately followed by that SAME shipment's item "
+        "table (quantities, HS codes) with no new header, no new document number, nothing "
+        "restarting. That is still one document, not two - the same test as above (a new "
+        "number, a new date, a restarting header) tells you it never actually ended. When it "
+        "matches a type, give that entry EVERY page of the combined document, not only the "
+        "page where that type's own defining evidence happened to be quoted from - an Invoice "
+        "match whose evidence is a price on page 1 still covers page 2 if page 2 is the same "
+        "shipment's item table with no new document starting there. A slot missing the very "
+        "page that carries its quantities/weights, because that page's defining evidence "
+        "happened to belong to a different type, is the mistake this guards against.\n\n"
+        "For every entry you return you MUST give the page(s) it is on and quote the content "
+        "that makes it that type. A match you cannot quote will be discarded.\n\n"
+        f"Slots:\n{lines}\n\n"
+        f"Filename: {filename}\n\n"
+        'Return JSON: {"matches": [{"key": "...", "pages": [1], '
+        '"evidence": "the words on the page that make it this type"}]}'
+    )
+
+
+def classify_document(filename: str, ocr_text: str | None, image_path: Path | None,
+                      candidates: list[dict]) -> list[dict]:
+    """Which document types are PRESENT in this file, with the evidence for each.
+
+    Returns [{"key", "pages": [int], "evidence": str}]. A match the model cannot back with
+    evidence is dropped here rather than trusted: that is the whole difference between "this
+    file contains a packing list" and "this file looks a bit like one".
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return []
+    if not ocr_text or not ocr_text.strip():
+        # No extractable text at all - never worth an AI opinion. A page with nothing to
+        # quote as evidence must not be attached to a job as if a vision guess from its raw
+        # appearance were a real match; that determination stays with OCR, not AI. (The
+        # vision engine's own separate reader, classify_document_from_image, is the
+        # deliberate exception to this rule - chosen explicitly via the extraction_engine
+        # setting, never as an automatic fallback from here.)
+        logger.info("classify %s: no OCR text extracted - not asking the model to guess "
+                    "from the image; this file is not attached to any document slot", filename)
+        return []
+
+    instruction = _classification_instruction(filename, candidates)
+    try:
+        from openai import APIError
+
+        from app.core.llm import create_chat_completion_with_retry
+
+        content: object = instruction + "\n\n--- DOCUMENT TEXT ---\n" + ocr_text[:9000]
+        resp = create_chat_completion_with_retry(
+            timeout=60,
+            model=settings.openai_model,
+            # Was 600 - a file with several instances of the same type (three invoices in
+            # one PDF) now returns one entry per instance instead of one per type, and got
+            # cut off mid-JSON on a genuinely multi-instance file at the old limit.
+            max_tokens=1200,
+            # A shipment's several near-identical documents (five packing lists from the
+            # same shipper) were classified ONE FILE AT A TIME, each its own independent call
+            # with no temperature pinned - two structurally identical files could and did come
+            # back with different answers purely from sampling, with nothing in the content
+            # itself explaining why one specific instance landed on the wrong slot.
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        valid = {c["key"] for c in candidates}
+        out = []
+        for m in data.get("matches") or []:
+            key = m.get("key")
+            ev = str(m.get("evidence") or "").strip()
+            if key not in valid:
+                continue
+            if len(ev) < 8:
+                logger.info("classify %s: dropped a match on %s with nothing to back it",
+                            filename, key)
+                continue
+            pages = [int(p) for p in (m.get("pages") or []) if str(p).isdigit()]
+            out.append({"key": key, "pages": pages or [1], "evidence": ev[:300],
+                        "source": "model"})
+        if not out:
+            logger.info("classify %s: no slot's document is present in this file (%s chars of "
+                        "text, %s slots offered)", filename, len(ocr_text or ""),
+                        len(candidates))
+        return out
+    except APIError as exc:
+        # Quota exhausted, rate limited, a dropped connection, a 5xx - the model was never
+        # actually consulted, so this file has NOT been found to match nothing; it has not
+        # been looked at. See AIServiceUnavailable.
+        raise AIServiceUnavailable(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Classification failed for %s: %s", filename, exc)
+        return []
+
+
+def classify_document_from_image(filename: str, image_path: Path | None,
+                                 candidates: list[dict], model: str) -> list[dict]:
+    """Vision-engine counterpart to classify_document - decides which document types are
+    PRESENT in this file from its PAGE-1 IMAGE ALONE, never OCR text. Used only when the
+    `extraction_engine` system setting is "gpt5_mini_vision" (see
+    app/models/system_setting.py); classify_document itself is untouched and keeps running
+    for the default engine.
+
+    Same return shape and evidence-or-discard discipline as classify_document. Scoped to
+    page 1 only for v1 (a deliberate, documented limitation - see the project plan): every
+    returned match's "pages" is always exactly [1], since page 1 is the only page this
+    function ever shows the model - a combined multi-page document whose defining evidence
+    sits on page 2+ may be missed here, with the unclassified-pages panel as the manual
+    fallback.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return []
+    if not image_path or not image_path.exists():
+        logger.info("classify %s: no page-1 image available for the vision engine - this "
+                    "file is not attached to any document slot", filename)
+        return []
+
+    instruction = (
+        _classification_instruction(filename, candidates)
+        + "\n\n(Only page 1 of this file is shown below - judge from it alone; if the "
+        "document genuinely continues past page 1, still return any type page 1 itself "
+        "gives you real evidence for.)"
+    )
+    try:
+        from openai import APIError
+
+        from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
+
+        b64 = base64.b64encode(image_path.read_bytes()).decode()
+        content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        resp = create_chat_completion_with_retry(
+            timeout=60,
+            model=model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=1200),
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        valid = {c["key"] for c in candidates}
+        out = []
+        for m in data.get("matches") or []:
+            key = m.get("key")
+            ev = str(m.get("evidence") or "").strip()
+            if key not in valid:
+                continue
+            if len(ev) < 8:
+                logger.info("classify %s: dropped a vision match on %s with nothing to back it",
+                            filename, key)
+                continue
+            # Page 1 is the only page this function ever showed the model - never trust a
+            # claim to any other page, regardless of what the model itself returns.
+            out.append({"key": key, "pages": [1], "evidence": ev[:300], "source": "model"})
+        if not out:
+            logger.info("classify %s: no slot's document is present on page 1 (vision "
+                        "engine, %s slots offered)", filename, len(candidates))
+        return out
+    except APIError as exc:
+        raise AIServiceUnavailable(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Vision classification failed for %s: %s", filename, exc)
+        return []
+
+
+def classify_page_image(filename: str, page_no: int, image_path: Path, candidates: list[dict],
+                        model: str, prev_key: str | None) -> dict | None:
+    """Decide which ONE of this template's own candidates (whatever document labels were
+    declared in Step 1 Declare - never a fixed document-type list) a SINGLE page belongs to,
+    independent of every other page in the file. Smart-Upload-only building block for
+    classify_pages_from_images, below.
+
+    Returns {"key", "confidence", "evidence"}, or None if nothing matches or the model's own
+    confidence is below `vision_classification_confidence_threshold` - a low-confidence or
+    unmatched page is simply left out, so it falls through to the existing Unclassified Pages
+    tray exactly like any other page nothing could place. No new "LOW_CONFIDENCE" status is
+    introduced; that tray already is one.
+
+    EXCEPTION: a page that agrees it CONTINUES `prev_key`'s document (same key returned, with
+    real evidence) is trusted on that reasoning alone, regardless of its own raw confidence -
+    see the comment at that check for why a continuation page can honestly self-rate near
+    zero while still being the right answer.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key or not candidates:
+        return None
+    if not image_path.exists():
+        return None
+
+    # Deliberately plain: this template's own document labels (never a fixed BL/PL/INVOICE/
+    # FREIGHT list) and the image, nothing else - no written heuristics describing what each
+    # type should look like or how to tell them apart. That judgment belongs to the model's
+    # own visual analysis of the page. classify_document/classify_document_from_image's own
+    # elaborate instruction text (the "trap" paragraphs) was written for a different,
+    # whole-file, multi-match call and is deliberately NOT reused here.
+    #
+    # The ONE exception, reusing the SAME lookup classify_document already relies on
+    # (_hint_from_name/DOC_TYPE_HINTS): a short "typically contains" phrase per candidate.
+    # This is not a rule for telling document types apart - it is what the candidate's own
+    # NAME even refers to. A tenant's slot literally named "Fright Certificate" (their own
+    # spelling) means nothing to a model with no domain context; a real Arrival Notice, shown
+    # with no hint, confidently says "this is none of your 4 types" (verified: 0.85-0.92
+    # confidence, key=null) because "Arrival Notice" isn't a synonym for "Fright Certificate"
+    # without being told so - the exact gap DOC_TYPE_HINTS/_hint_from_name already exists to
+    # close for the older classifier. Omitting it here silently broke that same case.
+    def _candidate_line(c: dict) -> str:
+        hint = DOC_TYPE_HINTS.get(c.get("doc_type") or "") or _hint_from_name(c.get("name") or "")
+        suffix = f" (typically: {hint})" if hint else ""
+        return f'- key="{c["key"]}" name="{c["name"]}"{suffix}'
+
+    lines = "\n".join(_candidate_line(c) for c in candidates)
+    instruction = (
+        f"This image is page {page_no} of a file named {filename!r}, part of one shipment's "
+        "paperwork. Based on what you actually see on the page - its title, layout, and the "
+        "fields or tables it contains - decide which ONE of the following document types it "
+        f"is, if any:\n\n{lines}\n\n"
+    )
+    if prev_key:
+        prev_name = next((c["name"] for c in candidates if c["key"] == prev_key), prev_key)
+        instruction += (
+            f"The page immediately before this one was classified as {prev_name!r}. If this "
+            "page is simply the next page of that same document, say so.\n\n"
+        )
+    instruction += (
+        'Return JSON: {"key": "..." or null, "confidence": 0.00, '
+        '"evidence": "what on the page tells you this"}. Use null for key if none of the '
+        "types fit this page."
+    )
+    try:
+        from openai import APIError
+
+        from app.core.llm import create_chat_completion_with_retry, reasoning_safe_chat_params
+
+        b64 = base64.b64encode(image_path.read_bytes()).decode()
+        content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        resp = create_chat_completion_with_retry(
+            timeout=60,
+            model=model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+            **reasoning_safe_chat_params(model, temperature=0, max_tokens=500),
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        valid = {c["key"] for c in candidates}
+        key = data.get("key")
+        ev = str(data.get("evidence") or "").strip()
+        try:
+            confidence = float(data.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not key or key not in valid or len(ev) < 8:
+            return None
+        # A page agreeing it CONTINUES the previous page's document (same key, per the
+        # continuation hint above) is trusted on that reasoning alone, not on its own raw
+        # confidence - a carrier's continuation/attachment page rarely LOOKS like a Bill of
+        # Lading by itself (no Shipper/Consignee box, no title), so the model can honestly
+        # self-rate near zero even while correctly following the continuation instruction.
+        # Gating that away is what regressed a page that classified correctly before this
+        # per-page engine existed. Only a FRESH match (no continuation claim) needs to clear
+        # the confidence bar.
+        is_continuation = prev_key is not None and key == prev_key
+        if not is_continuation and confidence < settings.vision_classification_confidence_threshold:
+            logger.info("classify %s page %s: %s below confidence threshold (%.2f < %.2f)",
+                        filename, page_no, key, confidence,
+                        settings.vision_classification_confidence_threshold)
+            return None
+        return {"key": key, "confidence": confidence, "evidence": ev[:300]}
+    except APIError as exc:
+        raise AIServiceUnavailable(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Per-page vision classification failed for %s page %s: %s",
+                       filename, page_no, exc)
+        return None
+
+
+def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
+                               candidates: list[dict], model: str) -> list[dict]:
+    """Smart-Upload-only counterpart to classify_document_from_image: classifies EVERY kept
+    page of a file independently from its own image (not just page 1) - the fix for a
+    combined/multi-page file's classification, done once over the whole file's OCR text,
+    sometimes assigning the wrong page to the wrong slot. `page_images` is this file's own
+    KEPT-page numbering, same contract as this function's own return value (see this
+    module's docstring on assign_documents_detailed).
+
+    Consecutive pages landing on the SAME slot are merged into one document instance (a
+    2-page bill of lading stays one BL, not two) - a deliberate v1 trade-off: several
+    genuinely SEPARATE same-type documents back-to-back in one file (e.g. three invoices
+    with no gap) would currently merge into one entry too. The whole-file text classifier's
+    own number/date/header reasoning still catches that case; this path trades it away for
+    reliably keeping each page in the right slot, which is the bug this exists to fix. The
+    manual Unclassified Pages tray remains the fallback either way.
+
+    Returns the same shape as classify_document/classify_document_from_image:
+    [{"key", "pages": [int], "evidence": str}].
+    """
+    out: list[dict] = []
+    current: dict | None = None
+    prev_key: str | None = None
+    for page_no, image_path in page_images:
+        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key)
+        if result is None:
+            prev_key = None
+            if current is not None:
+                out.append(current)
+                current = None
+            continue
+        key = result["key"]
+        if current is not None and current["key"] == key:
+            current["pages"].append(page_no)
+        else:
+            if current is not None:
+                out.append(current)
+            current = {"key": key, "pages": [page_no], "evidence": result["evidence"],
+                      "source": "model"}
+        prev_key = key
+    if current is not None:
+        out.append(current)
+    if not out:
+        logger.info("classify %s: no slot's document is present on any page (per-page "
+                    "vision engine, %s slots offered)", filename, len(candidates))
+    return out
+
+
+def assign_documents_detailed(
+    files: list[dict], candidates: list[dict],
+    engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
+    per_page_vision: bool = False,
+    # Accepted and deliberately unused. Smart Upload and the email puller both pass it (see
+    # their own calls) because the newer classifier this file replaced used it to pick that
+    # tenant's own OpenAI key instead of the shared pool. This version has no per-tenant key
+    # routing at all, so classification uses the shared pool - which is what production has
+    # always done, and is the behaviour this file was restored to get back.
+    #
+    # It is taken rather than removed from the callers on purpose: dropping the argument
+    # there would silently undo the per-tenant routing for everything ELSE those code paths
+    # do, and refusing it crashes every harvested email with a TypeError - which is exactly
+    # what happened when this file was restored without it.
+    tenant_id: str | None = None,
+) -> list[list[dict]]:
+    """Same as assign_documents, but keeps each match's page numbers instead of collapsing
+    to a bare key: [{"key", "pages": [int], "evidence": str}] per file.
+
+    The pages are in the file's own KEPT-page numbering - position within the "=== PAGE n
+    ===" text the classifier was actually shown, after carrier-terms pages were filtered out
+    - not the original PDF's page numbers. A caller that wants to physically split the PDF
+    needs to translate through whatever page-drop list it used to build that text (see
+    page_filter.extract_pdf_pages and its callers).
+
+    `engine`/`vision_model` select which reader classifies each file - "ocr_gpt4o_mini"
+    (the default, every existing caller) keeps using classify_document (OCR text) exactly as
+    before; "gpt5_mini_vision" switches to classify_document_from_image (the page-1 image)
+    instead, with `vision_model` as the model it reads with. Passing neither is completely
+    unaffected by this parameter's existence.
+
+    `per_page_vision` (passed by both Smart Upload and email_puller) additionally switches
+    the gpt5_mini_vision engine from page-1-only to classifying every one of a file's own
+    `page_images` independently (classify_pages_from_images) - see that function's own
+    docstring for the trade-off this makes. Ignored under the default engine.
+    """
+    if engine == "gpt5_mini_vision" and per_page_vision:
+        claims: list[list[dict]] = [
+            classify_pages_from_images(f.get("name") or "", f.get("page_images") or [],
+                                       candidates, vision_model)
+            for f in files
+        ]
+    elif engine == "gpt5_mini_vision":
+        claims = [
+            classify_document_from_image(f.get("name") or "", f.get("image"), candidates,
+                                         vision_model)
+            for f in files
+        ]
+    else:
+        claims = [
+            classify_document(f.get("name") or "", f.get("text"), f.get("image"), candidates)
+            for f in files
+        ]
+
+    # A deterministic backstop, run BEFORE the reconciliation below so an added claim is
+    # reconciled exactly like one the model found itself. See _augment_combined_document_claims.
+    _augment_combined_document_claims(files, candidates, claims)
+
+    # 1. The SAME key may never claim a page twice - a file can genuinely hold several
+    #    invoices, and each is its own document with its own, non-overlapping pages, so only
+    #    an actual page clash WITHIN one type means one of those claims is wrong.
+    #
+    #    DIFFERENT keys sharing a page are a different case and are deliberately NOT deduped
+    #    here: a "SHIPPING INVOICE CUM PACKING LIST" is one real page that genuinely is both
+    #    an Invoice and a Packing List at once - a combined document, not a classifier
+    #    mistake. Rejecting that page for one of the two types (the earlier version of this
+    #    rule did) meant a genuinely combined document always lost one of its two slots, when
+    #    what it needs is the SAME file written into BOTH.
+    for i, ms in enumerate(claims):
+        if len(ms) <= 1:
+            continue
+        pages_used_by_key: dict[str, set[int]] = {}
+        kept = []
+        for m in sorted(ms, key=lambda x: -len(x["evidence"])):
+            used = pages_used_by_key.setdefault(m["key"], set())
+            if set(m["pages"]) & used:
+                logger.info("classify %s: dropped a second %s claiming a page already taken "
+                            "by another instance of the same type", files[i].get("name"), m["key"])
+                continue
+            used |= set(m["pages"])
+            kept.append(m)
+        claims[i] = kept
+
+    # 2. A slot may hold SEVERAL files — a shipment covered by three invoices is three files
+    #    in the Invoice slot — but only files that claimed it just as specifically. Specificity
+    #    is how many DISTINCT TYPES the file claimed, not how many matches - a file with three
+    #    separate invoices and nothing else is still a single-type (specific) claimant, not a
+    #    broad one, and must not lose the Invoice slot to a file with only one invoice on it.
+    #    A file saying only "packing list" still beats one saying "invoice AND packing list",
+    #    and the broad claimant is dropped from that slot exactly as before.
+    #
+    #    This used to read "one slot, one file", and the most specific single claimant won.
+    #    That is what silently discarded invoices 2 and 3: three files each saying "invoice"
+    #    and only one of them kept. Keeping every EQUALLY specific claimant fixes that without
+    #    reopening the original bug, where one invoice filled the packing list slot as well and
+    #    the real packing list was dropped.
+    #    One exception, and it matters: a claim the keyword backstop added is NOT stripped
+    #    here. Breadth is a heuristic about how broadly a file claimed; a keyword signature is
+    #    the document's own words matching a required phrase plus supporting markers. When
+    #    those disagree the evidence wins.
+    #
+    #    Without the exception this rule did the opposite of its job. A forwarder's arrival
+    #    notice was wrongly claimed as an Invoice by the model (it carries "Total Payable" and
+    #    a charge table) and correctly claimed as Freight by the backstop. Holding two slots
+    #    made it "broad", so it lost Freight to a file holding one - and kept the Invoice
+    #    claim, the wrong one, because only the well-evidenced claim was eligible to be
+    #    stripped. The arrival notice then sat in the Invoice slot and the real invoice had to
+    #    share it. Stripping the evidenced claim and keeping the guess is exactly backwards.
+    breadth = [len({m["key"] for m in ms}) for ms in claims]
+    for cand in candidates:
+        key = cand["key"]
+        holders = [i for i, ms in enumerate(claims) if any(m["key"] == key for m in ms)]
+        if len(holders) <= 1:
+            continue
+        keenest = min(breadth[i] for i in holders)
+        winners = [i for i in holders if breadth[i] == keenest]
+        for i in holders:
+            if i not in winners:
+                if any(m["key"] == key and m.get("source") == "signature"
+                       for m in claims[i]):
+                    logger.info(
+                        "classify: %s keeps %r despite claiming %s slot(s) - its own text "
+                        "carries the keyword signature for it",
+                        files[i].get("name"), cand.get("name"), breadth[i])
+                    continue
+                claims[i] = [m for m in claims[i] if m["key"] != key]
+                logger.info("classify: %s loses %r (it claimed %s slot(s); %s claimed only %s)",
+                            files[i].get("name"), cand.get("name"), breadth[i],
+                            " and ".join(str(files[w].get("name")) for w in winners), keenest)
+        if len(winners) > 1:
+            logger.info("classify: %r holds %d files — %s", cand.get("name"), len(winners),
+                        ", ".join(str(files[w].get("name")) for w in winners))
+    return claims
+
+
+def assign_documents(files: list[dict], candidates: list[dict]) -> list[list[str]]:
+    """Sort a shipment's files into slots, one slot to one file.
+
+    `files`: [{"name", "text", "image"}]. Returns, per file and in the same order, the slot
+    keys it should be written into - after the two rules above have been applied.
+    """
+    return [[m["key"] for m in ms] for ms in assign_documents_detailed(files, candidates)]

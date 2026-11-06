@@ -1,11 +1,11 @@
-"""assign_documents_detailed: the deterministic reconciliation that runs AFTER the model
+﻿"""assign_documents_detailed: the deterministic reconciliation that runs AFTER the model
 classifies each file - same-page collisions dropped, slots contested by specificity.
 classify_document (the actual OpenAI call) is mocked out per file so these tests exercise
 only the reconciliation logic, not the model."""
 
 from unittest.mock import MagicMock, patch
 
-from app.core.classifier import _keyword_signature_match, assign_documents, assign_documents_detailed, classify_document
+from app.core.classifier_sea_import import _keyword_signature_match, assign_documents, assign_documents_detailed, classify_document
 
 
 def _file(name, text="", page_count=1):
@@ -25,7 +25,7 @@ CANDIDATES = [
 
 
 def _run(files, per_file_claims):
-    with patch("app.core.classifier.classify_document", side_effect=per_file_claims):
+    with patch("app.core.classifier_sea_import.classify_document", side_effect=per_file_claims):
         return assign_documents_detailed(files, CANDIDATES)
 
 
@@ -130,7 +130,7 @@ def test_files_with_no_matches_at_all_return_empty_per_file():
 
 def test_assign_documents_wrapper_returns_bare_keys_only():
     files = [_file("a.pdf")]
-    with patch("app.core.classifier.classify_document", side_effect=[[_claim("inv", [1])]]):
+    with patch("app.core.classifier_sea_import.classify_document", side_effect=[[_claim("inv", [1])]]):
         result = assign_documents(files, CANDIDATES)
     assert result == [["inv"]]
 
@@ -239,7 +239,7 @@ def test_ai_fallback_adds_the_second_type_when_regex_does_not_recognise_the_word
     # also the commercial paperwork) - the AI fallback is the only thing that can catch this.
     files = [_file("despatch.pdf", text="DESPATCH NOTE\nSome wording regex has never seen.")]
     claims = [[_claim("inv", [1], evidence="invoice fields present")]]
-    with patch("app.core.classifier._ai_verify_second_type", side_effect=_only_packinglist_verified):
+    with patch("app.core.classifier_sea_import._ai_verify_second_type", side_effect=_only_packinglist_verified):
         result = _run(files, claims)
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
     added = next(m for m in result[0] if m["key"] == "pl")
@@ -252,7 +252,7 @@ def test_ai_fallback_is_not_called_when_regex_already_matched():
     files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
     claims = [[_claim("inv", [1], evidence="invoice fields present")]]
     mock_ai = Mock(return_value=None)
-    with patch("app.core.classifier._ai_verify_second_type", mock_ai):
+    with patch("app.core.classifier_sea_import._ai_verify_second_type", mock_ai):
         result = _run(files, claims)
     assert {m["key"] for m in result[0]} == {"inv", "pl"}
     # PackingList was already caught by regex, so the AI fallback is never consulted for it -
@@ -264,7 +264,7 @@ def test_ai_fallback_is_not_called_when_regex_already_matched():
 def test_ai_fallback_returning_not_present_adds_nothing():
     files = [_file("plain_invoice.pdf", text=ORDINARY_INVOICE_TEXT)]
     claims = [[_claim("inv", [1], evidence="invoice fields present")]]
-    with patch("app.core.classifier._ai_verify_second_type", return_value=None):
+    with patch("app.core.classifier_sea_import._ai_verify_second_type", return_value=None):
         result = _run(files, claims)
     assert [m["key"] for m in result[0]] == ["inv"]
 
@@ -281,13 +281,13 @@ def test_ai_fallback_is_not_called_when_every_slot_is_already_claimed():
         _claim("frt", [1], evidence="freight fields present"),
     ]]
     mock_ai = Mock()
-    with patch("app.core.classifier._ai_verify_second_type", mock_ai):
+    with patch("app.core.classifier_sea_import._ai_verify_second_type", mock_ai):
         _run(files, claims)
     mock_ai.assert_not_called()
 
 
 def test_ai_fallback_without_an_api_key_returns_none_without_crashing():
-    from app.core.classifier import _ai_verify_second_type
+    from app.core.classifier_sea_import import _ai_verify_second_type
 
     candidate = {"key": "pl", "name": "Packing List", "doc_type": "PackingList"}
     result = _ai_verify_second_type("f.pdf", "some text", None, candidate, ["Invoice"])
@@ -300,7 +300,7 @@ def test_ai_fallback_prompt_warns_against_a_routine_freight_cost_line_for_freigh
     # as "this invoice is ALSO a Freight Certificate", duplicating the whole invoice into that
     # slot. The prompt must explicitly warn the model off a single freight cost line counting
     # as evidence of a SEPARATE freight document.
-    from app.core.classifier import _ai_verify_second_type
+    from app.core.classifier_sea_import import _ai_verify_second_type
 
     captured = {}
 
@@ -310,7 +310,7 @@ def test_ai_fallback_prompt_warns_against_a_routine_freight_cost_line_for_freigh
         resp.choices[0].message.content = '{"present": false}'
         return resp
 
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         mock_openai_cls.return_value.chat.completions.create.side_effect = _fake_create
         freight_candidate = {"key": "frt", "name": "Fright Certificate", "doc_type": "Freight"}
@@ -323,7 +323,7 @@ def test_ai_fallback_prompt_warns_against_a_routine_freight_cost_line_for_freigh
 
 
 def test_ai_fallback_prompt_has_no_freight_caveat_for_a_non_freight_candidate():
-    from app.core.classifier import _ai_verify_second_type
+    from app.core.classifier_sea_import import _ai_verify_second_type
 
     captured = {}
 
@@ -333,7 +333,7 @@ def test_ai_fallback_prompt_has_no_freight_caveat_for_a_non_freight_candidate():
         resp.choices[0].message.content = '{"present": false}'
         return resp
 
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         mock_openai_cls.return_value.chat.completions.create.side_effect = _fake_create
         pl_candidate = {"key": "pl", "name": "Packing List", "doc_type": "PackingList"}
@@ -363,7 +363,7 @@ def test_keyword_backstop_does_not_fire_on_an_ordinary_packing_list():
 def test_keyword_backstop_does_nothing_when_no_slot_exists_for_the_missing_type():
     candidates_no_pl = [{"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []}]
     files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
-    with patch("app.core.classifier.classify_document",
+    with patch("app.core.classifier_sea_import.classify_document",
                side_effect=[[_claim("inv", [1], evidence="invoice fields present")]]):
         result = assign_documents_detailed(files, candidates_no_pl)
     assert [m["key"] for m in result[0]] == ["inv"]
@@ -447,7 +447,7 @@ def test_keyword_backstop_never_fires_for_a_doc_type_with_no_signature_defined()
         {"key": "bl", "name": "BL", "doc_type": "BL", "fields": []},
     ]
     files = [_file("combined.pdf", text=HUSKY_STYLE_TEXT)]
-    with patch("app.core.classifier.classify_document",
+    with patch("app.core.classifier_sea_import.classify_document",
                side_effect=[[_claim("inv", [1], evidence="invoice fields present")]]):
         result = assign_documents_detailed(files, candidates_with_bl)
     assert "bl" not in {m["key"] for m in result[0]}
@@ -486,7 +486,7 @@ def test_keyword_backstop_reaches_a_custom_typed_slot_named_for_freight():
     ]
     text = "ARRIVAL NOTICE\nORIGIN CHARGES : USD 216.74\nOCEAN FREIGHT : USD 143.415\n"
     files = [_file("arrival_notice.pdf", text=text, page_count=2)]
-    with patch("app.core.classifier.classify_document", side_effect=[[]]):
+    with patch("app.core.classifier_sea_import.classify_document", side_effect=[[]]):
         result = assign_documents_detailed(files, candidates_custom_freight)
     assert [m["key"] for m in result[0]] == ["frt"]
     assert result[0][0]["pages"] == [1, 2]
@@ -507,7 +507,7 @@ def test_keyword_backstop_rescues_a_freight_document_the_model_missed():
 
 
 # --------------------------------------------------------------------------- #
-# _keyword_signature_match — direct unit tests on the matcher itself
+# _keyword_signature_match â€” direct unit tests on the matcher itself
 # --------------------------------------------------------------------------- #
 
 def test_signature_match_exact_threshold_boundary():
@@ -604,7 +604,7 @@ def test_signature_match_none_and_empty_text_do_not_crash():
 
 
 # --------------------------------------------------------------------------- #
-# classify_document — a page with no extractable OCR text must never be handed
+# classify_document â€” a page with no extractable OCR text must never be handed
 # to the model as an image to guess from. Program-based check only, never AI.
 # --------------------------------------------------------------------------- #
 
@@ -616,7 +616,7 @@ def _settings_with_key():
 
 
 def test_classify_document_returns_empty_for_blank_text_without_calling_openai():
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         result = classify_document("scan.png", "", MagicMock(exists=lambda: True), CANDIDATES)
     assert result == []
@@ -624,7 +624,7 @@ def test_classify_document_returns_empty_for_blank_text_without_calling_openai()
 
 
 def test_classify_document_returns_empty_for_none_text_without_calling_openai():
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         result = classify_document("scan.png", None, MagicMock(exists=lambda: True), CANDIDATES)
     assert result == []
@@ -632,7 +632,7 @@ def test_classify_document_returns_empty_for_none_text_without_calling_openai():
 
 
 def test_classify_document_returns_empty_for_whitespace_only_text_without_calling_openai():
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls:
         result = classify_document("scan.png", "   \n\t  ", MagicMock(exists=lambda: True), CANDIDATES)
     assert result == []
@@ -643,7 +643,7 @@ def test_classify_document_ignores_a_real_image_when_text_is_blank():
     # The old behaviour (removed): fall back to sending the page image itself for a vision
     # guess when OCR text was empty. This confirms that path is gone even when a real,
     # existing image file is available - having an image must never revive the AI call.
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI") as mock_openai_cls, \
          patch("pathlib.Path.exists", return_value=True), \
          patch("pathlib.Path.read_bytes", return_value=b"fake png bytes"):
@@ -662,7 +662,7 @@ def test_classify_document_still_calls_openai_when_real_text_is_present():
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = fake_response
 
-    with patch("app.core.classifier.get_settings", return_value=_settings_with_key()), \
+    with patch("app.core.classifier_sea_import.get_settings", return_value=_settings_with_key()), \
          patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls:
         result = classify_document("invoice.pdf", "Invoice No: INV-123\nTotal Payable: 500", None, CANDIDATES)
 
@@ -689,7 +689,7 @@ def test_a_keyword_signature_claim_survives_the_specificity_rule():
     matching a required phrase plus supporting markers. Where they disagree, the
     evidence wins.
     """
-    from app.core.classifier import assign_documents_detailed
+    from app.core.classifier_sea_import import assign_documents_detailed
 
     candidates = [
         {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},
@@ -707,7 +707,7 @@ def test_a_keyword_signature_claim_survives_the_specificity_rule():
         [{"key": "frt", "pages": [1], "evidence": "freight certificate", "source": "model"}],
     ]
 
-    import app.core.classifier as mod
+    import app.core.classifier_sea_import as mod
 
     original = mod.classify_document
     mod.classify_document = lambda *a, **k: claims.pop(0)
@@ -731,8 +731,8 @@ def test_an_unevidenced_claim_is_still_stripped():
     a file that claimed it more specifically - that is the rule's whole purpose,
     and it is what stops one invoice also filling the packing list slot.
     """
-    from app.core.classifier import assign_documents_detailed
-    import app.core.classifier as mod
+    from app.core.classifier_sea_import import assign_documents_detailed
+    import app.core.classifier_sea_import as mod
 
     candidates = [
         {"key": "inv", "name": "Invoice", "doc_type": "Invoice", "fields": []},

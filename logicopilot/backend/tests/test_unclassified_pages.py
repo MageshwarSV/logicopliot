@@ -1,4 +1,4 @@
-"""A page smart-upload could not confidently place used to be silently discarded along with
+﻿"""A page smart-upload could not confidently place used to be silently discarded along with
 the temp upload dir - gone the instant the request finished, with no trace it ever existed.
 Now it's kept as an UnmatchedUploadPage row an operator can resolve by hand (GET the list,
 POST assign onto a real document slot). That manual correction is remembered the same way an
@@ -74,7 +74,7 @@ def test_a_page_matching_nothing_is_kept_as_unclassified_not_discarded(client, d
     op = make_user(db_session, role="operator", tenant=tenant, email="unc1@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         resp = _upload(client, job.id, [("arrival_notice.pdf", _pdf_bytes(1), "application/pdf")])
     assert resp.status_code == 200, resp.text
 
@@ -97,7 +97,7 @@ def test_a_confidently_matched_page_does_not_stay_unclassified(client, db_sessio
     op = make_user(db_session, role="operator", tenant=tenant, email="unc2@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[{"key": docs["Invoice"].id, "pages": [1], "evidence": "e"}]]):
         resp = _upload(client, job.id, [("inv.pdf", _pdf_bytes(1), "application/pdf")])
     assert resp.status_code == 200, resp.text
@@ -124,7 +124,7 @@ def test_a_weak_ai_second_opinion_claim_never_fills_a_slot_and_stays_unclassifie
         {"key": docs["Packing List"].id, "pages": [1],
          "evidence": "AI-verified combined document: weak guess", "source": "ai_second"},
     ]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("hbl.pdf", _pdf_bytes(1), "application/pdf")])
     assert resp.status_code == 200, resp.text
 
@@ -152,7 +152,7 @@ def test_assigning_an_unclassified_page_writes_it_into_the_slot_and_removes_the_
 
     with patch("app.api.v1.jobs.ocr_page_image",
                return_value={"text": _REALISTIC_OCR_TEXT, "tokens": []}), \
-         patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         _upload(client, job.id, [("arrival_notice.pdf", _pdf_bytes(1), "application/pdf")])
     page = db_session.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.job_id == job.id).one()
 

@@ -1,4 +1,4 @@
-"""resolve_pending_email was the one entry point still missing the extraction_engine wiring
+﻿"""resolve_pending_email was the one entry point still missing the extraction_engine wiring
 smart_upload and email_puller already have - its own docstring promised "the SAME classifier
 ... smart-upload use", but it called assign_documents_detailed with no engine/vision_model/
 per_page_vision at all, so it silently used the old default text classifier regardless of the
@@ -60,7 +60,7 @@ def test_default_engine_reaches_assign_documents_detailed_unchanged(client, db_s
     login(client, admin.email)
     set_extraction_engine(db_session, "ocr_gpt4o_mini")
 
-    with patch("app.api.v1.pending_mail.assign_documents_detailed",
+    with patch("app.core.classifier_sea_import.assign_documents_detailed",
               return_value=[[{"key": doc.id, "pages": [1], "evidence": "e"}]]) as mock_assign, \
          patch("app.api.v1.jobs._start_extraction_background"):
         resp = client.post(f"/api/v1/pending-emails/{row.id}/resolve", json={"group_id": group.id})
@@ -79,7 +79,7 @@ def test_vision_engine_setting_reaches_assign_documents_detailed_with_the_config
     admin = make_user(db_session, role="super_admin", email="pm-op2@example.com")
     login(client, admin.email)
 
-    with patch("app.api.v1.pending_mail.assign_documents_detailed",
+    with patch("app.core.classifier_sea_import.assign_documents_detailed",
               return_value=[[{"key": doc.id, "pages": [1], "evidence": "e"}]]) as mock_assign, \
          patch("app.api.v1.jobs._start_extraction_background"):
         resp = client.post(f"/api/v1/pending-emails/{row.id}/resolve", json={"group_id": group.id})

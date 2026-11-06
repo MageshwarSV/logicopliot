@@ -52,7 +52,7 @@ def test_pull_inbox_runs_normally_when_not_paused(db_session):
 
 def test_run_extraction_raises_when_extraction_is_paused(db_session):
     from app.api.v1.jobs import run_extraction
-    from app.core.classifier import AIServiceUnavailable
+    from app.core.classifier_common import AIServiceUnavailable
 
     row = get_system_settings(db_session)
     row.extraction_paused = True
@@ -194,7 +194,7 @@ def test_an_unconfigured_tenant_is_not_paused(db_session):
 
 def test_run_extraction_raises_for_a_tenant_specific_pause_even_with_the_global_switch_off(db_session):
     from app.api.v1.jobs import run_extraction
-    from app.core.classifier import AIServiceUnavailable
+    from app.core.classifier_common import AIServiceUnavailable
     from app.models.tenant_extraction_config import TenantExtractionConfig
 
     tenant = make_tenant(db_session)

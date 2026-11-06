@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.core.classifier import assign_documents_detailed
+from app.core.classifier_common import classifier_module
 from app.core.config import get_settings
 from app.core.deps import get_db, require_role
 from app.core.email_puller import _document_name
@@ -164,7 +164,7 @@ def resolve_pending_email(
         }
     db.flush()
 
-    claims_per_file = assign_documents_detailed(
+    claims_per_file = classifier_module(group.mode).assign_documents_detailed(
         prepared, list(slot_meta.values()), engine=extraction_engine,
         vision_model=vision_engine_model, per_page_vision=True,
     )

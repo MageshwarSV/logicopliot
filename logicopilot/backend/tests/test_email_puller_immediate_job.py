@@ -1,4 +1,4 @@
-"""A single-template mailbox already knows its tenant and template before a single byte of
+﻿"""A single-template mailbox already knows its tenant and template before a single byte of
 OCR runs - so its job (and empty document slots) is now created immediately, instead of only
 once OCR and classification finish minutes later. While that runs, a page-by-page progress
 bar (app/core/email_progress.py) and a new "Document Classifying" stage give the operator
@@ -89,7 +89,7 @@ def test_job_exists_before_ocr_runs_for_a_single_template_mailbox(db_session):
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", side_effect=_ocr_side_effect), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="owner@zoho.com", mail_app_password="x",
@@ -120,7 +120,7 @@ def test_single_template_jobs_empty_slots_exist_from_the_start(db_session):
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", side_effect=_ocr_side_effect), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                          mail_email="owner@zoho.com", mail_app_password="x", mail_host="imap.zoho.com")
@@ -151,7 +151,7 @@ def test_progress_is_published_during_ocr_and_cleared_before_classification(db_s
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", side_effect=_ocr_side_effect), \
-         patch("app.core.classifier.assign_documents_detailed", side_effect=_classify_side_effect):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", side_effect=_classify_side_effect):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="owner@zoho.com", mail_app_password="x",
                                    mail_host="imap.zoho.com")
@@ -191,7 +191,7 @@ def test_document_classifying_stage_is_shown_while_assign_documents_runs(db_sess
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed", side_effect=_classify_side_effect):
+         patch("app.core.classifier_sea_import.assign_documents_detailed", side_effect=_classify_side_effect):
         _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                          mail_email="owner@zoho.com", mail_app_password="x", mail_host="imap.zoho.com")
 
@@ -239,8 +239,8 @@ def test_shared_mailbox_still_creates_no_job_until_a_customer_is_identified(db_s
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Consignee A", "tokens": []}), \
-         patch("app.core.classifier.identify_customer", side_effect=_identify_side_effect), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_common.identify_customer", side_effect=_identify_side_effect), \
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="owner@zoho.com", mail_app_password="x",

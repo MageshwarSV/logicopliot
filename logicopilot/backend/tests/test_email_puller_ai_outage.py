@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import fitz
 
-from app.core.classifier import AIServiceUnavailable
+from app.core.classifier_common import AIServiceUnavailable
 from app.core.email_puller import _pull_one_mailbox
 from app.models.custom_field import CustomField
 from app.models.email_seen import EmailSeen
@@ -73,7 +73,7 @@ def test_identify_customer_outage_leaves_the_message_completely_unclaimed(db_ses
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                side_effect=AIServiceUnavailable("insufficient_quota")):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op@zoho.com", mail_app_password="x",
@@ -99,9 +99,9 @@ def test_classify_document_outage_rolls_back_the_tentative_job_and_unclaims(db_s
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                side_effect=AIServiceUnavailable("rate limited")):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op2@zoho.com", mail_app_password="x",
@@ -129,7 +129,7 @@ def test_single_template_mailbox_outage_during_classification_discards_the_early
 
     with patch("app.core.email_puller._connect", return_value=conn), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "some text", "tokens": []}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                side_effect=AIServiceUnavailable("rate limited")):
         result = _pull_one_mailbox(db_session, tenant_id=tenant.id, forced_group_id=group.id,
                                    mail_email="outage-op4@zoho.com", mail_app_password="x",
@@ -159,7 +159,7 @@ def test_a_deferred_message_is_retried_by_the_very_next_ordinary_poll(db_session
     conn1 = _mock_conn_with_one_message(raw)
     with patch("app.core.email_puller._connect", return_value=conn1), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                side_effect=AIServiceUnavailable("insufficient_quota")):
         first = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                   mail_email="outage-op3@zoho.com", mail_app_password="x",
@@ -172,9 +172,9 @@ def test_a_deferred_message_is_retried_by_the_very_next_ordinary_poll(db_session
     conn2 = _mock_conn_with_one_message(raw)
     with patch("app.core.email_puller._connect", return_value=conn2), \
          patch("app.core.docai.ocr_page_image", return_value={"text": "consignee: Test Consignee Co", "tokens": []}), \
-         patch("app.core.classifier.identify_customer",
+         patch("app.core.classifier_common.identify_customer",
                return_value={"keys": [group.id], "reason": "matched", "evidence": "Test Consignee Co"}), \
-         patch("app.core.classifier.assign_documents_detailed",
+         patch("app.core.classifier_sea_import.assign_documents_detailed",
                return_value=[[{"key": doc.id, "pages": [1], "evidence": "bill of lading"}]]):
         second = _pull_one_mailbox(db_session, tenant_id=tenant.id,
                                    mail_email="outage-op3@zoho.com", mail_app_password="x",

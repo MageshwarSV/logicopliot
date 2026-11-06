@@ -1,4 +1,4 @@
-"""POST /jobs/{id}/smart-upload end to end: real multipart upload, real PDF rendering,
+﻿"""POST /jobs/{id}/smart-upload end to end: real multipart upload, real PDF rendering,
 real file writes and slot creation - only OCR (ocr_page_image) and classification
 (assign_documents_detailed) are mocked, since those need real Document AI/OpenAI
 credentials and are already covered on their own (test_classifier.py)."""
@@ -72,7 +72,7 @@ def test_single_file_matches_single_slot(client, db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="op1@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         resp = _upload(client, job.id, [("inv.pdf", _pdf_bytes(1), "application/pdf")])
 
@@ -97,7 +97,7 @@ def test_combined_invoice_cum_packing_list_single_page_fills_both_slots(client, 
     login(client, op.email)
 
     claims = [[_claim(docs["Invoice"].id, [1]), _claim(docs["PackingList"].id, [1])]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("shipping_invoice_cum_pl.pdf", _pdf_bytes(1), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -118,7 +118,7 @@ def test_combined_file_splits_across_two_slots(client, db_session):
     login(client, op.email)
 
     claims = [[_claim(docs["BL"].id, [1]), _claim(docs["PackingList"].id, [2])]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("combo.pdf", _pdf_bytes(2), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -140,7 +140,7 @@ def test_three_files_all_land_in_the_same_slot(client, db_session):
     login(client, op.email)
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])], [_claim(docs["Invoice"].id, [1])]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("inv1.pdf", _pdf_bytes(1), "application/pdf"),
             ("inv2.pdf", _pdf_bytes(1), "application/pdf"),
@@ -171,7 +171,7 @@ def test_zip_upload_extracts_and_processes_both_pdfs(client, db_session):
     zip_bytes = buf.getvalue()
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["BL"].id, [1])]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("bundle.zip", zip_bytes, "application/zip")])
 
     assert resp.status_code == 200, resp.text
@@ -191,7 +191,7 @@ def test_one_pdf_with_three_invoice_instances_splits_into_three_files(client, db
         _claim(docs["Invoice"].id, [2], "invoice two"),
         _claim(docs["Invoice"].id, [3], "invoice three"),
     ]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("three_invoices.pdf", _pdf_bytes(3), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -216,7 +216,7 @@ def test_mixed_multi_type_and_multi_instance_in_one_file(client, db_session):
         _claim(docs["Invoice"].id, [2], "invoice A"),
         _claim(docs["Invoice"].id, [3], "invoice B"),
     ]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [("mixed.pdf", _pdf_bytes(3), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -235,12 +235,12 @@ def test_uploading_to_a_slot_that_already_has_a_file_adds_a_row_not_overwrites(c
     op = make_user(db_session, role="operator", tenant=tenant, email="addrow@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         first = _upload(client, job.id, [("first.pdf", _pdf_bytes(1), "application/pdf")])
     assert first.status_code == 200, first.text
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         second = _upload(client, job.id, [("second.pdf", _pdf_bytes(1), "application/pdf")])
     assert second.status_code == 200, second.text
@@ -259,7 +259,7 @@ def test_mixed_supported_and_unsupported_file_in_one_request(client, db_session)
     op = make_user(db_session, role="operator", tenant=tenant, email="mixedreq@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         resp = _upload(client, job.id, [
             ("readme.txt", b"not a document", "text/plain"),
@@ -283,7 +283,7 @@ def test_direct_image_upload_is_accepted(client, db_session):
     png_bytes = pix.tobytes("png")
     doc.close()
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         resp = _upload(client, job.id, [("scan.png", png_bytes, "image/png")])
 
@@ -325,7 +325,7 @@ def test_zip_ignores_unsupported_entries_but_still_processes_the_supported_one(c
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("readme.txt", b"nothing useful")
         z.writestr("inv.pdf", _pdf_bytes(1))
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         resp = _upload(client, job.id, [("mixed.zip", buf.getvalue(), "application/zip")])
 
@@ -347,7 +347,7 @@ def test_zip_and_direct_file_together_in_one_request(client, db_session):
         z.writestr("inv.pdf", _pdf_bytes(1))
 
     claims = [[_claim(docs["Invoice"].id, [1])], [_claim(docs["BL"].id, [1])]]
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=claims):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=claims):
         resp = _upload(client, job.id, [
             ("bundle.zip", buf.getvalue(), "application/zip"),
             ("bl.pdf", _pdf_bytes(1), "application/pdf"),
@@ -363,7 +363,7 @@ def test_template_group_with_no_documents_at_all_never_crashes(client, db_sessio
     op = make_user(db_session, role="operator", tenant=tenant, email="nodocs@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         resp = _upload(client, job.id, [("inv.pdf", _pdf_bytes(1), "application/pdf")])
     assert resp.status_code == 200, resp.text
     assert resp.json()["results"][0]["matched"] is None
@@ -379,7 +379,7 @@ def test_allowed_roles_can_smart_upload(client, db_session, role):
                          email=f"r-{role}@example.com")
     login(client, user.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed",
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed",
                              return_value=[[_claim(docs["Invoice"].id, [1])]]):
         resp = _upload(client, job.id, [("inv.pdf", _pdf_bytes(1), "application/pdf")])
     assert resp.status_code == 200, resp.text
@@ -422,7 +422,7 @@ def test_unreadable_pdf_bytes_reported_as_error_not_a_crash(client, db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="op7@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[]):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[]):
         resp = _upload(client, job.id, [("garbage.pdf", b"this is not a pdf at all", "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -458,7 +458,7 @@ def test_file_matching_nothing_reports_no_match_without_error(client, db_session
     op = make_user(db_session, role="operator", tenant=tenant, email="op9@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[[]]):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[[]]):
         resp = _upload(client, job.id, [("random.pdf", _pdf_bytes(1), "application/pdf")])
 
     assert resp.status_code == 200, resp.text
@@ -480,7 +480,7 @@ def test_txt_file_produces_no_result_entry(client, db_session):
     op = make_user(db_session, role="operator", tenant=tenant, email="op10@example.com")
     login(client, op.email)
 
-    with _mock_ocr(), patch("app.api.v1.jobs.assign_documents_detailed", return_value=[]):
+    with _mock_ocr(), patch("app.core.classifier_sea_import.assign_documents_detailed", return_value=[]):
         resp = _upload(client, job.id, [("notes.txt", b"just some notes", "text/plain")])
 
     assert resp.status_code == 200, resp.text
