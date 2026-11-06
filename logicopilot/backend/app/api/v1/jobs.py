@@ -6668,6 +6668,11 @@ def _classify_and_place_files(
                     extra_raw.append(ocr_page_image(png).get("text", ""))
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
+        # Billed the same way as the initial OCR pass above - these pages past the <=6-page cap
+        # are only ever rendered and OCR'd here, the first time a claim actually needs them, so
+        # this IS their one OCR pass, whatever this function's own docstring's idempotency note
+        # says about a second call being a no-op (it never re-runs this block for the same item).
+        record_billable_pages(db, job, item["real_page_count"] - already)
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
@@ -6712,6 +6717,16 @@ def _classify_and_place_files(
                         logger.warning("OCR unavailable for %s page %s; classifying from image", name, i)
                         t = ""
                     raw_pages.append(t)
+                # Billed HERE, not when (or if) a page ends up in a real document - every page
+                # in this loop was just rendered and sent to Document AI, which costs the same
+                # whether it goes on to classify correctly, lands in Unclassified, or this whole
+                # run is a reclassify re-processing pages already billed once before. By request:
+                # the cost is the OCR pass itself, not the outcome, and a reclassify is its own
+                # fresh processing cost too, not a free re-run. Every later call site that used
+                # to bill once a page became part of a real document (the cluster write below,
+                # and both assign_unclassified_page branches further down) no longer does, so a
+                # page is billed exactly once per OCR pass, never twice for the same pass.
+                record_billable_pages(db, job, page_count)
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and
                 # "invoice", which is how one 2-page bill of lading came to match every slot on
@@ -6986,7 +7001,9 @@ def _classify_and_place_files(
                 )[:255] or None
                 jd.page_count = _render_pages(dorig, ddir / "pages")
             jd.file_path = str(dorig)
-            record_billable_pages(db, job, jd.page_count)
+            # Not billed here - every page in this cluster was already billed above, the moment
+            # it was first OCR'd during classification, regardless of which slot (or none) it
+            # ends up in. See that call site's own comment.
             slot_name = next(c["name"] for c in candidates if c["key"] == key)
             for p in cluster:
                 result_by_item_id[id(p["item"])]["matched"].append(slot_name)
@@ -7270,7 +7287,11 @@ def assign_unclassified_page(
     a slot for an ordinary manual upload already does (see document_samples.remember(), used by
     upload_job_document above) - this is exactly that same "the operator just said what this
     document is" signal, just arriving via the drag-and-drop resolver instead of a direct
-    upload. Removes the staging row - the whole point of today's correction."""
+    upload. Removes the staging row - the whole point of today's correction.
+
+    Not a billing event: this page was already billed the moment it was OCR'd during the
+    smart-upload/reclassify run that staged it (see record_billable_pages' own call site in
+    _classify_and_place_files) - being placed here later costs nothing new."""
     job = _load_job(db, job_id, scope, user)
     row = (
         db.query(UnmatchedUploadPage)
@@ -7306,7 +7327,9 @@ def assign_unclassified_page(
                 detail="That document belongs to a different document type.",
             )
         _merge_into_document(db, job, jd, Path(row.image_path).read_bytes(), ".png")
-        record_billable_pages(db, job, 1)
+        # Not billed here - this page was already billed the moment it was first OCR'd during
+        # smart-upload/reclassify classification, win or lose. Being manually placed later
+        # doesn't cost anything new.
     else:
         jd = _slot_for_new_file(db, job, tdoc.id)
         if jd is None:
@@ -7321,7 +7344,7 @@ def assign_unclassified_page(
         shutil.copy(Path(row.image_path), dorig)
         jd.file_path = str(dorig)
         jd.page_count = _render_pages(dorig, ddir / "pages")
-        record_billable_pages(db, job, jd.page_count)
+        # Not billed here either - same reasoning as the merge branch above.
 
     try:
         document_samples.remember(
