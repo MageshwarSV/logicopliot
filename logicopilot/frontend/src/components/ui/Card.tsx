@@ -19,7 +19,7 @@ const STAT_CARD_TONES = {
 } as const;
 
 export function StatCard({
-  label, value, icon, tone = "indigo", labelExtra,
+  label, value, icon, tone = "indigo", labelExtra, valueCaption,
 }: {
   label: string;
   value: string | number;
@@ -28,6 +28,9 @@ export function StatCard({
   tone?: keyof typeof STAT_CARD_TONES;
   /** Small extra content beside the label, e.g. an info tooltip trigger. */
   labelExtra?: ReactNode;
+  /** Small caption under the value, e.g. "(1,126 + 5)" - kept off the label line so a long
+   *  label plus a caption never wrap into each other in a narrow card. */
+  valueCaption?: ReactNode;
 }) {
   return (
     <Card className="flex h-full min-h-[92px] items-center gap-4 p-5">
@@ -36,12 +39,13 @@ export function StatCard({
           {icon}
         </div>
       )}
-      <div>
-        <p className="flex flex-wrap items-center gap-x-1 text-sm leading-tight text-slate-500 dark:text-slate-400">
+      <div className="min-w-0">
+        <p className="flex items-center gap-1 text-sm leading-tight text-slate-500 dark:text-slate-400">
           {label}
           {labelExtra}
         </p>
         <p className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{value}</p>
+        {valueCaption && <p className="text-xs text-slate-400">{valueCaption}</p>}
       </div>
     </Card>
   );
