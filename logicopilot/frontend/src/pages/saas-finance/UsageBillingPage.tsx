@@ -89,6 +89,21 @@ export function SaasFinanceUsageBillingPage() {
             <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
           </div>
 
+          {usage.pages_original !== null ? (
+            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+              <StatCard label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
+              <StatCard label="Original Pages" value={usage.pages_original.toLocaleString()} />
+              <StatCard label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
+              <StatCard label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()} />
+              <StatCard label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()} />
+            </div>
+          ) : (
+            <p className="mb-6 text-xs text-slate-400">
+              Classified / Unclassified / Rerun breakdown is not available for this already-finalized month.
+            </p>
+          )}
+
           <Card className="p-5">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Bill Calculation</h2>
             <dl className="space-y-2 text-sm">
