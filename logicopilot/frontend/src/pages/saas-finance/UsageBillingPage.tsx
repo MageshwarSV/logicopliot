@@ -92,7 +92,7 @@ export function SaasFinanceUsageBillingPage() {
       {!loading && usage && (
         <>
           {usage.pages_original !== null ? (
-            <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+            <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
               <StatCard icon={<FolderIcon />} tone="blue" label="Active Jobs" value={(usage.active_jobs_billed ?? 0).toLocaleString()} />
               <StatCard icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()} />
@@ -104,13 +104,9 @@ export function SaasFinanceUsageBillingPage() {
               <StatCard
                 icon={<LayersIcon />}
                 tone="indigo"
-                label="Total Pages (Billed)"
+                label="Total Pages"
                 value={usage.total_pages.toLocaleString()}
-                labelExtra={
-                  <span className="text-[10px] font-normal text-slate-400">
-                    ({usage.pages_original.toLocaleString()} + {(usage.pages_rerun ?? 0).toLocaleString()})
-                  </span>
-                }
+                valueCaption={`${usage.pages_original.toLocaleString()} + ${(usage.pages_rerun ?? 0).toLocaleString()}`}
               />
             </div>
           ) : (
