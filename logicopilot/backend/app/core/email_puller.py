@@ -1304,7 +1304,13 @@ def _process_one_message(
             prepared.append({"name": name, "ext": ext, "blob": blob,
                              "text": text, "image": first_png,
                              "drop_pages": list(dropped), "page_count": pages,
-                             "page_images": page_images, "kept_pages": kept})
+                             "page_images": page_images, "kept_pages": kept,
+                             # How many of this file's pages actually had real OCR text, for
+                             # billing - counted here, where raw_pages (before carrier-terms
+                             # filtering) is still in scope, since a job may not exist yet at
+                             # this point (a shared mailbox only creates one once the customer
+                             # is identified, further down) to bill against directly.
+                             "billable_pages": sum(1 for t in raw_pages if t.strip())})
             doc_texts.append((name, text))
 
         if not prepared:
@@ -1448,6 +1454,17 @@ def _process_one_message(
         # "documents actually sorted into slots".
         email_progress.clear(job.id)
         job.stage_override = "Document Classifying"
+        # Billed HERE, now that `job` definitely exists either way (the single-template fast
+        # path created it before OCR even started; a shared mailbox only just created it,
+        # above) - every attachment's own OCR pass already happened by this point regardless,
+        # so this is the one moment both paths can bill against a real job. Same reasoning as
+        # Smart Upload's own identical fix: the cost is the OCR pass itself, not whether a page
+        # goes on to classify correctly or ends up in Unclassified, and a page with no real text
+        # at all is not billed. The old call site that used to bill once a page became part of a
+        # real document (the slot-write loop further down) no longer does, so a page is billed
+        # exactly once per OCR pass, never twice.
+        for item in prepared:
+            record_billable_pages(db, job, item["billable_pages"])
         db.commit()
         cand_slots = list(slot_meta.values())
         # What has already gone into each slot, by content. Two attachments can carry
@@ -1549,6 +1566,11 @@ def _process_one_message(
             claimed_pages = {p for c in strong_claims for p in c["pages"]}
             for i, row in enumerate(unmatched_rows, start=1):
                 if row is not None and i in claimed_pages:
+                    # The staging copy made for this page is now redundant too - see
+                    # Smart Upload's own identical fix for why this must go with the row,
+                    # not outlive it as an orphaned file nothing ever points to again.
+                    if row.image_path:
+                        Path(row.image_path).unlink(missing_ok=True)
                     db.delete(row)
             # Say what the analyser decided, per file. Without this a document that
             # goes unrouted leaves no trace at all: the job simply has an empty slot
@@ -1625,7 +1647,8 @@ def _process_one_message(
                     jd.page_count = _render_pages(dorig, ddir / "pages",
                                                   skip=item.get("drop_pages"))
                 jd.file_path = str(dorig)
-                record_billable_pages(db, job, jd.page_count)
+                # Not billed here - this attachment was already billed above, the moment it
+                # was OCR'd, regardless of which slot (or none) it ends up in.
                 if meta["name"] not in filled:
                     filled.append(meta["name"])
                 named.append(f"{item['name']} -> {fname}")
