@@ -285,6 +285,7 @@ export function BillingUsagePage() {
                     <span className="text-xl font-bold">
                       {d.pages.toLocaleString()} <span className="text-xs font-normal opacity-70">pages</span>
                     </span>
+                    <span className="text-xs opacity-70">{d.jobs.toLocaleString()} job{d.jobs === 1 ? "" : "s"}</span>
                   </div>
                 ))}
               </div>
