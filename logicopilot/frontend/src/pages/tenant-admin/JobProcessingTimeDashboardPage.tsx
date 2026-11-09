@@ -4,7 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { ClockIcon, DocumentIcon, ArrowRightIcon } from "../../components/ui/icons";
 import { LineChart } from "../../components/charts/LineChart";
-import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { DashboardFilterBar, defaultDashboardRange, localIso, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { ProcessingTimeDashboard } from "../../api/tenants";
@@ -45,7 +45,7 @@ export function JobProcessingTimeDashboardPage() {
       .finally(() => setLoading(false));
   }, [user?.tenant_id, range.dateFrom, range.dateTo, range.mode]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localIso(new Date());
   const steps = [
     { label: "Pre-Alert Received" },
     { label: "AI Extraction", minutes: data?.avg_extraction_minutes ?? null },

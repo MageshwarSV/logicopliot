@@ -4,7 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { DocumentIcon, CheckCircleIcon, ExclamationTriangleIcon, TargetIcon } from "../../components/ui/icons";
 import { LineChart } from "../../components/charts/LineChart";
-import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { DashboardFilterBar, defaultDashboardRange, localIso, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { AccuracyDashboard } from "../../api/tenants";
@@ -36,7 +36,7 @@ export function DataAccuracyDashboardPage() {
       .finally(() => setLoading(false));
   }, [user?.tenant_id, range.dateFrom, range.dateTo, range.mode]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localIso(new Date());
 
   return (
     <AppShell

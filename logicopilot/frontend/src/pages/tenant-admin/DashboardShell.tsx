@@ -6,7 +6,7 @@ import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { ModeIcon } from "../../components/ModeIcon";
 import { TargetIcon, UsersIcon, ClockIcon, ArrowRightIcon } from "../../components/ui/icons";
-import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { DashboardFilterBar, defaultDashboardRange, localIso, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
 import { useAuth } from "../../auth/useAuth";
 import * as usersApi from "../../api/users";
 import * as jobsApi from "../../api/jobs";
@@ -54,7 +54,7 @@ function ExecutiveOverview() {
           <p className="text-sm text-slate-500 dark:text-slate-400">Key performance overview</p>
         </div>
       </div>
-      <DashboardFilterBar value={range} onChange={setRange} bounds={{ min: "2020-01-01", max: new Date().toISOString().slice(0, 10) }} />
+      <DashboardFilterBar value={range} onChange={setRange} bounds={{ min: "2020-01-01", max: localIso(new Date()) }} />
 
       <div className="flex flex-col gap-4">
         <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">

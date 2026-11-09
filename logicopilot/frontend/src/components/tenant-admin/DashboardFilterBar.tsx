@@ -55,9 +55,18 @@ export function DashboardFilterBar({
   );
 }
 
+/** Local YYYY-MM-DD - NOT d.toISOString().slice(0, 10), which converts to UTC first and
+ *  reads back a day early for any viewer east of UTC (IST included) once the local date's
+ *  own midnight has already rolled past into the next UTC day. */
+export function localIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export function defaultDashboardRange(): DashboardRange {
   const today = new Date();
   const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return { dateFrom: iso(first), dateTo: iso(today), mode: "" };
+  return { dateFrom: localIso(first), dateTo: localIso(today), mode: "" };
 }
