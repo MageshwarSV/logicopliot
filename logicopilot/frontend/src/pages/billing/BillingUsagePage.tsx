@@ -5,12 +5,8 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
-import {
-  DocumentIcon, TrashIcon, LayersIcon,
-  CheckCircleIcon, ExclamationTriangleIcon, ArrowPathIcon,
-} from "../../components/ui/icons";
-import { DonutChart } from "../../components/charts/DonutChart";
-import { ShipmentBarChart, ShipmentPieChart } from "../../components/charts/ShipmentCharts";
+import { DocumentIcon, TrashIcon, LayersIcon, CheckCircleIcon, ArrowPathIcon } from "../../components/ui/icons";
+import { ModeIcon } from "../../components/ModeIcon";
 import { JobBillingTable } from "../../components/billing/JobBillingTable";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
@@ -37,6 +33,11 @@ function shiftMonth(month: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function formatDate(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function StatusPill({ status }: { status: "unpaid" | "paid" }) {
   return (
     <span
@@ -52,10 +53,70 @@ function StatusPill({ status }: { status: "unpaid" | "paid" }) {
   );
 }
 
+const MODE_TONE: Record<string, string> = {
+  sea: "bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400",
+  air: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400",
+  road: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
+  train: "bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400",
+};
+function modeTone(mode: string): string {
+  const m = mode.toLowerCase();
+  for (const key of Object.keys(MODE_TONE)) if (m.includes(key)) return MODE_TONE[key];
+  return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+}
+
+/** null means "not available for this already-finalized month" (see BillingUsage's own
+ *  field docs) - shown honestly as "—", never guessed at from other fields. */
+function statValue(n: number | null | undefined): string {
+  return n == null ? "—" : n.toLocaleString();
+}
+
+/** The same 6 figures shown both on Usage Summary (wraps to 2 rows of 3 in its narrower,
+ *  two-thirds-width column) and at the top of Job Details (one row of 6, full width) - one
+ *  component so the two can never show different numbers for what looks like the same row. */
+function UsageStatRow({
+  usage, highlight, onSelect,
+}: {
+  usage: BillingUsage;
+  highlight: JobBillingHighlight | null;
+  onSelect: (h: JobBillingHighlight | null) => void;
+}) {
+  return (
+    <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      <StatCard
+        icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()}
+        onClick={() => onSelect(null)} active={highlight === null}
+      />
+      <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Active Jobs" value={statValue(usage.active_jobs_billed)} />
+      <StatCard
+        icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={statValue(usage.deleted_jobs_billed)}
+        onClick={() => onSelect("deleted_jobs")} active={highlight === "deleted_jobs"}
+      />
+      <StatCard icon={<DocumentIcon />} tone="violet" label="Original Pages" value={statValue(usage.pages_original)} />
+      <StatCard
+        icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={statValue(usage.pages_rerun)}
+        onClick={() => onSelect("rerun")} active={highlight === "rerun"}
+      />
+      <StatCard icon={<LayersIcon />} tone="indigo" label="Total Pages" value={usage.total_pages.toLocaleString()} />
+    </div>
+  );
+}
+
+const TABS = [
+  { key: "summary", label: "Usage Summary" },
+  { key: "jobs", label: "Job Details" },
+  { key: "invoices", label: "Invoices" },
+  { key: "payments", label: "Payment History" },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+
 /** Billing & Usage — the same page for both audiences: a Super Admin picks any tenant, a
  *  Tenant Admin only ever sees their own (the API itself enforces that; this just never shows
  *  a tenant picker for them). The current month is always live; any earlier month is a frozen,
- *  already-raised invoice. */
+ *  already-raised invoice. Rebuilt to the user's own reference layout (2026-11-09): tabs
+ *  instead of one long scroll, no Required/Not Required stat card or column - the actual
+ *  billing math (Not Required pages at their own flat rate) is unchanged, it just no longer
+ *  gets a dedicated counter here. */
 export function BillingUsagePage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -63,6 +124,7 @@ export function BillingUsagePage() {
 
   const [searchParams] = useSearchParams();
 
+  const [tab, setTab] = useState<TabKey>("summary");
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState<string | null>(user?.tenant_id ?? null);
   // Seeded from ?month=YYYY-MM once, e.g. the Invoices page's own "View" link - never
@@ -74,10 +136,6 @@ export function BillingUsagePage() {
   const [error, setError] = useState<string | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<JobBillingHighlight | null>(null);
-
-  function toggleHighlight(value: JobBillingHighlight) {
-    setHighlight((prev) => (prev === value ? null : value));
-  }
 
   useEffect(() => setHighlight(null), [tenantId, month]);
 
@@ -141,10 +199,12 @@ export function BillingUsagePage() {
     }
   }
 
+  const paidInvoices = invoices.filter((inv) => inv.status === "paid");
+
   return (
     <AppShell
       title="Billing & Usage"
-      subtitle="This month's live usage, and the invoice history behind it."
+      subtitle="Track document usage, jobs, and charges for this month."
     >
       {isSuperAdmin && (
         <Card className="mb-6 flex items-center gap-3 p-4">
@@ -163,228 +223,254 @@ export function BillingUsagePage() {
         </Card>
       )}
 
-      <Card className="mb-6 flex items-center justify-between p-4">
-        <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, -1))}>
-          ← Previous
-        </Button>
-        <div className="text-center">
-          <p className="font-semibold text-slate-900 dark:text-slate-50">{monthLabel(month)}</p>
-          <p className="text-xs text-slate-400">
-            {isCurrentMonth ? "Live — still accumulating" : usage ? (usage.status === "paid" ? "Finalized — Paid" : "Finalized — Unpaid") : ""}
-          </p>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === t.key
+                  ? "bg-indigo-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, 1))} disabled={isCurrentMonth}>
-          Next →
-        </Button>
-      </Card>
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-1 py-1 dark:border-slate-700 dark:bg-slate-900">
+          <button
+            type="button"
+            className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+            onClick={() => setMonth((m) => shiftMonth(m, -1))}
+            aria-label="Previous month"
+          >
+            ‹
+          </button>
+          <span className="min-w-[130px] px-2 text-center text-sm font-medium text-slate-700 dark:text-slate-200">
+            {monthLabel(month)}
+          </span>
+          <button
+            type="button"
+            className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800"
+            onClick={() => setMonth((m) => shiftMonth(m, 1))}
+            disabled={isCurrentMonth}
+            aria-label="Next month"
+          >
+            ›
+          </button>
+        </div>
+      </div>
 
       {error && <div className="mb-6"><Alert>{error}</Alert></div>}
 
-      {!loading && usage && (
-        <>
-          {usage.pages_original !== null ? (
-            <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <StatCard
-                icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()}
-                onClick={() => setHighlight(null)} active={highlight === null}
-              />
-              <StatCard
-                icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={(usage.deleted_jobs_billed ?? 0).toLocaleString()}
-                onClick={() => toggleHighlight("deleted_jobs")} active={highlight === "deleted_jobs"}
-              />
-              <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
-              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Required Pages" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
-              <StatCard
-                icon={<ExclamationTriangleIcon />} tone="amber" label="Not Required Pages" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
-                onClick={() => toggleHighlight("unclassified")} active={highlight === "unclassified"}
-              />
-              <StatCard
-                icon={<TrashIcon />} tone="rose" label="Deleted Pages" value={(usage.deleted_pages ?? 0).toLocaleString()}
-                onClick={() => toggleHighlight("deleted_pages")} active={highlight === "deleted_pages"}
-              />
-              <StatCard
-                icon={<ArrowPathIcon />} tone="violet" label="Rerun Pages" value={(usage.pages_rerun ?? 0).toLocaleString()}
-                onClick={() => toggleHighlight("rerun")} active={highlight === "rerun"}
-              />
-              <StatCard
-                icon={<LayersIcon />}
-                tone="indigo"
-                label="Total Pages"
-                value={usage.total_pages.toLocaleString()}
-                valueCaption={`${usage.pages_original.toLocaleString()} + ${(usage.pages_rerun ?? 0).toLocaleString()}`}
-              />
-            </div>
-          ) : (
-            <>
-              <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <StatCard icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()} />
-                <StatCard icon={<LayersIcon />} tone="blue" label="Total Pages" value={usage.total_pages.toLocaleString()} />
-                <StatCard label="Usage Charges" value={formatInr(usage.usage_charges)} />
-                <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
-              </div>
-              <p className="mb-6 text-xs text-slate-400">
-                Required / Not Required / Rerun breakdown is not available for this already-finalized month.
-              </p>
-            </>
-          )}
+      {loading && <p className="py-10 text-center text-sm text-slate-400">Loading…</p>}
 
-          <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <Card className="p-5">
+      {!loading && usage && tab === "summary" && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <UsageStatRow usage={usage} highlight={highlight} onSelect={setHighlight} />
+
+            <Card className="mb-6 p-5">
               <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Pages by Shipment Type</h2>
-              <ShipmentBarChart data={usage.by_shipment_type} />
-            </Card>
-            <Card className="p-5">
-              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Job Distribution</h2>
-              {usage.pages_original !== null ? (
-                <>
-                  <DonutChart active={usage.active_jobs_billed ?? 0} deleted={usage.deleted_jobs_billed ?? 0} />
-                  <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
-                    Deleted jobs are included in page counts and billing.
-                  </p>
-                </>
+              {usage.by_shipment_type.length === 0 ? (
+                <p className="text-sm text-slate-400">No jobs this period.</p>
               ) : (
-                <ShipmentPieChart data={usage.by_shipment_type} />
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  {usage.by_shipment_type.map((d) => (
+                    <div key={d.shipment_type} className={`flex flex-col gap-2 rounded-xl p-4 ${modeTone(d.shipment_type)}`}>
+                      <ModeIcon mode={d.shipment_type} className="h-6 w-6" />
+                      <span className="text-xs font-medium opacity-80">{d.shipment_type}</span>
+                      <span className="text-xl font-bold">
+                        {d.pages.toLocaleString()} <span className="text-xs font-normal opacity-70">pages</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card className="p-5">
+              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Page Usage</h2>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+                    <th className="py-2 font-medium">&nbsp;</th>
+                    <th className="py-2 font-medium">Original Pages</th>
+                    <th className="py-2 font-medium">Rerun Pages</th>
+                    <th className="py-2 font-medium">Total Pages</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="bg-slate-50 dark:bg-slate-800/40">
+                    <td className="rounded-l-lg py-3 pl-3 font-semibold text-slate-900 dark:text-slate-50">Total</td>
+                    <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_original)}</td>
+                    <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_rerun)}</td>
+                    <td className="rounded-r-lg py-3 pr-3 font-semibold text-slate-900 dark:text-slate-50">{usage.total_pages.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+              {usage.pages_original === null && (
+                <p className="mt-3 text-xs text-slate-400">
+                  Original/Rerun breakdown is not available for this already-finalized month - only the combined Total Pages figure was kept.
+                </p>
               )}
             </Card>
           </div>
 
-          {tenantId && (
-            <div className="mb-6">
-              <JobBillingTable
-                tenantId={tenantId}
-                month={month}
-                shipmentTypes={usage.by_shipment_type}
-                onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
-                highlight={highlight}
-                onClearHighlight={() => setHighlight(null)}
-              />
-            </div>
-          )}
+          <Card className="h-fit p-5">
+            <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Billing Summary – {monthLabel(month)}</h2>
+            <dl className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <dt className="text-slate-500 dark:text-slate-400">
+                  Platform Fee (Monthly)
+                  {usage.platform_fee_billed_days < usage.platform_fee_month_days && (
+                    <span className="ml-1.5 text-xs text-amber-600 dark:text-amber-400">
+                      (pro-rated: {usage.platform_fee_billed_days} of {usage.platform_fee_month_days} days)
+                    </span>
+                  )}
+                </dt>
+                <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.platform_fee)}</dd>
+              </div>
 
-          <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <Card className="p-5">
-              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Usage by Shipment Type</h2>
-              {usage.by_shipment_type.length === 0 ? (
-                <p className="text-sm text-slate-400">No jobs this period.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-                      <th className="py-2 font-medium">Shipment Type</th>
-                      <th className="py-2 font-medium">Jobs</th>
-                      <th className="py-2 font-medium">Pages</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {usage.by_shipment_type.map((d) => (
-                      <tr key={d.shipment_type} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                        <td className="py-2 text-slate-700 dark:text-slate-300">{d.shipment_type}</td>
-                        <td className="py-2 text-slate-900 dark:text-slate-100">{d.jobs.toLocaleString()}</td>
-                        <td className="py-2 text-slate-900 dark:text-slate-100">{d.pages.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </Card>
-
-            <Card className="p-5">
-              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Bill Calculation</h2>
-              <dl className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Platform fee
-                    {usage.platform_fee_billed_days < usage.platform_fee_month_days && (
-                      <span className="ml-1.5 text-xs text-amber-600 dark:text-amber-400">
-                        (pro-rated: {usage.platform_fee_billed_days} of {usage.platform_fee_month_days} days)
-                      </span>
-                    )}
-                  </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.platform_fee)}</dd>
-                </div>
+              <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
+                <p className="mb-2 font-medium text-slate-700 dark:text-slate-200">Processing Charges</p>
                 <div className="flex justify-between">
                   <dt className="text-slate-500 dark:text-slate-400">
                     Tier 1 ({usage.tier1_pages.toLocaleString()} pages × ₹{usage.tier1_rate})
                   </dt>
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier1_amount)}</dd>
                 </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Tier 2 ({usage.tier2_pages.toLocaleString()} pages × ₹{usage.tier2_rate})
-                  </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
-                </div>
-                {usage.not_required_pages > 0 && (
-                  <div className="flex justify-between">
+                {usage.tier2_pages > 0 && (
+                  <div className="mt-1.5 flex justify-between">
                     <dt className="text-slate-500 dark:text-slate-400">
-                      Not Required Pages ({usage.not_required_pages.toLocaleString()} pages × ₹{usage.not_required_rate})
+                      Above limit ({usage.tier2_pages.toLocaleString()} × ₹{usage.tier2_rate})
+                    </dt>
+                    <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
+                  </div>
+                )}
+                {usage.not_required_pages > 0 && (
+                  <div className="mt-1.5 flex justify-between">
+                    <dt className="text-slate-500 dark:text-slate-400">
+                      Not Required ({usage.not_required_pages.toLocaleString()} × ₹{usage.not_required_rate})
                     </dt>
                     <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
                   </div>
                 )}
-                <div className="flex justify-between border-t border-slate-200 pt-2 dark:border-slate-800">
-                  <dt className="text-slate-500 dark:text-slate-400">Subtotal</dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.subtotal)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">GST ({usage.gst_percent}%)</dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.gst_amount)}</dd>
-                </div>
-                <div className="flex justify-between border-t border-slate-200 pt-2 text-base dark:border-slate-800">
-                  <dt className="font-semibold text-slate-900 dark:text-slate-50">Total</dt>
-                  <dd className="font-semibold text-slate-900 dark:text-slate-50">{formatInr(usage.total_amount)}</dd>
-                </div>
-              </dl>
-            </Card>
-          </div>
+              </div>
+
+              <div className="flex justify-between rounded-lg bg-indigo-50 px-3 py-2.5 text-base dark:bg-indigo-500/10">
+                <dt className="font-semibold text-indigo-900 dark:text-indigo-200">Subtotal (Before GST)</dt>
+                <dd className="font-semibold text-indigo-900 dark:text-indigo-200">{formatInr(usage.subtotal)}</dd>
+              </div>
+
+              <div className="flex justify-between">
+                <dt className="text-slate-500 dark:text-slate-400">GST ({usage.gst_percent}%)</dt>
+                <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.gst_amount)}</dd>
+              </div>
+
+              <div className="flex justify-between rounded-lg bg-indigo-600 px-3 py-3 text-base text-white">
+                <dt className="font-semibold">Total Amount (Incl. GST)</dt>
+                <dd className="font-semibold">{formatInr(usage.total_amount)}</dd>
+              </div>
+            </dl>
+          </Card>
+        </div>
+      )}
+
+      {!loading && usage && tab === "jobs" && tenantId && (
+        <>
+          <UsageStatRow usage={usage} highlight={highlight} onSelect={setHighlight} />
+          <JobBillingTable
+            tenantId={tenantId}
+            month={month}
+            shipmentTypes={usage.by_shipment_type}
+            onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
+            highlight={highlight}
+            onClearHighlight={() => setHighlight(null)}
+          />
         </>
       )}
 
-      <Card className="p-5">
-        <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Invoice History</h2>
-        {invoices.length === 0 ? (
-          <p className="text-sm text-slate-400">No invoices raised yet.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-                <th className="py-2 font-medium">Invoice #</th>
-                <th className="py-2 font-medium">Period</th>
-                <th className="py-2 font-medium">Total</th>
-                <th className="py-2 font-medium">Status</th>
-                <th className="py-2 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                  <td className="py-2 text-slate-700 dark:text-slate-300">{inv.invoice_number}</td>
-                  <td className="py-2 text-slate-700 dark:text-slate-300">{monthLabel(inv.period_start.slice(0, 7))}</td>
-                  <td className="py-2 font-medium text-slate-900 dark:text-slate-100">{formatInr(inv.total_amount)}</td>
-                  <td className="py-2"><StatusPill status={inv.status} /></td>
-                  <td className="py-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => setMonth(inv.period_start.slice(0, 7))}>
-                        View
-                      </Button>
-                      {isSuperAdmin && inv.status === "unpaid" && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          isLoading={markingId === inv.id}
-                          onClick={() => handleMarkPaid(inv.id)}
-                        >
-                          Mark Paid
-                        </Button>
-                      )}
-                    </div>
-                  </td>
+      {!loading && tab === "invoices" && (
+        <Card className="p-5">
+          <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Invoices</h2>
+          {invoices.length === 0 ? (
+            <p className="text-sm text-slate-400">No invoices raised yet.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+                  <th className="py-2 font-medium">Invoice #</th>
+                  <th className="py-2 font-medium">Period</th>
+                  <th className="py-2 font-medium">Total</th>
+                  <th className="py-2 font-medium">Status</th>
+                  <th className="py-2 font-medium" />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+              </thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+                    <td className="py-2 text-slate-700 dark:text-slate-300">{inv.invoice_number}</td>
+                    <td className="py-2 text-slate-700 dark:text-slate-300">{monthLabel(inv.period_start.slice(0, 7))}</td>
+                    <td className="py-2 font-medium text-slate-900 dark:text-slate-100">{formatInr(inv.total_amount)}</td>
+                    <td className="py-2"><StatusPill status={inv.status} /></td>
+                    <td className="py-2 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => setMonth(inv.period_start.slice(0, 7))}>
+                          View
+                        </Button>
+                        {isSuperAdmin && inv.status === "unpaid" && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            isLoading={markingId === inv.id}
+                            onClick={() => handleMarkPaid(inv.id)}
+                          >
+                            Mark Paid
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
+      {!loading && tab === "payments" && (
+        <Card className="p-5">
+          <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Payment History</h2>
+          {paidInvoices.length === 0 ? (
+            <p className="text-sm text-slate-400">No payments recorded yet.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+                  <th className="py-2 font-medium">Invoice #</th>
+                  <th className="py-2 font-medium">Period</th>
+                  <th className="py-2 font-medium">Amount Paid</th>
+                  <th className="py-2 font-medium">Paid On</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paidInvoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+                    <td className="py-2 text-slate-700 dark:text-slate-300">{inv.invoice_number}</td>
+                    <td className="py-2 text-slate-700 dark:text-slate-300">{monthLabel(inv.period_start.slice(0, 7))}</td>
+                    <td className="py-2 font-medium text-slate-900 dark:text-slate-100">{formatInr(inv.total_amount)}</td>
+                    <td className="py-2 text-slate-700 dark:text-slate-300">{formatDate(inv.paid_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
     </AppShell>
   );
 }

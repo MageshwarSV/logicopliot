@@ -65,8 +65,8 @@ function formatDateTime(iso: string): string {
   });
 }
 
-/** The reference design's "Job Details" card - per-job Original/Required/Not Required/
- *  Rerun/Total breakdown, searchable by job number, filterable by shipment type
+/** The reference design's "Job Details" card - per-job Original/Rerun/Total Pages breakdown,
+ *  searchable by job number, filterable by shipment type
  *  and date range, server-paginated (job counts can be large), with CSV export. Shared by both
  *  BillingUsagePage.tsx and UsageBillingPage.tsx so the two stay visually identical. */
 export function JobBillingTable({
@@ -179,22 +179,9 @@ export function JobBillingTable({
     { header: "Job Start Time", render: (r) => formatDateTime(r.started_at) },
     { header: "Status", render: (r) => <StatusChip status={r.status} /> },
     { header: "Original Pages", render: (r) => r.original_pages.toLocaleString() },
-    { header: "Required Pages", render: (r) => r.final_classified_pages.toLocaleString() },
-    { header: "Not Required Pages", render: (r) => r.final_unclassified_pages.toLocaleString() },
-    {
-      header: "Deleted Pages",
-      render: (r) =>
-        r.deleted_pages > 0 ? (
-          <span className="text-rose-600 dark:text-rose-400" title="Billed once, then removed without a rerun - a duplicate or wrong upload deleted after processing.">
-            {r.deleted_pages.toLocaleString()}
-          </span>
-        ) : (
-          <span className="text-slate-400">0</span>
-        ),
-    },
     { header: "Rerun Pages", render: (r) => r.rerun_pages.toLocaleString() },
     {
-      header: "Total (Billed)",
+      header: "Total Pages",
       render: (r) => <span className="font-semibold text-slate-900 dark:text-slate-100">{r.total_billed.toLocaleString()}</span>,
     },
   ];

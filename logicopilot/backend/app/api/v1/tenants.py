@@ -607,14 +607,12 @@ def export_billing_jobs(
     writer = csv.writer(buffer)
     writer.writerow([
         "Job Number", "Shipment Type", "Status", "Job Start Time",
-        "Original Pages", "Required Pages", "Not Required Pages", "Deleted Pages",
-        "Rerun Pages", "Total Billed",
+        "Original Pages", "Rerun Pages", "Total Pages",
     ])
     for r in rows:
         writer.writerow([
             r.job_reference, r.shipment_type, r.status, r.started_at.isoformat(),
-            r.original_pages, r.final_classified_pages, r.final_unclassified_pages,
-            r.deleted_pages, r.rerun_pages, r.original_pages + r.rerun_pages,
+            r.original_pages, r.rerun_pages, r.original_pages + r.rerun_pages,
         ])
     buffer.seek(0)
     filename = f"billing-jobs-{tenant_id}-{period_start.strftime('%Y-%m')}.csv"

@@ -7,7 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import {
   DocumentIcon, TrashIcon, LayersIcon,
-  CheckCircleIcon, ExclamationTriangleIcon, ArrowPathIcon,
+  ArrowPathIcon,
 } from "../../components/ui/icons";
 import { DonutChart } from "../../components/charts/DonutChart";
 import { ShipmentBarChart, ShipmentPieChart } from "../../components/charts/ShipmentCharts";
@@ -109,11 +109,6 @@ export function SaasFinanceUsageBillingPage() {
                 onClick={() => toggleHighlight("deleted_jobs")} active={highlight === "deleted_jobs"}
               />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
-              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Required Pages" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
-              <StatCard
-                icon={<ExclamationTriangleIcon />} tone="amber" label="Not Required Pages" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
-                onClick={() => toggleHighlight("unclassified")} active={highlight === "unclassified"}
-              />
               <StatCard
                 icon={<TrashIcon />} tone="rose" label="Deleted Pages" value={(usage.deleted_pages ?? 0).toLocaleString()}
                 onClick={() => toggleHighlight("deleted_pages")} active={highlight === "deleted_pages"}
@@ -139,7 +134,7 @@ export function SaasFinanceUsageBillingPage() {
                 <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
               </div>
               <p className="mb-6 text-xs text-slate-400">
-                Required / Not Required / Rerun breakdown is not available for this already-finalized month.
+                Original / Rerun breakdown is not available for this already-finalized month.
               </p>
             </>
           )}
