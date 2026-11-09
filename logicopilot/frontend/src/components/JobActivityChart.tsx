@@ -114,6 +114,9 @@ export function JobActivityChart({
   const { top: niceMax, ticks } = niceTicks(max);
   const totalNew = days.reduce((sum, d) => sum + d.new_jobs, 0);
   const totalSubmitted = days.reduce((sum, d) => sum + d.erp_submitted_jobs, 0);
+  // New Jobs minus ERP Submitted Jobs, for this same month/Assigned To selection - not a
+  // separate count of its own, just this chart's own two totals read together.
+  const totalPending = Math.max(0, totalNew - totalSubmitted);
 
   const dayWidth = 72;
   const barWidth = 22;
@@ -176,6 +179,10 @@ export function JobActivityChart({
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-sm bg-[#22c55e]" /> ERP Submitted Jobs
           <span className="font-semibold text-slate-700 dark:text-slate-200">{totalSubmitted}</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-sm bg-[#f59e0b]" /> Pending Jobs
+          <span className="font-semibold text-slate-700 dark:text-slate-200">{totalPending}</span>
         </span>
       </div>
 
