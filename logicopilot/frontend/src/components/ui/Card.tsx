@@ -3,7 +3,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 export function Card({ className = "", ...rest }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={`rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/5 dark:border-slate-800 dark:bg-slate-900 ${className}`}
+      className={`overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/5 dark:border-slate-800 dark:bg-slate-900 ${className}`}
       {...rest}
     />
   );
@@ -61,8 +61,8 @@ export function StatCard({
           {icon}
         </div>
       )}
-      <div className="min-w-0">
-        <p className="flex items-center gap-1 text-sm leading-tight text-slate-500 dark:text-slate-400">
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-1 text-sm leading-tight text-slate-500 dark:text-slate-400">
           {label}
           {labelExtra}
         </p>
