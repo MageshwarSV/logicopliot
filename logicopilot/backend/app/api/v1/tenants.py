@@ -529,7 +529,7 @@ def list_billing_jobs(
     date_from/date_to (YYYY-MM-DD) further narrow by each job's own earliest billing event this
     period - a separate, finer-grained filter from `month`, not a replacement for it. `highlight`
     (one of billing.HIGHLIGHTS) narrows further to just the jobs behind one of the page's own
-    StatCards - clicking Deleted Pages, Rerun Pages, Not Required or Deleted Jobs. Only
+    StatCards - clicking Deleted Pages, Rerun Pages, Not Required Pages or Deleted Jobs. Only
     ever reads the live current month's state - there is no per-job breakdown stored on a
     finalized Invoice, so this always reflects "right now," even when `month` names an already-
     finalized past period. Super Admin may view any tenant; a Tenant Admin only their own."""
@@ -607,7 +607,7 @@ def export_billing_jobs(
     writer = csv.writer(buffer)
     writer.writerow([
         "Job Number", "Shipment Type", "Status", "Job Start Time",
-        "Original Pages", "Final Classified", "Not Required", "Deleted Pages",
+        "Original Pages", "Required Pages", "Not Required Pages", "Deleted Pages",
         "Rerun Pages", "Total Billed",
     ])
     for r in rows:

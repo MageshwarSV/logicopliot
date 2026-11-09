@@ -2872,7 +2872,7 @@ export function JobRunPage() {
           {unclassifiedPages.length > 0 && (
             <div className="lg:sticky lg:top-4 lg:self-start">
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
-                Unclassified pages · {unclassifiedPages.length}
+                Not Required pages · {unclassifiedPages.length}
               </p>
               <p className="mb-2 text-xs text-slate-400">
                 Couldn't be auto-routed — drag one onto the right document type on the left, or

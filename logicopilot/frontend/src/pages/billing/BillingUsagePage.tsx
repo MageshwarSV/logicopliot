@@ -193,9 +193,9 @@ export function BillingUsagePage() {
                 onClick={() => toggleHighlight("deleted_jobs")} active={highlight === "deleted_jobs"}
               />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
-              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Required Pages" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
               <StatCard
-                icon={<ExclamationTriangleIcon />} tone="amber" label="Not Required" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
+                icon={<ExclamationTriangleIcon />} tone="amber" label="Not Required Pages" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
                 onClick={() => toggleHighlight("unclassified")} active={highlight === "unclassified"}
               />
               <StatCard
@@ -223,7 +223,7 @@ export function BillingUsagePage() {
                 <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
               </div>
               <p className="mb-6 text-xs text-slate-400">
-                Classified / Not Required / Rerun breakdown is not available for this already-finalized month.
+                Required / Not Required / Rerun breakdown is not available for this already-finalized month.
               </p>
             </>
           )}
@@ -317,7 +317,7 @@ export function BillingUsagePage() {
                 {usage.not_required_pages > 0 && (
                   <div className="flex justify-between">
                     <dt className="text-slate-500 dark:text-slate-400">
-                      Not Required ({usage.not_required_pages.toLocaleString()} pages × ₹{usage.not_required_rate})
+                      Not Required Pages ({usage.not_required_pages.toLocaleString()} pages × ₹{usage.not_required_rate})
                     </dt>
                     <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
                   </div>

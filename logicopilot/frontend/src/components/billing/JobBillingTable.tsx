@@ -12,7 +12,7 @@ const PAGE_SIZE = 10;
 
 const HIGHLIGHT_LABELS: Record<JobBillingHighlight, string> = {
   deleted_jobs: "Deleted Jobs",
-  unclassified: "Not Required",
+  unclassified: "Not Required Pages",
   deleted_pages: "Deleted Pages",
   rerun: "Rerun Pages",
 };
@@ -65,8 +65,8 @@ function formatDateTime(iso: string): string {
   });
 }
 
-/** The reference design's "Job Details" card - per-job Original/Final Classified/Not
- *  Required/Rerun/Total breakdown, searchable by job number, filterable by shipment type
+/** The reference design's "Job Details" card - per-job Original/Required/Not Required/
+ *  Rerun/Total breakdown, searchable by job number, filterable by shipment type
  *  and date range, server-paginated (job counts can be large), with CSV export. Shared by both
  *  BillingUsagePage.tsx and UsageBillingPage.tsx so the two stay visually identical. */
 export function JobBillingTable({
@@ -179,8 +179,8 @@ export function JobBillingTable({
     { header: "Job Start Time", render: (r) => formatDateTime(r.started_at) },
     { header: "Status", render: (r) => <StatusChip status={r.status} /> },
     { header: "Original Pages", render: (r) => r.original_pages.toLocaleString() },
-    { header: "Final Classified", render: (r) => r.final_classified_pages.toLocaleString() },
-    { header: "Not Required", render: (r) => r.final_unclassified_pages.toLocaleString() },
+    { header: "Required Pages", render: (r) => r.final_classified_pages.toLocaleString() },
+    { header: "Not Required Pages", render: (r) => r.final_unclassified_pages.toLocaleString() },
     {
       header: "Deleted Pages",
       render: (r) =>
