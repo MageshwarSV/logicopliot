@@ -269,61 +269,59 @@ export function BillingUsagePage() {
       {loading && <p className="py-10 text-center text-sm text-slate-400">Loading…</p>}
 
       {!loading && usage && tab === "summary" && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2">
-            <UsageStatRow usage={usage} highlight={highlight} onSelect={setHighlight} />
+        <div className="flex flex-col gap-6">
+          <UsageStatRow usage={usage} highlight={highlight} onSelect={setHighlight} />
 
-            <Card className="mb-6 p-5">
-              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Pages by Shipment Type</h2>
-              {usage.by_shipment_type.length === 0 ? (
-                <p className="text-sm text-slate-400">No jobs this period.</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                  {usage.by_shipment_type.map((d) => (
-                    <div key={d.shipment_type} className={`flex flex-col gap-2 rounded-xl p-4 ${modeTone(d.shipment_type)}`}>
-                      <ModeIcon mode={d.shipment_type} className="h-6 w-6" />
-                      <span className="text-xs font-medium opacity-80">{d.shipment_type}</span>
-                      <span className="text-xl font-bold">
-                        {d.pages.toLocaleString()} <span className="text-xs font-normal opacity-70">pages</span>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
+          <Card className="p-5">
+            <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Pages by Shipment Type</h2>
+            {usage.by_shipment_type.length === 0 ? (
+              <p className="text-sm text-slate-400">No jobs this period.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                {usage.by_shipment_type.map((d) => (
+                  <div key={d.shipment_type} className={`flex flex-col gap-2 rounded-xl p-4 ${modeTone(d.shipment_type)}`}>
+                    <ModeIcon mode={d.shipment_type} className="h-6 w-6" />
+                    <span className="text-xs font-medium opacity-80">{d.shipment_type}</span>
+                    <span className="text-xl font-bold">
+                      {d.pages.toLocaleString()} <span className="text-xs font-normal opacity-70">pages</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
 
-            <Card className="p-5">
-              <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Page Usage</h2>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
-                    <th className="py-2 font-medium">&nbsp;</th>
-                    <th className="py-2 font-medium">Original Pages</th>
-                    <th className="py-2 font-medium">Rerun Pages</th>
-                    <th className="py-2 font-medium">Total Pages</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="bg-slate-50 dark:bg-slate-800/40">
-                    <td className="rounded-l-lg py-3 pl-3 font-semibold text-slate-900 dark:text-slate-50">Total</td>
-                    <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_original)}</td>
-                    <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_rerun)}</td>
-                    <td className="rounded-r-lg py-3 pr-3 font-semibold text-slate-900 dark:text-slate-50">{usage.total_pages.toLocaleString()}</td>
-                  </tr>
-                </tbody>
-              </table>
-              {usage.pages_original === null && (
-                <p className="mt-3 text-xs text-slate-400">
-                  Original/Rerun breakdown is not available for this already-finalized month - only the combined Total Pages figure was kept.
-                </p>
-              )}
-            </Card>
-          </div>
+          <Card className="p-5">
+            <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Page Usage</h2>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+                  <th className="py-2 font-medium">&nbsp;</th>
+                  <th className="py-2 font-medium">Original Pages</th>
+                  <th className="py-2 font-medium">Rerun Pages</th>
+                  <th className="py-2 font-medium">Total Pages</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="bg-slate-50 dark:bg-slate-800/40">
+                  <td className="rounded-l-lg py-3 pl-3 font-semibold text-slate-900 dark:text-slate-50">Total</td>
+                  <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_original)}</td>
+                  <td className="py-3 font-semibold text-slate-900 dark:text-slate-50">{statValue(usage.pages_rerun)}</td>
+                  <td className="rounded-r-lg py-3 pr-3 font-semibold text-slate-900 dark:text-slate-50">{usage.total_pages.toLocaleString()}</td>
+                </tr>
+              </tbody>
+            </table>
+            {usage.pages_original === null && (
+              <p className="mt-3 text-xs text-slate-400">
+                Original/Rerun breakdown is not available for this already-finalized month - only the combined Total Pages figure was kept.
+              </p>
+            )}
+          </Card>
 
-          <Card className="h-fit p-5">
+          <Card className="p-5">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Billing Summary – {monthLabel(month)}</h2>
-            <dl className="space-y-3 text-sm">
-              <div className="flex justify-between">
+            <dl className="grid grid-cols-1 gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
+              <div className="flex justify-between sm:col-span-2">
                 <dt className="text-slate-500 dark:text-slate-400">
                   Platform Fee (Monthly)
                   {usage.platform_fee_billed_days < usage.platform_fee_month_days && (
@@ -335,43 +333,43 @@ export function BillingUsagePage() {
                 <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.platform_fee)}</dd>
               </div>
 
-              <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
+              <div className="border-t border-slate-100 pt-3 dark:border-slate-800 sm:col-span-2">
                 <p className="mb-2 font-medium text-slate-700 dark:text-slate-200">Processing Charges</p>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-slate-500 dark:text-slate-400">
+                  Tier 1 ({usage.tier1_pages.toLocaleString()} pages × ₹{usage.tier1_rate})
+                </dt>
+                <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier1_amount)}</dd>
+              </div>
+              {usage.tier2_pages > 0 && (
                 <div className="flex justify-between">
                   <dt className="text-slate-500 dark:text-slate-400">
-                    Tier 1 ({usage.tier1_pages.toLocaleString()} pages × ₹{usage.tier1_rate})
+                    Above limit ({usage.tier2_pages.toLocaleString()} × ₹{usage.tier2_rate})
                   </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier1_amount)}</dd>
+                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
                 </div>
-                {usage.tier2_pages > 0 && (
-                  <div className="mt-1.5 flex justify-between">
-                    <dt className="text-slate-500 dark:text-slate-400">
-                      Above limit ({usage.tier2_pages.toLocaleString()} × ₹{usage.tier2_rate})
-                    </dt>
-                    <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
-                  </div>
-                )}
-                {usage.not_required_pages > 0 && (
-                  <div className="mt-1.5 flex justify-between">
-                    <dt className="text-slate-500 dark:text-slate-400">
-                      Not Required ({usage.not_required_pages.toLocaleString()} × ₹{usage.not_required_rate})
-                    </dt>
-                    <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
-                  </div>
-                )}
-              </div>
+              )}
+              {usage.not_required_pages > 0 && (
+                <div className="flex justify-between">
+                  <dt className="text-slate-500 dark:text-slate-400">
+                    Not Required ({usage.not_required_pages.toLocaleString()} × ₹{usage.not_required_rate})
+                  </dt>
+                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
+                </div>
+              )}
 
-              <div className="flex justify-between rounded-lg bg-indigo-50 px-3 py-2.5 text-base dark:bg-indigo-500/10">
+              <div className="flex justify-between rounded-lg bg-indigo-50 px-3 py-2.5 text-base dark:bg-indigo-500/10 sm:col-span-2">
                 <dt className="font-semibold text-indigo-900 dark:text-indigo-200">Subtotal (Before GST)</dt>
                 <dd className="font-semibold text-indigo-900 dark:text-indigo-200">{formatInr(usage.subtotal)}</dd>
               </div>
 
-              <div className="flex justify-between">
+              <div className="flex justify-between sm:col-span-2">
                 <dt className="text-slate-500 dark:text-slate-400">GST ({usage.gst_percent}%)</dt>
                 <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.gst_amount)}</dd>
               </div>
 
-              <div className="flex justify-between rounded-lg bg-indigo-600 px-3 py-3 text-base text-white">
+              <div className="flex justify-between rounded-lg bg-indigo-600 px-3 py-3 text-base text-white sm:col-span-2">
                 <dt className="font-semibold">Total Amount (Incl. GST)</dt>
                 <dd className="font-semibold">{formatInr(usage.total_amount)}</dd>
               </div>
