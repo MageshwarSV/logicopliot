@@ -75,6 +75,10 @@ export function SubscriptionPlansPage() {
                 <dt className="text-slate-500 dark:text-slate-400">Tier 2 rate</dt>
                 <dd className="text-slate-900 dark:text-slate-100">{formatInr(config.cargora_tier2_rate_per_page)} / page, beyond that</dd>
               </div>
+              <div className="flex justify-between">
+                <dt className="text-slate-500 dark:text-slate-400">Not Required page rate</dt>
+                <dd className="text-slate-900 dark:text-slate-100">{formatInr(config.not_required_page_rate)} / page</dd>
+              </div>
               {config.billing_start_date && (
                 <div className="flex justify-between">
                   <dt className="text-slate-500 dark:text-slate-400">Billing start date</dt>

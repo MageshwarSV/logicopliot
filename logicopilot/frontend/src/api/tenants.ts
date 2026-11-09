@@ -45,6 +45,9 @@ export interface TenantBillingConfig {
   cargora_tier1_rate_per_page: number;
   cargora_tier1_page_limit: number;
   cargora_tier2_rate_per_page: number;
+  /** A page never matched to any document ("Not Required") is billed at this flat rate
+   *  instead of the Tier 1/2 rate above. */
+  not_required_page_rate: number;
   trackcontainer_plan: "starter" | "professional" | null;
   trackcontainer_starter_price: number;
   trackcontainer_starter_container_limit: number;
@@ -183,6 +186,11 @@ export interface BillingUsage {
   tier2_rate: number;
   tier2_pages: number;
   tier2_amount: number;
+  /** Pages never matched to any document ("Not Required"), billed at this flat rate instead
+   *  of Tier 1/2 - not counted in tier1_pages/tier2_pages above. */
+  not_required_rate: number;
+  not_required_pages: number;
+  not_required_amount: number;
   usage_charges: number;
   subtotal: number;
   gst_percent: number;
@@ -206,6 +214,9 @@ export interface Invoice {
   tier2_rate: number;
   tier2_pages: number;
   tier2_amount: number;
+  not_required_rate: number;
+  not_required_pages: number;
+  not_required_amount: number;
   usage_charges: number;
   subtotal: number;
   gst_percent: number;

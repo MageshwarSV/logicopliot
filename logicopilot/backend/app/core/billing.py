@@ -427,6 +427,11 @@ class BillBreakdown(NamedTuple):
     tier2_rate: float
     tier2_pages: int
     tier2_amount: float
+    # Pages never matched to any document ("Not Required") - billed at this flat rate INSTEAD
+    # of Tier 1/2, not counted in tier1_pages/tier2_pages at all. See calculate_bill.
+    not_required_rate: float
+    not_required_pages: int
+    not_required_amount: float
     usage_charges: float
     subtotal: float
     gst_percent: float
@@ -468,19 +473,29 @@ def default_billing_config(tenant_id: str) -> TenantBillingConfig:
     config.cargora_tier1_rate_per_page = 2.50
     config.cargora_tier1_page_limit = 25000
     config.cargora_tier2_rate_per_page = 2.00
+    config.not_required_page_rate = 1.00
     config.gst_percent = 18.0
     config.billing_start_date = None
     return config
 
 
-def calculate_bill(config: TenantBillingConfig, total_pages: int, period_start: date) -> BillBreakdown:
+def calculate_bill(
+    config: TenantBillingConfig, total_pages: int, period_start: date, not_required_pages: int = 0,
+) -> BillBreakdown:
+    """total_pages is EVERY billed page, not_required_pages included - tier1_pages/tier2_pages
+    are carved out of the REMAINDER (total_pages - not_required_pages), so a Not Required page
+    is billed at config.not_required_page_rate ONLY, never also counted toward the Tier 1/2
+    rate. Confirmed with the user (2026-11-09): replace, not stack."""
     billed_days, month_days = _platform_fee_proration(config, period_start)
     platform_fee = round(config.cargora_monthly_fee * billed_days / month_days, 2)
-    tier1_pages = min(total_pages, config.cargora_tier1_page_limit)
-    tier2_pages = max(0, total_pages - config.cargora_tier1_page_limit)
+    not_required_pages = max(0, min(not_required_pages, total_pages))
+    tier_eligible_pages = total_pages - not_required_pages
+    tier1_pages = min(tier_eligible_pages, config.cargora_tier1_page_limit)
+    tier2_pages = max(0, tier_eligible_pages - config.cargora_tier1_page_limit)
     tier1_amount = round(tier1_pages * config.cargora_tier1_rate_per_page, 2)
     tier2_amount = round(tier2_pages * config.cargora_tier2_rate_per_page, 2)
-    usage_charges = round(tier1_amount + tier2_amount, 2)
+    not_required_amount = round(not_required_pages * config.not_required_page_rate, 2)
+    usage_charges = round(tier1_amount + tier2_amount + not_required_amount, 2)
     subtotal = round(platform_fee + usage_charges, 2)
     gst_amount = round(subtotal * config.gst_percent / 100, 2)
     total_amount = round(subtotal + gst_amount, 2)
@@ -488,6 +503,8 @@ def calculate_bill(config: TenantBillingConfig, total_pages: int, period_start: 
         platform_fee=platform_fee, platform_fee_billed_days=billed_days, platform_fee_month_days=month_days,
         tier1_rate=config.cargora_tier1_rate_per_page, tier1_pages=tier1_pages, tier1_amount=tier1_amount,
         tier2_rate=config.cargora_tier2_rate_per_page, tier2_pages=tier2_pages, tier2_amount=tier2_amount,
+        not_required_rate=config.not_required_page_rate, not_required_pages=not_required_pages,
+        not_required_amount=not_required_amount,
         usage_charges=usage_charges, subtotal=subtotal,
         gst_percent=config.gst_percent, gst_amount=gst_amount, total_amount=total_amount,
     )
@@ -532,7 +549,7 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
         )
         if exists is None:
             usage = compute_usage(db, tenant_id, month)
-            bill = calculate_bill(config, usage.total_pages, month)
+            bill = calculate_bill(config, usage.total_pages, month, usage.final_unclassified_pages)
             last_day = calendar.monthrange(month.year, month.month)[1]
             db.add(Invoice(
                 tenant_id=tenant_id,
@@ -545,6 +562,8 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
                 total_jobs=usage.total_jobs, total_pages=usage.total_pages,
                 tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages, tier1_amount=bill.tier1_amount,
                 tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages, tier2_amount=bill.tier2_amount,
+                not_required_rate=bill.not_required_rate, not_required_pages=bill.not_required_pages,
+                not_required_amount=bill.not_required_amount,
                 usage_charges=bill.usage_charges, subtotal=bill.subtotal,
                 gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
                 by_shipment_type=usage.by_shipment_type,

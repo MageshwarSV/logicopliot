@@ -72,7 +72,7 @@ def summarize_tenant_bill(db: Session, tenant: Tenant, period_start: date) -> Te
 
     config = db.get(TenantBillingConfig, tenant.id) or default_billing_config(tenant.id)
     usage = compute_usage(db, tenant.id, period_start)
-    bill = calculate_bill(config, usage.total_pages, period_start)
+    bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
     return TenantBillSummary(
         tenant_id=tenant.id, tenant_name=tenant.name, is_active=tenant.is_active,
         is_finalized=False, invoice_id=None, invoice_status=None,

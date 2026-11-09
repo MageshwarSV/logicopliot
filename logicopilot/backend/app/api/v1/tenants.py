@@ -457,13 +457,15 @@ def get_billing_usage(
             platform_fee_month_days=invoice.platform_fee_month_days,
             tier1_rate=invoice.tier1_rate, tier1_pages=invoice.tier1_pages, tier1_amount=invoice.tier1_amount,
             tier2_rate=invoice.tier2_rate, tier2_pages=invoice.tier2_pages, tier2_amount=invoice.tier2_amount,
+            not_required_rate=invoice.not_required_rate, not_required_pages=invoice.not_required_pages,
+            not_required_amount=invoice.not_required_amount,
             usage_charges=invoice.usage_charges, subtotal=invoice.subtotal,
             gst_percent=invoice.gst_percent, gst_amount=invoice.gst_amount, total_amount=invoice.total_amount,
         )
 
     config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
     usage = compute_usage(db, tenant_id, period_start)
-    bill = calculate_bill(config, usage.total_pages, period_start)
+    bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
     return BillingUsageOut(
         month=period_start.strftime("%Y-%m"), is_finalized=False,
         total_jobs=usage.total_jobs, total_pages=usage.total_pages,
@@ -482,7 +484,10 @@ def get_billing_usage(
         platform_fee_month_days=bill.platform_fee_month_days,
         tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages,
         tier1_amount=bill.tier1_amount, tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages,
-        tier2_amount=bill.tier2_amount, usage_charges=bill.usage_charges, subtotal=bill.subtotal,
+        tier2_amount=bill.tier2_amount,
+        not_required_rate=bill.not_required_rate, not_required_pages=bill.not_required_pages,
+        not_required_amount=bill.not_required_amount,
+        usage_charges=bill.usage_charges, subtotal=bill.subtotal,
         gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
     )
 
@@ -524,7 +529,7 @@ def list_billing_jobs(
     date_from/date_to (YYYY-MM-DD) further narrow by each job's own earliest billing event this
     period - a separate, finer-grained filter from `month`, not a replacement for it. `highlight`
     (one of billing.HIGHLIGHTS) narrows further to just the jobs behind one of the page's own
-    StatCards - clicking Deleted Pages, Rerun Pages, Final Unclassified or Deleted Jobs. Only
+    StatCards - clicking Deleted Pages, Rerun Pages, Not Required or Deleted Jobs. Only
     ever reads the live current month's state - there is no per-job breakdown stored on a
     finalized Invoice, so this always reflects "right now," even when `month` names an already-
     finalized past period. Super Admin may view any tenant; a Tenant Admin only their own."""
@@ -602,7 +607,7 @@ def export_billing_jobs(
     writer = csv.writer(buffer)
     writer.writerow([
         "Job Number", "Shipment Type", "Status", "Job Start Time",
-        "Original Pages", "Final Classified", "Final Unclassified", "Deleted Pages",
+        "Original Pages", "Final Classified", "Not Required", "Deleted Pages",
         "Rerun Pages", "Total Billed",
     ])
     for r in rows:

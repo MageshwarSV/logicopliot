@@ -56,7 +56,14 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     tier2_rate: Mapped[float] = mapped_column(Float, nullable=False)
     tier2_pages: Mapped[int] = mapped_column(Integer, nullable=False)
     tier2_amount: Mapped[float] = mapped_column(Float, nullable=False)
-    usage_charges: Mapped[float] = mapped_column(Float, nullable=False)  # tier1_amount + tier2_amount
+    # Pages never matched to any document ("Not Required"), billed at a flat rate instead of
+    # Tier 1/2 - see calculate_bill. 0/0.0 on every invoice raised before this existed, which
+    # is correct: those pages were simply billed at the Tier 1/2 rate like any other page back
+    # then, nothing to retroactively re-price.
+    not_required_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    not_required_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    not_required_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    usage_charges: Mapped[float] = mapped_column(Float, nullable=False)  # tier1_amount + tier2_amount + not_required_amount
     subtotal: Mapped[float] = mapped_column(Float, nullable=False)  # platform_fee + usage_charges
     gst_percent: Mapped[float] = mapped_column(Float, nullable=False)
     gst_amount: Mapped[float] = mapped_column(Float, nullable=False)
