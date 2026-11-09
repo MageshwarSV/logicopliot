@@ -9,6 +9,8 @@ import { ErpScriptsPage } from "../pages/super-admin/ErpScriptsPage";
 import { ErpScriptRecorderPage } from "../pages/super-admin/ErpScriptRecorderPage";
 import { ErpEntryBrowserPage } from "../pages/super-admin/ErpEntryBrowserPage";
 import { TenantAdminDashboard } from "../pages/tenant-admin/DashboardShell";
+import { DataAccuracyDashboardPage } from "../pages/tenant-admin/DataAccuracyDashboardPage";
+import { JobProcessingTimeDashboardPage } from "../pages/tenant-admin/JobProcessingTimeDashboardPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
@@ -152,6 +154,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <TenantAdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/accuracy"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <DataAccuracyDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/processing-time"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <JobProcessingTimeDashboardPage />
           </ProtectedRoute>
         }
       />

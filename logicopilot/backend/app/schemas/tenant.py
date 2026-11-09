@@ -194,6 +194,42 @@ class JobBillingPageOut(BaseModel):
     page_size: int
 
 
+class DocTypeAccuracyOut(BaseModel):
+    document_name: str
+    documents: int
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
+class AccuracyTrendPointOut(BaseModel):
+    day: str
+    accuracy_pct: float | None
+
+
+class AccuracyDashboardOut(BaseModel):
+    documents_processed: int
+    fields_extracted_by_ai: int
+    fields_manually_edited: int
+    accuracy_pct: float | None
+    by_document_type: list[DocTypeAccuracyOut]
+    trend: list[AccuracyTrendPointOut]
+
+
+class ProcessingTimeTrendPointOut(BaseModel):
+    day: str
+    avg_total_tat_minutes: float | None
+
+
+class ProcessingTimeDashboardOut(BaseModel):
+    total_jobs: int
+    avg_total_tat_minutes: float | None
+    avg_extraction_minutes: float | None
+    avg_review_minutes: float | None
+    avg_erp_submission_minutes: float | None
+    trend: list[ProcessingTimeTrendPointOut]
+
+
 class InvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

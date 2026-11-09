@@ -314,6 +314,77 @@ export async function exportBillingJobs(tenantId: string, filters: JobBillingFil
   return response.data;
 }
 
+export interface DashboardFilters {
+  /** YYYY-MM-DD, inclusive. Both default server-side to the current month so far. */
+  dateFrom?: string;
+  dateTo?: string;
+  /** Comma-separated shipment modes (e.g. "Sea Import,Air Import"). Omit for every mode. */
+  mode?: string;
+}
+
+function dashboardParams(filters: DashboardFilters) {
+  return {
+    date_from: filters.dateFrom || undefined,
+    date_to: filters.dateTo || undefined,
+    mode: filters.mode || undefined,
+  };
+}
+
+export interface DocTypeAccuracy {
+  document_name: string;
+  documents: number;
+  fields_extracted: number;
+  fields_edited: number;
+  accuracy_pct: number | null;
+}
+
+export interface DashboardTrendPoint {
+  day: string;
+  accuracy_pct?: number | null;
+  avg_total_tat_minutes?: number | null;
+}
+
+export interface AccuracyDashboard {
+  documents_processed: number;
+  fields_extracted_by_ai: number;
+  fields_manually_edited: number;
+  accuracy_pct: number | null;
+  by_document_type: DocTypeAccuracy[];
+  trend: DashboardTrendPoint[];
+}
+
+export interface ProcessingTimeDashboard {
+  total_jobs: number;
+  avg_total_tat_minutes: number | null;
+  avg_extraction_minutes: number | null;
+  avg_review_minutes: number | null;
+  avg_erp_submission_minutes: number | null;
+  trend: DashboardTrendPoint[];
+}
+
+/** Executive Dashboard - Data Accuracy page. Scoped to completed jobs only (see
+ *  app/core/dashboard_metrics.py's own module docstring for why). */
+export async function getAccuracyDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<AccuracyDashboard> {
+  const response = await apiClient.get<AccuracyDashboard>(`/tenants/${tenantId}/dashboard/accuracy`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
+/** Executive Dashboard - Job Processing Time page. */
+export async function getProcessingTimeDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<ProcessingTimeDashboard> {
+  const response = await apiClient.get<ProcessingTimeDashboard>(`/tenants/${tenantId}/dashboard/processing-time`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
 export async function createTenant(payload: {
   name: string;
   region?: string;

@@ -12,6 +12,7 @@ from app.core.billing import (
     HIGHLIGHTS, calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
     list_job_billing, list_job_billing_export,
 )
+from app.core.dashboard_metrics import compute_accuracy_metrics, compute_processing_time_metrics
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.modes import MODES
 from app.core.openai_pool import (
@@ -31,11 +32,16 @@ from app.models.tenant_extraction_config import TenantExtractionConfig
 from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
+    AccuracyDashboardOut,
+    AccuracyTrendPointOut,
     BillingUsageOut,
+    DocTypeAccuracyOut,
     InvoiceOut,
     JobBillingPageOut,
     JobBillingRowOut,
     MarkInvoicePaid,
+    ProcessingTimeDashboardOut,
+    ProcessingTimeTrendPointOut,
     ShipmentTypeUsageOut,
     TenantBillingConfigOut,
     TenantBillingConfigUpdate,
@@ -602,6 +608,91 @@ def export_billing_jobs(
         iter([buffer.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
+    """Defaults to the current calendar month so far, same shape as the billing page's own
+    default. Both ends are plain dates (inclusive) - dashboard_metrics converts to IST-aware
+    UTC bounds itself."""
+    today = datetime.now(timezone.utc).date()
+    start = _parse_optional_date(date_from, "date_from") or today.replace(day=1)
+    end = _parse_optional_date(date_to, "date_to") or today
+    if end < start:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date_to must not be before date_from")
+    if (end - start).days > 366:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Range too wide - pick 366 days or fewer")
+    return start, end
+
+
+def _resolve_dashboard_modes(mode: str | None) -> list[str] | None:
+    if not mode:
+        return None
+    chosen = [m.strip() for m in mode.split(",") if m.strip()]
+    invalid = [m for m in chosen if m not in MODES]
+    if invalid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown shipment mode(s): {', '.join(invalid)}")
+    return chosen or None
+
+
+@router.get("/{tenant_id}/dashboard/accuracy", response_model=AccuracyDashboardOut)
+def get_accuracy_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> AccuracyDashboardOut:
+    """Data Accuracy page of the Tenant Admin Executive Dashboard. Same read-access rule as
+    billing (Super Admin any tenant, Tenant Admin only their own, SaaS Finance any)."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_accuracy_metrics(db, tenant_id, start, end, modes)
+    return AccuracyDashboardOut(
+        documents_processed=m.documents_processed,
+        fields_extracted_by_ai=m.fields_extracted_by_ai,
+        fields_manually_edited=m.fields_manually_edited,
+        accuracy_pct=m.accuracy_pct,
+        by_document_type=[
+            DocTypeAccuracyOut(
+                document_name=d.document_name, documents=d.documents,
+                fields_extracted=d.fields_extracted, fields_edited=d.fields_edited,
+                accuracy_pct=d.accuracy_pct,
+            )
+            for d in m.by_document_type
+        ],
+        trend=[AccuracyTrendPointOut(day=p.day.isoformat(), accuracy_pct=p.accuracy_pct) for p in m.trend],
+    )
+
+
+@router.get("/{tenant_id}/dashboard/processing-time", response_model=ProcessingTimeDashboardOut)
+def get_processing_time_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProcessingTimeDashboardOut:
+    """Job Processing Time page of the Tenant Admin Executive Dashboard. Same read-access rule
+    as billing."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_processing_time_metrics(db, tenant_id, start, end, modes)
+    return ProcessingTimeDashboardOut(
+        total_jobs=m.total_jobs,
+        avg_total_tat_minutes=m.avg_total_tat_minutes,
+        avg_extraction_minutes=m.avg_extraction_minutes,
+        avg_review_minutes=m.avg_review_minutes,
+        avg_erp_submission_minutes=m.avg_erp_submission_minutes,
+        trend=[ProcessingTimeTrendPointOut(day=p.day.isoformat(), avg_total_tat_minutes=p.avg_total_tat_minutes) for p in m.trend],
     )
 
 

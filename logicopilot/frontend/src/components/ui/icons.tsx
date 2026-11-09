@@ -114,3 +114,52 @@ export function InfoIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function TargetIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx={12} cy={12} r={9} />
+      <circle cx={12} cy={12} r={5} />
+      <circle cx={12} cy={12} r={1} fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function UsersIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx={9} cy={8} r={3} />
+      <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
+      <path d="M16 5.5a3 3 0 0 1 0 5.9" />
+      <path d="M17 14c2.8.5 5 2.9 5 6" />
+    </Icon>
+  );
+}
+
+export function ClockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx={12} cy={12} r={9} />
+      <path d="M12 7v5l3.5 2" />
+    </Icon>
+  );
+}
+
+export function ArrowRightIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M4 12h16" />
+      <path d="m13 6 6 6-6 6" />
+    </Icon>
+  );
+}
+
+export function CalendarIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={3.5} y={5} width={17} height={16} rx={2} />
+      <path d="M3.5 9.5h17" />
+      <path d="M8 3v4M16 3v4" />
+    </Icon>
+  );
+}

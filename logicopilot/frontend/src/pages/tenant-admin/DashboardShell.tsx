@@ -5,11 +5,13 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { ModeIcon } from "../../components/ModeIcon";
+import { TargetIcon, UsersIcon, ClockIcon, ArrowRightIcon } from "../../components/ui/icons";
+import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
 import { useAuth } from "../../auth/useAuth";
 import * as usersApi from "../../api/users";
 import * as jobsApi from "../../api/jobs";
 import * as tenantsApi from "../../api/tenants";
-import type { BillingUsage } from "../../api/tenants";
+import type { BillingUsage, AccuracyDashboard, ProcessingTimeDashboard } from "../../api/tenants";
 import type { User } from "../../types/auth";
 import type { Job } from "../../types/jobs";
 
@@ -17,6 +19,125 @@ const ALL = "All";
 
 function formatInr(n: number): string {
   return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function fmtMinutes(m: number | null | undefined): string {
+  if (m == null) return "—";
+  if (m < 60) return `${Math.round(m * 10) / 10} mins`;
+  const h = Math.floor(m / 60);
+  const rem = Math.round(m % 60);
+  return `${h}h ${rem}m`;
+}
+
+/** The Overview's three summary sections - real numbers for the two pages that have them
+ *  (see app/core/dashboard_metrics.py), and a plain "coming soon" tile for Workforce
+ *  Productivity until the system tracks who reviewed a job and for how long. */
+function ExecutiveOverview() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [range, setRange] = useState<DashboardRange>(defaultDashboardRange());
+  const [accuracy, setAccuracy] = useState<AccuracyDashboard | null>(null);
+  const [processing, setProcessing] = useState<ProcessingTimeDashboard | null>(null);
+
+  useEffect(() => {
+    if (!user?.tenant_id) return;
+    const filters = { dateFrom: range.dateFrom, dateTo: range.dateTo, mode: range.mode };
+    tenantsApi.getAccuracyDashboard(user.tenant_id, filters).then(setAccuracy).catch(() => setAccuracy(null));
+    tenantsApi.getProcessingTimeDashboard(user.tenant_id, filters).then(setProcessing).catch(() => setProcessing(null));
+  }, [user?.tenant_id, range.dateFrom, range.dateTo, range.mode]);
+
+  return (
+    <div className="mb-8">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Executive Dashboard</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Key performance overview</p>
+        </div>
+      </div>
+      <DashboardFilterBar value={range} onChange={setRange} bounds={{ min: "2020-01-01", max: new Date().toISOString().slice(0, 10) }} />
+
+      <div className="flex flex-col gap-4">
+        <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-3 sm:w-48 sm:shrink-0">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
+              <TargetIcon />
+            </div>
+            <span className="font-semibold text-slate-900 dark:text-slate-50">Data Accuracy</span>
+          </div>
+          <div className="flex min-w-[140px] flex-col items-start rounded-xl bg-emerald-50 px-4 py-2.5 dark:bg-emerald-500/10">
+            <span className="text-xs font-medium text-emerald-700 dark:text-emerald-300">AI Data Accuracy</span>
+            <span className="text-xl font-bold text-emerald-700 dark:text-emerald-300">
+              {accuracy?.accuracy_pct != null ? `${accuracy.accuracy_pct}%` : "—"}
+            </span>
+          </div>
+          <div className="grid flex-1 grid-cols-3 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Documents Processed</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(accuracy?.documents_processed ?? 0).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Fields Extracted by AI</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(accuracy?.fields_extracted_by_ai ?? 0).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Fields Manually Edited</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(accuracy?.fields_manually_edited ?? 0).toLocaleString()}</p>
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/tenant-admin/dashboard/accuracy")}>
+            See More Details <ArrowRightIcon className="h-4 w-4" />
+          </Button>
+        </Card>
+
+        <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-3 sm:w-48 sm:shrink-0">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400">
+              <UsersIcon />
+            </div>
+            <span className="font-semibold text-slate-900 dark:text-slate-50">Workforce Productivity</span>
+          </div>
+          <div className="flex-1 rounded-xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-400 dark:border-slate-700">
+            Coming soon — needs new tracking of who reviewed each job and how long it took, which the system
+            doesn't record yet.
+          </div>
+        </Card>
+
+        <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-3 sm:w-48 sm:shrink-0">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400">
+              <ClockIcon />
+            </div>
+            <span className="font-semibold text-slate-900 dark:text-slate-50">Job Processing Time</span>
+          </div>
+          <div className="flex min-w-[140px] flex-col items-start rounded-xl bg-sky-50 px-4 py-2.5 dark:bg-sky-500/10">
+            <span className="text-xs font-medium text-sky-700 dark:text-sky-300">Avg. Total TAT (End-to-End)</span>
+            <span className="text-xl font-bold text-sky-700 dark:text-sky-300">{fmtMinutes(processing?.avg_total_tat_minutes)}</span>
+          </div>
+          <div className="grid flex-1 grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Jobs</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(processing?.total_jobs ?? 0).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Avg. Extraction</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(processing?.avg_extraction_minutes)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Avg. Review</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(processing?.avg_review_minutes)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Avg. ERP Submission</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(processing?.avg_erp_submission_minutes)}</p>
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/tenant-admin/dashboard/processing-time")}>
+            See More Details <ArrowRightIcon className="h-4 w-4" />
+          </Button>
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 /** Tenant Admin's actual landing page — their org's users at a glance (as before), plus what
@@ -73,6 +194,12 @@ export function TenantAdminDashboard() {
 
   return (
     <AppShell title="Dashboard" subtitle="Your organization's jobs, users, and billing, at a glance.">
+      <ExecutiveOverview />
+
+      <div className="mb-4 border-t border-slate-200 pt-6 dark:border-slate-800">
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-400">Organization</h2>
+      </div>
+
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Total Users" value={gk1 + gk2 + manager} />
         <StatCard label="Gate Keeper 1" value={gk1} />
