@@ -552,8 +552,8 @@ export function JobsPage() {
   // submission in flight — get the same pulsing sky dot; everything else is a place the job
   // is WAITING, not something happening.
   const BUSY = new Set([
-    "Running", "AI - Processing", "AI - Preparing for ERP", "ERP Entry Process Started", "Submitted",
-    "Document Classifying",
+    "Running", "AI - Processing", "AI - Re-Extraction", "AI - Preparing for ERP",
+    "ERP Entry Process Started", "Submitted", "Document Classifying",
   ]);
 
   function stageBadge(

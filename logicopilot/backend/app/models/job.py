@@ -94,6 +94,15 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # anyone that happened and the job wants a fresh Extract. run_extraction clears it again
     # on its own next run.
     needs_reextraction: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # True only while status=="extracting" AND this particular run was fired by Re-run
+    # extraction / Extract this one on a job already past "draft" - see extract_job's own
+    # is_rerun computation. Lets _outer_status tell "AI Re-Extraction" (In Review -> AI
+    # Re-Extraction -> In Review) apart from a job's first-ever "AI Processing" pass, without
+    # disturbing job.status or stage_override, which the rail and Next button still key off
+    # unchanged. Not reset back to False when extraction finishes - harmless, since nothing
+    # reads it outside the status=="extracting" check, and the next extraction always
+    # overwrites it to whatever that run actually is.
+    extraction_is_rerun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # A GK1-set target date for this job - "YYYY-MM-DD", plain calendar date with no time
     # component (a job has no timezone of its own). Set from the Jobs list; drives the ETA
     # boxes on the operator dashboard. None = no target date set.

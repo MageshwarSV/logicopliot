@@ -8,6 +8,9 @@ const STATUS_DISPLAY_MAP: Record<string, string> = {
   "Document Capture": "Pre-Alert Received",
   "Missing Documents": "Missing Documents (Exception)",
   "AI - Processing": "AI Processing",
+  // A Re-run extraction / Extract this one press on a job already in review: In Review ->
+  // AI Re-Extraction -> In Review (the follow-up to the original mapping, not in the image).
+  "AI - Re-Extraction": "AI Re-Extraction",
   "GK1 Review": "Ready for Review",
   "GK1 Reviewing": "In Review",
   "Ready for Submission": "In Review",

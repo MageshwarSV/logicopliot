@@ -958,7 +958,7 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
     if job.gk2_status == "failed":
         return "Failed"
     if job.status == "extracting":
-        return "AI - Processing"
+        return "AI - Re-Extraction" if job.extraction_is_rerun else "AI - Processing"
     # Whether every MANDATORY document slot actually has a file yet - the same test
     # _maybe_auto_extract() uses to decide when to fire extraction on its own. Checked here,
     # BEFORE computing the rail stage at all, not only for a job on its first pass - a document
@@ -1139,6 +1139,7 @@ def _begin_extraction(
     job.accepted_verifications = None
     job.stage_override = None
     job.status = "extracting"
+    job.extraction_is_rerun = is_rerun
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage="Data Validation", note="Extraction started — back to Data Validation for review"))
     db.commit()
