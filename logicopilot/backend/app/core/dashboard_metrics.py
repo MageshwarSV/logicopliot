@@ -10,11 +10,17 @@ contributes nothing - WorkforceMetrics.jobs_with_recorded_review says how many o
 that actually covers, same spirit as Job Processing Time's own "not every job has this stage"
 note.
 
-All three pages are scoped to COMPLETED jobs only, anchored on Job.completed_at - the same
-"what finished, and when" definition app/api/v1/manager_app.py already uses, so this dashboard
-can never quietly disagree with the Manager app about what counts as done. A job still being
-worked on contributes to none of them; it has no accuracy figure yet (still being corrected)
-and no duration (not yet finished).
+Job Processing Time and Workforce Productivity are scoped to COMPLETED jobs only, anchored on
+Job.completed_at - the same "what finished, and when" definition app/api/v1/manager_app.py
+already uses, so this dashboard can never quietly disagree with the Manager app about what
+counts as done. A job still being worked on contributes to neither; it has no duration yet
+(not yet finished).
+
+Data Accuracy is scoped differently, by explicit request (2026-11-09): every job CREATED in
+the window counts, finished or not (_created_jobs_query, matching the Job Activity report's
+own "New Jobs" scoping) - a document's own extraction/correction is real the moment it
+happens, not only once the whole job later finishes. This means a job's own accuracy % can
+still shift after this is read, if a correction lands on it later.
 """
 from __future__ import annotations
 
@@ -58,6 +64,20 @@ def _completed_jobs_query(db: Session, tenant_id: str, start: datetime, end: dat
         .filter(Job.completed_at >= start)
         .filter(Job.completed_at < end)
     )
+    if modes:
+        q = q.join(TemplateGroup, Job.group_id == TemplateGroup.id).filter(TemplateGroup.mode.in_(modes))
+    return q
+
+
+def _created_jobs_query(db: Session, tenant_id: str, start: datetime, end: datetime, modes: list[str] | None):
+    """Every job CREATED in this window, regardless of what has happened to it since -
+    finished, still being worked on, even failed. Matches the Job Activity report's own "New
+    Jobs" scoping (job creation date), unlike _completed_jobs_query above. Used by Data
+    Accuracy specifically, per explicit request (2026-11-09): a document's own extraction/
+    correction is real the moment it happens, not only once the whole job later finishes -
+    confirmed knowing this means a job's own accuracy % can still shift afterward if a
+    correction lands on it after this read."""
+    q = db.query(Job).filter(Job.tenant_id == tenant_id).filter(Job.created_at >= start).filter(Job.created_at < end)
     if modes:
         q = q.join(TemplateGroup, Job.group_id == TemplateGroup.id).filter(TemplateGroup.mode.in_(modes))
     return q
@@ -107,9 +127,13 @@ def compute_accuracy_metrics(
     never an AI "reading" to begin with, so correcting one is not an AI mistake. A FieldMark
     the operator must always type by hand (ask_operator=True, no document source at all) is
     excluded the same way - the AI never attempted those, so they cannot count against it.
+
+    Scoped to every job CREATED in this window, finished or not (_created_jobs_query) - unlike
+    Job Processing Time/Workforce Productivity, which need a job to have actually finished
+    before their own durations mean anything at all.
     """
     start_utc, end_utc = range_bounds(start, end)
-    jobs_q = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes)
+    jobs_q = _created_jobs_query(db, tenant_id, start_utc, end_utc, modes)
     job_ids = [r.id for r in jobs_q.with_entities(Job.id).all()]
 
     out = AccuracyMetrics()
@@ -173,12 +197,12 @@ def compute_accuracy_metrics(
         )
 
     # Daily trend: re-run the same aggregate per day in range rather than per job, so a job
-    # whose completion date falls outside a given day never leaks into that day's bucket.
+    # whose creation date falls outside a given day never leaks into that day's bucket.
     cursor = start
     while cursor <= end:
         d_start, d_end = day_bounds(cursor)
         day_job_ids = [
-            r.id for r in _completed_jobs_query(db, tenant_id, d_start, d_end, modes)
+            r.id for r in _created_jobs_query(db, tenant_id, d_start, d_end, modes)
             .with_entities(Job.id).all()
         ]
         if day_job_ids:

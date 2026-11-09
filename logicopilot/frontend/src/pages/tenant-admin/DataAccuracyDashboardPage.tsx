@@ -16,7 +16,11 @@ function fmtDay(iso: string): string {
 
 /** Data Accuracy detail page of the Executive Dashboard - see the "CARGORA - Executive
  *  Dashboard" mockup's own Data Accuracy screen. Numbers are real (see
- *  app/core/dashboard_metrics.py), scoped to jobs that finished within the selected range. */
+ *  app/core/dashboard_metrics.py), scoped to every job CREATED in the selected range, finished
+ *  or not (matching the Job Activity report's own "New Jobs" count, per explicit request
+ *  2026-11-09) - unlike Job Processing Time/Workforce Productivity, which need a job to have
+ *  actually finished first. A job still being reviewed can still get more corrections later,
+ *  so its own accuracy % here can still shift after this is read. */
 export function DataAccuracyDashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -39,7 +43,7 @@ export function DataAccuracyDashboardPage() {
   return (
     <AppShell
       title="Data Accuracy"
-      subtitle="Document extraction accuracy and manual corrections, for jobs completed in this range."
+      subtitle="Document extraction accuracy and manual corrections, for jobs created in this range."
     >
       <DashboardFilterBar value={range} onChange={setRange} />
 
@@ -71,6 +75,11 @@ export function DataAccuracyDashboardPage() {
           tone="amber"
         />
       </div>
+
+      <p className="mb-6 text-xs text-slate-400">
+        Counts every job created in this range, finished or not - a job still being reviewed can still get more
+        corrections later, so its own accuracy % here can still change after this is read.
+      </p>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="p-5">
