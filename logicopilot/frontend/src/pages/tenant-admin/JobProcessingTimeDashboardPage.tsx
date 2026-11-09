@@ -4,7 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { ClockIcon, DocumentIcon, ArrowRightIcon } from "../../components/ui/icons";
 import { LineChart } from "../../components/charts/LineChart";
-import { DashboardFilterBar, defaultDashboardRange, localIso, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { ProcessingTimeDashboard } from "../../api/tenants";
@@ -45,7 +45,6 @@ export function JobProcessingTimeDashboardPage() {
       .finally(() => setLoading(false));
   }, [user?.tenant_id, range.dateFrom, range.dateTo, range.mode]);
 
-  const today = localIso(new Date());
   const steps = [
     { label: "Pre-Alert Received" },
     { label: "AI Extraction", minutes: data?.avg_extraction_minutes ?? null },
@@ -59,7 +58,7 @@ export function JobProcessingTimeDashboardPage() {
       title="Job Processing Time"
       subtitle="End-to-end job processing time (Pre-Alert to ERP Submission), for jobs completed in this range."
     >
-      <DashboardFilterBar value={range} onChange={setRange} bounds={{ min: "2020-01-01", max: today }} />
+      <DashboardFilterBar value={range} onChange={setRange} />
 
       {error && <p className="mb-4 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
 
