@@ -366,6 +366,9 @@ export interface AccuracyDashboard {
 
 export interface ProcessingTimeDashboard {
   total_jobs: number;
+  /** How many of total_jobs have actually finished - avg_total_tat_minutes is computed from
+   *  only this subset. */
+  jobs_completed: number;
   avg_total_tat_minutes: number | null;
   avg_extraction_minutes: number | null;
   avg_review_minutes: number | null;

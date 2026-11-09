@@ -10,17 +10,22 @@ contributes nothing - WorkforceMetrics.jobs_with_recorded_review says how many o
 that actually covers, same spirit as Job Processing Time's own "not every job has this stage"
 note.
 
-Job Processing Time and Workforce Productivity are scoped to COMPLETED jobs only, anchored on
-Job.completed_at - the same "what finished, and when" definition app/api/v1/manager_app.py
-already uses, so this dashboard can never quietly disagree with the Manager app about what
-counts as done. A job still being worked on contributes to neither; it has no duration yet
-(not yet finished).
-
-Data Accuracy is scoped differently, by explicit request (2026-11-09): every job CREATED in
-the window counts, finished or not (_created_jobs_query, matching the Job Activity report's
-own "New Jobs" scoping) - a document's own extraction/correction is real the moment it
-happens, not only once the whole job later finishes. This means a job's own accuracy % can
-still shift after this is read, if a correction lands on it later.
+All three pages are scoped to every job CREATED in the selected window, finished or not
+(_created_jobs_query), matching the Job Activity report's own "New Jobs" scoping - by explicit
+request (2026-11-09), after "Total Jobs: 1" on these pages read as broken next to a report
+showing dozens of New Jobs for the same month. Within that shared population:
+  - Data Accuracy: a document's own extraction/correction is real the moment it happens, no
+    finishing required at all.
+  - Workforce Productivity: validation_approved_at/gk2_validation_approved_at don't require
+    completion either - real review work on a job still mid-ERP-submission still counts.
+  - Job Processing Time: avg_total_tat_minutes is the one figure that DOES need a job to have
+    actually finished (it's the span from creation to completion, by definition) -
+    jobs_completed says how many of total_jobs that covers. The three stage averages
+    (extraction/review/ERP submission) don't share that requirement and can include an
+    in-progress job's already-finished stages.
+A job's own numbers here can still shift later as more happens to it this period - accepted,
+since the alternative (waiting for every job to finish before counting any of it) is what
+produced the "reads as broken" problem in the first place.
 """
 from __future__ import annotations
 
@@ -232,11 +237,24 @@ def compute_accuracy_metrics(
 @dataclass
 class ProcessingTimeMetrics:
     total_jobs: int = 0
+    # How many of total_jobs have actually finished - avg_total_tat_minutes (which needs
+    # completed_at by definition) is computed from only this subset; shown on the page so a
+    # low number here explains why Total Jobs can be much bigger than what TAT was averaged
+    # over, same spirit as Workforce Productivity's own jobs_with_recorded_review.
+    jobs_completed: int = 0
     avg_total_tat_minutes: float | None = None
     avg_extraction_minutes: float | None = None
     avg_review_minutes: float | None = None
     avg_erp_submission_minutes: float | None = None
     trend: list[TrendPoint] = field(default_factory=list)
+
+
+def _is_completed_job(job: Job) -> bool:
+    """Python-side mirror of _category_condition("completed") (app/api/v1/jobs.py), for
+    filtering an already-fetched list of Job objects instead of a second SQL round-trip."""
+    if job.ai_submitted_at is not None:
+        return job.erp_verified_at is not None
+    return job.status == "completed"
 
 
 def _extraction_end(job: Job) -> datetime | None:
@@ -294,17 +312,29 @@ def _avg(values: list[float]) -> float | None:
 def compute_processing_time_metrics(
     db: Session, tenant_id: str, start: Date, end: Date, modes: list[str] | None = None,
 ) -> ProcessingTimeMetrics:
+    """Scoped to every job CREATED in this window, finished or not (_created_jobs_query,
+    matching Data Accuracy/Workforce Productivity - per explicit request 2026-11-09).
+    avg_total_tat_minutes needs a job to have actually completed (it is, by definition, the
+    span from creation to completion) - jobs_completed says how many of total_jobs that
+    covers. The three stage averages (extraction/review/ERP submission) don't share that
+    requirement - _job_stage_durations already returns None for a stage a job hasn't reached
+    yet, which _avg() silently skips, so an in-progress job can still contribute its own
+    already-finished stages (e.g. extraction time) even before the whole job wraps up.
+    """
     start_utc, end_utc = range_bounds(start, end)
-    jobs = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
+    jobs = _created_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
 
     out = ProcessingTimeMetrics(total_jobs=len(jobs))
     if not jobs:
         out.trend = [TrendPoint(day=start + timedelta(days=i)) for i in range((end - start).days + 1)]
         return out
 
-    tats, extractions, reviews, erps = [], [], [], []
+    completed_jobs = [j for j in jobs if j.completed_at is not None and _is_completed_job(j)]
+    out.jobs_completed = len(completed_jobs)
+
+    tats = [(j.completed_at - j.created_at).total_seconds() / 60 for j in completed_jobs]
+    extractions, reviews, erps = [], [], []
     for j in jobs:
-        tats.append((j.completed_at - j.created_at).total_seconds() / 60)
         ext, rev, erp = _job_stage_durations(j)
         if ext is not None:
             extractions.append(ext)
@@ -318,9 +348,11 @@ def compute_processing_time_metrics(
     out.avg_review_minutes = _avg(reviews)
     out.avg_erp_submission_minutes = _avg(erps)
 
+    # Bucketed by CREATED day, matching total_jobs' own scoping - a job created on day X that
+    # later finishes still credits day X's own trend point once it does.
     by_day: dict[Date, list[float]] = {}
-    for j in jobs:
-        local_day = (j.completed_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
+    for j in completed_jobs:
+        local_day = (j.created_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
         by_day.setdefault(local_day, []).append((j.completed_at - j.created_at).total_seconds() / 60)
 
     cursor = start
@@ -379,9 +411,15 @@ def compute_workforce_metrics(
     docstrings. A job that sailed through Data Validation with no explicit approval (no
     cross-doc checks to confirm) contributes nothing here, rather than having time guessed for
     it - jobs_with_recorded_review says how many of total_jobs that actually covers.
+
+    Scoped to every job CREATED in this window, finished or not (_created_jobs_query, matching
+    Data Accuracy - per explicit request 2026-11-09) - unlike Job.completed_at, neither
+    validation_approved_at nor gk2_validation_approved_at requires the job to have finished;
+    real review work on a job still mid-ERP-submission is real review work this period, not
+    something to wait on until the whole job later closes out.
     """
     start_utc, end_utc = range_bounds(start, end)
-    jobs = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
+    jobs = _created_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
 
     out = WorkforceMetrics(total_jobs=len(jobs))
     if not jobs:

@@ -232,6 +232,7 @@ class ProcessingTimeTrendPointOut(BaseModel):
 
 class ProcessingTimeDashboardOut(BaseModel):
     total_jobs: int
+    jobs_completed: int
     avg_total_tat_minutes: float | None
     avg_extraction_minutes: float | None
     avg_review_minutes: float | None
