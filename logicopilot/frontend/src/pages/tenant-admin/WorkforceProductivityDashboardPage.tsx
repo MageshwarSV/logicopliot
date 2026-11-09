@@ -44,7 +44,7 @@ export function WorkforceProductivityDashboardPage() {
   return (
     <AppShell
       title="Workforce Productivity"
-      subtitle="Human review effort, productivity and resource requirement, for jobs completed in this range."
+      subtitle="Human review effort, productivity and resource requirement, for jobs created in this range."
     >
       <DashboardFilterBar value={range} onChange={setRange} />
 
