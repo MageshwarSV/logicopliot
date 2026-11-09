@@ -65,8 +65,15 @@ export function localIso(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Trailing 90 days, not "this calendar month so far" - a tenant with only a handful of
+ *  completed jobs total (the common case early on) can easily have ZERO of them land in the
+ *  first few days of a new month, and a dashboard that opens to an all-zero screen reads as
+ *  broken rather than as "nothing happened yet in this narrow window." 90 days is wide enough
+ *  to almost always show something real on first open; the date pickers are still right there
+ *  to narrow or widen it. */
 export function defaultDashboardRange(): DashboardRange {
   const today = new Date();
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  return { dateFrom: localIso(first), dateTo: localIso(today), mode: "" };
+  const start = new Date(today);
+  start.setDate(start.getDate() - 89);
+  return { dateFrom: localIso(start), dateTo: localIso(today), mode: "" };
 }
