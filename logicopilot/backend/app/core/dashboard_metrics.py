@@ -1,16 +1,19 @@
-"""Tenant Admin Executive Dashboard — Data Accuracy and Job Processing Time pages only.
+"""Tenant Admin Executive Dashboard: Data Accuracy, Job Processing Time, and Workforce
+Productivity.
 
-Workforce Productivity (FTE, review hours per employee) is deliberately NOT here: it would
-need per-user, per-stage start/end timestamps the system does not record today (JobEvent has
-no actor column; Job has no "review started/finished" pair the way it has erp_verified_at/
-erp_verified_by_id for the one checkpoint that IS tracked). Faking those numbers on an
-executive-facing dashboard would be worse than not showing them - see the Workforce
-Productivity page once that tracking exists.
+Workforce Productivity's numbers (FTE, review hours per employee) only cover jobs that
+recorded a real actor+timestamp for GK1's and/or GK2's "Approved and Proceed" press on Data
+Validation (Job.validation_approved_at/_by_id, gk2_validation_approved_at/_by_id - added
+specifically to make this page honest rather than invented, see those columns' own
+docstrings). A job that sailed through Data Validation with no explicit approval at all
+contributes nothing - WorkforceMetrics.jobs_with_recorded_review says how many of total_jobs
+that actually covers, same spirit as Job Processing Time's own "not every job has this stage"
+note.
 
-Both pages here are scoped to COMPLETED jobs only, anchored on Job.completed_at - the same
+All three pages are scoped to COMPLETED jobs only, anchored on Job.completed_at - the same
 "what finished, and when" definition app/api/v1/manager_app.py already uses, so this dashboard
 can never quietly disagree with the Manager app about what counts as done. A job still being
-worked on contributes to neither page; it has no accuracy figure yet (still being corrected)
+worked on contributes to none of them; it has no accuracy figure yet (still being corrected)
 and no duration (not yet finished).
 """
 from __future__ import annotations
@@ -23,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.jobs import _category_condition
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
+from app.models.user import User
 from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
@@ -211,6 +215,19 @@ class ProcessingTimeMetrics:
     trend: list[TrendPoint] = field(default_factory=list)
 
 
+def _extraction_end(job: Job) -> datetime | None:
+    """The timestamp right after the LAST "extracting" JobEvent - i.e. when this job's final
+    extraction pass actually finished. Shared by _job_stage_durations (Job Processing Time)
+    and compute_workforce_metrics (review-time-per-employee), so the two pages can never
+    disagree about where extraction ends and review begins."""
+    events = sorted(job.events, key=lambda e: e.created_at)
+    extraction_end = None
+    for i, ev in enumerate(events):
+        if ev.status == "extracting":
+            extraction_end = events[i + 1].created_at if i + 1 < len(events) else None
+    return extraction_end
+
+
 def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | None]:
     """(extraction_minutes, review_minutes, erp_submission_minutes) for ONE completed job,
     reconstructed from JobEvent history plus the job's own checkpoint timestamps.
@@ -225,11 +242,11 @@ def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | 
     a job that actually went through that path.
     """
     events = sorted(job.events, key=lambda e: e.created_at)
-    extraction_start = extraction_end = None
-    for i, ev in enumerate(events):
+    extraction_start = None
+    extraction_end = _extraction_end(job)
+    for ev in events:
         if ev.status == "extracting":
             extraction_start = ev.created_at
-            extraction_end = events[i + 1].created_at if i + 1 < len(events) else None
     extraction_minutes = None
     if extraction_start and extraction_end:
         extraction_minutes = (extraction_end - extraction_start).total_seconds() / 60
@@ -286,5 +303,135 @@ def compute_processing_time_metrics(
     while cursor <= end:
         out.trend.append(TrendPoint(day=cursor, avg_total_tat_minutes=_avg(by_day.get(cursor, []))))
         cursor += timedelta(days=1)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Workforce Productivity
+# ---------------------------------------------------------------------------
+
+# Matches the "5 hrs/day x 6 days/week" convention the Executive Dashboard mockup itself
+# specifies for its own FTE calculation - Sunday is the one day off; every other day in the
+# range counts as a working day, regardless of how that day's own jobs actually landed.
+WORKING_HOURS_PER_DAY = 5.0
+SUNDAY = 6  # datetime.weekday()'s own numbering: Monday=0 .. Sunday=6
+
+
+def _working_hours_in_range(start: Date, end: Date) -> float:
+    days = (end - start).days + 1
+    sundays = sum(1 for i in range(days) if (start + timedelta(days=i)).weekday() == SUNDAY)
+    return (days - sundays) * WORKING_HOURS_PER_DAY
+
+
+@dataclass
+class EmployeeReviewRow:
+    user_id: str
+    name: str
+    jobs_reviewed: int
+    review_hours: float
+    avg_minutes_per_job: float | None
+
+
+@dataclass
+class WorkforceMetrics:
+    employee_requirement_fte: float | None = None
+    avg_review_minutes_per_job: float | None = None
+    total_jobs: int = 0
+    human_review_hours: float = 0.0
+    by_employee: list[EmployeeReviewRow] = field(default_factory=list)
+    # How many of total_jobs actually had a usable GK1 or GK2 approval timestamp to measure -
+    # shown on the page so a low number here explains a small human_review_hours figure, same
+    # spirit as Job Processing Time's own "not every job has this stage" note.
+    jobs_with_recorded_review: int = 0
+
+
+def compute_workforce_metrics(
+    db: Session, tenant_id: str, start: Date, end: Date, modes: list[str] | None = None,
+) -> WorkforceMetrics:
+    """Real, not invented: only counts time between a job's own extraction-finished moment and
+    an actual "Approved and Proceed" press (Job.validation_approved_at for GK1, or
+    gk2_validation_approved_at for GK2's own separate pass) - see those columns' own
+    docstrings. A job that sailed through Data Validation with no explicit approval (no
+    cross-doc checks to confirm) contributes nothing here, rather than having time guessed for
+    it - jobs_with_recorded_review says how many of total_jobs that actually covers.
+    """
+    start_utc, end_utc = range_bounds(start, end)
+    jobs = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
+
+    out = WorkforceMetrics(total_jobs=len(jobs))
+    if not jobs:
+        return out
+
+    user_ids: set[str] = set()
+    per_user_hours: dict[str, float] = {}
+    per_user_jobs: dict[str, set[str]] = {}
+    jobs_with_review: set[str] = set()
+
+    for job in jobs:
+        extraction_end = _extraction_end(job)
+        if extraction_end is None:
+            continue
+
+        gk1_end = job.validation_approved_at
+        if gk1_end and job.validation_approved_by_id and gk1_end > extraction_end:
+            hours = (gk1_end - extraction_end).total_seconds() / 3600
+            uid = job.validation_approved_by_id
+            per_user_hours[uid] = per_user_hours.get(uid, 0.0) + hours
+            per_user_jobs.setdefault(uid, set()).add(job.id)
+            user_ids.add(uid)
+            jobs_with_review.add(job.id)
+
+        gk2_end = job.gk2_validation_approved_at
+        gk2_start = gk1_end or extraction_end
+        if gk2_end and job.gk2_validation_approved_by_id and gk2_end > gk2_start:
+            hours = (gk2_end - gk2_start).total_seconds() / 3600
+            uid = job.gk2_validation_approved_by_id
+            per_user_hours[uid] = per_user_hours.get(uid, 0.0) + hours
+            per_user_jobs.setdefault(uid, set()).add(job.id)
+            user_ids.add(uid)
+            jobs_with_review.add(job.id)
+
+    out.jobs_with_recorded_review = len(jobs_with_review)
+    out.human_review_hours = round(sum(per_user_hours.values()), 1)
+
+    if jobs_with_review:
+        # Per-job total (a job with both a GK1 and a GK2 pass counts both toward its own
+        # total), averaged across only the jobs that have any recorded time at all.
+        per_job_hours: dict[str, float] = {}
+        for job in jobs:
+            if job.id not in jobs_with_review:
+                continue
+            total = 0.0
+            extraction_end = _extraction_end(job)
+            if job.validation_approved_at and job.validation_approved_by_id and extraction_end and job.validation_approved_at > extraction_end:
+                total += (job.validation_approved_at - extraction_end).total_seconds() / 60
+            gk2_start = job.validation_approved_at or extraction_end
+            if job.gk2_validation_approved_at and job.gk2_validation_approved_by_id and gk2_start and job.gk2_validation_approved_at > gk2_start:
+                total += (job.gk2_validation_approved_at - gk2_start).total_seconds() / 60
+            per_job_hours[job.id] = total
+        out.avg_review_minutes_per_job = _avg(list(per_job_hours.values()))
+
+    working_hours = _working_hours_in_range(start, end)
+    if working_hours > 0:
+        out.employee_requirement_fte = round(out.human_review_hours / working_hours, 2)
+
+    if user_ids:
+        names = {u.id: (u.full_name or u.email) for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+        rows = [
+            EmployeeReviewRow(
+                user_id=uid,
+                name=names.get(uid, "Unknown user"),
+                jobs_reviewed=len(per_user_jobs.get(uid, ())),
+                review_hours=round(per_user_hours.get(uid, 0.0), 1),
+                avg_minutes_per_job=(
+                    round(per_user_hours[uid] * 60 / len(per_user_jobs[uid]), 1)
+                    if per_user_jobs.get(uid) else None
+                ),
+            )
+            for uid in user_ids
+        ]
+        rows.sort(key=lambda r: -r.review_hours)
+        out.by_employee = rows
 
     return out

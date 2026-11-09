@@ -1134,7 +1134,11 @@ def _begin_extraction(
         approval_scope = approval_scope.filter(JobDocument.id == only_job_document_id)
     approval_scope.update({"approved": False, "gk2_approved": False}, synchronize_session=False)
     job.validation_approved = False
+    job.validation_approved_at = None
+    job.validation_approved_by_id = None
     job.gk2_validation_approved = False
+    job.gk2_validation_approved_at = None
+    job.gk2_validation_approved_by_id = None
     job.gk2_status = None
     job.accepted_verifications = None
     job.stage_override = None
@@ -2646,10 +2650,15 @@ def approve_validation(
     cross-checks stay visible on the screen regardless; this button says a human looked, not
     that nothing was found."""
     job = _load_job(db, job_id, scope, user)
+    now = datetime.now(timezone.utc)
     if user.role == GK2:
         job.gk2_validation_approved = True
+        job.gk2_validation_approved_at = now
+        job.gk2_validation_approved_by_id = user.id
     else:
         job.validation_approved = True
+        job.validation_approved_at = now
+        job.validation_approved_by_id = user.id
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)

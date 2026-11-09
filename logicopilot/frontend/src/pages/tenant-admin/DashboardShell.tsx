@@ -11,7 +11,7 @@ import { useAuth } from "../../auth/useAuth";
 import * as usersApi from "../../api/users";
 import * as jobsApi from "../../api/jobs";
 import * as tenantsApi from "../../api/tenants";
-import type { BillingUsage, AccuracyDashboard, ProcessingTimeDashboard } from "../../api/tenants";
+import type { BillingUsage, AccuracyDashboard, ProcessingTimeDashboard, WorkforceDashboard } from "../../api/tenants";
 import type { User } from "../../types/auth";
 import type { Job } from "../../types/jobs";
 
@@ -38,12 +38,14 @@ function ExecutiveOverview() {
   const [range, setRange] = useState<DashboardRange>(defaultDashboardRange());
   const [accuracy, setAccuracy] = useState<AccuracyDashboard | null>(null);
   const [processing, setProcessing] = useState<ProcessingTimeDashboard | null>(null);
+  const [workforce, setWorkforce] = useState<WorkforceDashboard | null>(null);
 
   useEffect(() => {
     if (!user?.tenant_id) return;
     const filters = { dateFrom: range.dateFrom, dateTo: range.dateTo, mode: range.mode };
     tenantsApi.getAccuracyDashboard(user.tenant_id, filters).then(setAccuracy).catch(() => setAccuracy(null));
     tenantsApi.getProcessingTimeDashboard(user.tenant_id, filters).then(setProcessing).catch(() => setProcessing(null));
+    tenantsApi.getWorkforceDashboard(user.tenant_id, filters).then(setWorkforce).catch(() => setWorkforce(null));
   }, [user?.tenant_id, range.dateFrom, range.dateTo, range.mode]);
 
   return (
@@ -96,10 +98,29 @@ function ExecutiveOverview() {
             </div>
             <span className="font-semibold text-slate-900 dark:text-slate-50">Workforce Productivity</span>
           </div>
-          <div className="flex-1 rounded-xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-400 dark:border-slate-700">
-            Coming soon — needs new tracking of who reviewed each job and how long it took, which the system
-            doesn't record yet.
+          <div className="flex min-w-[140px] flex-col items-start rounded-xl bg-violet-50 px-4 py-2.5 dark:bg-violet-500/10">
+            <span className="text-xs font-medium text-violet-700 dark:text-violet-300">Employee Requirement (FTE)</span>
+            <span className="text-xl font-bold text-violet-700 dark:text-violet-300">
+              {workforce?.employee_requirement_fte != null ? `${workforce.employee_requirement_fte} FTE` : "—"}
+            </span>
           </div>
+          <div className="grid flex-1 grid-cols-3 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Avg. Review Time per Job</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(workforce?.avg_review_minutes_per_job)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Jobs</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.total_jobs ?? 0).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Human Review Hours</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.human_review_hours ?? 0).toLocaleString()} hrs</p>
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => navigate("/tenant-admin/dashboard/workforce")}>
+            See More Details <ArrowRightIcon className="h-4 w-4" />
+          </Button>
         </Card>
 
         <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">

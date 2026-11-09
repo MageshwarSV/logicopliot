@@ -11,6 +11,7 @@ import { ErpEntryBrowserPage } from "../pages/super-admin/ErpEntryBrowserPage";
 import { TenantAdminDashboard } from "../pages/tenant-admin/DashboardShell";
 import { DataAccuracyDashboardPage } from "../pages/tenant-admin/DataAccuracyDashboardPage";
 import { JobProcessingTimeDashboardPage } from "../pages/tenant-admin/JobProcessingTimeDashboardPage";
+import { WorkforceProductivityDashboardPage } from "../pages/tenant-admin/WorkforceProductivityDashboardPage";
 import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
@@ -173,6 +174,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <JobProcessingTimeDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/workforce"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <WorkforceProductivityDashboardPage />
           </ProtectedRoute>
         }
       />

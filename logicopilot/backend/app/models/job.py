@@ -52,10 +52,27 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # very values that were approved. A job with no cross-doc checks at all would otherwise
     # sail through Data Validation with nobody ever having looked at it.
     validation_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # WHO pressed it and WHEN - the Workforce Productivity dashboard's own review-time/FTE
+    # figures are reconstructed from this (and its gk2_ counterpart below) paired against the
+    # job's own extraction-finished moment; see app/core/dashboard_metrics.py. Cleared
+    # alongside validation_approved on re-extraction (_begin_extraction), for the same reason:
+    # a stale actor/timestamp from a PREVIOUS pass must not be credited against this one's
+    # review time. None on every job approved before this column existed, and on any job that
+    # sailed through with no explicit approval at all - excluded from the average rather than
+    # guessed at, same as every other "no data for this one" case on that dashboard.
+    validation_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validation_approved_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     # GK2's OWN independent "Approved and Proceed" on Data Validation, on their separate
     # re-review pass - see JobDocument.gk2_approved for why this is a second column rather
     # than reusing validation_approved.
     gk2_validation_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Mirrors validation_approved_at/validation_approved_by_id, for GK2's own pass.
+    gk2_validation_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gk2_validation_approved_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     # The GK1 (operator) -> GK2 (Gate Keeper 2) sign-off chain, layered on top of an already
     # "extracted" job rather than added as more job.status values - job.status still says
     # what actually happened to the data (extracted, or a real ERP outcome, if that pipeline

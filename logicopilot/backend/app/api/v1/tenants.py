@@ -12,7 +12,9 @@ from app.core.billing import (
     HIGHLIGHTS, calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
     list_job_billing, list_job_billing_export,
 )
-from app.core.dashboard_metrics import compute_accuracy_metrics, compute_processing_time_metrics
+from app.core.dashboard_metrics import (
+    compute_accuracy_metrics, compute_processing_time_metrics, compute_workforce_metrics,
+)
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.finance_aggregation import summarize_tenant_bill, trailing_months
 from app.core.finance_export import rows_to_csv, rows_to_xlsx
@@ -38,6 +40,7 @@ from app.schemas.tenant import (
     AccuracyTrendPointOut,
     BillingUsageOut,
     DocTypeAccuracyOut,
+    EmployeeReviewRowOut,
     InvoiceOut,
     JobBillingPageOut,
     JobBillingRowOut,
@@ -46,6 +49,7 @@ from app.schemas.tenant import (
     ProcessingTimeTrendPointOut,
     ShipmentTypeUsageOut,
     TenantBillingConfigOut,
+    WorkforceDashboardOut,
     TenantBillingConfigUpdate,
     TenantCreate,
     TenantExtractionConfigOut,
@@ -698,6 +702,40 @@ def get_processing_time_dashboard(
         avg_review_minutes=m.avg_review_minutes,
         avg_erp_submission_minutes=m.avg_erp_submission_minutes,
         trend=[ProcessingTimeTrendPointOut(day=p.day.isoformat(), avg_total_tat_minutes=p.avg_total_tat_minutes) for p in m.trend],
+    )
+
+
+@router.get("/{tenant_id}/dashboard/workforce", response_model=WorkforceDashboardOut)
+def get_workforce_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkforceDashboardOut:
+    """Workforce Productivity page of the Tenant Admin Executive Dashboard. Only counts jobs
+    with a real recorded "Approved and Proceed" press (see compute_workforce_metrics's own
+    docstring) - jobs_with_recorded_review says how many of total_jobs that covers."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_workforce_metrics(db, tenant_id, start, end, modes)
+    return WorkforceDashboardOut(
+        employee_requirement_fte=m.employee_requirement_fte,
+        avg_review_minutes_per_job=m.avg_review_minutes_per_job,
+        total_jobs=m.total_jobs,
+        human_review_hours=m.human_review_hours,
+        jobs_with_recorded_review=m.jobs_with_recorded_review,
+        by_employee=[
+            EmployeeReviewRowOut(
+                user_id=r.user_id, name=r.name, jobs_reviewed=r.jobs_reviewed,
+                review_hours=r.review_hours, avg_minutes_per_job=r.avg_minutes_per_job,
+            )
+            for r in m.by_employee
+        ],
     )
 
 

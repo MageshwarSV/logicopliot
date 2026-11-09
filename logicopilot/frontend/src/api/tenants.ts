@@ -385,6 +385,36 @@ export async function getProcessingTimeDashboard(
   return response.data;
 }
 
+export interface EmployeeReviewRow {
+  user_id: string;
+  name: string;
+  jobs_reviewed: number;
+  review_hours: number;
+  avg_minutes_per_job: number | null;
+}
+
+export interface WorkforceDashboard {
+  employee_requirement_fte: number | null;
+  avg_review_minutes_per_job: number | null;
+  total_jobs: number;
+  human_review_hours: number;
+  jobs_with_recorded_review: number;
+  by_employee: EmployeeReviewRow[];
+}
+
+/** Executive Dashboard - Workforce Productivity page. Only covers jobs with a real recorded
+ *  "Approved and Proceed" timestamp - jobs_with_recorded_review says how many of total_jobs
+ *  that is. */
+export async function getWorkforceDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<WorkforceDashboard> {
+  const response = await apiClient.get<WorkforceDashboard>(`/tenants/${tenantId}/dashboard/workforce`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
 export type TenantReportType = "monthly-usage" | "billing-summary" | "revenue-trend" | "outstanding-payments";
 
 /** A tenant-scoped report row set, trailing 12 months (except outstanding-payments, which is

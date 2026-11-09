@@ -230,6 +230,23 @@ class ProcessingTimeDashboardOut(BaseModel):
     trend: list[ProcessingTimeTrendPointOut]
 
 
+class EmployeeReviewRowOut(BaseModel):
+    user_id: str
+    name: str
+    jobs_reviewed: int
+    review_hours: float
+    avg_minutes_per_job: float | None
+
+
+class WorkforceDashboardOut(BaseModel):
+    employee_requirement_fte: float | None
+    avg_review_minutes_per_job: float | None
+    total_jobs: int
+    human_review_hours: float
+    jobs_with_recorded_review: int
+    by_employee: list[EmployeeReviewRowOut]
+
+
 class InvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
