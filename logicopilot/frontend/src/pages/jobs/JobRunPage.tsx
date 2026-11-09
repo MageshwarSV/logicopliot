@@ -7,6 +7,7 @@ import { AppShell } from "../../components/AppShell";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
+import { displayStatusLabel } from "../../utils/statusDisplay";
 import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
@@ -2404,7 +2405,7 @@ export function JobRunPage() {
               return (
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>
                   {busy && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
-                  {outer}
+                  {displayStatusLabel(outer)}
                 </span>
               );
             })()}

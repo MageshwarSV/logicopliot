@@ -13,6 +13,7 @@ import { Alert } from "../../components/ui/Alert";
 import * as jobsApi from "../../api/jobs";
 import * as emailApi from "../../api/email";
 import * as tenantsApi from "../../api/tenants";
+import { displayStatusLabel } from "../../utils/statusDisplay";
 import * as usersApi from "../../api/users";
 import type { Job, JobEvent } from "../../types/jobs";
 import type { Tenant } from "../../types/tenant";
@@ -596,7 +597,7 @@ export function JobsPage() {
           title={missingDocuments?.length ? `Missing: ${missingDocuments.join(", ")}` : undefined}
         >
           {BUSY.has(s) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
-          {s}
+          {displayStatusLabel(s)}
         </span>
         {/* Named right here too, not only on hover - the whole point is an operator can tell
             WHICH document to go find without opening the job. */}
