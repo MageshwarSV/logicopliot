@@ -84,6 +84,10 @@ export function SaasFinancePricingPlansPage() {
               </dt>
               <dd className="text-lg font-semibold text-slate-900 dark:text-slate-50">{formatInr(config.cargora_tier2_rate_per_page)} / page</dd>
             </div>
+            <div>
+              <dt className="text-sm text-slate-500 dark:text-slate-400">Not Required page rate</dt>
+              <dd className="text-lg font-semibold text-slate-900 dark:text-slate-50">{formatInr(config.not_required_page_rate)} / page</dd>
+            </div>
             {config.billing_start_date && (
               <div>
                 <dt className="text-sm text-slate-500 dark:text-slate-400">Billing start date</dt>

@@ -58,6 +58,9 @@ class TenantBillingConfigOut(BaseModel):
     cargora_tier1_rate_per_page: float
     cargora_tier1_page_limit: int
     cargora_tier2_rate_per_page: float
+    # A page never matched to any document ("Not Required") is billed at this flat rate
+    # instead of the Tier 1/2 rate above - see calculate_bill.
+    not_required_page_rate: float
     trackcontainer_plan: str | None
     trackcontainer_starter_price: float
     trackcontainer_starter_container_limit: int
@@ -74,6 +77,7 @@ class TenantBillingConfigUpdate(BaseModel):
     cargora_tier1_rate_per_page: float | None = None
     cargora_tier1_page_limit: int | None = None
     cargora_tier2_rate_per_page: float | None = None
+    not_required_page_rate: float | None = None
     # null = not subscribed to TrackContainer at all.
     trackcontainer_plan: str | None = None
     trackcontainer_starter_price: float | None = None
@@ -163,6 +167,11 @@ class BillingUsageOut(BaseModel):
     tier2_rate: float
     tier2_pages: int
     tier2_amount: float
+    # Not Required pages (see final_unclassified_pages), billed at a flat rate instead of
+    # Tier 1/2 - not counted in tier1_pages/tier2_pages above.
+    not_required_rate: float
+    not_required_pages: int
+    not_required_amount: float
     usage_charges: float
     subtotal: float
     gst_percent: float
@@ -194,6 +203,59 @@ class JobBillingPageOut(BaseModel):
     page_size: int
 
 
+class DocTypeAccuracyOut(BaseModel):
+    document_name: str
+    documents: int
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
+class AccuracyTrendPointOut(BaseModel):
+    day: str
+    accuracy_pct: float | None
+
+
+class AccuracyDashboardOut(BaseModel):
+    documents_processed: int
+    fields_extracted_by_ai: int
+    fields_manually_edited: int
+    accuracy_pct: float | None
+    by_document_type: list[DocTypeAccuracyOut]
+    trend: list[AccuracyTrendPointOut]
+
+
+class ProcessingTimeTrendPointOut(BaseModel):
+    day: str
+    avg_total_tat_minutes: float | None
+
+
+class ProcessingTimeDashboardOut(BaseModel):
+    total_jobs: int
+    avg_total_tat_minutes: float | None
+    avg_extraction_minutes: float | None
+    avg_review_minutes: float | None
+    avg_erp_submission_minutes: float | None
+    trend: list[ProcessingTimeTrendPointOut]
+
+
+class EmployeeReviewRowOut(BaseModel):
+    user_id: str
+    name: str
+    jobs_reviewed: int
+    review_hours: float
+    avg_minutes_per_job: float | None
+
+
+class WorkforceDashboardOut(BaseModel):
+    employee_requirement_fte: float | None
+    avg_review_minutes_per_job: float | None
+    total_jobs: int
+    human_review_hours: float
+    jobs_with_recorded_review: int
+    by_employee: list[EmployeeReviewRowOut]
+
+
 class InvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -212,6 +274,9 @@ class InvoiceOut(BaseModel):
     tier2_rate: float
     tier2_pages: int
     tier2_amount: float
+    not_required_rate: float
+    not_required_pages: int
+    not_required_amount: float
     usage_charges: float
     subtotal: float
     gst_percent: float

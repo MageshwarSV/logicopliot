@@ -46,6 +46,33 @@ def describe(status: str) -> str:
     return _WORDS.get(status, status or "")
 
 
+# The same CARGORA external-status words the Jobs list/job header badges show (see
+# frontend/src/utils/statusDisplay.ts) - this history popup used to show the words above
+# instead, which read as a second, internal-sounding vocabulary next to the badge the operator
+# already knows. Keyed on JobEvent.status (the only thing every event actually carries) plus,
+# for "extracting", whether its own note says this was a re-run - see _begin_extraction in
+# app/api/v1/jobs.py, the one place that note text is written. This is necessarily an
+# approximation: the live badge also reads gk2_status/stage_override, neither of which a past
+# JobEvent snapshots, so a job's GK2-approval detour (Pending GK2 Approval, IRN Document
+# Process, ...) never shows as its own history line - only the coarser status this event
+# actually recorded does.
+_EXTERNAL_WORDS = {
+    "draft": "Pre-Alert Received",
+    "extracting": "AI Processing",
+    "processing": "ERP Submitted",
+    "extracted": "Ready for Review",
+    "completed": "ERP Submitted",
+    "failed": "Failed (Exception)",
+    "duplicate": "Possible Duplicate (Exception)",
+}
+
+
+def describe_external(status: str, note: str | None = None) -> str:
+    if status == "extracting" and note and note.lower().startswith("re-extraction"):
+        return "AI Re-Extraction"
+    return _EXTERNAL_WORDS.get(status, status or "")
+
+
 def _changed_status(session: Session, obj) -> tuple[bool, str | None]:
     """Did this job's status really change, and what was it before?
 

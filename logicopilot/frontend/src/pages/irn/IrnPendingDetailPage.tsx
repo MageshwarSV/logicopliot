@@ -4,6 +4,7 @@ import * as publicIrnApi from "../../api/publicIrn";
 import type { IrnDocumentGroup } from "../../api/publicIrn";
 import type { JobDetail } from "../../types/jobs";
 import { PublicIrnShell } from "./PublicIrnShell";
+import { displayStatusLabel } from "../../utils/statusDisplay";
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
 
@@ -277,7 +278,7 @@ export function IrnPendingDetailPage() {
     >
       {movedOn && (
         <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
-          Every document is signed — this job has moved on to {job.outer_status ?? "the next stage"}.
+          Every document is signed — this job has moved on to {displayStatusLabel(job.outer_status) || "the next stage"}.
         </div>
       )}
       <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">

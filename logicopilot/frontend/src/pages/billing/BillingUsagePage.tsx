@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -61,9 +61,13 @@ export function BillingUsagePage() {
   const navigate = useNavigate();
   const isSuperAdmin = user?.role === "super_admin";
 
+  const [searchParams] = useSearchParams();
+
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState<string | null>(user?.tenant_id ?? null);
-  const [month, setMonth] = useState<string>(currentMonthStr());
+  // Seeded from ?month=YYYY-MM once, e.g. the Invoices page's own "View" link - never
+  // re-read after mount, so the month switcher below still works normally afterward.
+  const [month, setMonth] = useState<string>(searchParams.get("month") || currentMonthStr());
   const [usage, setUsage] = useState<BillingUsage | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,9 +193,9 @@ export function BillingUsagePage() {
                 onClick={() => toggleHighlight("deleted_jobs")} active={highlight === "deleted_jobs"}
               />
               <StatCard icon={<LayersIcon />} tone="blue" label="Original Pages" value={usage.pages_original.toLocaleString()} />
-              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Final Classified" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
+              <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Required Pages" value={(usage.final_classified_pages ?? 0).toLocaleString()} />
               <StatCard
-                icon={<ExclamationTriangleIcon />} tone="amber" label="Final Unclassified" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
+                icon={<ExclamationTriangleIcon />} tone="amber" label="Not Required Pages" value={(usage.final_unclassified_pages ?? 0).toLocaleString()}
                 onClick={() => toggleHighlight("unclassified")} active={highlight === "unclassified"}
               />
               <StatCard
@@ -219,7 +223,7 @@ export function BillingUsagePage() {
                 <StatCard label="Total Amount" value={formatInr(usage.total_amount)} />
               </div>
               <p className="mb-6 text-xs text-slate-400">
-                Classified / Unclassified / Rerun breakdown is not available for this already-finalized month.
+                Required / Not Required / Rerun breakdown is not available for this already-finalized month.
               </p>
             </>
           )}
@@ -310,6 +314,14 @@ export function BillingUsagePage() {
                   </dt>
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
                 </div>
+                {usage.not_required_pages > 0 && (
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500 dark:text-slate-400">
+                      Not Required Pages ({usage.not_required_pages.toLocaleString()} pages × ₹{usage.not_required_rate})
+                    </dt>
+                    <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
+                  </div>
+                )}
                 <div className="flex justify-between border-t border-slate-200 pt-2 dark:border-slate-800">
                   <dt className="text-slate-500 dark:text-slate-400">Subtotal</dt>
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.subtotal)}</dd>

@@ -9,6 +9,12 @@ import { ErpScriptsPage } from "../pages/super-admin/ErpScriptsPage";
 import { ErpScriptRecorderPage } from "../pages/super-admin/ErpScriptRecorderPage";
 import { ErpEntryBrowserPage } from "../pages/super-admin/ErpEntryBrowserPage";
 import { TenantAdminDashboard } from "../pages/tenant-admin/DashboardShell";
+import { DataAccuracyDashboardPage } from "../pages/tenant-admin/DataAccuracyDashboardPage";
+import { JobProcessingTimeDashboardPage } from "../pages/tenant-admin/JobProcessingTimeDashboardPage";
+import { WorkforceProductivityDashboardPage } from "../pages/tenant-admin/WorkforceProductivityDashboardPage";
+import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
+import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
+import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
@@ -152,6 +158,54 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <TenantAdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/accuracy"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <DataAccuracyDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/processing-time"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <JobProcessingTimeDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/dashboard/workforce"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <WorkforceProductivityDashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/invoices"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <InvoicesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/subscription"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <SubscriptionPlansPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/reports"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <TenantReportsPage />
           </ProtectedRoute>
         }
       />

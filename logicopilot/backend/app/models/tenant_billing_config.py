@@ -6,12 +6,13 @@ from app.models.mixins import TimestampMixin
 
 
 class TenantBillingConfig(Base, TimestampMixin):
-    """Per-tenant pricing/billing reference numbers a Super Admin records against third-party
-    services this tenant is billed for - CARGORA's own platform fee and AI-page processing
-    tiers, and the TrackContainer.in plan this tenant is on. Pure reference data: nothing
-    elsewhere in the app reads these to enforce or calculate an actual bill. One row per
-    tenant, created on first save rather than at tenant creation - a tenant with no row yet
-    simply has nothing configured, not an error."""
+    """Per-tenant pricing/billing numbers a Super Admin sets - CARGORA's own platform fee and
+    AI-page processing tiers, and the TrackContainer.in plan this tenant is on. These ARE what
+    every real invoice is computed from (see app/core/billing.py's calculate_bill) - not pure
+    reference data, despite this docstring once saying so. One row per tenant, created on
+    first save rather than at tenant creation - a tenant with no row yet simply has nothing
+    configured, not an error (default_billing_config supplies the standard published rates in
+    that case)."""
 
     __tablename__ = "tenant_billing_configs"
 
@@ -24,6 +25,12 @@ class TenantBillingConfig(Base, TimestampMixin):
     cargora_tier1_rate_per_page: Mapped[float] = mapped_column(Float, nullable=False, default=2.50)
     cargora_tier1_page_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=25000)
     cargora_tier2_rate_per_page: Mapped[float] = mapped_column(Float, nullable=False, default=2.00)
+    # A page that never got matched to any document (shown to the operator as "Not Required" -
+    # see JobBillingRow.final_unclassified_pages) is billed at this flat rate INSTEAD of the
+    # Tier 1/2 rate above, not in addition to it - replaces, not stacks. Same ₹1.00 default for
+    # every tenant; editable per tenant like every other rate here. See calculate_bill's own
+    # not_required_pages parameter for exactly how this is applied.
+    not_required_page_rate: Mapped[float] = mapped_column(Float, nullable=False, default=1.00)
 
     # TrackContainer.in — which plan this tenant is on (null = none/not subscribed), plus
     # both plans' own price/limit so a changed standard rate doesn't need a new column.

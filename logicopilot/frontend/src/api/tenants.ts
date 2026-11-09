@@ -45,6 +45,9 @@ export interface TenantBillingConfig {
   cargora_tier1_rate_per_page: number;
   cargora_tier1_page_limit: number;
   cargora_tier2_rate_per_page: number;
+  /** A page never matched to any document ("Not Required") is billed at this flat rate
+   *  instead of the Tier 1/2 rate above. */
+  not_required_page_rate: number;
   trackcontainer_plan: "starter" | "professional" | null;
   trackcontainer_starter_price: number;
   trackcontainer_starter_container_limit: number;
@@ -183,6 +186,11 @@ export interface BillingUsage {
   tier2_rate: number;
   tier2_pages: number;
   tier2_amount: number;
+  /** Pages never matched to any document ("Not Required"), billed at this flat rate instead
+   *  of Tier 1/2 - not counted in tier1_pages/tier2_pages above. */
+  not_required_rate: number;
+  not_required_pages: number;
+  not_required_amount: number;
   usage_charges: number;
   subtotal: number;
   gst_percent: number;
@@ -206,6 +214,9 @@ export interface Invoice {
   tier2_rate: number;
   tier2_pages: number;
   tier2_amount: number;
+  not_required_rate: number;
+  not_required_pages: number;
+  not_required_amount: number;
   usage_charges: number;
   subtotal: number;
   gst_percent: number;
@@ -312,6 +323,146 @@ export async function exportBillingJobs(tenantId: string, filters: JobBillingFil
     responseType: "blob",
   });
   return response.data;
+}
+
+export interface DashboardFilters {
+  /** YYYY-MM-DD, inclusive. Both default server-side to the current month so far. */
+  dateFrom?: string;
+  dateTo?: string;
+  /** Comma-separated shipment modes (e.g. "Sea Import,Air Import"). Omit for every mode. */
+  mode?: string;
+}
+
+function dashboardParams(filters: DashboardFilters) {
+  return {
+    date_from: filters.dateFrom || undefined,
+    date_to: filters.dateTo || undefined,
+    mode: filters.mode || undefined,
+  };
+}
+
+export interface DocTypeAccuracy {
+  document_name: string;
+  documents: number;
+  fields_extracted: number;
+  fields_edited: number;
+  accuracy_pct: number | null;
+}
+
+export interface DashboardTrendPoint {
+  day: string;
+  accuracy_pct?: number | null;
+  avg_total_tat_minutes?: number | null;
+}
+
+export interface AccuracyDashboard {
+  documents_processed: number;
+  fields_extracted_by_ai: number;
+  fields_manually_edited: number;
+  accuracy_pct: number | null;
+  by_document_type: DocTypeAccuracy[];
+  trend: DashboardTrendPoint[];
+}
+
+export interface ProcessingTimeDashboard {
+  total_jobs: number;
+  avg_total_tat_minutes: number | null;
+  avg_extraction_minutes: number | null;
+  avg_review_minutes: number | null;
+  avg_erp_submission_minutes: number | null;
+  trend: DashboardTrendPoint[];
+}
+
+/** Executive Dashboard - Data Accuracy page. Scoped to completed jobs only (see
+ *  app/core/dashboard_metrics.py's own module docstring for why). */
+export async function getAccuracyDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<AccuracyDashboard> {
+  const response = await apiClient.get<AccuracyDashboard>(`/tenants/${tenantId}/dashboard/accuracy`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
+/** Executive Dashboard - Job Processing Time page. */
+export async function getProcessingTimeDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<ProcessingTimeDashboard> {
+  const response = await apiClient.get<ProcessingTimeDashboard>(`/tenants/${tenantId}/dashboard/processing-time`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
+export interface EmployeeReviewRow {
+  user_id: string;
+  name: string;
+  jobs_reviewed: number;
+  review_hours: number;
+  avg_minutes_per_job: number | null;
+}
+
+export interface WorkforceDashboard {
+  employee_requirement_fte: number | null;
+  avg_review_minutes_per_job: number | null;
+  total_jobs: number;
+  human_review_hours: number;
+  jobs_with_recorded_review: number;
+  by_employee: EmployeeReviewRow[];
+}
+
+/** Executive Dashboard - Workforce Productivity page. Only covers jobs with a real recorded
+ *  "Approved and Proceed" timestamp - jobs_with_recorded_review says how many of total_jobs
+ *  that is. */
+export async function getWorkforceDashboard(
+  tenantId: string,
+  filters: DashboardFilters,
+): Promise<WorkforceDashboard> {
+  const response = await apiClient.get<WorkforceDashboard>(`/tenants/${tenantId}/dashboard/workforce`, {
+    params: dashboardParams(filters),
+  });
+  return response.data;
+}
+
+export type TenantReportType = "monthly-usage" | "billing-summary" | "revenue-trend" | "outstanding-payments";
+
+/** A tenant-scoped report row set, trailing 12 months (except outstanding-payments, which is
+ *  every unpaid invoice regardless of month). Keys vary by report type - render generically
+ *  off Object.keys(rows[0]), same pattern the SaaS Finance reports page already uses. */
+export async function getTenantReport(
+  tenantId: string,
+  reportType: TenantReportType,
+  month?: string,
+): Promise<Record<string, string | number>[]> {
+  const response = await apiClient.get<Record<string, string | number>[]>(
+    `/tenants/${tenantId}/reports/${reportType}`,
+    { params: { month: month || undefined } },
+  );
+  return response.data;
+}
+
+export async function exportTenantReport(
+  tenantId: string,
+  reportType: TenantReportType,
+  format: "csv" | "xlsx",
+  month?: string,
+): Promise<void> {
+  const response = await apiClient.get(`/tenants/${tenantId}/reports/${reportType}/export`, {
+    params: { format, ...(month ? { month } : {}) },
+    responseType: "blob",
+  });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  const disposition = response.headers["content-disposition"] as string | undefined;
+  const match = disposition?.match(/filename="(.+)"/);
+  link.download = match?.[1] ?? `${reportType}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 export async function createTenant(payload: {

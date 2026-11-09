@@ -731,6 +731,14 @@ export function SettingsPage() {
                     value={billingDraft.cargora_tier2_rate_per_page}
                     onChange={(e) => patchBillingDraft({ cargora_tier2_rate_per_page: Number(e.target.value) })}
                   />
+                  <Input
+                    label="Not Required page rate (₹/page + GST)"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={billingDraft.not_required_page_rate}
+                    onChange={(e) => patchBillingDraft({ not_required_page_rate: Number(e.target.value) })}
+                  />
                 </div>
               </div>
 

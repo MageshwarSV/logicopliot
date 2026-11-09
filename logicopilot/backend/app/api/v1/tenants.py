@@ -12,7 +12,12 @@ from app.core.billing import (
     HIGHLIGHTS, calculate_bill, compute_usage, default_billing_config, ensure_invoices_finalized,
     list_job_billing, list_job_billing_export,
 )
+from app.core.dashboard_metrics import (
+    compute_accuracy_metrics, compute_processing_time_metrics, compute_workforce_metrics,
+)
 from app.core.deps import get_current_user, get_db, require_role
+from app.core.finance_aggregation import summarize_tenant_bill, trailing_months
+from app.core.finance_export import rows_to_csv, rows_to_xlsx
 from app.core.modes import MODES
 from app.core.openai_pool import (
     add_api_key,
@@ -31,13 +36,20 @@ from app.models.tenant_extraction_config import TenantExtractionConfig
 from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.tenant import (
     TRACKCONTAINER_PLANS,
+    AccuracyDashboardOut,
+    AccuracyTrendPointOut,
     BillingUsageOut,
+    DocTypeAccuracyOut,
+    EmployeeReviewRowOut,
     InvoiceOut,
     JobBillingPageOut,
     JobBillingRowOut,
     MarkInvoicePaid,
+    ProcessingTimeDashboardOut,
+    ProcessingTimeTrendPointOut,
     ShipmentTypeUsageOut,
     TenantBillingConfigOut,
+    WorkforceDashboardOut,
     TenantBillingConfigUpdate,
     TenantCreate,
     TenantExtractionConfigOut,
@@ -203,14 +215,17 @@ def update_tenant(
 def get_tenant_billing_config(
     tenant_id: str,
     db: Session = Depends(get_db),
-    # SaaS Finance may VIEW pricing (its own Pricing & Plans page) but never change it -
-    # update_tenant_billing_config below stays Super-Admin-only.
-    user: User = Depends(require_role(SUPER_ADMIN, SAAS_FINANCE)),
+    # SaaS Finance may VIEW pricing (its own Pricing & Plans page), and a Tenant Admin may
+    # VIEW their own tenant's plan (the Subscription & Plans page) - update_tenant_billing_config
+    # below stays Super-Admin-only either way; nobody self-serves a rate change here.
+    user: User = Depends(require_role(SUPER_ADMIN, SAAS_FINANCE, TENANT_ADMIN)),
 ) -> TenantBillingConfigOut:
     """Pure reference data for the Super Admin's own records - what this tenant is billed for
     CARGORA itself and the TrackContainer.in integration. Returns the model's own defaults
     (the standard published rates) when nothing has been saved for this tenant yet, rather
     than 404ing - there is nothing wrong with a tenant nobody has configured this for."""
+    if user.role == TENANT_ADMIN and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
@@ -442,13 +457,15 @@ def get_billing_usage(
             platform_fee_month_days=invoice.platform_fee_month_days,
             tier1_rate=invoice.tier1_rate, tier1_pages=invoice.tier1_pages, tier1_amount=invoice.tier1_amount,
             tier2_rate=invoice.tier2_rate, tier2_pages=invoice.tier2_pages, tier2_amount=invoice.tier2_amount,
+            not_required_rate=invoice.not_required_rate, not_required_pages=invoice.not_required_pages,
+            not_required_amount=invoice.not_required_amount,
             usage_charges=invoice.usage_charges, subtotal=invoice.subtotal,
             gst_percent=invoice.gst_percent, gst_amount=invoice.gst_amount, total_amount=invoice.total_amount,
         )
 
     config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
     usage = compute_usage(db, tenant_id, period_start)
-    bill = calculate_bill(config, usage.total_pages, period_start)
+    bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
     return BillingUsageOut(
         month=period_start.strftime("%Y-%m"), is_finalized=False,
         total_jobs=usage.total_jobs, total_pages=usage.total_pages,
@@ -467,7 +484,10 @@ def get_billing_usage(
         platform_fee_month_days=bill.platform_fee_month_days,
         tier1_rate=bill.tier1_rate, tier1_pages=bill.tier1_pages,
         tier1_amount=bill.tier1_amount, tier2_rate=bill.tier2_rate, tier2_pages=bill.tier2_pages,
-        tier2_amount=bill.tier2_amount, usage_charges=bill.usage_charges, subtotal=bill.subtotal,
+        tier2_amount=bill.tier2_amount,
+        not_required_rate=bill.not_required_rate, not_required_pages=bill.not_required_pages,
+        not_required_amount=bill.not_required_amount,
+        usage_charges=bill.usage_charges, subtotal=bill.subtotal,
         gst_percent=bill.gst_percent, gst_amount=bill.gst_amount, total_amount=bill.total_amount,
     )
 
@@ -509,7 +529,7 @@ def list_billing_jobs(
     date_from/date_to (YYYY-MM-DD) further narrow by each job's own earliest billing event this
     period - a separate, finer-grained filter from `month`, not a replacement for it. `highlight`
     (one of billing.HIGHLIGHTS) narrows further to just the jobs behind one of the page's own
-    StatCards - clicking Deleted Pages, Rerun Pages, Final Unclassified or Deleted Jobs. Only
+    StatCards - clicking Deleted Pages, Rerun Pages, Not Required Pages or Deleted Jobs. Only
     ever reads the live current month's state - there is no per-job breakdown stored on a
     finalized Invoice, so this always reflects "right now," even when `month` names an already-
     finalized past period. Super Admin may view any tenant; a Tenant Admin only their own."""
@@ -587,7 +607,7 @@ def export_billing_jobs(
     writer = csv.writer(buffer)
     writer.writerow([
         "Job Number", "Shipment Type", "Status", "Job Start Time",
-        "Original Pages", "Final Classified", "Final Unclassified", "Deleted Pages",
+        "Original Pages", "Required Pages", "Not Required Pages", "Deleted Pages",
         "Rerun Pages", "Total Billed",
     ])
     for r in rows:
@@ -602,6 +622,125 @@ def export_billing_jobs(
         iter([buffer.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
+    """Defaults to the current calendar month so far, same shape as the billing page's own
+    default. Both ends are plain dates (inclusive) - dashboard_metrics converts to IST-aware
+    UTC bounds itself."""
+    today = datetime.now(timezone.utc).date()
+    start = _parse_optional_date(date_from, "date_from") or today.replace(day=1)
+    end = _parse_optional_date(date_to, "date_to") or today
+    if end < start:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date_to must not be before date_from")
+    if (end - start).days > 366:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Range too wide - pick 366 days or fewer")
+    return start, end
+
+
+def _resolve_dashboard_modes(mode: str | None) -> list[str] | None:
+    if not mode:
+        return None
+    chosen = [m.strip() for m in mode.split(",") if m.strip()]
+    invalid = [m for m in chosen if m not in MODES]
+    if invalid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown shipment mode(s): {', '.join(invalid)}")
+    return chosen or None
+
+
+@router.get("/{tenant_id}/dashboard/accuracy", response_model=AccuracyDashboardOut)
+def get_accuracy_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> AccuracyDashboardOut:
+    """Data Accuracy page of the Tenant Admin Executive Dashboard. Same read-access rule as
+    billing (Super Admin any tenant, Tenant Admin only their own, SaaS Finance any)."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_accuracy_metrics(db, tenant_id, start, end, modes)
+    return AccuracyDashboardOut(
+        documents_processed=m.documents_processed,
+        fields_extracted_by_ai=m.fields_extracted_by_ai,
+        fields_manually_edited=m.fields_manually_edited,
+        accuracy_pct=m.accuracy_pct,
+        by_document_type=[
+            DocTypeAccuracyOut(
+                document_name=d.document_name, documents=d.documents,
+                fields_extracted=d.fields_extracted, fields_edited=d.fields_edited,
+                accuracy_pct=d.accuracy_pct,
+            )
+            for d in m.by_document_type
+        ],
+        trend=[AccuracyTrendPointOut(day=p.day.isoformat(), accuracy_pct=p.accuracy_pct) for p in m.trend],
+    )
+
+
+@router.get("/{tenant_id}/dashboard/processing-time", response_model=ProcessingTimeDashboardOut)
+def get_processing_time_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProcessingTimeDashboardOut:
+    """Job Processing Time page of the Tenant Admin Executive Dashboard. Same read-access rule
+    as billing."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_processing_time_metrics(db, tenant_id, start, end, modes)
+    return ProcessingTimeDashboardOut(
+        total_jobs=m.total_jobs,
+        avg_total_tat_minutes=m.avg_total_tat_minutes,
+        avg_extraction_minutes=m.avg_extraction_minutes,
+        avg_review_minutes=m.avg_review_minutes,
+        avg_erp_submission_minutes=m.avg_erp_submission_minutes,
+        trend=[ProcessingTimeTrendPointOut(day=p.day.isoformat(), avg_total_tat_minutes=p.avg_total_tat_minutes) for p in m.trend],
+    )
+
+
+@router.get("/{tenant_id}/dashboard/workforce", response_model=WorkforceDashboardOut)
+def get_workforce_dashboard(
+    tenant_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkforceDashboardOut:
+    """Workforce Productivity page of the Tenant Admin Executive Dashboard. Only counts jobs
+    with a real recorded "Approved and Proceed" press (see compute_workforce_metrics's own
+    docstring) - jobs_with_recorded_review says how many of total_jobs that covers."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    start, end = _resolve_dashboard_range(date_from, date_to)
+    modes = _resolve_dashboard_modes(mode)
+    m = compute_workforce_metrics(db, tenant_id, start, end, modes)
+    return WorkforceDashboardOut(
+        employee_requirement_fte=m.employee_requirement_fte,
+        avg_review_minutes_per_job=m.avg_review_minutes_per_job,
+        total_jobs=m.total_jobs,
+        human_review_hours=m.human_review_hours,
+        jobs_with_recorded_review=m.jobs_with_recorded_review,
+        by_employee=[
+            EmployeeReviewRowOut(
+                user_id=r.user_id, name=r.name, jobs_reviewed=r.jobs_reviewed,
+                review_hours=r.review_hours, avg_minutes_per_job=r.avg_minutes_per_job,
+            )
+            for r in m.by_employee
+        ],
     )
 
 
@@ -626,6 +765,115 @@ def list_invoices(
         .all()
     )
     return [InvoiceOut.model_validate(inv) for inv in invoices]
+
+
+TENANT_REPORT_TYPES = ("monthly-usage", "billing-summary", "revenue-trend", "outstanding-payments")
+
+_TENANT_REPORT_HEADERS = {
+    "monthly-usage": ["Month", "Jobs", "Pages"],
+    "billing-summary": ["Month", "Jobs", "Pages", "Platform Fee", "Usage Charges", "GST", "Total Amount", "Invoice Status"],
+    "revenue-trend": ["Month", "Total Amount"],
+    "outstanding-payments": ["Invoice Number", "Period", "Total Amount", "Status"],
+}
+
+
+def _tenant_report_rows(db: Session, tenant: Tenant, report_type: str, period_start: date) -> list[dict]:
+    """The same report shapes saas_finance.py's platform-wide reports use, scoped down to
+    just this one tenant - reuses summarize_tenant_bill/trailing_months rather than filtering
+    summarize_all_tenants's own full-platform loop down to one row, which would still cost a
+    query over every tenant just to throw away all but one."""
+    if report_type == "revenue-trend":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({"Month": month_start.strftime("%Y-%m"), "Total Amount": s.total_amount})
+        return rows
+    if report_type == "outstanding-payments":
+        unpaid = (
+            db.query(Invoice)
+            .filter(Invoice.tenant_id == tenant.id, Invoice.status == "unpaid")
+            .order_by(Invoice.period_start.desc())
+            .all()
+        )
+        return [
+            {"Invoice Number": inv.invoice_number, "Period": inv.period_start,
+             "Total Amount": inv.total_amount, "Status": inv.status}
+            for inv in unpaid
+        ]
+    if report_type == "monthly-usage":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({"Month": month_start.strftime("%Y-%m"), "Jobs": s.total_jobs, "Pages": s.total_pages})
+        return rows
+    if report_type == "billing-summary":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({
+                "Month": month_start.strftime("%Y-%m"), "Jobs": s.total_jobs, "Pages": s.total_pages,
+                "Platform Fee": s.platform_fee, "Usage Charges": s.usage_charges,
+                "GST": s.gst_amount, "Total Amount": s.total_amount,
+                "Invoice Status": s.invoice_status or "Live",
+            })
+        return rows
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+
+
+@router.get("/{tenant_id}/reports/{report_type}")
+def get_tenant_report(
+    tenant_id: str,
+    report_type: str,
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """A tenant-scoped version of SaaS Finance's own platform-wide reports (see
+    app/api/v1/saas_finance.py) - the trailing-12-months trend reports read better than one
+    single month in isolation would, unlike that page's own current-month-only snapshot."""
+    _require_billing_read_access(user, tenant_id)
+    if report_type not in TENANT_REPORT_TYPES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return _tenant_report_rows(db, tenant, report_type, _parse_period_start(month))
+
+
+@router.get("/{tenant_id}/reports/{report_type}/export")
+def export_tenant_report(
+    tenant_id: str,
+    report_type: str,
+    format: str = "csv",
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    _require_billing_read_access(user, tenant_id)
+    if report_type not in TENANT_REPORT_TYPES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    period_start = _parse_period_start(month)
+    headers = _TENANT_REPORT_HEADERS[report_type]
+    rows = _tenant_report_rows(db, tenant, report_type, period_start)
+    filename_base = f"{report_type}-{tenant_id}-{period_start.strftime('%Y-%m')}"
+
+    if format == "xlsx":
+        content = rows_to_xlsx(report_type, headers, rows, keys=headers)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{filename_base}.xlsx"
+    elif format == "csv":
+        content = rows_to_csv(headers, rows, keys=headers)
+        media_type = "text/csv"
+        filename = f"{filename_base}.csv"
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="format must be csv or xlsx")
+    return StreamingResponse(
+        iter([content]), media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{tenant_id}/billing/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)
