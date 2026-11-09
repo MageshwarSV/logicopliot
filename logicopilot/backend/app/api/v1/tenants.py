@@ -14,6 +14,8 @@ from app.core.billing import (
 )
 from app.core.dashboard_metrics import compute_accuracy_metrics, compute_processing_time_metrics
 from app.core.deps import get_current_user, get_db, require_role
+from app.core.finance_aggregation import summarize_tenant_bill, trailing_months
+from app.core.finance_export import rows_to_csv, rows_to_xlsx
 from app.core.modes import MODES
 from app.core.openai_pool import (
     add_api_key,
@@ -209,14 +211,17 @@ def update_tenant(
 def get_tenant_billing_config(
     tenant_id: str,
     db: Session = Depends(get_db),
-    # SaaS Finance may VIEW pricing (its own Pricing & Plans page) but never change it -
-    # update_tenant_billing_config below stays Super-Admin-only.
-    user: User = Depends(require_role(SUPER_ADMIN, SAAS_FINANCE)),
+    # SaaS Finance may VIEW pricing (its own Pricing & Plans page), and a Tenant Admin may
+    # VIEW their own tenant's plan (the Subscription & Plans page) - update_tenant_billing_config
+    # below stays Super-Admin-only either way; nobody self-serves a rate change here.
+    user: User = Depends(require_role(SUPER_ADMIN, SAAS_FINANCE, TENANT_ADMIN)),
 ) -> TenantBillingConfigOut:
     """Pure reference data for the Super Admin's own records - what this tenant is billed for
     CARGORA itself and the TrackContainer.in integration. Returns the model's own defaults
     (the standard published rates) when nothing has been saved for this tenant yet, rather
     than 404ing - there is nothing wrong with a tenant nobody has configured this for."""
+    if user.role == TENANT_ADMIN and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
@@ -717,6 +722,115 @@ def list_invoices(
         .all()
     )
     return [InvoiceOut.model_validate(inv) for inv in invoices]
+
+
+TENANT_REPORT_TYPES = ("monthly-usage", "billing-summary", "revenue-trend", "outstanding-payments")
+
+_TENANT_REPORT_HEADERS = {
+    "monthly-usage": ["Month", "Jobs", "Pages"],
+    "billing-summary": ["Month", "Jobs", "Pages", "Platform Fee", "Usage Charges", "GST", "Total Amount", "Invoice Status"],
+    "revenue-trend": ["Month", "Total Amount"],
+    "outstanding-payments": ["Invoice Number", "Period", "Total Amount", "Status"],
+}
+
+
+def _tenant_report_rows(db: Session, tenant: Tenant, report_type: str, period_start: date) -> list[dict]:
+    """The same report shapes saas_finance.py's platform-wide reports use, scoped down to
+    just this one tenant - reuses summarize_tenant_bill/trailing_months rather than filtering
+    summarize_all_tenants's own full-platform loop down to one row, which would still cost a
+    query over every tenant just to throw away all but one."""
+    if report_type == "revenue-trend":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({"Month": month_start.strftime("%Y-%m"), "Total Amount": s.total_amount})
+        return rows
+    if report_type == "outstanding-payments":
+        unpaid = (
+            db.query(Invoice)
+            .filter(Invoice.tenant_id == tenant.id, Invoice.status == "unpaid")
+            .order_by(Invoice.period_start.desc())
+            .all()
+        )
+        return [
+            {"Invoice Number": inv.invoice_number, "Period": inv.period_start,
+             "Total Amount": inv.total_amount, "Status": inv.status}
+            for inv in unpaid
+        ]
+    if report_type == "monthly-usage":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({"Month": month_start.strftime("%Y-%m"), "Jobs": s.total_jobs, "Pages": s.total_pages})
+        return rows
+    if report_type == "billing-summary":
+        rows = []
+        for month_start in trailing_months(period_start, 12):
+            s = summarize_tenant_bill(db, tenant, month_start)
+            rows.append({
+                "Month": month_start.strftime("%Y-%m"), "Jobs": s.total_jobs, "Pages": s.total_pages,
+                "Platform Fee": s.platform_fee, "Usage Charges": s.usage_charges,
+                "GST": s.gst_amount, "Total Amount": s.total_amount,
+                "Invoice Status": s.invoice_status or "Live",
+            })
+        return rows
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+
+
+@router.get("/{tenant_id}/reports/{report_type}")
+def get_tenant_report(
+    tenant_id: str,
+    report_type: str,
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """A tenant-scoped version of SaaS Finance's own platform-wide reports (see
+    app/api/v1/saas_finance.py) - the trailing-12-months trend reports read better than one
+    single month in isolation would, unlike that page's own current-month-only snapshot."""
+    _require_billing_read_access(user, tenant_id)
+    if report_type not in TENANT_REPORT_TYPES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return _tenant_report_rows(db, tenant, report_type, _parse_period_start(month))
+
+
+@router.get("/{tenant_id}/reports/{report_type}/export")
+def export_tenant_report(
+    tenant_id: str,
+    report_type: str,
+    format: str = "csv",
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    _require_billing_read_access(user, tenant_id)
+    if report_type not in TENANT_REPORT_TYPES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown report type")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    period_start = _parse_period_start(month)
+    headers = _TENANT_REPORT_HEADERS[report_type]
+    rows = _tenant_report_rows(db, tenant, report_type, period_start)
+    filename_base = f"{report_type}-{tenant_id}-{period_start.strftime('%Y-%m')}"
+
+    if format == "xlsx":
+        content = rows_to_xlsx(report_type, headers, rows, keys=headers)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{filename_base}.xlsx"
+    elif format == "csv":
+        content = rows_to_csv(headers, rows, keys=headers)
+        media_type = "text/csv"
+        filename = f"{filename_base}.csv"
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="format must be csv or xlsx")
+    return StreamingResponse(
+        iter([content]), media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{tenant_id}/billing/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)

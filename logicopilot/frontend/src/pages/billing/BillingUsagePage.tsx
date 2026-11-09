@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -61,9 +61,13 @@ export function BillingUsagePage() {
   const navigate = useNavigate();
   const isSuperAdmin = user?.role === "super_admin";
 
+  const [searchParams] = useSearchParams();
+
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState<string | null>(user?.tenant_id ?? null);
-  const [month, setMonth] = useState<string>(currentMonthStr());
+  // Seeded from ?month=YYYY-MM once, e.g. the Invoices page's own "View" link - never
+  // re-read after mount, so the month switcher below still works normally afterward.
+  const [month, setMonth] = useState<string>(searchParams.get("month") || currentMonthStr());
   const [usage, setUsage] = useState<BillingUsage | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);

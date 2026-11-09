@@ -385,6 +385,45 @@ export async function getProcessingTimeDashboard(
   return response.data;
 }
 
+export type TenantReportType = "monthly-usage" | "billing-summary" | "revenue-trend" | "outstanding-payments";
+
+/** A tenant-scoped report row set, trailing 12 months (except outstanding-payments, which is
+ *  every unpaid invoice regardless of month). Keys vary by report type - render generically
+ *  off Object.keys(rows[0]), same pattern the SaaS Finance reports page already uses. */
+export async function getTenantReport(
+  tenantId: string,
+  reportType: TenantReportType,
+  month?: string,
+): Promise<Record<string, string | number>[]> {
+  const response = await apiClient.get<Record<string, string | number>[]>(
+    `/tenants/${tenantId}/reports/${reportType}`,
+    { params: { month: month || undefined } },
+  );
+  return response.data;
+}
+
+export async function exportTenantReport(
+  tenantId: string,
+  reportType: TenantReportType,
+  format: "csv" | "xlsx",
+  month?: string,
+): Promise<void> {
+  const response = await apiClient.get(`/tenants/${tenantId}/reports/${reportType}/export`, {
+    params: { format, ...(month ? { month } : {}) },
+    responseType: "blob",
+  });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  const disposition = response.headers["content-disposition"] as string | undefined;
+  const match = disposition?.match(/filename="(.+)"/);
+  link.download = match?.[1] ?? `${reportType}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export async function createTenant(payload: {
   name: string;
   region?: string;

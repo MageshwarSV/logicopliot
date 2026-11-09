@@ -4,6 +4,10 @@ import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures } from "../features/registry";
 import * as jobsApi from "../api/jobs";
+import {
+  LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
+  BriefcaseIcon, ChartBarIcon, ChevronDownIcon,
+} from "./ui/icons";
 
 function initials(name: string): string {
   return name
@@ -103,6 +107,9 @@ export function AppShell({
 }) {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const [masterDataOpen, setMasterDataOpen] = useState(
+    location.pathname.startsWith("/tenant-admin/masters"),
+  );
   // The page you are actually on is what should be lit up — a nav rail that always shows
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
   // at all, because it actively tells you the wrong thing.
@@ -144,7 +151,7 @@ export function AppShell({
   // object itself, which JobsPage passes as a new reference every render and would otherwise
   // refetch on every keystroke-unrelated re-render too.
   const showsJobCategories =
-    user != null && ["operator", "admin", "gk2", "manager"].includes(user.role);
+    user != null && ["operator", "admin", "gk2", "manager", "tenant_admin"].includes(user.role);
   const [categoryCounts, setCategoryCounts] = useState<jobsApi.JobCategoryCounts | null>(null);
   const ccfDateFrom = categoryCountFilters?.dateFrom;
   const ccfDateTo = categoryCountFilters?.dateTo;
@@ -165,6 +172,10 @@ export function AppShell({
     const t = window.setInterval(load, 30000);
     return () => { alive = false; window.clearInterval(t); };
   }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
+
+  const totalJobsCount = categoryCounts
+    ? Object.values(categoryCounts).reduce((a, b) => a + b, 0)
+    : null;
 
   function jobCategoryLinks() {
     return JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
@@ -230,22 +241,84 @@ export function AppShell({
           )}
 
           {user?.role === "tenant_admin" && (
-            <div className="mt-8">
-              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
-              <div className="mt-2 space-y-1">
-                {[
-                  { to: "/tenant-admin/customers", label: "Shipment Type" },
-                  { to: "/tenant-admin/masters", label: "Masters" },
-                  { to: "/tenant-admin/users", label: "Users" },
-                  { to: "/tenant-admin/billing", label: "Billing & Usage" },
-                  { to: "/account", label: "Settings" },
-                ].map((item) => (
-                  <Link key={item.to} to={item.to} className={navClass(item.to)}>
-                    {item.label}
+            <>
+              <div className="mt-8">
+                <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Billing &amp; Finance</h3>
+                <div className="mt-2 space-y-1">
+                  <Link to="/tenant-admin/billing" className={navClass("/tenant-admin/billing")}>
+                    <LayersIcon /> Usage &amp; Consumption
                   </Link>
-                ))}
+                  <Link to="/tenant-admin/invoices" className={navClass("/tenant-admin/invoices")}>
+                    <DocumentIcon /> Invoices
+                  </Link>
+                  <Link to="/tenant-admin/subscription" className={navClass("/tenant-admin/subscription")}>
+                    <CreditCardIcon /> Subscription &amp; Plans
+                  </Link>
+                </div>
               </div>
-            </div>
+
+              <div className="mt-8">
+                <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Administration</h3>
+                <div className="mt-2 space-y-1">
+                  <Link to="/tenant-admin/users" className={navClass("/tenant-admin/users")}>
+                    <UsersIcon /> Users &amp; Access
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={() => setMasterDataOpen((v) => !v)}
+                    className={`${NAV_INACTIVE} w-full justify-between`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <DatabaseIcon /> Master Data
+                    </span>
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${masterDataOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                  {masterDataOpen && (
+                    <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
+                      {[
+                        { label: "Shipments", to: "/tenant-admin/customers" },
+                        { label: "Shipment Type", to: "/tenant-admin/masters" },
+                        { label: "Ports", to: "/tenant-admin/masters" },
+                        { label: "Consignees", to: "/tenant-admin/masters" },
+                        { label: "Others", to: "/tenant-admin/masters" },
+                      ].map((item) => (
+                        <Link
+                          key={item.label}
+                          to={item.to}
+                          className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                        >
+                          <span className="h-1 w-1 rounded-full bg-slate-400" />
+                          {item.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+
+                  <Link to="/account" className={navClass("/account")}>
+                    <GearIcon /> Settings
+                  </Link>
+                </div>
+              </div>
+
+              <div className="mt-8">
+                <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Operations</h3>
+                <div className="mt-2 space-y-1">
+                  <Link to="/jobs" className={navClass("/jobs")}>
+                    <BriefcaseIcon />
+                    <span className="min-w-0 flex-1 truncate">Jobs</span>
+                    {totalJobsCount != null && (
+                      <CountBadge count={totalJobsCount} cls="bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" />
+                    )}
+                  </Link>
+                  <Link to="/tenant-admin/reports" className={navClass("/tenant-admin/reports")}>
+                    <ChartBarIcon /> Reports
+                  </Link>
+                </div>
+              </div>
+            </>
           )}
 
           {user?.role === "operator" && (
