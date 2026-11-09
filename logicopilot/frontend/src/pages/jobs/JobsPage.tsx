@@ -634,6 +634,20 @@ export function JobsPage() {
     });
   }
 
+  function fmtDuration(minutes?: number | null) {
+    if (minutes == null || Number.isNaN(minutes)) return null;
+    const total = Math.round(minutes);
+    if (total < 1) return "<1m";
+    const days = Math.floor(total / 1440);
+    const hours = Math.floor((total % 1440) / 60);
+    const mins = total % 60;
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (mins > 0 || parts.length === 0) parts.push(`${mins}m`);
+    return parts.join(" ");
+  }
+
   function timeOnly(iso?: string | null) {
     if (!iso) return "";
     const d = new Date(iso);
@@ -1243,13 +1257,19 @@ export function JobsPage() {
             <p className="text-sm text-slate-400">No history recorded for this job yet.</p>
           ) : (
             <ol className="flex flex-col gap-3">
-              {[...historyRows].reverse().map((ev) => (
+              {[...historyRows].reverse().map((ev, i) => (
                 <li key={ev.id} className="flex items-start gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0 dark:border-slate-800">
                   <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                      {ev.label ?? ev.status}
-                      {ev.stage && <span className="ml-2 text-xs font-normal text-slate-400">({ev.stage})</span>}
+                    <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
+                      {ev.external_label ?? ev.label ?? ev.status}
+                      {ev.stage && <span className="text-xs font-normal text-slate-400">({ev.stage})</span>}
+                      {fmtDuration(ev.duration_minutes) && (
+                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">
+                          {i === 0 ? "ongoing · " : ""}
+                          {fmtDuration(ev.duration_minutes)}
+                        </span>
+                      )}
                     </p>
                     {ev.note && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{ev.note}</p>}
                     <p className="mt-0.5 text-xs text-slate-400">{when(ev.at, true)}</p>

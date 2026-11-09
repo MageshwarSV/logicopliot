@@ -21,6 +21,7 @@ from app.core.config import get_settings
 # that name at module level, so `job_history.describe` resolved to the ROUTE and raised
 # AttributeError on every request. Legal Python - it imported cleanly and 500'd live.
 from app.db.job_history import describe as describe_status
+from app.db.job_history import describe_external
 from app.core.deps import (
     TenantScope,
     get_current_user,
@@ -1144,8 +1145,16 @@ def _begin_extraction(
     job.stage_override = None
     job.status = "extracting"
     job.extraction_is_rerun = is_rerun
+    # The note text itself is what job_history's external_status_label reads back to tell a
+    # rerun apart from a job's first pass - is_rerun itself is a Job column, not snapshotted
+    # onto the JobEvent, so by the time an OLDER event is viewed this note is the only record
+    # of which one it was.
+    note = (
+        "Re-extraction started — back to Data Validation for review" if is_rerun
+        else "Extraction started — back to Data Validation for review"
+    )
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
-                    stage="Data Validation", note="Extraction started — back to Data Validation for review"))
+                    stage="Data Validation", note=note))
     db.commit()
     _start_extraction_background(job.id, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
 
@@ -3306,8 +3315,20 @@ def job_history(
             .filter(JobEvent.job_id == job_id)
             .order_by(JobEvent.created_at.asc())
             .all())
-    return [JobEventOut(id=r.id, status=r.status, label=describe_status(r.status),
-                        stage=r.stage, note=r.note, at=r.created_at) for r in rows]
+    # How long THIS row's status lasted - until the next row started, or (the most recent row)
+    # until right now, so a job currently stuck on one status shows how long it has been there
+    # rather than nothing at all.
+    now = datetime.now(timezone.utc)
+    out = []
+    for i, r in enumerate(rows):
+        ends_at = rows[i + 1].created_at if i + 1 < len(rows) else now
+        duration_minutes = max(0.0, (ends_at - r.created_at).total_seconds() / 60)
+        out.append(JobEventOut(
+            id=r.id, status=r.status, label=describe_status(r.status),
+            external_label=describe_external(r.status, r.note),
+            stage=r.stage, note=r.note, at=r.created_at, duration_minutes=duration_minutes,
+        ))
+    return out
 
 
 def _one_per_field(fvs: list) -> list:

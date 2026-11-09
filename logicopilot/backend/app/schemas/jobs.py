@@ -122,9 +122,17 @@ class JobEventOut(BaseModel):
     # already drifted: the popup's heading said "Extracting" while the line underneath it said
     # "-> Extracting the documents", for the same event. One set of words, sent with the event.
     label: str | None = None
+    # The same CARGORA external-status words the Jobs list/job header badges show (see
+    # app/db/job_history.describe_external) - an approximation of what the badge read at this
+    # point in time, since not everything the live badge reads is captured per event. `label`
+    # above is kept, unchanged, for anything still reading the old internal wording.
+    external_label: str | None = None
     stage: str | None = None
     note: str | None = None
     at: datetime
+    # Minutes this row's status lasted - until the next row, or until now for the most recent
+    # one (so a job stuck on one status shows how long it has been there).
+    duration_minutes: float | None = None
 
 
 class JobDocumentOut(BaseModel):

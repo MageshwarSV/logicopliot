@@ -59,9 +59,17 @@ export interface JobEvent {
   /** What to CALL this status, sent by the server. The screen used to keep its own copy of
    *  these words and the two had drifted apart. Optional only for rows saved before it. */
   label?: string | null;
+  /** The same CARGORA external-status words the Jobs list/job header badge shows (an
+   *  approximation of what the badge read at this point in time - see the backend's own
+   *  describe_external docstring for what it can't capture). Falls back to `label` when not
+   *  sent (a row from before this existed). */
+  external_label?: string | null;
   stage?: string | null;
   note?: string | null;
   at: string;
+  /** How long this row's status lasted - until the next row, or until now for the most recent
+   *  one. Optional only for a row from before this existed. */
+  duration_minutes?: number | null;
 }
 
 export interface JobDocument {
