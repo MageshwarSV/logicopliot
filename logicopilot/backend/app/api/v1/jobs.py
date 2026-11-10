@@ -2708,11 +2708,6 @@ def submit_for_gk2_approval(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cross Docs Verification must be approved before this can go to GK2.",
         )
-    # Checked here too, not only in _finalize_job_approval below - an unresolved ruling must
-    # block the hand-off to GK2 just as much as it blocks the real ERP submission, so GK2 is
-    # never handed a job that was never actually submittable in the first place.
-    group = db.get(TemplateGroup, job.group_id)
-    _check_ruling_before_submit(db, job, group)
     if _gk2_required_for_job(db, job):
         job.gk2_status = "pending"
         db.commit()
@@ -2867,9 +2862,8 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
     turned GK2 review off for this job's shipment type - see Tenant.gk2_required_by_mode) - a
     skipped job is held to exactly the same bar a GK2-reviewed one is."""
     # The same pre-flight complete_job requires before it touches the real ERP - a GK2 run is
-    # no less real now, so a required field the operator never answered, or a ruling this
-    # shipment's documents still can't resolve, must block it here exactly as it would block
-    # Submit Entry.
+    # no less real now, so a required field the operator never answered must block it here
+    # exactly as it would block Submit Entry.
     pending = _unanswered_operator_fields(db, job)
     if pending:
         raise HTTPException(
@@ -2877,8 +2871,6 @@ def _finalize_job_approval(db: Session, job: Job) -> None:
             detail=("Enter a value for these fields before submitting the entry: "
                     + ", ".join(pending)),
         )
-    group = db.get(TemplateGroup, job.group_id)
-    _check_ruling_before_submit(db, job, group)
 
     # GK1 chose Approval for IRN (not Skip) on IRN Documents Upload - the real ERP submission
     # does not run yet. Park the job in its own wait-state instead, next to the per-document
@@ -4507,69 +4499,6 @@ def evaluate_job_ruling(
     return result
 
 
-def _check_ruling_before_submit(db: Session, job: Job, group: TemplateGroup) -> None:
-    """The final-submission gate for a template's conditional document ruling - replaces the
-    old "Hold" job status entirely. A job is never parked on a separate stage/status for this;
-    instead, Submit for Approval, Final Approve & Proceed, and Submit Entry all call this and
-    refuse outright (409, before anything real happens) until the ruling can be evaluated AND
-    every document it names as required has actually been uploaded.
-
-    Uses Job.ruling_answer - whatever the operator already answered via the "Check required
-    documents" box (evaluate_job_ruling persists it there) - exactly as a fresh "Check required
-    documents" press would, so an operator who already answered the question is never asked
-    again just because they moved on to pressing the real Submit button.
-
-    A technical failure (the AI call itself errors) is logged AND still blocks submission with
-    a clear message - unlike the old best-effort auto-check after extraction, skipping this
-    silently would mean submitting on exactly as much of a guess as ignoring a real
-    "needs_input" would.
-    """
-    if group is None or not group.ruling_prompt:
-        return
-    from app.core.llm import evaluate_ruling
-
-    try:
-        all_names, uploaded, docs_text = _ruling_context(db, job, group)
-        result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, job.ruling_answer)
-        # A "no real incoterm found" is retried once, fresh, before actually blocking
-        # submission - two things this catches at once: a genuinely transient AI-call hiccup
-        # (found live: the exact same documents, re-evaluated moments later with nothing
-        # changed, correctly found the incoterm the first call missed), and an operator who
-        # corrected the Invoice's own incoterm field (TOI) and pressed Submit again without
-        # first pressing "Check required documents" separately - _ruling_context rebuilds its
-        # evidence from the CURRENT database state every time, so a fresh retry already sees
-        # that correction without needing to know which field name a given template's own
-        # ruling prompt happens to care about.
-        if result.get("needs_input"):
-            all_names, uploaded, docs_text = _ruling_context(db, job, group)
-            result = evaluate_ruling(group.ruling_prompt, all_names, docs_text, job.ruling_answer)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("ruling evaluation failed at submission for job %s", job.id)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot submit this job for approval — the document ruling could not be "
-                   "evaluated due to a technical error. Try again, or use \"Check required "
-                   "documents\" on Document Capture for more detail.",
-        ) from exc
-
-    if result.get("needs_input"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot submit this job for approval — "
-                   + (result.get("reason") or "the required documents could not be determined")
-                   + ". " + (result.get("question") or "Answer the required-documents question")
-                   + " — use \"Check required documents\" on Document Capture to answer it, then try again.",
-        )
-
-    missing = [n for n in (result.get("required_documents") or []) if n not in uploaded]
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot submit this job for approval — upload the document(s) this shipment "
-                   "requires first: " + ", ".join(missing),
-        )
-
-
 @router.post("/jobs/{job_id}/clear-stale-hold", response_model=JobDetailOut)
 def clear_stale_hold(
     job_id: str,
@@ -5266,11 +5195,6 @@ def complete_job(
             detail=("Enter a value for these fields before submitting the entry: "
                     + ", ".join(pending)),
         )
-    # The ruling must be resolvable, and everything it names as required must be uploaded -
-    # entering this into the ERP on an unresolved guess is exactly what this refuses.
-    group = db.get(TemplateGroup, job.group_id)
-    _check_ruling_before_submit(db, job, group)
-
     # Find the ready ERP script that covers this job's template.
     script = next(
         (

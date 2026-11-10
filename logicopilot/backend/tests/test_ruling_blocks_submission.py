@@ -1,12 +1,15 @@
-"""The "Hold" job status was removed entirely. A template's conditional document ruling (e.g.
-"an FOB shipment needs a Freight Certificate, a CIF one doesn't") is now checked at the moment
-of submission instead - Submit for Approval / Final Approve & Proceed / Submit Entry all refuse
-outright (409) until the ruling can be evaluated AND every document it names as required has
-actually been uploaded, rather than parking the job on a separate status beforehand.
+"""The document-ruling check (a template's conditional "an FOB shipment needs a Freight
+Certificate, a CIF one doesn't" rule) no longer blocks Submit for Approval / Final Approve &
+Proceed / Submit Entry (2026-11-10, by explicit request) - it kept producing false "no valid
+incoterm found" blocks on real jobs that plainly had one (e.g. JOB-8BA341), with no reliable
+way to diagnose why the evidence the AI was given didn't convince it. The ruling is still
+available as a voluntary, non-blocking check via "Check required documents"
+(evaluate_job_ruling) on Document Capture - only the submission-time gate (formerly
+_check_ruling_before_submit) was removed.
 
-See _check_ruling_before_submit (app/api/v1/jobs.py) and Job.ruling_answer, which persists the
-operator's own answer (given via the existing "Check required documents" box,
-evaluate_job_ruling) so a later submission attempt reuses it instead of asking again."""
+The "Hold" job status itself was removed entirely in an earlier change and is not reinstated by
+this one - clear_stale_hold stays for any job still carrying a stale Hold stage_override from
+before that removal."""
 from unittest.mock import patch
 
 from app.models.job import Job, JobDocument
@@ -60,9 +63,11 @@ def _login_operator(client, db_session, tenant):
     return op
 
 
-def test_submit_for_approval_blocked_when_the_ruling_needs_input(client, db_session):
+def test_submit_for_approval_succeeds_even_when_the_ruling_needs_input(client, db_session):
     tenant = make_tenant(db_session)
     group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
+    # Freight Certificate never uploaded, and the ruling (if it were still consulted) would ask
+    # a question and/or say it is required - submission must not care either way.
     job = _make_job(db_session, tenant, group, [invoice, bl])
     _login_operator(client, db_session, tenant)
 
@@ -70,138 +75,18 @@ def test_submit_for_approval_blocked_when_the_ruling_needs_input(client, db_sess
         mock_rule.return_value = {
             "needs_input": True, "question": "Which incoterm applies to this shipment?",
             "reason": "No real incoterm found in the Bill of Lading, Invoice, or Packing List.",
-            "required_documents": [], "decision": None,
-        }
-        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
-
-    assert resp.status_code == 409, resp.text
-    assert "Cannot submit this job for approval" in resp.json()["detail"]
-    assert "incoterm" in resp.json()["detail"].lower()
-    db_session.refresh(job)
-    assert job.gk2_status is None  # never handed off to GK2
-
-
-def test_submit_for_approval_blocked_when_a_ruling_required_document_is_missing(client, db_session):
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
-    job = _make_job(db_session, tenant, group, [invoice, bl])  # Freight Certificate not uploaded
-    _login_operator(client, db_session, tenant)
-
-    with patch("app.core.llm.evaluate_ruling") as mock_rule:
-        mock_rule.return_value = {
-            "needs_input": False, "decision": "FOB",
-            "required_documents": ["Invoice", "Bill of Lading", "Freight Certificate"],
-        }
-        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
-
-    assert resp.status_code == 409, resp.text
-    assert "Freight Certificate" in resp.json()["detail"]
-    db_session.refresh(job)
-    assert job.gk2_status is None
-
-
-def test_submit_for_approval_succeeds_once_the_rulings_requirements_are_met(client, db_session):
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
-    job = _make_job(db_session, tenant, group, [invoice, bl, freight])
-    _login_operator(client, db_session, tenant)
-
-    # Fake JobDocument rows carry no real, OCR-able file - _ruling_context's own "uploaded"
-    # list is built from actual extracted text, so it is stubbed directly here rather than
-    # relying on OCR to somehow read something out of a file that doesn't really exist.
-    fake_context = (
-        ["Invoice", "Bill of Lading", "Freight Certificate"],
-        ["Invoice", "Bill of Lading", "Freight Certificate"],
-        "...",
-    )
-    with patch("app.api.v1.jobs._ruling_context", return_value=fake_context), \
-         patch("app.core.llm.evaluate_ruling") as mock_rule:
-        mock_rule.return_value = {
-            "needs_input": False, "decision": "FOB",
-            "required_documents": ["Invoice", "Bill of Lading", "Freight Certificate"],
+            "required_documents": ["Invoice", "Bill of Lading", "Freight Certificate"], "decision": None,
         }
         resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
 
     assert resp.status_code == 200, resp.text
+    assert not mock_rule.called  # never even consulted - the gate it used to feed is gone
     db_session.refresh(job)
     assert job.gk2_status == "pending"
 
 
-def test_a_previously_given_ruling_answer_is_reused_at_submission(client, db_session):
-    """The operator already answered the question via "Check required documents" earlier - a
-    later Submit attempt must not ask again, and must pass that same answer through."""
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
-    job = _make_job(db_session, tenant, group, [invoice, bl], ruling_answer="CIF")
-    _login_operator(client, db_session, tenant)
-
-    fake_context = (["Invoice", "Bill of Lading", "Freight Certificate"], ["Invoice", "Bill of Lading"], "...")
-    with patch("app.api.v1.jobs._ruling_context", return_value=fake_context), \
-         patch("app.core.llm.evaluate_ruling") as mock_rule:
-        mock_rule.return_value = {
-            "needs_input": False, "decision": "CIF",
-            "required_documents": ["Invoice", "Bill of Lading"],
-        }
-        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
-        assert resp.status_code == 200, resp.text
-        passed_answer = mock_rule.call_args.args[-1]
-        assert passed_answer == "CIF"
-
-
-def test_a_technical_failure_evaluating_the_ruling_blocks_submission(client, db_session):
-    """A real error (the AI call itself fails) must never be silently skipped - that would
-    submit on exactly as much of a guess as ignoring a genuine needs_input would."""
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
-    job = _make_job(db_session, tenant, group, [invoice, bl])
-    _login_operator(client, db_session, tenant)
-
-    with patch("app.core.llm.evaluate_ruling", side_effect=RuntimeError("openai timeout")):
-        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
-
-    assert resp.status_code == 409, resp.text
-    assert "technical error" in resp.json()["detail"].lower()
-    db_session.refresh(job)
-    assert job.gk2_status is None
-
-
-def test_a_template_with_no_ruling_configured_is_unaffected(client, db_session):
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant, ruling=None)
-    job = _make_job(db_session, tenant, group, [invoice, bl])  # Freight Certificate never uploaded
-    _login_operator(client, db_session, tenant)
-
-    with patch("app.core.llm.evaluate_ruling") as mock_rule:
-        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
-
-    assert resp.status_code == 200, resp.text
-    assert not mock_rule.called
-    db_session.refresh(job)
-    assert job.gk2_status == "pending"
-
-
-def test_evaluate_job_ruling_persists_the_answer_without_setting_any_stage_override(client, db_session):
-    tenant = make_tenant(db_session)
-    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
-    job = _make_job(db_session, tenant, group, [invoice, bl])
-    _login_operator(client, db_session, tenant)
-
-    with patch("app.core.llm.evaluate_ruling") as mock_rule:
-        mock_rule.return_value = {
-            "needs_input": True, "question": "Which incoterm applies?",
-            "reason": "no incoterm found", "required_documents": [],
-        }
-        resp = client.post(f"/api/v1/jobs/{job.id}/ruling", json={"answer": "CIF"})
-
-    assert resp.status_code == 200, resp.text
-    assert "held" not in resp.json()
-    db_session.refresh(job)
-    assert job.ruling_answer == "CIF"
-    assert job.stage_override is None
-
-
-def test_gk2_final_approve_is_also_blocked_when_the_ruling_needs_input(client, db_session):
-    """Same gate, reached through the OTHER real submission path - GK2's own Final Approve &
+def test_gk2_final_approve_succeeds_even_when_the_ruling_needs_input(client, db_session):
+    """Same path, reached through the OTHER real submission route - GK2's own Final Approve &
     Proceed, for a tenant/mode where GK2 review is actually required (_finalize_job_approval is
     shared by both)."""
     tenant = make_tenant(db_session)
@@ -221,30 +106,68 @@ def test_gk2_final_approve_is_also_blocked_when_the_ruling_needs_input(client, d
         }
         resp = client.post(f"/api/v1/jobs/{job.id}/gk2/approve")
 
-    assert resp.status_code == 409, resp.text
-    assert "Cannot submit this job for approval" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    assert not mock_rule.called
     db_session.refresh(job)
-    assert job.gk2_status == "pending"  # never moved to preparing_erp
+    assert job.gk2_status != "pending"  # moved on
 
 
-def test_submit_entry_is_also_blocked_when_the_ruling_needs_input(client, db_session):
-    """Same gate, reached through the direct (non-GK2) Submit Entry path."""
+def test_submit_entry_succeeds_even_when_the_ruling_needs_input(client, db_session):
+    """Same path, reached through the direct (non-GK2) Submit Entry route."""
     tenant = make_tenant(db_session)
     group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
     job = _make_job(db_session, tenant, group, [invoice, bl])
-    op = _login_operator(client, db_session, tenant)
+    _login_operator(client, db_session, tenant)
 
-    with patch("app.core.llm.evaluate_ruling") as mock_rule:
+    with patch("app.core.llm.evaluate_ruling") as mock_rule, \
+         patch("app.api.v1.jobs._kick_off_real_erp_submission") as mock_kick_off:
         mock_rule.return_value = {
             "needs_input": True, "question": "Which incoterm applies?",
             "reason": "no incoterm found", "required_documents": [],
         }
         resp = client.post(f"/api/v1/jobs/{job.id}/complete")
 
-    assert resp.status_code == 409, resp.text
-    assert "Cannot submit this job for approval" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    assert not mock_rule.called
+    assert mock_kick_off.called
+
+
+def test_a_template_with_no_ruling_configured_is_unaffected(client, db_session):
+    tenant = make_tenant(db_session)
+    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant, ruling=None)
+    job = _make_job(db_session, tenant, group, [invoice, bl])  # Freight Certificate never uploaded
+    _login_operator(client, db_session, tenant)
+
+    with patch("app.core.llm.evaluate_ruling") as mock_rule:
+        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
+
+    assert resp.status_code == 200, resp.text
+    assert not mock_rule.called
     db_session.refresh(job)
-    assert job.status == "extracted"  # never touched
+    assert job.gk2_status == "pending"
+
+
+def test_evaluate_job_ruling_persists_the_answer_without_setting_any_stage_override(client, db_session):
+    """The voluntary "Check required documents" check (Document Capture) is untouched by the
+    submission-gate removal - still available, still persists an answer, still never parks the
+    job on a stage of its own."""
+    tenant = make_tenant(db_session)
+    group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
+    job = _make_job(db_session, tenant, group, [invoice, bl])
+    _login_operator(client, db_session, tenant)
+
+    with patch("app.core.llm.evaluate_ruling") as mock_rule:
+        mock_rule.return_value = {
+            "needs_input": True, "question": "Which incoterm applies?",
+            "reason": "no incoterm found", "required_documents": [],
+        }
+        resp = client.post(f"/api/v1/jobs/{job.id}/ruling", json={"answer": "CIF"})
+
+    assert resp.status_code == 200, resp.text
+    assert "held" not in resp.json()
+    db_session.refresh(job)
+    assert job.ruling_answer == "CIF"
+    assert job.stage_override is None
 
 
 def test_clear_stale_hold_resets_an_old_jobs_stage_override(client, db_session):
@@ -284,8 +207,9 @@ def test_clear_stale_hold_is_refused_to_a_non_super_admin(client, db_session):
 
 
 def test_outer_status_never_shows_hold_even_when_the_ruling_needs_input(client, db_session):
-    """The whole point: a job the ruling can't resolve stays wherever it already genuinely is
-    in its own pipeline - it is never parked on a separate "Hold" status."""
+    """The whole point, still true after the gate's removal: a job the ruling can't resolve
+    stays wherever it already genuinely is in its own pipeline - it is never parked on a
+    separate "Hold" status, and now it is not blocked from moving on either."""
     tenant = make_tenant(db_session)
     group, invoice, bl, freight = _make_group_with_ruling(db_session, tenant)
     job = _make_job(db_session, tenant, group, [invoice, bl])
@@ -294,7 +218,8 @@ def test_outer_status_never_shows_hold_even_when_the_ruling_needs_input(client, 
     with patch("app.core.llm.evaluate_ruling") as mock_rule:
         mock_rule.return_value = {"needs_input": True, "question": "?", "reason": "?", "required_documents": []}
         client.post(f"/api/v1/jobs/{job.id}/ruling", json={})
-        client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
+        resp = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
+        assert resp.status_code == 200, resp.text
 
     resp = client.get(f"/api/v1/jobs/{job.id}")
     assert resp.json()["outer_status"] != "Hold"
