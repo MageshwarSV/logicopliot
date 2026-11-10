@@ -9,6 +9,9 @@
 // ---------------------------------------------------------------------------
 
 export const superAdminFeatures = [
+  { path: "/super-admin/tenants", navLabel: "Tenants", group: "Customer Management", order: 1.1 },
+  { path: "/super-admin/users", navLabel: "Users & Tenant Admins", group: "Customer Management", order: 1.2 },
+
   { path: "/super-admin/template-list", navLabel: "Document Templates", group: "Platform Configuration", order: 2 },
   // The step-by-step onboarding wizard - pairs a new customer with the template that reads
   // their documents.
@@ -44,6 +47,7 @@ export const superAdminFeatures = [
 
 // The groups, in render order - every item's own `group` must be one of these.
 export const SUPER_ADMIN_FEATURE_GROUPS = [
+  "Customer Management",
   "Platform Configuration",
   "Integrations & Automation",
   "Operations",

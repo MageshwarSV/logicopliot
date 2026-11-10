@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode, type SVGProps } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
@@ -6,8 +6,28 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
-  BriefcaseIcon, ChartBarIcon, ChevronDownIcon,
+  BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon, FilterIcon,
+  CodeIcon, MonitorIcon, ArrowPathIcon,
 } from "./ui/icons";
+
+// One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
+// pure data only, no component imports, to avoid a cycle with this file) rather than as a
+// third parallel array to keep in sync by hand.
+const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) => ReactNode> = {
+  "/super-admin/tenants": BuildingIcon,
+  "/super-admin/users": UsersIcon,
+  "/super-admin/template-list": DocumentIcon,
+  "/super-admin/template-creation": LayersIcon,
+  "/super-admin/filter-pages": FilterIcon,
+  "/super-admin/data-transformation": ArrowPathIcon,
+  "/super-admin/email-puller": MailIcon,
+  "/super-admin/erp-scripts": CodeIcon,
+  "/super-admin/entry-browser": MonitorIcon,
+  "/jobs": BriefcaseIcon,
+  "/super-admin/pending-mail": MailIcon,
+  "/super-admin/billing": CreditCardIcon,
+  "/super-admin/settings": GearIcon,
+};
 
 function initials(name: string): string {
   return name
@@ -227,11 +247,15 @@ export function AppShell({
                     {group}
                   </h3>
                   <div className="mt-2 space-y-1">
-                    {superAdminFeatures.filter((f) => f.group === group).map((f) => (
-                      <Link key={f.path} to={f.path} className={navClass(f.path)}>
-                        {f.navLabel}
-                      </Link>
-                    ))}
+                    {superAdminFeatures.filter((f) => f.group === group).map((f) => {
+                      const Icon = SUPER_ADMIN_ICON_BY_PATH[f.path];
+                      return (
+                        <Link key={f.path} to={f.path} className={navClass(f.path)}>
+                          {Icon && <Icon />}
+                          {f.navLabel}
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               ))}

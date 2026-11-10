@@ -220,3 +220,47 @@ export function CalendarIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function BuildingIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={4} y={3} width={11} height={18} rx={1} />
+      <path d="M9 21v-4h2v4M7.5 7h2M11.5 7h2M7.5 11h2M11.5 11h2M7.5 15h2M11.5 15h2" />
+      <path d="M15 10h5v11h-5" />
+    </Icon>
+  );
+}
+
+export function MailIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={3} y={5} width={18} height={14} rx={2} />
+      <path d="m3.5 6 8.5 7 8.5-7" />
+    </Icon>
+  );
+}
+
+export function FilterIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M4 5h16l-6 7v6l-4 2v-8Z" />
+    </Icon>
+  );
+}
+
+export function CodeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="m9 7-5 5 5 5M15 7l5 5-5 5" />
+    </Icon>
+  );
+}
+
+export function MonitorIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={3} y={4} width={18} height={13} rx={1.5} />
+      <path d="M8 21h8M12 17v4" />
+    </Icon>
+  );
+}
