@@ -2038,11 +2038,28 @@ export function JobRunPage() {
         // ContainerTypeCode only ever applies to an FCL shipment (blank on purpose for every
         // other shipment type, see run_extraction's own container-field blanking pass) and
         // must never hold up a job that has nothing to put there at all.
+        //
+        // A product-row (row_index != null) self_filled field that is only ever a CANDIDATE
+        // feeding a picker pairing - e.g. "Dump CTH Number" feeding the real "CTH" field via
+        // its own sync_field_ids - is excluded unless IT is the answer side of that pairing
+        // (its own custom_field_id is someone else's sync target). Mirrors approveActive's own
+        // identical answerFieldIds exclusion (see that comment for why): the candidate is
+        // evidence and may genuinely be empty when the customer's sheet has no row for a part;
+        // the answer field is the declaration and is what must not be blank. Reported live:
+        // "Document CTH" correctly picked as the answer, CTH filled, yet the stage stayed
+        // blocked on "Dump CTH Number" - a field nothing asked the operator to fill in.
+        // row_index == null (job/document/container-level self_filled fields, e.g.
+        // ContainerTypeCode) are untouched by this - same scope approveActive uses it in.
+        const answerFieldIds = new Set<string>();
+        for (const fv of job.field_values) {
+          for (const id of fv.sync_field_ids ?? []) answerFieldIds.add(id);
+        }
         const blank = job.field_values.filter(
           (fv) =>
             fv.self_filled === true &&
             !fv.hidden_from_capture &&
             fv.ask_operator_required !== false &&
+            (fv.row_index == null || (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
             !(fv.value ?? "").trim(),
         );
         if (blank.length) {
@@ -2216,11 +2233,18 @@ export function JobRunPage() {
       const uploaded = job.documents.filter((d) => d.is_uploaded);
       const isGk2Tab = user?.role === "gk2";
       const docsApproved = uploaded.every((d) => (isGk2Tab ? d.gk2_approved : d.approved));
+      // Same answerFieldIds exclusion as blockedBecause's own "extraction" case - a product-row
+      // candidate like "Dump CTH Number" must not count as a blank here either.
+      const answerFieldIds = new Set<string>();
+      for (const fv of job.field_values) {
+        for (const id of fv.sync_field_ids ?? []) answerFieldIds.add(id);
+      }
       const noSelfFilledBlanks = !job.field_values.some(
         (fv) =>
           fv.self_filled === true &&
           !fv.hidden_from_capture &&
           fv.ask_operator_required !== false &&
+          (fv.row_index == null || (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
           !(fv.value ?? "").trim(),
       );
       if (blocker.key === "extraction" && docsApproved && noSelfFilledBlanks && unconfirmedButFilled) {
