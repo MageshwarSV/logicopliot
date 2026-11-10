@@ -37,8 +37,14 @@ const QUICK_ALL = "__all__";
 // only round-tripping within the same browser session now keeps what you set.
 const JOBS_FILTERS_STORAGE_KEY = "jobs-list-filters";
 
+/** The quick-filter choices. "custom" is not offered as a starting point - it is what the
+ *  filter becomes when someone types their own dates into From/To, so the dropdown stops
+ *  claiming a named range it no longer describes. */
+type QuickKey =
+  | "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month" | "all" | "custom";
+
 interface StoredJobsFilters {
-  quick: "today" | "7" | "30" | "all";
+  quick: QuickKey;
   customer: string;
   statusFilter: string;
   assignedTo: string;
@@ -223,7 +229,7 @@ export function JobsPage() {
   // working regardless of exactly when react-router's own state catches up.
   const quickParam = searchParams.get("quick");
   const assignedToParam = searchParams.get("assignedTo");
-  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => storedFilters.quick ?? "today");
+  const [quick, setQuick] = useState<QuickKey>(() => storedFilters.quick ?? "today");
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
@@ -719,15 +725,60 @@ export function JobsPage() {
     return `${y}-${m}-${day}`;
   }
 
-  // The window the quick filter means, unless explicit dates override it.
+  /** What each named range actually means, as two dates.
+   *
+   * ONE definition, used both to fill the From/To boxes when a range is picked and to work out
+   * the window when nothing has been typed. Two separate definitions would be free to drift,
+   * and the symptom of that drift is a screen showing dates it is not filtering by.
+   *
+   * Every range is CLOSED - it sets "to" as well as "from". "Today" used to leave "to" empty,
+   * which read as "today onwards" and left the box blank with nothing to show the operator
+   * what was being applied.
+   *
+   * Month boundaries are done with the Date constructor's own rollover rather than by
+   * arithmetic on day numbers: day 0 of this month IS the last day of last month, whether that
+   * is 28, 29, 30 or 31, and it is right in February without anybody thinking about February.
+   */
+  function rangeFor(key: QuickKey): { from: string; to: string } {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const back = (days: number) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - days);
+      return d;
+    };
+    switch (key) {
+      case "today":
+        return { from: localDayKey(today), to: localDayKey(today) };
+      case "yesterday":
+        return { from: localDayKey(back(1)), to: localDayKey(back(1)) };
+      case "7":
+        return { from: localDayKey(back(6)), to: localDayKey(today) };
+      case "30":
+        return { from: localDayKey(back(29)), to: localDayKey(today) };
+      case "this_month":
+        return {
+          from: localDayKey(new Date(today.getFullYear(), today.getMonth(), 1)),
+          to: localDayKey(today),
+        };
+      case "prev_month":
+        return {
+          from: localDayKey(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+          to: localDayKey(new Date(today.getFullYear(), today.getMonth(), 0)),
+        };
+      default:
+        return { from: "", to: "" };
+    }
+  }
+
+  // The window actually being applied. Once a range is picked the From/To boxes hold it, so
+  // they are the single source of truth and the two can never disagree; rangeFor is the
+  // fallback for a filter restored from storage before the boxes were ever filled.
   const quickRange = useMemo(() => {
-    if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
     if (quick === "all") return { from: "", to: "" };
-    const days = quick === "today" ? 0 : Number(quick) - 1;
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - days);
-    return { from: localDayKey(start), to: "" };
+    if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
+    return rangeFor(quick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quick, dateFrom, dateTo]);
 
   function dayKey(iso: string | null | undefined): string {
@@ -1086,24 +1137,51 @@ export function JobsPage() {
               className={quickField}
               value={quick}
               onChange={(e) => {
-                setQuick(e.target.value as typeof quick);
-                setDateFrom("");
-                setDateTo("");
+                // Fills From/To instead of blanking them, so the operator can SEE the window
+                // being applied and can then nudge either end by hand without first having to
+                // work out what "Last 30 days" started on.
+                const next = e.target.value as QuickKey;
+                const { from, to } = rangeFor(next);
+                setQuick(next);
+                setDateFrom(from);
+                setDateTo(to);
               }}
             >
               <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
               <option value="7">Last 7 days</option>
               <option value="30">Last 30 days</option>
+              <option value="this_month">This month</option>
+              <option value="prev_month">Previous month</option>
               <option value="all">All time</option>
+              {quick === "custom" && <option value="custom">Custom range</option>}
             </select>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">From</label>
-            <input type="date" className={quickField} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+            {/* Typing a date of your own stops the dropdown claiming a named range it no
+                longer describes - the list refreshes off these two boxes either way. */}
+            <input
+              type="date"
+              className={quickField}
+              value={dateFrom}
+              onChange={(e) => {
+                setDateFrom(e.target.value);
+                setQuick("custom");
+              }}
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">To</label>
-            <input type="date" className={quickField} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+            <input
+              type="date"
+              className={quickField}
+              value={dateTo}
+              onChange={(e) => {
+                setDateTo(e.target.value);
+                setQuick("custom");
+              }}
+            />
           </div>
           <div className="min-w-0 flex-1">
             <label className="mb-1 block text-xs font-medium text-slate-500">Customer</label>
