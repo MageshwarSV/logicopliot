@@ -58,9 +58,6 @@ class TenantBillingConfigOut(BaseModel):
     cargora_tier1_rate_per_page: float
     cargora_tier1_page_limit: int
     cargora_tier2_rate_per_page: float
-    # A page never matched to any document ("Not Required") is billed at this flat rate
-    # instead of the Tier 1/2 rate above - see calculate_bill.
-    not_required_page_rate: float
     trackcontainer_plan: str | None
     trackcontainer_starter_price: float
     trackcontainer_starter_container_limit: int
@@ -77,7 +74,6 @@ class TenantBillingConfigUpdate(BaseModel):
     cargora_tier1_rate_per_page: float | None = None
     cargora_tier1_page_limit: int | None = None
     cargora_tier2_rate_per_page: float | None = None
-    not_required_page_rate: float | None = None
     # null = not subscribed to TrackContainer at all.
     trackcontainer_plan: str | None = None
     trackcontainer_starter_price: float | None = None

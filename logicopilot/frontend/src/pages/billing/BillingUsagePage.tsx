@@ -351,15 +351,6 @@ export function BillingUsagePage() {
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
                 </div>
               )}
-              {usage.not_required_pages > 0 && (
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Not Required ({usage.not_required_pages.toLocaleString()} × ₹{usage.not_required_rate})
-                  </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
-                </div>
-              )}
-
               <div className="flex justify-between rounded-lg bg-indigo-50 px-3 py-2.5 text-base dark:bg-indigo-500/10 sm:col-span-2">
                 <dt className="font-semibold text-indigo-900 dark:text-indigo-200">Subtotal (Before GST)</dt>
                 <dd className="font-semibold text-indigo-900 dark:text-indigo-200">{formatInr(usage.subtotal)}</dd>

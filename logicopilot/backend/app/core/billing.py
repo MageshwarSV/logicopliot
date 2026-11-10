@@ -482,20 +482,21 @@ def default_billing_config(tenant_id: str) -> TenantBillingConfig:
 def calculate_bill(
     config: TenantBillingConfig, total_pages: int, period_start: date, not_required_pages: int = 0,
 ) -> BillBreakdown:
-    """total_pages is EVERY billed page, not_required_pages included - tier1_pages/tier2_pages
-    are carved out of the REMAINDER (total_pages - not_required_pages), so a Not Required page
-    is billed at config.not_required_page_rate ONLY, never also counted toward the Tier 1/2
-    rate. Confirmed with the user (2026-11-09): replace, not stack."""
+    """total_pages is EVERY billed page - Not Required pages are NOT carved out, they count
+    toward tier1_pages/tier2_pages exactly like any other page. The ₹/page flat-rate
+    Not Required billing tried earlier (2026-11-09) was reverted by the user the same day:
+    those pages must flow through the normal tier math, not a separate rate. The
+    not_required_pages param and BillBreakdown's not_required_* fields are kept only so the
+    already-migrated columns/schema stay populated (always 0), not because they affect billing."""
     billed_days, month_days = _platform_fee_proration(config, period_start)
     platform_fee = round(config.cargora_monthly_fee * billed_days / month_days, 2)
-    not_required_pages = max(0, min(not_required_pages, total_pages))
-    tier_eligible_pages = total_pages - not_required_pages
-    tier1_pages = min(tier_eligible_pages, config.cargora_tier1_page_limit)
-    tier2_pages = max(0, tier_eligible_pages - config.cargora_tier1_page_limit)
+    not_required_pages = 0
+    tier1_pages = min(total_pages, config.cargora_tier1_page_limit)
+    tier2_pages = max(0, total_pages - config.cargora_tier1_page_limit)
     tier1_amount = round(tier1_pages * config.cargora_tier1_rate_per_page, 2)
     tier2_amount = round(tier2_pages * config.cargora_tier2_rate_per_page, 2)
-    not_required_amount = round(not_required_pages * config.not_required_page_rate, 2)
-    usage_charges = round(tier1_amount + tier2_amount + not_required_amount, 2)
+    not_required_amount = 0.0
+    usage_charges = round(tier1_amount + tier2_amount, 2)
     subtotal = round(platform_fee + usage_charges, 2)
     gst_amount = round(subtotal * config.gst_percent / 100, 2)
     total_amount = round(subtotal + gst_amount, 2)
