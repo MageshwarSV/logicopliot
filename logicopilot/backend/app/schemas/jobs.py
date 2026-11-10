@@ -88,13 +88,14 @@ class JobOut(BaseModel):
 
 
 class JobCategoryCounts(BaseModel):
-    """How many jobs sit in each of the five Jobs-list screens, under the same tenant/role
-    visibility list_jobs itself applies - the left-side nav's own badge counts."""
+    """How many jobs sit in each of the four Jobs-list screens, under the same tenant/role
+    visibility list_jobs itself applies - the left-side nav's own badge counts. The old,
+    separate "completed" (ERP Verified Jobs) bucket was removed (2026-11-10) - a submitted
+    entry counts the same whether or not it has also been verified."""
     new: int = 0
     missing: int = 0
     failed: int = 0
     submitted: int = 0
-    completed: int = 0
 
 
 class JobActivityDay(BaseModel):

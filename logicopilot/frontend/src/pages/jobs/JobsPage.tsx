@@ -47,12 +47,17 @@ interface StoredJobsFilters {
   dateTo: string;
 }
 
-// The Jobs list's five screens - which one is active lives in the URL (?category=...), set
+// The Jobs list's four screens - which one is active lives in the URL (?category=...), set
 // by the real left-nav links (AppShell.tsx's jobCategoryLinks) - not in component state, the
 // same way group/bucket (a dashboard box click) already work. Omitted entirely (a plain visit
 // to /jobs, or a dashboard box click that sets group/bucket but not category) means "every
-// category", unchanged from before this feature existed - only clicking one of the five nav
+// category", unchanged from before this feature existed - only clicking one of the four nav
 // links actually narrows it. See Job.category / _category_condition in api/v1/jobs.py.
+//
+// "completed" is kept here even though no nav link points at it any more (the old, separate
+// "ERP Verified Jobs" screen was removed 2026-11-10) - a stale bookmark/link with
+// ?category=completed still resolves to a real title instead of "undefined", and the backend
+// still accepts it (identical to "submitted" now).
 const CATEGORY_TITLES: Record<string, string> = {
   new: "New Jobs",
   missing: "Missing Documents",
@@ -61,7 +66,7 @@ const CATEGORY_TITLES: Record<string, string> = {
   completed: "ERP Verified Jobs",
 };
 
-// Which screen a set of filters belongs to. The five sidebar screens each keep their
+// Which screen a set of filters belongs to. The four sidebar screens each keep their
 // own; a plain /jobs visit and a dashboard box click share the "all" bucket, since
 // neither narrows to a category.
 function filtersScope(category: string | undefined): string {
@@ -191,12 +196,6 @@ export function JobsPage() {
   // accepts. Always editable, even after a job already has someone assigned — reassigning
   // just overwrites the previous value, there is no lock to work around.
   const canAssign = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
-  // Who can press Submitted Jobs' own "Verified" button - same roles the backend's
-  // POST /jobs/{id}/verify accepts. Not manager (read-only) - everyone else who actually
-  // works a job (including the operator/Gate Keeper 1, for a GK2-skipped tenant where they
-  // are the only one who ever sees it) can confirm the ERP portal shows the entry went in.
-  const canVerify = user?.role === "operator" || user?.role === "gk2" || user?.role === "super_admin"
-    || user?.role === "admin" || user?.role === "tenant_admin";
   const [operators, setOperators] = useState<User[]>([]);
   const [savingAssignId, setSavingAssignId] = useState<string | null>(null);
   // Quick filter — date range + customer. Lives here, not on the dashboard, so it only ever
@@ -307,7 +306,6 @@ export function JobsPage() {
   const [shipmentType, setShipmentType] = useState<string>(() => storedFilters.shipmentType ?? QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
   const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   // Keep the stored filters in sync with whatever is currently selected, so the NEXT time
   // this page mounts (coming back from Dashboard, a job, anywhere) it restores exactly this.
@@ -514,23 +512,6 @@ export function JobsPage() {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not assign the operator.");
     } finally {
       setSavingAssignId(null);
-    }
-  }
-
-  // Submitted Jobs' own "Verified" button - a human confirming the AI/ERP automation
-  // actually went through. Moves the job on to Completed Jobs; refreshCurrentWindow (still
-  // filtered to category="submitted") naturally drops it from view the moment its category
-  // changes server-side.
-  async function handleVerify(job: Job) {
-    setVerifyingId(job.id);
-    setError(null);
-    try {
-      await jobsApi.verifyJob(job.id);
-      await refreshCurrentWindow();
-    } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not verify the job.");
-    } finally {
-      setVerifyingId(null);
     }
   }
 
@@ -919,29 +900,6 @@ export function JobsPage() {
       header: "Importer/Exporter",
       render: (j) => <span>{j.customer_name ?? "—"}</span>,
     },
-    // Submitted Jobs' own column - a human confirming the AI/ERP automation actually went
-    // through. Only shown on that screen; New Jobs and Completed Jobs have nothing to press
-    // here (a completed job is either already verified or came through the direct Submit
-    // Entry path, which needed no separate confirmation).
-    ...(category === "submitted" && canVerify
-      ? [{
-          header: "",
-          render: (j: Job) => (
-            <Button
-              size="sm"
-              variant="secondary"
-              className="whitespace-nowrap"
-              isLoading={verifyingId === j.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleVerify(j);
-              }}
-            >
-              Mark as Verified in ERP
-            </Button>
-          ),
-        } as Column<Job>]
-      : []),
     {
       header: "",
       className: "text-right",

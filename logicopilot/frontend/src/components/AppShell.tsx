@@ -64,15 +64,6 @@ function ErpSubmittedIcon() {
   );
 }
 
-function ErpVerifiedIcon() {
-  return (
-    <svg className="h-4 w-4 shrink-0 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <circle cx="12" cy="12" r="9" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8.5 12.5l2.5 2.5 4.5-5" />
-    </svg>
-  );
-}
-
 function CountBadge({ count, cls }: { count: number; cls: string }) {
   return (
     <span className={`ml-auto inline-flex min-w-[1.375rem] shrink-0 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none ${cls}`}>
@@ -115,15 +106,16 @@ export function AppShell({
   // at all, because it actively tells you the wrong thing.
   const navClass = (path: string) => (location.pathname === path ? NAV_ACTIVE : NAV_INACTIVE);
 
-  // The Jobs list's five screens - New Jobs (Pre-Alert through anything short of the ERP
+  // The Jobs list's four screens - New Jobs (Pre-Alert through anything short of the ERP
   // submission actually running), Missing Documents (a mandatory document hasn't arrived yet -
   // see outer_status "Missing Documents"), ERP Failed Jobs (status or gk2_status "failed"),
-  // Submitted Jobs (the AI/ERP automation already went through; each row there gets a Verified
-  // button), Completed Jobs (confirmed, or completed the direct Submit Entry way). Every role
-  // that sees a plain Jobs link gets all five - see Job.category/_category_condition in
+  // ERP Submitted Jobs (the AI/ERP automation went through, automated or direct - no separate
+  // "verified" state any more, that screen was removed 2026-11-10 by explicit request since a
+  // submitted entry counts the same whether or not it has also been verified). Every role
+  // that sees a plain Jobs link gets all four - see Job.category/_category_condition in
   // api/v1/jobs.py; applies identically whether the tenant/mode requires GK2 review or not.
   const JOB_CATEGORIES: {
-    key: "new" | "missing" | "failed" | "submitted" | "completed";
+    key: "new" | "missing" | "failed" | "submitted";
     label: string;
     icon: () => ReactNode;
     badgeCls: string;
@@ -136,8 +128,6 @@ export function AppShell({
       badgeCls: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" },
     { key: "submitted", label: "ERP Submitted Jobs", icon: ErpSubmittedIcon,
       badgeCls: "bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300" },
-    { key: "completed", label: "ERP Verified Jobs", icon: ErpVerifiedIcon,
-      badgeCls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" },
   ];
   const activeJobCategory = location.pathname === "/jobs"
     ? new URLSearchParams(location.search).get("category")

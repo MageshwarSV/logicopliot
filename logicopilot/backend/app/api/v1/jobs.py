@@ -1030,16 +1030,16 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
 
 
 def _job_category(job: Job) -> str:
-    """Which of the three Jobs-list screens this job belongs on:
+    """Which of the four Jobs-list screens this job belongs on:
 
       "new"       - everything from Pre-Alert up to before the ERP submission actually runs.
       "submitted" - the AI/ERP automation went through at least once (Job.ai_submitted_at
-                    set), and a human still needs to confirm it actually landed before this
-                    counts as done - see Job.erp_verified_at.
-      "completed" - confirmed (erp_verified_at set), or reached the direct Submit Entry path
-                    instead (job.status == "completed", ai_submitted_at never set), which
-                    needs no separate confirmation since an operator pressing it IS the human
-                    submitting it in real time.
+                    set), or it reached the direct Submit Entry path instead (job.status ==
+                    "completed", ai_submitted_at never set - a historical/legacy case only,
+                    see below). No separate "verified" state exists any more - the old
+                    "ERP Verified Jobs" screen/category was removed (2026-11-10, by explicit
+                    request): a submitted entry counts the same whether or not Job.
+                    erp_verified_at is ever set afterward.
 
     Applies identically whether this tenant/mode requires GK2 or not - a GK2-skipped job
     (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same successful
@@ -1053,21 +1053,20 @@ def _job_category(job: Job) -> str:
     after a fresh attempt - see that function's own comment, and the sync-status endpoint
     built to patch this exact drift by hand. That reset is correct for the badge, but relying
     on the CURRENT gk2_status here would un-submit a job the moment someone re-ran it any
-    other way, silently moving it back to New Jobs or straight to Completed with nobody ever
-    having pressed Verified - confirmed live in production. ai_submitted_at is set once and
-    never cleared, so it survives that reset.
+    other way, silently moving it back to New Jobs - confirmed live in production.
+    ai_submitted_at is set once and never cleared, so it survives that reset.
 
     job.status == "failed" always wins over ai_submitted_at, though (see _category_condition's
-    own "submitted" exclusion) - a run that never actually produced a job number is not
-    "mid-flight", it is done and done badly, and must not keep reading "submitted" forever
-    just because ai_submitted_at still remembers one attempt.
+    own exclusion) - a run that never actually produced a job number is not "mid-flight", it is
+    done and done badly, and must not keep reading "submitted" forever just because
+    ai_submitted_at still remembers one attempt.
     """
     if job.status == "failed":
         return "new"
     if job.ai_submitted_at is not None:
-        return "completed" if job.erp_verified_at is not None else "submitted"
+        return "submitted"
     if job.status == "completed":
-        return "completed"
+        return "submitted"
     return "new"
 
 
@@ -1863,23 +1862,23 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 # already-loaded Job object (list rows, _build_detail).
 def _category_condition(category: str):
     not_ai_submitted = Job.ai_submitted_at.is_(None)
-    if category == "completed":
+    # "completed" and "submitted" are now the SAME condition - the separate "ERP Verified
+    # Jobs" screen/category was removed (2026-11-10, by explicit request): an ERP entry that
+    # has merely been SUBMITTED (automated or direct) counts the same as one that has also
+    # been VERIFIED afterward, so there is no more distinct "awaiting verification" state to
+    # gate on. Job.status is set to "completed" the moment an ERP entry succeeds, automated or
+    # direct, regardless of whether erp_verified_at is ever set afterward - see
+    # persist_run_outcome/complete_job. Both category names are kept (rather than deleting
+    # "completed" outright) because other callers still ask for "completed" by name (the
+    # manager app's own dashboard, the Tenant Admin dashboard box's union of the two) and must
+    # keep working unchanged.
+    if category in ("completed", "submitted"):
         return (
-            (Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.isnot(None))
-            | (not_ai_submitted & (Job.status == "completed"))
-        )
-    if category == "submitted":
-        # ai_submitted_at is set once and never cleared (see _job_category's own docstring) -
-        # on purpose, so a later retry through the regular entry screen (which resets
-        # gk2_status) doesn't silently un-submit a job that is still genuinely mid-flight.
-        # But found live (JOB-AF9B0B, JOB-6B2F53): a job whose run never actually produced a
-        # job number is now "failed" (see persist_run_outcome), and that is NOT "mid-flight" -
-        # it needs the same exclusion "new" already applies, or it keeps showing under "ERP
-        # Submitted Jobs" forever purely because ai_submitted_at still remembers one attempt.
-        return (
-            Job.ai_submitted_at.isnot(None)
-            & Job.erp_verified_at.is_(None)
-            & (Job.status != "failed")
+            (Job.ai_submitted_at.isnot(None) & (Job.status != "failed"))
+            # A job completed before ai_submitted_at existed (or through some other historical
+            # path that never set it) still belongs here - same fallback the old "completed"
+            # category always had.
+            | (Job.ai_submitted_at.is_(None) & (Job.status == "completed"))
         )
     if category == "new":
         # Excludes Failed here too (found live: a job already showing its own "Failed" badge,
@@ -1973,12 +1972,14 @@ def job_category_counts(
     status: str | None = None,
     shipment_type: str | None = None,
 ) -> JobCategoryCounts:
-    """Badge counts for the Jobs list's five left-side screens - New Jobs / Missing Documents /
-    ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
-    visibility list_jobs itself applies, AND the exact same filters currently applied on
-    whichever of those five screens is open, so a badge never disagrees with the list sitting
-    right next to it (found live: "ERP Failed Jobs" read 7 while its own filtered list, Quick
-    filter "Last 7 days" + Assigned To "malar", showed a single row)."""
+    """Badge counts for the Jobs list's four left-side screens - New Jobs / Missing Documents /
+    ERP Failed Jobs / Submitted Jobs - under the exact same tenant/role visibility list_jobs
+    itself applies, AND the exact same filters currently applied on whichever of those four
+    screens is open, so a badge never disagrees with the list sitting right next to it (found
+    live: "ERP Failed Jobs" read 7 while its own filtered list, Quick filter "Last 7 days" +
+    Assigned To "malar", showed a single row). The old separate "Completed Jobs"/"ERP Verified
+    Jobs" screen was removed (2026-11-10) - a submitted entry counts the same whether or not it
+    has also been verified, so there is nothing left for a fifth bucket to distinguish."""
     base = _jobs_visible_query(db, scope, user)
     lo, hi = _count_bound_day_range(date_from, date_to)
     if lo is not None:
@@ -2017,7 +2018,6 @@ def job_category_counts(
     new_candidates = base.filter(_category_condition("new")).all()
     failed_candidates = base.filter(_category_condition("failed")).all()
     submitted_candidates = erp_base.filter(_category_condition("submitted")).all()
-    completed_candidates = erp_base.filter(_category_condition("completed")).all()
 
     # Batched ONCE across both candidate sets, instead of _is_missing_documents' own two lazy-
     # loads running once per candidate (found live 2026-11-03 jamming the whole site - this
@@ -2051,7 +2051,6 @@ def job_category_counts(
         missing=sum(1 for j in missing_candidates if _missing(j) and _extra(j)),
         failed=sum(1 for j in failed_candidates if _extra(j)),
         submitted=sum(1 for j in submitted_candidates if _extra(j)),
-        completed=sum(1 for j in completed_candidates if _extra(j)),
     )
 
 
