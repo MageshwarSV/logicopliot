@@ -360,15 +360,16 @@ export interface AccuracyDashboard {
   fields_extracted_by_ai: number;
   fields_manually_edited: number;
   accuracy_pct: number | null;
+  /** How many completed jobs this is computed over - same population as total_jobs on
+   *  ProcessingTimeDashboard/WorkforceDashboard. Shown as "Total Completed Jobs". */
+  jobs_completed: number;
   by_document_type: DocTypeAccuracy[];
   trend: DashboardTrendPoint[];
 }
 
 export interface ProcessingTimeDashboard {
+  /** Jobs completed in range - shown as "Total Completed Jobs". */
   total_jobs: number;
-  /** How many of total_jobs have actually finished - avg_total_tat_minutes is computed from
-   *  only this subset. */
-  jobs_completed: number;
   avg_total_tat_minutes: number | null;
   avg_extraction_minutes: number | null;
   avg_review_minutes: number | null;
@@ -410,6 +411,7 @@ export interface EmployeeReviewRow {
 export interface WorkforceDashboard {
   employee_requirement_fte: number | null;
   avg_review_minutes_per_job: number | null;
+  /** Jobs completed in range - shown as "Total Completed Jobs". */
   total_jobs: number;
   human_review_hours: number;
   jobs_with_recorded_review: number;

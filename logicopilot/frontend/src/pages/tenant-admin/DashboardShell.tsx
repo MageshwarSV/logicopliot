@@ -59,7 +59,11 @@ function ExecutiveOverview() {
               {accuracy?.accuracy_pct != null ? `${accuracy.accuracy_pct}%` : "—"}
             </span>
           </div>
-          <div className="grid flex-1 grid-cols-3 gap-4">
+          <div className="grid flex-1 grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Completed Jobs</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(accuracy?.jobs_completed ?? 0).toLocaleString()}</p>
+            </div>
             <div>
               <p className="text-xs text-slate-500 dark:text-slate-400">Documents Processed</p>
               <p className="font-semibold text-slate-900 dark:text-slate-50">{(accuracy?.documents_processed ?? 0).toLocaleString()}</p>
@@ -97,7 +101,7 @@ function ExecutiveOverview() {
               <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(workforce?.avg_review_minutes_per_job)}</p>
             </div>
             <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Total Jobs</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Completed Jobs</p>
               <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.total_jobs ?? 0).toLocaleString()}</p>
             </div>
             <div>
@@ -123,7 +127,7 @@ function ExecutiveOverview() {
           </div>
           <div className="grid flex-1 grid-cols-4 gap-4">
             <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Total Jobs</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Completed Jobs</p>
               <p className="font-semibold text-slate-900 dark:text-slate-50">{(processing?.total_jobs ?? 0).toLocaleString()}</p>
             </div>
             <div>

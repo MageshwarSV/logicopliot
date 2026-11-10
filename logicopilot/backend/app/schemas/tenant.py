@@ -217,6 +217,7 @@ class AccuracyDashboardOut(BaseModel):
     fields_extracted_by_ai: int
     fields_manually_edited: int
     accuracy_pct: float | None
+    jobs_completed: int
     by_document_type: list[DocTypeAccuracyOut]
     trend: list[AccuracyTrendPointOut]
 
@@ -228,7 +229,6 @@ class ProcessingTimeTrendPointOut(BaseModel):
 
 class ProcessingTimeDashboardOut(BaseModel):
     total_jobs: int
-    jobs_completed: int
     avg_total_tat_minutes: float | None
     avg_extraction_minutes: float | None
     avg_review_minutes: float | None
