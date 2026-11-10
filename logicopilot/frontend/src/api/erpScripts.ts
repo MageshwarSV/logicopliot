@@ -54,6 +54,12 @@ export async function deleteErpScript(scriptId: string): Promise<void> {
   await apiClient.delete(`/erp-scripts/${scriptId}`);
 }
 
+/** Copy a script into a brand-new draft - same URL, login, templates and every recorded step. */
+export async function duplicateErpScript(scriptId: string): Promise<ErpScript> {
+  const { data } = await apiClient.post<ErpScript>(`/erp-scripts/${scriptId}/duplicate`);
+  return data;
+}
+
 // --------------------------------------------------------------------------- //
 // Live browser recorder
 // --------------------------------------------------------------------------- //

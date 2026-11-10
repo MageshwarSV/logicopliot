@@ -53,14 +53,15 @@ export async function listJobs(options: ListJobsOptions = {}): Promise<Job[]> {
   return data;
 }
 
-/** Badge counts for the Jobs list's three left-side screens, under the caller's own
- *  tenant/role visibility - see GET /jobs/category-counts. */
+/** Badge counts for the Jobs list's four left-side screens, under the caller's own
+ *  tenant/role visibility - see GET /jobs/category-counts. The old, separate "completed"
+ *  (ERP Verified Jobs) bucket was removed (2026-11-10) - a submitted entry counts the same
+ *  whether or not it has also been verified. */
 export interface JobCategoryCounts {
   new: number;
   missing: number;
   failed: number;
   submitted: number;
-  completed: number;
 }
 
 /** Mirrors the Jobs list's own client-side filters exactly (JobsPage.tsx) - omitted (the
@@ -891,13 +892,6 @@ export async function gk2Approve(jobId: string): Promise<JobDetail> {
   return data;
 }
 
-/** A human confirming the AI/ERP automation actually submitted this job - the Submitted
- *  Jobs screen's "Verified" button. Moves the job on to Completed Jobs (see Job.category);
- *  refused (409) for a job that hasn't reached "AI - ERP Submitted" yet. */
-export async function verifyJob(jobId: string): Promise<JobDetail> {
-  const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/verify`);
-  return data;
-}
 
 /** Operator decided a job flagged "possible_duplicate" is genuinely a separate shipment -
  *  let it proceed as if never flagged. "Delete" uses deleteJob() instead - there is nothing

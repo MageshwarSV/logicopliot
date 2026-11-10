@@ -8,6 +8,8 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
+import { CalendarIcon } from "../../components/ui/icons";
+import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
@@ -5009,6 +5011,21 @@ function ExtractedField({
   // one edit rather than a setting.
   const [soloEdit, setSoloEdit] = useState(false);
 
+  // A DATE field - FieldMark.date_picker / CustomField.date_picker, ticked once by an admin
+  // in the Template Creation Wizard. Adds a calendar button at the right of the box; the box
+  // itself is untouched and still typed into exactly as before.
+  //
+  // Deliberately NOT a replacement for the text box. An <input type="date"> can only display a
+  // date it can parse, so a value this app cannot read - OCR noise like "15 MAR 26", a smudged
+  // year, a blank where extraction found nothing - would render as an EMPTY calendar, which
+  // reads as "there is nothing here" when there is in fact something here that needs fixing.
+  // Keeping the text box means the operator always sees what the document actually said.
+  //
+  // Only ever on a plain text box: a dropdown, a multi-line box and the two search pickers all
+  // own their own right-hand edge, and all three are the wrong shape for a date anyway.
+  const dateField = !!fv.date_picker && !options && !multiline && !asyncSearchPicker
+    && !comboOptions && !readOnly;
+
   const saveValue = async (value: string) => {
     if (readOnly) return;
     let transformed = transformBeforeSave ? transformBeforeSave(value) : value;
@@ -5189,7 +5206,13 @@ function ExtractedField({
                     : tone === "computed"
                       ? "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200"
                       : "border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-        } ${readOnly ? "cursor-default" : ""} ${!readOnly && (dirty || corrected) ? "pr-16" : ""}`;
+        } ${readOnly ? "cursor-default" : ""} ${
+          // Right-hand padding so the typed value never runs under whatever is drawn on top of
+          // the box: the Save button, the calendar, or both at once.
+          !readOnly && (dirty || corrected)
+            ? (dateField ? "pr-24" : "pr-16")
+            : (dateField ? "pr-10" : "")
+        }`;
 
         return options ? (
           <select
@@ -5392,6 +5415,54 @@ function ExtractedField({
           </>
         );
       })()}
+      {dateField && (
+        <span
+          className={`absolute top-1/2 h-7 w-7 -translate-y-1/2 ${
+            // Steps aside when the Save button appears, rather than sitting under it.
+            dirty || saving ? "right-14" : "right-1.5"
+          }`}
+        >
+          {/* The real control, laid over the icon and invisible. Sized and positioned exactly
+              where the icon is drawn, not parked off-screen, so the browser anchors its popup
+              calendar to the field the operator just clicked.
+
+              value is derived from the draft every render rather than held in its own state -
+              type a date by hand and the calendar opens on it; the two can never disagree.
+              A value this app cannot parse yields "", so the calendar simply opens on today
+              instead of refusing to open. */}
+          <input
+            type="date"
+            value={toInputDate(draft)}
+            aria-label={`Pick a date for ${labelOverride ?? fv.label_name}`}
+            title="Pick a date"
+            // Chrome/Edge/Firefox/Safari only open the popup from the small indicator glyph,
+            // which is invisible here - so ask for it explicitly. Wrapped because showPicker()
+            // throws without a user gesture, and is missing entirely on older browsers; either
+            // way the box above is still typed into, so nothing is lost.
+            onClick={(e) => {
+              const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+              try {
+                el.showPicker?.();
+              } catch {
+                /* no popup available - typing still works */
+              }
+            }}
+            onChange={(e) => {
+              // The whole point of fieldDates: a pick changes the DATE and nothing else. The
+              // value is written back in whatever format this box already holds, so an ERP
+              // script, the Excel export and the cross-document date check all keep reading it
+              // exactly as they did before. See pickedDateToFieldValue.
+              const next = pickedDateToFieldValue(e.target.value, draft, fv.date_format);
+              setDraft(next);
+              onDraftChange?.(next);
+              if (next === current) return;
+              void saveValue(next);
+            }}
+            className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+          />
+          <CalendarIcon className="pointer-events-none absolute inset-0 m-auto h-4 w-4 text-slate-400 dark:text-slate-500" />
+        </span>
+      )}
       {!readOnly && !options && (dirty || saving) && (
         <button
           type="button"

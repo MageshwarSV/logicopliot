@@ -1030,16 +1030,16 @@ def _outer_status(db: Session, job: Job, stage: str | None = None) -> str:
 
 
 def _job_category(job: Job) -> str:
-    """Which of the three Jobs-list screens this job belongs on:
+    """Which of the four Jobs-list screens this job belongs on:
 
       "new"       - everything from Pre-Alert up to before the ERP submission actually runs.
       "submitted" - the AI/ERP automation went through at least once (Job.ai_submitted_at
-                    set), and a human still needs to confirm it actually landed before this
-                    counts as done - see Job.erp_verified_at.
-      "completed" - confirmed (erp_verified_at set), or reached the direct Submit Entry path
-                    instead (job.status == "completed", ai_submitted_at never set), which
-                    needs no separate confirmation since an operator pressing it IS the human
-                    submitting it in real time.
+                    set), or it reached the direct Submit Entry path instead (job.status ==
+                    "completed", ai_submitted_at never set - a historical/legacy case only,
+                    see below). No separate "verified" state exists any more - the old
+                    "ERP Verified Jobs" screen/category was removed (2026-11-10, by explicit
+                    request): a submitted entry counts the same whether or not Job.
+                    erp_verified_at is ever set afterward.
 
     Applies identically whether this tenant/mode requires GK2 or not - a GK2-skipped job
     (Tenant.gk2_required_by_mode off for its shipment mode) reaches the exact same successful
@@ -1053,21 +1053,20 @@ def _job_category(job: Job) -> str:
     after a fresh attempt - see that function's own comment, and the sync-status endpoint
     built to patch this exact drift by hand. That reset is correct for the badge, but relying
     on the CURRENT gk2_status here would un-submit a job the moment someone re-ran it any
-    other way, silently moving it back to New Jobs or straight to Completed with nobody ever
-    having pressed Verified - confirmed live in production. ai_submitted_at is set once and
-    never cleared, so it survives that reset.
+    other way, silently moving it back to New Jobs - confirmed live in production.
+    ai_submitted_at is set once and never cleared, so it survives that reset.
 
     job.status == "failed" always wins over ai_submitted_at, though (see _category_condition's
-    own "submitted" exclusion) - a run that never actually produced a job number is not
-    "mid-flight", it is done and done badly, and must not keep reading "submitted" forever
-    just because ai_submitted_at still remembers one attempt.
+    own exclusion) - a run that never actually produced a job number is not "mid-flight", it is
+    done and done badly, and must not keep reading "submitted" forever just because
+    ai_submitted_at still remembers one attempt.
     """
     if job.status == "failed":
         return "new"
     if job.ai_submitted_at is not None:
-        return "completed" if job.erp_verified_at is not None else "submitted"
+        return "submitted"
     if job.status == "completed":
-        return "completed"
+        return "submitted"
     return "new"
 
 
@@ -1863,23 +1862,23 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 # already-loaded Job object (list rows, _build_detail).
 def _category_condition(category: str):
     not_ai_submitted = Job.ai_submitted_at.is_(None)
-    if category == "completed":
+    # "completed" and "submitted" are now the SAME condition - the separate "ERP Verified
+    # Jobs" screen/category was removed (2026-11-10, by explicit request): an ERP entry that
+    # has merely been SUBMITTED (automated or direct) counts the same as one that has also
+    # been VERIFIED afterward, so there is no more distinct "awaiting verification" state to
+    # gate on. Job.status is set to "completed" the moment an ERP entry succeeds, automated or
+    # direct, regardless of whether erp_verified_at is ever set afterward - see
+    # persist_run_outcome/complete_job. Both category names are kept (rather than deleting
+    # "completed" outright) because other callers still ask for "completed" by name (the
+    # manager app's own dashboard, the Tenant Admin dashboard box's union of the two) and must
+    # keep working unchanged.
+    if category in ("completed", "submitted"):
         return (
-            (Job.ai_submitted_at.isnot(None) & Job.erp_verified_at.isnot(None))
-            | (not_ai_submitted & (Job.status == "completed"))
-        )
-    if category == "submitted":
-        # ai_submitted_at is set once and never cleared (see _job_category's own docstring) -
-        # on purpose, so a later retry through the regular entry screen (which resets
-        # gk2_status) doesn't silently un-submit a job that is still genuinely mid-flight.
-        # But found live (JOB-AF9B0B, JOB-6B2F53): a job whose run never actually produced a
-        # job number is now "failed" (see persist_run_outcome), and that is NOT "mid-flight" -
-        # it needs the same exclusion "new" already applies, or it keeps showing under "ERP
-        # Submitted Jobs" forever purely because ai_submitted_at still remembers one attempt.
-        return (
-            Job.ai_submitted_at.isnot(None)
-            & Job.erp_verified_at.is_(None)
-            & (Job.status != "failed")
+            (Job.ai_submitted_at.isnot(None) & (Job.status != "failed"))
+            # A job completed before ai_submitted_at existed (or through some other historical
+            # path that never set it) still belongs here - same fallback the old "completed"
+            # category always had.
+            | (Job.ai_submitted_at.is_(None) & (Job.status == "completed"))
         )
     if category == "new":
         # Excludes Failed here too (found live: a job already showing its own "Failed" badge,
@@ -1973,12 +1972,14 @@ def job_category_counts(
     status: str | None = None,
     shipment_type: str | None = None,
 ) -> JobCategoryCounts:
-    """Badge counts for the Jobs list's five left-side screens - New Jobs / Missing Documents /
-    ERP Failed Jobs / Submitted Jobs / Completed Jobs - under the exact same tenant/role
-    visibility list_jobs itself applies, AND the exact same filters currently applied on
-    whichever of those five screens is open, so a badge never disagrees with the list sitting
-    right next to it (found live: "ERP Failed Jobs" read 7 while its own filtered list, Quick
-    filter "Last 7 days" + Assigned To "malar", showed a single row)."""
+    """Badge counts for the Jobs list's four left-side screens - New Jobs / Missing Documents /
+    ERP Failed Jobs / Submitted Jobs - under the exact same tenant/role visibility list_jobs
+    itself applies, AND the exact same filters currently applied on whichever of those four
+    screens is open, so a badge never disagrees with the list sitting right next to it (found
+    live: "ERP Failed Jobs" read 7 while its own filtered list, Quick filter "Last 7 days" +
+    Assigned To "malar", showed a single row). The old separate "Completed Jobs"/"ERP Verified
+    Jobs" screen was removed (2026-11-10) - a submitted entry counts the same whether or not it
+    has also been verified, so there is nothing left for a fifth bucket to distinguish."""
     base = _jobs_visible_query(db, scope, user)
     lo, hi = _count_bound_day_range(date_from, date_to)
     if lo is not None:
@@ -2017,7 +2018,6 @@ def job_category_counts(
     new_candidates = base.filter(_category_condition("new")).all()
     failed_candidates = base.filter(_category_condition("failed")).all()
     submitted_candidates = erp_base.filter(_category_condition("submitted")).all()
-    completed_candidates = erp_base.filter(_category_condition("completed")).all()
 
     # Batched ONCE across both candidate sets, instead of _is_missing_documents' own two lazy-
     # loads running once per candidate (found live 2026-11-03 jamming the whole site - this
@@ -2051,7 +2051,6 @@ def job_category_counts(
         missing=sum(1 for j in missing_candidates if _missing(j) and _extra(j)),
         failed=sum(1 for j in failed_candidates if _extra(j)),
         submitted=sum(1 for j in submitted_candidates if _extra(j)),
-        completed=sum(1 for j in completed_candidates if _extra(j)),
     )
 
 
@@ -2064,15 +2063,23 @@ def job_activity_chart(
     assigned_to: str | None = None,
 ) -> JobActivityChartOut:
     """One bar per calendar day (IST) of the given month ("YYYY-MM"): how many jobs arrived
-    that day (created_at) next to how many were submitted to the ERP that day (ai_submitted_at).
-    This is a historical activity/throughput view, deliberately NOT the same thing as the
-    "New Jobs"/"ERP Submitted Jobs" sidebar badges above (job_category_counts) - those answer
-    "what's true of a job RIGHT NOW", which cannot be attributed to a past day (a job created
-    two weeks ago is no longer "new" today, but it genuinely did arrive on that day two weeks
-    ago - that is the event this chart counts). assigned_to mirrors category-counts' own filter
-    exactly (an operator's full_name, not an id - see _operator_name/_job_passes_extra_filters),
-    so this dashboard's "Assigned To" dropdown agrees with every other screen that already
-    filters jobs this way."""
+    that day (created_at) next to how many reached the ERP that day. This is a historical
+    activity/throughput view, deliberately NOT the same thing as the "New Jobs"/"ERP Submitted
+    Jobs" sidebar badges above (job_category_counts) - those answer "what's true of a job RIGHT
+    NOW", which cannot be attributed to a past day (a job created two weeks ago is no longer
+    "new" today, but it genuinely did arrive on that day two weeks ago - that is the event this
+    chart counts). assigned_to mirrors category-counts' own filter exactly (an operator's
+    full_name, not an id - see _operator_name/_job_passes_extra_filters), so this dashboard's
+    "Assigned To" dropdown agrees with every other screen that already filters jobs this way.
+
+    "Reached the ERP" uses _category_condition("submitted") - the same definition the sidebar
+    badge and the Jobs list itself use - not a bare ai_submitted_at check: a job that went
+    through the direct Submit Entry path without ai_submitted_at ever being set (an older,
+    legacy shape) still counts, same as everywhere else since the ERP Submitted/Verified merge
+    (2026-11-10). Bucketed by ai_submitted_at when it is set (the precise moment automation hit
+    the ERP), falling back to completed_at for that legacy shape - found live: a job with no
+    ai_submitted_at at all was invisible to this chart in every month, despite correctly
+    showing on the Jobs list's own "ERP Submitted Jobs" screen."""
     try:
         year, mon = (int(x) for x in month.split("-"))
         start = datetime(year, mon, 1, tzinfo=IST)
@@ -2082,9 +2089,10 @@ def job_activity_chart(
 
     base = _jobs_visible_query(db, scope, user)
     created_candidates = base.filter(Job.created_at >= start, Job.created_at < end).all()
+    _submitted_when = func.coalesce(Job.ai_submitted_at, Job.completed_at, Job.created_at)
     submitted_candidates = base.filter(
-        Job.ai_submitted_at.isnot(None),
-        Job.ai_submitted_at >= start, Job.ai_submitted_at < end,
+        _category_condition("submitted"),
+        _submitted_when >= start, _submitted_when < end,
     ).all()
     if assigned_to:
         created_candidates = [j for j in created_candidates if _operator_name(db, j) == assigned_to]
@@ -2098,7 +2106,9 @@ def job_activity_chart(
         return counts
 
     new_counts = _bucket([j.created_at for j in created_candidates])
-    submitted_counts = _bucket([j.ai_submitted_at for j in submitted_candidates])
+    submitted_counts = _bucket([
+        j.ai_submitted_at or j.completed_at or j.created_at for j in submitted_candidates
+    ])
 
     days: list[JobActivityDay] = []
     cursor = start
@@ -3507,6 +3517,12 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_multiline: dict[str, bool] = {
         m.id: m.multiline for tdoc in group.documents for m in tdoc.marks
     }
+    mark_date_picker: dict[str, bool] = {
+        m.id: m.date_picker for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_date_format: dict[str, str | None] = {
+        m.id: m.date_format for tdoc in group.documents for m in tdoc.marks
+    }
     mark_field_order: dict[str, int | None] = {
         m.id: m.field_order for tdoc in group.documents for m in tdoc.marks
     }
@@ -3534,6 +3550,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_display_label = {c.id: c.display_label for c in cf_rows}
     cf_full_width = {c.id: c.full_width for c in cf_rows}
     cf_multiline = {c.id: c.multiline for c in cf_rows}
+    cf_date_picker = {c.id: c.date_picker for c in cf_rows}
+    cf_date_format = {c.id: c.date_format for c in cf_rows}
     cf_field_order = {c.id: c.field_order for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
@@ -3748,6 +3766,14 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 multiline=(
                     mark_multiline.get(fv.mark_id, False)
                     or cf_multiline.get(fv.custom_field_id, False)
+                ),
+                date_picker=(
+                    mark_date_picker.get(fv.mark_id, False)
+                    or cf_date_picker.get(fv.custom_field_id, False)
+                ),
+                date_format=(
+                    mark_date_format.get(fv.mark_id)
+                    or cf_date_format.get(fv.custom_field_id)
                 ),
                 # Not `or` - field_order=0 is a real, meaningful value ("first"), and 0 is
                 # falsy, so `0 or cf_value` would wrongly fall through to the custom-field side
@@ -6549,18 +6575,52 @@ def delete_job_document_row(
     # 1's row 1 and set 3's row 1 are different products. Blank normalises to 1, the same way
     # the per-row write loop and the screen itself both normalise it.
     set_index = jd.set_index or 1
+
+    # ...EXCEPT on a document whose rows are its own standalone table.
+    #
+    # A Bill of Lading's container rows are numbered 1, 2, 3 exactly as an invoice's product
+    # lines are, and they count containers, not products. Taking the union above on such a
+    # document deleted the PRODUCT's per-row fields at the same row number and then renumbered
+    # the rest to close the gap - so removing container 2 deleted product 2's CTH and shifted
+    # products 3..11's codes up one, onto the wrong products.
+    #
+    # Seen on JOB-8BA341 (production, 2026-11-10 13:13:33: "deleted product line 2 from
+    # <Bill of lading> (10 lines left)"). The visible symptom was product 11 losing its CTH
+    # box; the damage underneath was every code from product 3 onward sitting against the
+    # wrong line, which is a wrong customs declaration on nine products and nothing on screen
+    # to say so.
+    #
+    # Same test the screen and the extraction slot-builder both make: a document whose
+    # row-indexed labels are ALL standalone marks is its own table, and a delete there touches
+    # only its own rows.
+    group_for_doc = db.get(TemplateGroup, job.group_id)
+    standalone_labels = _standalone_mark_labels(group_for_doc) if group_for_doc else set()
+    own_row_labels = {
+        r[0]
+        for r in db.query(JobFieldValue.label_name)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd.id,
+                JobFieldValue.row_index.isnot(None))
+        .distinct().all()
+    }
+    doc_is_standalone_table = bool(own_row_labels) and own_row_labels <= standalone_labels
+
+    scope_filter = (
+        JobFieldValue.job_document_id == jd.id
+        if doc_is_standalone_table
+        else or_(
+            JobFieldValue.job_document_id == jd.id,
+            and_(
+                JobFieldValue.custom_field_id.isnot(None),
+                func.coalesce(JobFieldValue.set_index, 1) == set_index,
+            ),
+        )
+    )
     rows = (
         db.query(JobFieldValue)
         .filter(
             JobFieldValue.job_id == job.id,
             JobFieldValue.row_index.isnot(None),
-            or_(
-                JobFieldValue.job_document_id == jd.id,
-                and_(
-                    JobFieldValue.custom_field_id.isnot(None),
-                    func.coalesce(JobFieldValue.set_index, 1) == set_index,
-                ),
-            ),
+            scope_filter,
         )
         .all()
     )
@@ -9383,6 +9443,8 @@ def correct_field_value(
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
         full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
         multiline=bool(owner_for_mandatory and owner_for_mandatory.multiline),
+        date_picker=bool(owner_for_mandatory and owner_for_mandatory.date_picker),
+        date_format=owner_for_mandatory.date_format if owner_for_mandatory else None,
         field_order=owner_for_mandatory.field_order if owner_for_mandatory else None,
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
@@ -9590,6 +9652,8 @@ def _recompute_per_row_custom_field(
             mandatory=bool(cf.ask_operator_required),
             full_width=bool(cf.full_width),
             multiline=bool(cf.multiline),
+            date_picker=bool(cf.date_picker),
+            date_format=cf.date_format,
             field_order=cf.field_order,
         ))
     return results
@@ -9733,6 +9797,8 @@ def recompute_custom_field(
         mandatory=bool(cf.ask_operator_required),
         full_width=bool(cf.full_width),
         multiline=bool(cf.multiline),
+        date_picker=bool(cf.date_picker),
+        date_format=cf.date_format,
         field_order=cf.field_order,
     )]
 
@@ -10141,6 +10207,8 @@ def recompute_mark(
             mandatory=bool(mark.ask_operator_required),
             full_width=bool(mark.full_width),
             multiline=bool(mark.multiline),
+            date_picker=bool(mark.date_picker),
+            date_format=mark.date_format,
             field_order=mark.field_order,
         ))
     return results

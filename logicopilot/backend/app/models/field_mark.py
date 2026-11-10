@@ -124,6 +124,25 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # today's existing behavior for every field that predates this column.
     multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+
+    # This field holds a DATE: the Job Run screen puts a calendar button beside its box, so an
+    # operator can click a day instead of typing one. Purely additive - the text box itself is
+    # unchanged, still showing and still accepting whatever the document actually said, because
+    # an OCR'd date this app cannot parse ("15 MAR 26", a smudged year) must still be visible
+    # and correctable rather than rendering as an empty calendar.
+    #
+    # A pick is written back in the format the box's CURRENT value already uses, not in a
+    # format of this feature's choosing: values are stored exactly as the document wrote them
+    # (see extraction._DATE_FORMATS, which exists precisely because they vary), the ERP robot
+    # re-renders them itself (browser._set_date), and the Excel export copies the string
+    # through untouched. Normalising here would silently rewrite a tenant's own
+    # tenant_format_prompt choice.
+    date_picker: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # date_picker only: the format a pick is written in when the box is EMPTY and there is no
+    # existing value to match. None (the default) means day-first DD/MM/YYYY, the convention
+    # the rest of this product already reads ambiguous dates with.
+    date_format: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     # Where this field sits, lowest-first, among the other fields under the SAME section
     # heading on the job screen - admin-settable, so reordering never needs a deploy. None
     # (every field that predates this column) falls back to whatever position the old hardcoded

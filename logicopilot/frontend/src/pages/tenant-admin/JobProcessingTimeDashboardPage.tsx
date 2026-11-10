@@ -25,10 +25,9 @@ function fmtMinutes(m: number | null): string {
 /** Job Processing Time detail page of the Executive Dashboard - see the mockup's own "Job
  *  Process Flow & Average Time" screen. Extraction/Review/ERP Submission durations are
  *  reconstructed from JobEvent history and Job.ai_submitted_at/completed_at (no new tracking
- *  needed) - see app/core/dashboard_metrics.py's own docstring for exactly how. Total Jobs
- *  counts every job CREATED in the range, finished or not (matching Data Accuracy/Workforce
- *  Productivity); Avg. Total TAT specifically only covers the subset that has actually
- *  finished (jobs_completed), since a total turnaround time has no meaning until a job does. */
+ *  needed) - see app/core/dashboard_metrics.py's own docstring for exactly how. Total Completed
+ *  Jobs counts every job COMPLETED in the range (matching Data Accuracy/Workforce
+ *  Productivity). */
 export function JobProcessingTimeDashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -59,7 +58,7 @@ export function JobProcessingTimeDashboardPage() {
   return (
     <AppShell
       title="Job Processing Time"
-      subtitle="End-to-end job processing time (Pre-Alert to ERP Submission), for jobs created in this range."
+      subtitle="End-to-end job processing time (Pre-Alert to ERP Submission), for jobs completed in this range."
     >
       <DashboardFilterBar value={range} onChange={setRange} />
 
@@ -73,7 +72,7 @@ export function JobProcessingTimeDashboardPage() {
           tone="blue"
         />
         <StatCard
-          label="Total Jobs"
+          label="Total Completed Jobs"
           value={loading ? "…" : (data?.total_jobs ?? 0).toLocaleString()}
           icon={<DocumentIcon />}
           tone="indigo"
@@ -94,14 +93,6 @@ export function JobProcessingTimeDashboardPage() {
           tone="emerald"
         />
       </div>
-
-      {!loading && data && data.total_jobs > 0 && (
-        <p className="mb-6 text-xs text-slate-400">
-          {data.jobs_completed} of {data.total_jobs} job{data.total_jobs === 1 ? "" : "s"} created in this range{" "}
-          {data.jobs_completed === 1 ? "has" : "have"} actually finished — Avg. Total TAT is computed from only
-          that subset; the per-stage averages can still include an in-progress job's own already-finished stages.
-        </p>
-      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="p-5">

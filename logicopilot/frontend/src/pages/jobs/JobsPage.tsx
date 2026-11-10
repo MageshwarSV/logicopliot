@@ -37,8 +37,14 @@ const QUICK_ALL = "__all__";
 // only round-tripping within the same browser session now keeps what you set.
 const JOBS_FILTERS_STORAGE_KEY = "jobs-list-filters";
 
+/** The quick-filter choices. "custom" is not offered as a starting point - it is what the
+ *  filter becomes when someone types their own dates into From/To, so the dropdown stops
+ *  claiming a named range it no longer describes. */
+type QuickKey =
+  | "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month" | "all" | "custom";
+
 interface StoredJobsFilters {
-  quick: "today" | "7" | "30" | "all";
+  quick: QuickKey;
   customer: string;
   statusFilter: string;
   assignedTo: string;
@@ -47,12 +53,17 @@ interface StoredJobsFilters {
   dateTo: string;
 }
 
-// The Jobs list's five screens - which one is active lives in the URL (?category=...), set
+// The Jobs list's four screens - which one is active lives in the URL (?category=...), set
 // by the real left-nav links (AppShell.tsx's jobCategoryLinks) - not in component state, the
 // same way group/bucket (a dashboard box click) already work. Omitted entirely (a plain visit
 // to /jobs, or a dashboard box click that sets group/bucket but not category) means "every
-// category", unchanged from before this feature existed - only clicking one of the five nav
+// category", unchanged from before this feature existed - only clicking one of the four nav
 // links actually narrows it. See Job.category / _category_condition in api/v1/jobs.py.
+//
+// "completed" is kept here even though no nav link points at it any more (the old, separate
+// "ERP Verified Jobs" screen was removed 2026-11-10) - a stale bookmark/link with
+// ?category=completed still resolves to a real title instead of "undefined", and the backend
+// still accepts it (identical to "submitted" now).
 const CATEGORY_TITLES: Record<string, string> = {
   new: "New Jobs",
   missing: "Missing Documents",
@@ -61,7 +72,7 @@ const CATEGORY_TITLES: Record<string, string> = {
   completed: "ERP Verified Jobs",
 };
 
-// Which screen a set of filters belongs to. The five sidebar screens each keep their
+// Which screen a set of filters belongs to. The four sidebar screens each keep their
 // own; a plain /jobs visit and a dashboard box click share the "all" bucket, since
 // neither narrows to a category.
 function filtersScope(category: string | undefined): string {
@@ -191,12 +202,6 @@ export function JobsPage() {
   // accepts. Always editable, even after a job already has someone assigned — reassigning
   // just overwrites the previous value, there is no lock to work around.
   const canAssign = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
-  // Who can press Submitted Jobs' own "Verified" button - same roles the backend's
-  // POST /jobs/{id}/verify accepts. Not manager (read-only) - everyone else who actually
-  // works a job (including the operator/Gate Keeper 1, for a GK2-skipped tenant where they
-  // are the only one who ever sees it) can confirm the ERP portal shows the entry went in.
-  const canVerify = user?.role === "operator" || user?.role === "gk2" || user?.role === "super_admin"
-    || user?.role === "admin" || user?.role === "tenant_admin";
   const [operators, setOperators] = useState<User[]>([]);
   const [savingAssignId, setSavingAssignId] = useState<string | null>(null);
   // Quick filter — date range + customer. Lives here, not on the dashboard, so it only ever
@@ -223,7 +228,7 @@ export function JobsPage() {
   // working regardless of exactly when react-router's own state catches up.
   const quickParam = searchParams.get("quick");
   const assignedToParam = searchParams.get("assignedTo");
-  const [quick, setQuick] = useState<"today" | "7" | "30" | "all">(() => storedFilters.quick ?? "today");
+  const [quick, setQuick] = useState<QuickKey>(() => storedFilters.quick ?? "today");
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
@@ -307,7 +312,6 @@ export function JobsPage() {
   const [shipmentType, setShipmentType] = useState<string>(() => storedFilters.shipmentType ?? QUICK_ALL);
   const [dateFrom, setDateFrom] = useState<string>(() => storedFilters.dateFrom ?? "");
   const [dateTo, setDateTo] = useState<string>(() => storedFilters.dateTo ?? "");
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   // Keep the stored filters in sync with whatever is currently selected, so the NEXT time
   // this page mounts (coming back from Dashboard, a job, anywhere) it restores exactly this.
@@ -517,23 +521,6 @@ export function JobsPage() {
     }
   }
 
-  // Submitted Jobs' own "Verified" button - a human confirming the AI/ERP automation
-  // actually went through. Moves the job on to Completed Jobs; refreshCurrentWindow (still
-  // filtered to category="submitted") naturally drops it from view the moment its category
-  // changes server-side.
-  async function handleVerify(job: Job) {
-    setVerifyingId(job.id);
-    setError(null);
-    try {
-      await jobsApi.verifyJob(job.id);
-      await refreshCurrentWindow();
-    } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not verify the job.");
-    } finally {
-      setVerifyingId(null);
-    }
-  }
-
   async function handleDelete(job: Job) {
     if (!window.confirm(`Delete job ${job.reference}? This removes its documents and extracted values.`)) return;
     setDeletingId(job.id);
@@ -719,15 +706,60 @@ export function JobsPage() {
     return `${y}-${m}-${day}`;
   }
 
-  // The window the quick filter means, unless explicit dates override it.
+  /** What each named range actually means, as two dates.
+   *
+   * ONE definition, used both to fill the From/To boxes when a range is picked and to work out
+   * the window when nothing has been typed. Two separate definitions would be free to drift,
+   * and the symptom of that drift is a screen showing dates it is not filtering by.
+   *
+   * Every range is CLOSED - it sets "to" as well as "from". "Today" used to leave "to" empty,
+   * which read as "today onwards" and left the box blank with nothing to show the operator
+   * what was being applied.
+   *
+   * Month boundaries are done with the Date constructor's own rollover rather than by
+   * arithmetic on day numbers: day 0 of this month IS the last day of last month, whether that
+   * is 28, 29, 30 or 31, and it is right in February without anybody thinking about February.
+   */
+  function rangeFor(key: QuickKey): { from: string; to: string } {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const back = (days: number) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - days);
+      return d;
+    };
+    switch (key) {
+      case "today":
+        return { from: localDayKey(today), to: localDayKey(today) };
+      case "yesterday":
+        return { from: localDayKey(back(1)), to: localDayKey(back(1)) };
+      case "7":
+        return { from: localDayKey(back(6)), to: localDayKey(today) };
+      case "30":
+        return { from: localDayKey(back(29)), to: localDayKey(today) };
+      case "this_month":
+        return {
+          from: localDayKey(new Date(today.getFullYear(), today.getMonth(), 1)),
+          to: localDayKey(today),
+        };
+      case "prev_month":
+        return {
+          from: localDayKey(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+          to: localDayKey(new Date(today.getFullYear(), today.getMonth(), 0)),
+        };
+      default:
+        return { from: "", to: "" };
+    }
+  }
+
+  // The window actually being applied. Once a range is picked the From/To boxes hold it, so
+  // they are the single source of truth and the two can never disagree; rangeFor is the
+  // fallback for a filter restored from storage before the boxes were ever filled.
   const quickRange = useMemo(() => {
-    if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
     if (quick === "all") return { from: "", to: "" };
-    const days = quick === "today" ? 0 : Number(quick) - 1;
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - days);
-    return { from: localDayKey(start), to: "" };
+    if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
+    return rangeFor(quick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quick, dateFrom, dateTo]);
 
   function dayKey(iso: string | null | undefined): string {
@@ -919,29 +951,6 @@ export function JobsPage() {
       header: "Importer/Exporter",
       render: (j) => <span>{j.customer_name ?? "—"}</span>,
     },
-    // Submitted Jobs' own column - a human confirming the AI/ERP automation actually went
-    // through. Only shown on that screen; New Jobs and Completed Jobs have nothing to press
-    // here (a completed job is either already verified or came through the direct Submit
-    // Entry path, which needed no separate confirmation).
-    ...(category === "submitted" && canVerify
-      ? [{
-          header: "",
-          render: (j: Job) => (
-            <Button
-              size="sm"
-              variant="secondary"
-              className="whitespace-nowrap"
-              isLoading={verifyingId === j.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleVerify(j);
-              }}
-            >
-              Mark as Verified in ERP
-            </Button>
-          ),
-        } as Column<Job>]
-      : []),
     {
       header: "",
       className: "text-right",
@@ -1086,24 +1095,51 @@ export function JobsPage() {
               className={quickField}
               value={quick}
               onChange={(e) => {
-                setQuick(e.target.value as typeof quick);
-                setDateFrom("");
-                setDateTo("");
+                // Fills From/To instead of blanking them, so the operator can SEE the window
+                // being applied and can then nudge either end by hand without first having to
+                // work out what "Last 30 days" started on.
+                const next = e.target.value as QuickKey;
+                const { from, to } = rangeFor(next);
+                setQuick(next);
+                setDateFrom(from);
+                setDateTo(to);
               }}
             >
               <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
               <option value="7">Last 7 days</option>
               <option value="30">Last 30 days</option>
+              <option value="this_month">This month</option>
+              <option value="prev_month">Previous month</option>
               <option value="all">All time</option>
+              {quick === "custom" && <option value="custom">Custom range</option>}
             </select>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">From</label>
-            <input type="date" className={quickField} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+            {/* Typing a date of your own stops the dropdown claiming a named range it no
+                longer describes - the list refreshes off these two boxes either way. */}
+            <input
+              type="date"
+              className={quickField}
+              value={dateFrom}
+              onChange={(e) => {
+                setDateFrom(e.target.value);
+                setQuick("custom");
+              }}
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">To</label>
-            <input type="date" className={quickField} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+            <input
+              type="date"
+              className={quickField}
+              value={dateTo}
+              onChange={(e) => {
+                setDateTo(e.target.value);
+                setQuick("custom");
+              }}
+            />
           </div>
           <div className="min-w-0 flex-1">
             <label className="mb-1 block text-xs font-medium text-slate-500">Customer</label>

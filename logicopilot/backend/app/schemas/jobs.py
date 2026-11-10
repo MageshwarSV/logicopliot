@@ -88,13 +88,14 @@ class JobOut(BaseModel):
 
 
 class JobCategoryCounts(BaseModel):
-    """How many jobs sit in each of the five Jobs-list screens, under the same tenant/role
-    visibility list_jobs itself applies - the left-side nav's own badge counts."""
+    """How many jobs sit in each of the four Jobs-list screens, under the same tenant/role
+    visibility list_jobs itself applies - the left-side nav's own badge counts. The old,
+    separate "completed" (ERP Verified Jobs) bucket was removed (2026-11-10) - a submitted
+    entry counts the same whether or not it has also been verified."""
     new: int = 0
     missing: int = 0
     failed: int = 0
     submitted: int = 0
-    completed: int = 0
 
 
 class JobActivityDay(BaseModel):
@@ -295,6 +296,14 @@ class JobFieldValueOut(BaseModel):
     # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
     # is today's existing behavior for every field that predates this column.
     multiline: bool = False
+    # Admin-settable - this field holds a date, so the job screen puts a calendar button beside
+    # its box. See FieldMark.date_picker's own docstring. The box itself is unchanged: picking
+    # a day is a second way to set the same value, never a replacement for typing it.
+    date_picker: bool = False
+    # date_picker only - the format a pick is written in when the box is EMPTY. None means
+    # day-first DD/MM/YYYY. A box that already HAS a value ignores this and keeps that value's
+    # own format, so a pick changes the date and nothing else.
+    date_format: str | None = None
     # Admin-settable - where this field sits, lowest-first, among its siblings under the same
     # section heading. See FieldMark.field_order's own docstring. None falls back to whatever
     # position the old hardcoded FIELD_GROUPS_BY_DOC_TYPE label-order list already gives it.

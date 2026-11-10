@@ -29,8 +29,20 @@ logger = logging.getLogger(__name__)
 DOC_TYPE_HINTS = {
     "BL": "bill of lading, sea/air waybill, B/L no, shipper, consignee, notify party, vessel, port of loading/discharge",
     "PackingList": "packing list, number of packages/cartons, net weight, gross weight, dimensions, marks & numbers",
-    "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code",
-    "Freight": "freight certificate/invoice, freight charges, ocean freight, THC, BAF, freight amount",
+    "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code - a"
+               " real GOODS invoice always lists actual products (part numbers, quantities, unit prices of physical"
+               " items), not just a payable total",
+    # A freight forwarder's own "Tax Invoice" for an air shipment is itself the freight
+    # certificate here - found live: Expeditors' own tax invoice, headed "Tax Invoice" with an
+    # ordinary invoice number/date, itemizing AIR FREIGHT CHARGES, FSC (fuel surcharge), ISS,
+    # CUSTOMS CLEARANCE, DELIVERY ORDER FEES, CHARGES COLLECT FEES and PICKUP FEES against an
+    # AWB/HAWB number - no product/goods line at all, because it bills for the SHIPPING
+    # SERVICE, not the cargo. That shape (forwarder-billed logistics service charges against an
+    # AWB, no goods) is Freight regardless of its own title.
+    "Freight": "freight certificate/invoice, air freight charges, ocean freight, THC, BAF, FSC (fuel surcharge),"
+               " ISS, customs clearance, delivery order fees, pickup fees, charges collect fees, freight amount -"
+               " billed by a freight forwarder/carrier against an AWB/HAWB/BL for the shipping service itself,"
+               " never a goods/product line",
 }
 
 # Words a customer uses when NAMING a slot, mapped to the built-in hint for that kind of
@@ -119,14 +131,22 @@ _TYPE_SIGNATURES: dict[str, dict] = {
         # carries this same charge line under its own heading, with no page ever printed
         # "freight certificate" - so a specific dollar-figure charge line is the required
         # signal, not the document's own title.
+        #
+        # "air freight" is its own required alternative (not folded into the plain "freight
+        # charges?" pattern) because a real one found live says "AIR FREIGHT CHARGES" as a
+        # line-item description, not a document heading - the page was titled "Tax Invoice"
+        # (an air freight forwarder's own GST invoice for the shipping service, Expeditors
+        # International) and went unclassified until this was added.
         "required": [
-            r"ocean\s*freight", r"freight\s*charges?", r"freight\s*amount",
+            r"ocean\s*freight", r"air\s*freight", r"freight\s*charges?", r"freight\s*amount",
             r"origin\s*charges", r"destination\s*charges", r"freight\s*certificate",
             r"freight\s*invoice",
         ],
         "supporting": [
-            r"\bthc\b", r"\bbaf\b", r"handling\s*charges", r"chargeable\s*weight",
-            r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}", r"tracking\s*no",
+            r"\bthc\b", r"\bbaf\b", r"\bfsc\b", r"\biss\b", r"handling\s*charges",
+            r"chargeable\s*weight", r"customs\s*clearance", r"delivery\s*order\s*fees?",
+            r"pickup\s*fees?", r"charges?\s*collect", r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}",
+            r"tracking\s*no",
         ],
         "min_supporting": 1,
     },
@@ -143,6 +163,43 @@ def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
         return False, 0
     hits = sum(1 for p in sig["supporting"] if re.search(p, text, re.IGNORECASE))
     return hits >= sig["min_supporting"], hits
+
+
+_PAGE_MARKER_RE = re.compile(r"=== PAGE (\d+) ===\n")
+
+
+def _split_into_pages(text: str) -> list[tuple[int, str]] | None:
+    """[(page_number, that page's own text), ...] from the "=== PAGE n ===" blob every file's
+    own `text` is assembled as (see jobs.py's smart-upload text assembly) - the KEPT-page
+    numbering, same as everywhere else in this module. None if the text carries no page
+    markers at all (not this format - a caller should fall back to treating it as one page)."""
+    parts = _PAGE_MARKER_RE.split(text)
+    if len(parts) < 3:
+        return None
+    # re.split with a capturing group returns [before, num, after, num, after, ...] - the
+    # leading "before" (whatever sat before the first marker, normally empty) is discarded.
+    return [(int(parts[i]), parts[i + 1]) for i in range(1, len(parts), 2)]
+
+
+def _pages_matching_signature(text: str, doc_type: str) -> list[int] | None:
+    """Which of this file's OWN pages individually satisfy doc_type's keyword signature, or
+    None if `text` has no per-page markers to check pages against at all (a genuinely single-
+    page file, say) - the caller falls back to its own default in that case.
+
+    Exists because the whole-file signature match (_keyword_signature_match on the full,
+    concatenated text) only proves the type is present SOMEWHERE in the file - it says nothing
+    about WHICH pages. Checking every page's own slice individually, instead of just reusing
+    whatever pages some OTHER, unrelated type already claimed, is what keeps a large combined
+    upload's own Packing List pages (say) from being duplicated into a Freight Certificate
+    match that is genuinely only on the file's OWN separate Export Invoice pages - found live
+    on JOB-5D0F78: a 9-page combined upload (BL + Invoice + Packing List + two Export Invoice
+    pages), where the old "reuse whichever pages something else already claimed" fallback
+    pulled the Packing List's own 3 pages into Freight Certificate too, on a file that never
+    needed the fallback in the first place - it had page markers all along."""
+    pages = _split_into_pages(text)
+    if pages is None:
+        return None
+    return [n for n, page_text in pages if _keyword_signature_match(page_text, doc_type)[0]]
 
 
 def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
@@ -288,8 +345,30 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 continue
             is_match, hits = _keyword_signature_match(text, doc_type)
             if is_match:
+                # Which of THIS file's own pages actually carry the signature, not just
+                # whichever pages some OTHER, unrelated type already claimed - the whole-file
+                # match above only proves doc_type is present SOMEWHERE, never where. Falls
+                # back to matched_pages only when the file has no page markers to check at all
+                # (a single-page file - nothing to be imprecise about). When the file DOES have
+                # per-page markers and NONE of its own pages individually carry the signature,
+                # that is not "split across pages" - it means the required/supporting markers
+                # the whole-file match saw are scattered across OTHER types' own pages (an
+                # ordinary invoice's routine "Freight Charges: $0.00" line plus some unrelated
+                # page's own supporting word, for instance - confirmed live on SIT, JOB-5D0F78:
+                # a plain commercial invoice's own zero-value freight line, no freight document
+                # anywhere in the file at all, used to make Freight claim every other type's
+                # pages wholesale). A claim with nowhere real to point is worse than no claim -
+                # drop it rather than fall back to the old wholesale behaviour.
+                precise_pages = _pages_matching_signature(text, doc_type)
+                if precise_pages is not None and not precise_pages:
+                    logger.info(
+                        "classify %s: keyword backstop for %s matched the file's whole text "
+                        "but no single page of it - treating as a false positive scattered "
+                        "across other types' pages, not claiming it", item.get("name"), doc_type)
+                    continue
+                claim_pages = precise_pages if precise_pages else matched_pages
                 claims[i].append({
-                    "key": keys[0], "pages": matched_pages,
+                    "key": keys[0], "pages": claim_pages,
                     # Deterministic evidence, not a judgement call - see the
                     # specificity rule, which refuses to strip a claim carrying this.
                     "source": "signature",
@@ -299,8 +378,9 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                                    "that the model's own classification call missed entirely"),
                 })
                 logger.info(
-                    "classify %s: added %s by keyword backstop (%d supporting markers)%s",
-                    item.get("name"), doc_type, hits,
+                    "classify %s: added %s by keyword backstop (%d supporting markers, pages "
+                    "%s)%s",
+                    item.get("name"), doc_type, hits, claim_pages,
                     "" if ms else " - the model's own call matched nothing at all for this file")
                 continue
 
@@ -383,7 +463,15 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         "real document of this type from this same customer, so it is the best evidence you "
         "have. Match on what the document IS, not on what it is titled: a slot called 'Freight "
         "Certificate' is still the right home for a document headed ARRIVAL NOTICE, if that is "
-        "where this customer's freight charges appear.\n\n"
+        "where this customer's freight charges appear. The same applies when a freight "
+        "forwarder or airline bills its OWN shipping service as a 'Tax Invoice' or 'Commercial "
+        "Invoice' with an ordinary invoice number/date: if its line items are freight/logistics "
+        "SERVICE charges against an AWB/HAWB (air freight, fuel surcharge/FSC, ISS, customs "
+        "clearance, delivery order fees, pickup fees, charges collect fees - never an actual "
+        "product/part number/quantity of physical goods), it is the Freight Certificate, not "
+        "the Invoice, regardless of its own 'Tax Invoice'/'Invoice No'/'Invoice Date' heading. "
+        "A real goods Invoice always lists what was actually shipped - parts, quantities, unit "
+        "prices of physical items.\n\n"
         f"Expected types:\n{cand_lines}\n\n"
         f'Filename: {filename}\n\n'
         'Return a JSON object: {"keys": [ ...matching key strings... ]}.'

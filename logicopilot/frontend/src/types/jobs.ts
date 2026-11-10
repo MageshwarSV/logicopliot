@@ -157,6 +157,14 @@ export interface JobFieldValue {
    *  scrolled sideways through. Undefined/false = single line, today's existing behavior for
    *  every field that predates this. */
   multiline?: boolean;
+  /** Admin-settable - this field holds a date, so a calendar button sits beside its box. The
+   *  box itself is unchanged: picking a day is a second way to set the same value, never a
+   *  replacement for typing it. */
+  date_picker?: boolean;
+  /** date_picker only - the format a pick is written in when the box is EMPTY. A box that
+   *  already holds a date keeps that value's own format instead, so a pick changes the date
+   *  and nothing else. See utils/fieldDates.ts. */
+  date_format?: string | null;
   /** Admin-settable - where this field sits, lowest-first, among its siblings under the same
    *  section heading. null/undefined falls back to the old hardcoded label-order list. */
   field_order?: number | null;

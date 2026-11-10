@@ -97,6 +97,8 @@ export async function createCustomField(
     validation_message?: string | null;
     full_width?: boolean;
     multiline?: boolean;
+    date_picker?: boolean;
+    date_format?: string | null;
     field_order?: number | null;
   },
 ): Promise<import("../types/onboarding").CustomField> {
@@ -303,6 +305,8 @@ export async function createMark(
     /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
     full_width?: boolean;
     multiline?: boolean;
+    date_picker?: boolean;
+    date_format?: string | null;
     field_order?: number | null;
     /** Look the extracted value up in its own reference table; a match replaces it, no
      *  match returns empty. */
@@ -342,6 +346,8 @@ export async function editMark(
     validation_message: string | null;
     full_width: boolean;
     multiline: boolean;
+    date_picker: boolean;
+    date_format: string | null;
     field_order: number | null;
   }>,
 ): Promise<Mark> {
@@ -449,6 +455,8 @@ export async function updateCustomField(
     validation_message: string | null;
     full_width: boolean;
     multiline: boolean;
+    date_picker: boolean;
+    date_format: string | null;
     field_order: number | null;
   }>,
 ) {

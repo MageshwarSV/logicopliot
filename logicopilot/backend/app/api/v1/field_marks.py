@@ -138,6 +138,8 @@ def create_mark(
         validation_message=payload.validation_message,
         full_width=payload.full_width,
         multiline=payload.multiline,
+        date_picker=payload.date_picker,
+        date_format=payload.date_format,
         field_order=payload.field_order,
     )
     db.add(mark)
@@ -270,6 +272,8 @@ def edit_mark(
                 seen.add(v.lower())
                 cleaned.append(v)
         updates["anchor_variations"] = cleaned
+    if updates.get("date_picker") is None and "date_picker" in updates:
+        updates["date_picker"] = False
     for field, value in updates.items():
         setattr(mark, field, value)
     new_label = updates.get("label_name")
@@ -689,6 +693,8 @@ def create_custom_field(
         validation_message=payload.validation_message,
         full_width=payload.full_width,
         multiline=payload.multiline,
+        date_picker=payload.date_picker,
+        date_format=payload.date_format,
         field_order=payload.field_order,
     )
     db.add(cf)
@@ -745,7 +751,8 @@ def edit_custom_field(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Label cannot be empty")
         updates["label_name"] = updates["label_name"].strip()
     # NOT NULL columns: an explicit null means "off", never a failed commit.
-    for flag in ("ask_operator", "ask_operator_required", "hidden_from_capture", "validation_uppercase"):
+    for flag in ("ask_operator", "ask_operator_required", "hidden_from_capture",
+                 "validation_uppercase", "date_picker"):
         if flag in updates and updates[flag] is None:
             updates[flag] = flag == "ask_operator_required"
     if "source_document_ids" in updates and updates["source_document_ids"] is None:

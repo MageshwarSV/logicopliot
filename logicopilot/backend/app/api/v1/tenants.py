@@ -669,6 +669,7 @@ def get_accuracy_dashboard(
         fields_extracted_by_ai=m.fields_extracted_by_ai,
         fields_manually_edited=m.fields_manually_edited,
         accuracy_pct=m.accuracy_pct,
+        jobs_completed=m.jobs_completed,
         by_document_type=[
             DocTypeAccuracyOut(
                 document_name=d.document_name, documents=d.documents,
@@ -700,7 +701,6 @@ def get_processing_time_dashboard(
     m = compute_processing_time_metrics(db, tenant_id, start, end, modes)
     return ProcessingTimeDashboardOut(
         total_jobs=m.total_jobs,
-        jobs_completed=m.jobs_completed,
         avg_total_tat_minutes=m.avg_total_tat_minutes,
         avg_extraction_minutes=m.avg_extraction_minutes,
         avg_review_minutes=m.avg_review_minutes,

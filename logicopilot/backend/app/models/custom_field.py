@@ -212,6 +212,10 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # MULTILINE_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).
     multiline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Mirrors FieldMark.date_picker/date_format - see those columns' own docstrings.
+    date_picker: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    date_format: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     # Mirrors FieldMark.field_order - see its own docstring.
     field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

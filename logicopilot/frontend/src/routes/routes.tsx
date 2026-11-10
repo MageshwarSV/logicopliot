@@ -3,6 +3,8 @@ import { ProtectedRoute } from "../auth/ProtectedRoute";
 import { LoginPage } from "../pages/LoginPage";
 import { NotAuthorizedPage } from "../pages/NotAuthorizedPage";
 import { SuperAdminDashboard } from "../pages/super-admin/DashboardShell";
+import { TenantsPage } from "../pages/super-admin/TenantsPage";
+import { UsersAndAdminsPage } from "../pages/super-admin/UsersAndAdminsPage";
 import { TemplateCreationWizard } from "../pages/super-admin/template-wizard/TemplateCreationWizard";
 import { TemplateListPage } from "../pages/super-admin/TemplateListPage";
 import { ErpScriptsPage } from "../pages/super-admin/ErpScriptsPage";
@@ -54,6 +56,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <SuperAdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/tenants"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <TenantsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/users"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <UsersAndAdminsPage />
           </ProtectedRoute>
         }
       />
