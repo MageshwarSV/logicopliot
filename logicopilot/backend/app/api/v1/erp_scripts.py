@@ -1,4 +1,5 @@
 import logging
+from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -176,6 +177,45 @@ def parked_restart(
     snap = _sync_parked(script)
     return snap or {"script_id": script_id, "phase": "none",
                     "detail": "nothing to park (no checkpoint, or stay open is off)"}
+
+
+@router.post("/{script_id}/duplicate", response_model=ErpScriptOut, status_code=status.HTTP_201_CREATED)
+def duplicate_erp_script(
+    script_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> ErpScriptOut:
+    """Copy an existing script into a brand-new draft - same URL, login, templates and every
+    recorded step, so a similar ERP form (or a risky change to try out) starts from something
+    that already works instead of an empty recorder.
+
+    Always lands as a separate, inert draft: status resets to "draft" and stay_open to False,
+    so the copy can never silently take over the original's own parked browser session before
+    the Super Admin has opened and reviewed it. deepcopy on steps/template_ids - both are plain
+    JSON lists/dicts SQLAlchemy keeps loaded on the original ORM object, and the two rows must
+    never end up sharing the same nested list/dict in memory.
+    """
+    original = db.get(ErpScript, script_id)
+    if original is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ERP script not found")
+    copy = ErpScript(
+        tenant_id=original.tenant_id,
+        name=f"{original.name} (copy)",
+        url=original.url,
+        has_login=original.has_login,
+        login_username=original.login_username,
+        login_password=original.login_password,
+        template_ids=deepcopy(original.template_ids) if original.template_ids else [],
+        steps=deepcopy(original.steps) if original.steps else [],
+        checkpoint_index=original.checkpoint_index,
+        stay_open=False,
+        status="draft",
+        notes=original.notes,
+    )
+    db.add(copy)
+    db.commit()
+    db.refresh(copy)
+    return ErpScriptOut.model_validate(copy)
 
 
 @router.delete("/{script_id}", status_code=status.HTTP_204_NO_CONTENT)

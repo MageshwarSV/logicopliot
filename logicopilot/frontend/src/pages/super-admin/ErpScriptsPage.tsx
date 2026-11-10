@@ -31,6 +31,16 @@ export function ErpScriptsPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
+  const [editOpen, setEditOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editUrl, setEditUrl] = useState("");
+  const [editHasLogin, setEditHasLogin] = useState(false);
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editSelected, setEditSelected] = useState<string[]>([]);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
   useEffect(() => {
     tenantsApi.listTenants().then((t) => {
       setTenants(t);
@@ -94,6 +104,52 @@ export function ErpScriptsPage() {
     refresh(tenantId);
   }
 
+  async function duplicate(s: ErpScript) {
+    try {
+      const copy = await erpApi.duplicateErpScript(s.id);
+      await refresh(tenantId);
+      navigate(`/super-admin/erp-scripts/${copy.id}`);
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not duplicate ERP script.");
+    }
+  }
+
+  function openEdit(s: ErpScript) {
+    setEditId(s.id);
+    setEditName(s.name);
+    setEditUrl(s.url);
+    setEditHasLogin(s.has_login);
+    setEditUsername(s.login_username ?? "");
+    // login_password is never sent back by the API - leave blank, keeps the saved one unless typed.
+    setEditPassword("");
+    setEditSelected(s.template_ids ?? []);
+    setEditOpen(true);
+  }
+
+  async function saveEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!editId) return;
+    setEditSubmitting(true);
+    setError(null);
+    try {
+      await erpApi.updateErpScript(editId, {
+        name: editName,
+        url: editUrl,
+        has_login: editHasLogin,
+        login_username: editHasLogin ? editUsername : null,
+        // Omitted (not null) when left blank, so a saved password is kept rather than wiped.
+        ...(editHasLogin && editPassword ? { login_password: editPassword } : {}),
+        template_ids: editSelected,
+      });
+      setEditOpen(false);
+      refresh(tenantId);
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not save changes.");
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
   return (
     <AppShell
       title="ERP Script Creation"
@@ -149,7 +205,9 @@ export function ErpScriptsPage() {
               </div>
               <div className="flex shrink-0 gap-1">
                 <Button size="sm" onClick={() => navigate(`/super-admin/erp-scripts/${s.id}`)}>Open recorder</Button>
+                <Button size="sm" variant="secondary" onClick={() => openEdit(s)}>Edit</Button>
                 <Button size="sm" variant="secondary" onClick={() => toggleReady(s)}>{s.status === "ready" ? "Set draft" : "Mark ready"}</Button>
+                <Button size="sm" variant="secondary" onClick={() => duplicate(s)}>Duplicate</Button>
                 <Button size="sm" variant="danger" onClick={() => remove(s)}>Delete</Button>
               </div>
             </div>
@@ -189,6 +247,41 @@ export function ErpScriptsPage() {
           </div>
           {error && <Alert>{error}</Alert>}
           <Button type="submit" isLoading={submitting} disabled={selected.length === 0}>Create &amp; open recorder</Button>
+        </form>
+      </Modal>
+
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Edit ERP Script">
+        <form className="flex flex-col gap-4" onSubmit={saveEdit}>
+          <Input label="Script name" value={editName} onChange={(e) => setEditName(e.target.value)} required />
+          <Input label="ERP URL" value={editUrl} onChange={(e) => setEditUrl(e.target.value)} required />
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+            <input type="checkbox" checked={editHasLogin} onChange={(e) => setEditHasLogin(e.target.checked)} />
+            This ERP requires a login
+          </label>
+          {editHasLogin && (
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Username" value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
+              <Input label="Password" type="text" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave blank to keep the saved password" />
+            </div>
+          )}
+          <div>
+            <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Templates (fields to enter)</p>
+            {groups.length === 0 ? (
+              <p className="text-xs text-slate-400">No templates for this tenant.</p>
+            ) : (
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                {groups.map((g) => (
+                  <label key={g.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                    <input type="checkbox" checked={editSelected.includes(g.id)} onChange={(e) => setEditSelected((arr) => (e.target.checked ? [...arr, g.id] : arr.filter((x) => x !== g.id)))} />
+                    {g.name}
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="mt-1 text-xs text-slate-400">Reassign which template(s) feed this ERP form.</p>
+          </div>
+          {error && <Alert>{error}</Alert>}
+          <Button type="submit" isLoading={editSubmitting} disabled={editSelected.length === 0}>Save changes</Button>
         </form>
       </Modal>
     </AppShell>
