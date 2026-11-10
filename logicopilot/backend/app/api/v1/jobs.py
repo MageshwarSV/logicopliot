@@ -8689,6 +8689,19 @@ def run_extraction(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
                     field_label=cf.label_name,
                 )
+                # zip() stops at the shorter side, so a model that returns nine answers for
+                # eleven lines loses the last two WITHOUT A WORD - the rows are still written
+                # (the write loop below walks field_keys, not looked_up), just silently blank,
+                # which on a CTH is a line with no tariff heading and nothing anywhere saying
+                # why. Said out loud instead; the blanks themselves are then the operator's to
+                # fill, which is the correct outcome, but no longer an invisible one.
+                if len(answers) != len(line_keys):
+                    logger.warning(
+                        "per-row field %r on job %s: asked for %d line(s), got %d answer(s) - "
+                        "line(s) %s left blank",
+                        cf.label_name, job.id, len(line_keys), len(answers),
+                        [k[1] for k in line_keys[len(answers):]] or "(none)",
+                    )
                 for key, answer in zip(line_keys, answers):
                     looked_up[key] = answer
             elif cf.kind == "composite":
