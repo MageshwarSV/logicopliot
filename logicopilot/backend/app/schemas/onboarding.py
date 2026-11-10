@@ -72,6 +72,8 @@ class MarkOut(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    date_picker: bool = False
+    date_format: str | None = None
     field_order: int | None = None
 
 
@@ -150,6 +152,8 @@ class CustomFieldOut(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    date_picker: bool = False
+    date_format: str | None = None
     field_order: int | None = None
 
 
@@ -195,6 +199,8 @@ class CustomFieldCreate(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    date_picker: bool = False
+    date_format: str | None = None
     field_order: int | None = None
 
 
@@ -244,6 +250,8 @@ class CustomFieldEdit(BaseModel):
     validation_message: str | None = None
     full_width: bool | None = None
     multiline: bool | None = None
+    date_picker: bool | None = None
+    date_format: str | None = None
     field_order: int | None = None
 
 
@@ -300,6 +308,8 @@ class MarkCreate(BaseModel):
     validation_message: str | None = None
     full_width: bool = False
     multiline: bool = False
+    date_picker: bool = False
+    date_format: str | None = None
     field_order: int | None = None
 
 
@@ -329,6 +339,8 @@ class MarkEdit(BaseModel):
     validation_message: str | None = None
     full_width: bool | None = None
     multiline: bool | None = None
+    date_picker: bool | None = None
+    date_format: str | None = None
     field_order: int | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the
     # text it found around the box, and the value inside it. On a two-column layout the words

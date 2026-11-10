@@ -296,6 +296,14 @@ class JobFieldValueOut(BaseModel):
     # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
     # is today's existing behavior for every field that predates this column.
     multiline: bool = False
+    # Admin-settable - this field holds a date, so the job screen puts a calendar button beside
+    # its box. See FieldMark.date_picker's own docstring. The box itself is unchanged: picking
+    # a day is a second way to set the same value, never a replacement for typing it.
+    date_picker: bool = False
+    # date_picker only - the format a pick is written in when the box is EMPTY. None means
+    # day-first DD/MM/YYYY. A box that already HAS a value ignores this and keeps that value's
+    # own format, so a pick changes the date and nothing else.
+    date_format: str | None = None
     # Admin-settable - where this field sits, lowest-first, among its siblings under the same
     # section heading. See FieldMark.field_order's own docstring. None falls back to whatever
     # position the old hardcoded FIELD_GROUPS_BY_DOC_TYPE label-order list already gives it.

@@ -3517,6 +3517,12 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_multiline: dict[str, bool] = {
         m.id: m.multiline for tdoc in group.documents for m in tdoc.marks
     }
+    mark_date_picker: dict[str, bool] = {
+        m.id: m.date_picker for tdoc in group.documents for m in tdoc.marks
+    }
+    mark_date_format: dict[str, str | None] = {
+        m.id: m.date_format for tdoc in group.documents for m in tdoc.marks
+    }
     mark_field_order: dict[str, int | None] = {
         m.id: m.field_order for tdoc in group.documents for m in tdoc.marks
     }
@@ -3544,6 +3550,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_display_label = {c.id: c.display_label for c in cf_rows}
     cf_full_width = {c.id: c.full_width for c in cf_rows}
     cf_multiline = {c.id: c.multiline for c in cf_rows}
+    cf_date_picker = {c.id: c.date_picker for c in cf_rows}
+    cf_date_format = {c.id: c.date_format for c in cf_rows}
     cf_field_order = {c.id: c.field_order for c in cf_rows}
     # A hardcoded, job-level custom field added to the template AFTER this job already existed
     # has no JobFieldValue row here - nothing ever creates one until the job is re-extracted.
@@ -3758,6 +3766,14 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 multiline=(
                     mark_multiline.get(fv.mark_id, False)
                     or cf_multiline.get(fv.custom_field_id, False)
+                ),
+                date_picker=(
+                    mark_date_picker.get(fv.mark_id, False)
+                    or cf_date_picker.get(fv.custom_field_id, False)
+                ),
+                date_format=(
+                    mark_date_format.get(fv.mark_id)
+                    or cf_date_format.get(fv.custom_field_id)
                 ),
                 # Not `or` - field_order=0 is a real, meaningful value ("first"), and 0 is
                 # falsy, so `0 or cf_value` would wrongly fall through to the custom-field side
@@ -9427,6 +9443,8 @@ def correct_field_value(
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
         full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
         multiline=bool(owner_for_mandatory and owner_for_mandatory.multiline),
+        date_picker=bool(owner_for_mandatory and owner_for_mandatory.date_picker),
+        date_format=owner_for_mandatory.date_format if owner_for_mandatory else None,
         field_order=owner_for_mandatory.field_order if owner_for_mandatory else None,
         mark_page=mark.page_number if mark else None,
         mark_x=mark.x if mark else None,
@@ -9634,6 +9652,8 @@ def _recompute_per_row_custom_field(
             mandatory=bool(cf.ask_operator_required),
             full_width=bool(cf.full_width),
             multiline=bool(cf.multiline),
+            date_picker=bool(cf.date_picker),
+            date_format=cf.date_format,
             field_order=cf.field_order,
         ))
     return results
@@ -9777,6 +9797,8 @@ def recompute_custom_field(
         mandatory=bool(cf.ask_operator_required),
         full_width=bool(cf.full_width),
         multiline=bool(cf.multiline),
+        date_picker=bool(cf.date_picker),
+        date_format=cf.date_format,
         field_order=cf.field_order,
     )]
 
@@ -10185,6 +10207,8 @@ def recompute_mark(
             mandatory=bool(mark.ask_operator_required),
             full_width=bool(mark.full_width),
             multiline=bool(mark.multiline),
+            date_picker=bool(mark.date_picker),
+            date_format=mark.date_format,
             field_order=mark.field_order,
         ))
     return results

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { DATE_FORMAT_CHOICES } from "../../../utils/fieldDates";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { AppShell } from "../../../components/AppShell";
@@ -207,6 +208,12 @@ export function TemplateCreationWizard() {
   // Renders as a multi-line, auto-growing box instead of a single-line box - see
   // FieldMark.multiline's own docstring.
   const [multiline, setMultiline] = useState(false);
+  // Holds a DATE: the job screen puts a calendar button beside the box, so an operator can
+  // click a day instead of typing one - see FieldMark.date_picker's own docstring. The box
+  // itself is unchanged; this adds a second way in, it does not take typing away.
+  const [datePicker, setDatePicker] = useState(false);
+  // "" = match whatever the box already holds, falling back to day-first DD/MM/YYYY.
+  const [dateFormat, setDateFormat] = useState("");
   // Where this field sits among its siblings under the same heading - see
   // FieldMark.field_order's own docstring. "" = unset, falls back to the old hardcoded order.
   const [fieldOrder, setFieldOrder] = useState("");
@@ -382,6 +389,8 @@ export function TemplateCreationWizard() {
   const [editValidationMessage, setEditValidationMessage] = useState("");
   const [editFullWidth, setEditFullWidth] = useState(false);
   const [editMultiline, setEditMultiline] = useState(false);
+  const [editDatePicker, setEditDatePicker] = useState(false);
+  const [editDateFormat, setEditDateFormat] = useState("");
   const [editFieldOrder, setEditFieldOrder] = useState("");
   const [savingMark, setSavingMark] = useState(false);
   // Custom tag (computed/hardcoded field)
@@ -434,7 +443,11 @@ export function TemplateCreationWizard() {
   // "text" = free text (fixed_options null). "select" = plain closed dropdown (dropdown_style
   // null/"plain"). "search" = searchable, still pick-only. "search_free" = searchable, but a
   // typed value not in the list still saves.
-  const [cfInputType, setCfInputType] = useState<"text" | "select" | "search" | "search_free">("text");
+  const [cfInputType, setCfInputType] =
+    useState<"text" | "select" | "search" | "search_free" | "date">("text");
+  // cfInputType === "date" only - "" means match whatever the box already holds, falling back
+  // to day-first DD/MM/YYYY.
+  const [cfDateFormat, setCfDateFormat] = useState("");
   // One choice per line - parsed into CustomField.fixed_options on save.
   const [cfFixedOptionsText, setCfFixedOptionsText] = useState("");
   const [cfSyncFieldIds, setCfSyncFieldIds] = useState<string[]>([]);
@@ -555,7 +568,7 @@ export function TemplateCreationWizard() {
     setCfEditId(null);
     setCfLabel(""); setCfKind("ai"); setCfValue(""); setCfPrompt(""); setCfAskOperator(false); setCfAskRequired(true); setCfPerRow(false); setCfMultiValue(false); setCfAskHint(""); setCfVerify(false); setCfTargetValue(false); setCfFuzzyMatch(false);
     setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
-    setCfInputType("text"); setCfFixedOptionsText("");
+    setCfInputType("text"); setCfFixedOptionsText(""); setCfDateFormat("");
     setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
     setCfFullWidth(false); setCfMultiline(false); setCfFieldOrder("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
@@ -587,12 +600,18 @@ export function TemplateCreationWizard() {
     setCfDisplayLabel(cf.display_label ?? "");
     setCfDisplayDocumentId(cf.display_document_id ?? "");
     setCfInputType(
-      !cf.fixed_options?.length
-        ? "text"
-        : cf.dropdown_style === "search" || cf.dropdown_style === "search_free"
-          ? cf.dropdown_style
-          : "select",
+      // A date field is its own input type and never carries fixed_options, so this is checked
+      // before them rather than after - otherwise a date tag would reopen as "Input box" and
+      // silently lose its calendar the next time anybody saved it.
+      cf.date_picker
+        ? "date"
+        : !cf.fixed_options?.length
+          ? "text"
+          : cf.dropdown_style === "search" || cf.dropdown_style === "search_free"
+            ? cf.dropdown_style
+            : "select",
     );
+    setCfDateFormat(cf.date_format ?? "");
     setCfFixedOptionsText((cf.fixed_options ?? []).join("\n"));
     const cfParsedValidation = parseValidationPattern(cf.validation_pattern);
     setCfValidationMode(cfParsedValidation.mode);
@@ -624,7 +643,8 @@ export function TemplateCreationWizard() {
       setError("Choose at least one piece to combine.");
       return;
     }
-    if (cfInputType !== "text" && !cfFixedOptionsText.split("\n").some((v) => v.trim())) {
+    if (cfInputType !== "text" && cfInputType !== "date"
+        && !cfFixedOptionsText.split("\n").some((v) => v.trim())) {
       setError("Enter at least one choice, one per line, or switch the input type back to Input box.");
       return;
     }
@@ -653,10 +673,15 @@ export function TemplateCreationWizard() {
         display_label: cfDisplayLabel.trim() || null,
         display_document_id: cfDisplayDocumentId || null,
         fixed_options:
-          cfInputType === "text"
+          cfInputType === "text" || cfInputType === "date"
             ? null
             : cfFixedOptionsText.split("\n").map((v) => v.trim()).filter(Boolean),
-        dropdown_style: cfInputType === "text" || cfInputType === "select" ? null : cfInputType,
+        dropdown_style:
+          cfInputType === "text" || cfInputType === "select" || cfInputType === "date"
+            ? null
+            : cfInputType,
+        date_picker: cfInputType === "date",
+        date_format: cfInputType === "date" ? cfDateFormat || null : null,
         validation_pattern: buildValidationPattern(cfValidationMode, cfValidationLength, cfValidationCustom),
         validation_uppercase: cfValidationUppercase,
         validation_message: cfValidationMessage.trim() || null,
@@ -794,6 +819,7 @@ export function TemplateCreationWizard() {
     setDisplayLabel("");
     setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
     setFullWidth(false); setMultiline(false); setFieldOrder("");
+    setDatePicker(false); setDateFormat("");
     setTargetValue(false);
     setFuzzyMatch(false);
     setMarkColor("red");
@@ -829,6 +855,8 @@ export function TemplateCreationWizard() {
         validation_message: validationMessage.trim() || null,
         full_width: fullWidth,
         multiline: multiline,
+        date_picker: datePicker,
+        date_format: datePicker ? dateFormat || null : null,
         field_order: fieldOrder.trim() === "" ? null : Number(fieldOrder),
       });
 
@@ -931,6 +959,8 @@ export function TemplateCreationWizard() {
     setEditValidationMessage(m.validation_message ?? "");
     setEditFullWidth(!!m.full_width);
     setEditMultiline(!!m.multiline);
+    setEditDatePicker(!!m.date_picker);
+    setEditDateFormat(m.date_format ?? "");
     setEditFieldOrder(m.field_order != null ? String(m.field_order) : "");
     setError(null);
   }
@@ -959,6 +989,8 @@ export function TemplateCreationWizard() {
         validation_message: editValidationMessage.trim() || null,
         full_width: editFullWidth,
         multiline: editMultiline,
+        date_picker: editDatePicker,
+        date_format: editDatePicker ? editDateFormat || null : null,
         field_order: editFieldOrder.trim() === "" ? null : Number(editFieldOrder),
       });
       await reloadGroup(group.id);
@@ -1810,6 +1842,24 @@ export function TemplateCreationWizard() {
                         <input type="checkbox" checked={editMultiline} onChange={(e) => setEditMultiline(e.target.checked)} />
                         Multi-line, auto-growing box (for a full address, say)
                       </label>
+                      <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                        <input type="checkbox" checked={editDatePicker} onChange={(e) => setEditDatePicker(e.target.checked)} />
+                        This field is a DATE - show a calendar button beside the box
+                      </label>
+                      {editDatePicker && (
+                        <label className="mt-1 ml-6 block text-xs text-slate-600 dark:text-slate-400">
+                          Format to use when the box is empty
+                          <select
+                            value={editDateFormat}
+                            onChange={(e) => setEditDateFormat(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                          >
+                            {DATE_FORMAT_CHOICES.map((f) => (
+                              <option key={f.value} value={f.value}>{f.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
                       <label className="mt-2 block text-xs text-slate-700 dark:text-slate-300">
                         Order within its section (blank = default)
                         <input
@@ -2637,6 +2687,24 @@ export function TemplateCreationWizard() {
               <input type="checkbox" checked={multiline} onChange={(e) => setMultiline(e.target.checked)} />
               Multi-line, auto-growing box (for a full address, say)
             </label>
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={datePicker} onChange={(e) => setDatePicker(e.target.checked)} />
+              This field is a DATE - show a calendar button beside the box
+            </label>
+            {datePicker && (
+              <label className="mt-1 ml-6 block text-xs text-slate-600 dark:text-slate-400">
+                Format to use when the box is empty (a box that already has a date keeps its own)
+                <select
+                  value={dateFormat}
+                  onChange={(e) => setDateFormat(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  {DATE_FORMAT_CHOICES.map((f) => (
+                    <option key={f.value} value={f.value}>{f.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="mt-2 block text-sm text-slate-700 dark:text-slate-300">
               Order within its section (blank = default)
               <input
@@ -2912,6 +2980,7 @@ export function TemplateCreationWizard() {
                 { key: "select", label: "Dropdown", hint: "Pick only, short list" },
                 { key: "search", label: "Dropdown with search", hint: "Pick only, long list" },
                 { key: "search_free", label: "Editable dropdown", hint: "Pick, or type a new value" },
+                { key: "date", label: "Date picker", hint: "Type it, or click a day" },
               ] as const).map((opt) => (
                 <button
                   key={opt.key}
@@ -2928,7 +2997,27 @@ export function TemplateCreationWizard() {
                 </button>
               ))}
             </div>
-            {cfInputType !== "text" && (
+            {cfInputType === "date" && (
+              <div className="mt-2">
+                <p className="mb-1 text-xs text-slate-500">
+                  The operator can still type the date. The calendar is a second way in, and a
+                  pick is written in whatever format the box already holds - pick a new day on
+                  15/03/2026 and you get 20/03/2026, on 15-Mar-2026 you get 20-Mar-2026. This
+                  setting is only used when the box is EMPTY and there is no existing value to
+                  copy the format from.
+                </p>
+                <select
+                  value={cfDateFormat}
+                  onChange={(e) => setCfDateFormat(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  {DATE_FORMAT_CHOICES.map((f) => (
+                    <option key={f.value} value={f.value}>{f.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {cfInputType !== "text" && cfInputType !== "date" && (
               <div className="mt-2">
                 <p className="mb-1 text-xs text-slate-500">
                   One choice per line. Type "code:Label" (e.g. "P:Prior") when the saved value

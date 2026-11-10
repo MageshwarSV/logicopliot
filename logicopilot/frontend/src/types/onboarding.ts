@@ -56,6 +56,10 @@ export interface Mark {
   full_width?: boolean;
   /** Renders as a multi-line, auto-growing box instead of a single-line box. */
   multiline?: boolean;
+  /** Holds a date: a calendar button sits beside the box on the job screen. */
+  date_picker?: boolean;
+  /** date_picker only: format a pick is written in when the box is empty. Blank = DD/MM/YYYY. */
+  date_format?: string | null;
   /** Where this field sits, lowest-first, among its siblings under the same section heading. */
   field_order?: number | null;
 }
@@ -170,6 +174,10 @@ export interface CustomField {
   full_width?: boolean;
   /** Mirrors Mark.multiline. */
   multiline?: boolean;
+  /** Mirrors Mark.date_picker. */
+  date_picker?: boolean;
+  /** Mirrors Mark.date_format. */
+  date_format?: string | null;
   /** Mirrors Mark.field_order. */
   field_order?: number | null;
 }
