@@ -195,18 +195,21 @@ export function SuperAdminDashboard() {
   ];
 
   return (
-    <AppShell title="Super Admin" subtitle="Manage tenants and the admins who run them." actions={<InboxButton />}>
+    <AppShell
+      title="Super Admin Dashboard"
+      subtitle="Manage tenants, users, platform configuration and system operations."
+      actions={<InboxButton />}
+    >
       {error && (
         <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
           {error}
         </div>
       )}
 
-      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label="Tenants" value={tenants.length} />
         <StatCard label="Tenant Admins" value={tenantAdmins.length} />
         <StatCard label="Operators" value={operators.length} />
-        <StatCard label="All Users" value={users.length} />
       </div>
 
       <Card className="mb-8">

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
-import { superAdminFeatures } from "../features/registry";
+import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/registry";
 import * as jobsApi from "../api/jobs";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
@@ -218,16 +218,24 @@ export function AppShell({
           </Link>
 
           {user?.role === "super_admin" && (
-            <div className="mt-8">
-              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Platform Features</h3>
-              <div className="mt-2 space-y-1">
-                {superAdminFeatures.map((f) => (
-                  <Link key={f.path} to={f.path} className={navClass(f.path)}>
-                    {f.navLabel}
-                  </Link>
-                ))}
-              </div>
-            </div>
+            <>
+              {/* "/super-admin" itself (tenant+admin management) is NOT repeated here - the
+                  universal Dashboard link above already points there. */}
+              {SUPER_ADMIN_FEATURE_GROUPS.map((group) => (
+                <div key={group} className="mt-8">
+                  <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {group}
+                  </h3>
+                  <div className="mt-2 space-y-1">
+                    {superAdminFeatures.filter((f) => f.group === group).map((f) => (
+                      <Link key={f.path} to={f.path} className={navClass(f.path)}>
+                        {f.navLabel}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
           )}
 
           {user?.role === "tenant_admin" && (
