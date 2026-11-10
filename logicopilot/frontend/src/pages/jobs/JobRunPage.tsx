@@ -1913,8 +1913,13 @@ export function JobRunPage() {
   const insuranceOtherId = insuranceMode === "amount" ? insurancePercentageFv?.id
     : insuranceMode === "percentage" ? insuranceAmountFv?.id
     : undefined;
+  // Same self_filled exclusion as manualFields/perRowAsks (see their own comments): a
+  // self_filled candidate like "Dump CTH Number" lives on its own dedicated screen (Dump
+  // Data / the CTH picker), which already enforces it correctly - without this, the "still
+  // need an answer" banner and the bulk-confirm modal both wrongly demanded it even after the
+  // operator had resolved it via the picker (JOB-8BA341).
   const askPending = askFields.filter(
-    (fv) => fv.id !== insuranceOtherId && !answered(fv) && fv.ask_operator_required !== false,
+    (fv) => fv.id !== insuranceOtherId && fv.self_filled !== true && !answered(fv) && fv.ask_operator_required !== false,
   );
   const manualPending = manualFields.filter(
     (fv) => fv.id !== insuranceOtherId && !answered(fv) && fv.ask_operator_required !== false,
@@ -1962,6 +1967,16 @@ export function JobRunPage() {
       // picked is ever meant to be filled in. Same exclusion as askPending/manualPending
       // above; this queue builds its own list straight from askFields and needs it too.
       if (fv.id === insuranceOtherId) return;
+      // Same exclusion as manualFields/perRowAsks above, and for the same reason: a
+      // self_filled field (CTH, RITC, "Dump CTH Number") lives on its own dedicated screen
+      // (Dump Data / the CTH picker), which already enforces it correctly - including it here
+      // too duplicates the box AND, for a per-row candidate like "Dump CTH Number" that only
+      // ever feeds the real CTH field through the picker, wrongly demands a value in a box the
+      // operator was never meant to fill in directly. Without this, every self_filled per-row
+      // field leaked in here mislabeled as "This shipment" (job-level) instead of being
+      // skipped - reported live on JOB-8BA341: "Dump CTH Number" asked for 11 times over, after
+      // the operator had already resolved every line via "Document CTH".
+      if (fv.self_filled === true) return;
       if (!answered(fv) && fv.ask_operator_required !== false) {
         out.push({ fv, where: "This shipment" });
       }
