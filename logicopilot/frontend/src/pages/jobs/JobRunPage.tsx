@@ -6377,11 +6377,32 @@ function ExtractionReview({
       // owns the custom fields sitting on those same lines, which is exactly where the operator
       // sees them - on the product card, under that document. A document with no product lines
       // of its own (a bill of lading) matches nothing here and is not blocked by them.
-      const linesOnThisDocument = new Set(
-        job.field_values
-          .filter((fv) => fv.row_index != null && fv.job_document_id === active.id)
-          .map((fv) => fv.row_index),
-      );
+      // ...but ONLY on a document that actually shows product cards.
+      //
+      // A Bill of Lading's container rows carry row_index 1, 2, ... exactly as an invoice's
+      // product lines do. Matching on row_index alone therefore made the BL claim it had
+      // "line 1", and then demand the INVOICE's CTH for it - on a screen that shows no CTH box
+      // anywhere, so there was nothing the operator could do but stare at it. A real customer
+      // sat unable to submit JOB-8BA341 because of this.
+      //
+      // The test is the one the screen itself makes before deciding to render product cards at
+      // all (docIsStandalone further down): a document whose every row is part of a standalone
+      // table - containers off a bill of lading - is its own table, not a line-item family, and
+      // never joins the per-row reference lookup. The gate has to ask for exactly what the
+      // screen shows, or it asks for something that cannot be given.
+      const rowCells = new Map<number, JobFieldValue[]>();
+      for (const fv of job.field_values) {
+        if (fv.row_index == null || fv.job_document_id !== active.id) continue;
+        const cells = rowCells.get(fv.row_index) ?? [];
+        cells.push(fv);
+        rowCells.set(fv.row_index, cells);
+      }
+      const activeDocIsStandalone =
+        rowCells.size > 0 &&
+        [...rowCells.values()].every((cells) => cells.every((fv) => fv.standalone_multi_value));
+      const linesOnThisDocument = activeDocIsStandalone
+        ? new Set<number>()
+        : new Set(rowCells.keys());
       const productRows = job.field_values.filter(
         (fv) =>
           fv.row_index != null &&
