@@ -2063,15 +2063,23 @@ def job_activity_chart(
     assigned_to: str | None = None,
 ) -> JobActivityChartOut:
     """One bar per calendar day (IST) of the given month ("YYYY-MM"): how many jobs arrived
-    that day (created_at) next to how many were submitted to the ERP that day (ai_submitted_at).
-    This is a historical activity/throughput view, deliberately NOT the same thing as the
-    "New Jobs"/"ERP Submitted Jobs" sidebar badges above (job_category_counts) - those answer
-    "what's true of a job RIGHT NOW", which cannot be attributed to a past day (a job created
-    two weeks ago is no longer "new" today, but it genuinely did arrive on that day two weeks
-    ago - that is the event this chart counts). assigned_to mirrors category-counts' own filter
-    exactly (an operator's full_name, not an id - see _operator_name/_job_passes_extra_filters),
-    so this dashboard's "Assigned To" dropdown agrees with every other screen that already
-    filters jobs this way."""
+    that day (created_at) next to how many reached the ERP that day. This is a historical
+    activity/throughput view, deliberately NOT the same thing as the "New Jobs"/"ERP Submitted
+    Jobs" sidebar badges above (job_category_counts) - those answer "what's true of a job RIGHT
+    NOW", which cannot be attributed to a past day (a job created two weeks ago is no longer
+    "new" today, but it genuinely did arrive on that day two weeks ago - that is the event this
+    chart counts). assigned_to mirrors category-counts' own filter exactly (an operator's
+    full_name, not an id - see _operator_name/_job_passes_extra_filters), so this dashboard's
+    "Assigned To" dropdown agrees with every other screen that already filters jobs this way.
+
+    "Reached the ERP" uses _category_condition("submitted") - the same definition the sidebar
+    badge and the Jobs list itself use - not a bare ai_submitted_at check: a job that went
+    through the direct Submit Entry path without ai_submitted_at ever being set (an older,
+    legacy shape) still counts, same as everywhere else since the ERP Submitted/Verified merge
+    (2026-11-10). Bucketed by ai_submitted_at when it is set (the precise moment automation hit
+    the ERP), falling back to completed_at for that legacy shape - found live: a job with no
+    ai_submitted_at at all was invisible to this chart in every month, despite correctly
+    showing on the Jobs list's own "ERP Submitted Jobs" screen."""
     try:
         year, mon = (int(x) for x in month.split("-"))
         start = datetime(year, mon, 1, tzinfo=IST)
@@ -2081,9 +2089,10 @@ def job_activity_chart(
 
     base = _jobs_visible_query(db, scope, user)
     created_candidates = base.filter(Job.created_at >= start, Job.created_at < end).all()
+    _submitted_when = func.coalesce(Job.ai_submitted_at, Job.completed_at, Job.created_at)
     submitted_candidates = base.filter(
-        Job.ai_submitted_at.isnot(None),
-        Job.ai_submitted_at >= start, Job.ai_submitted_at < end,
+        _category_condition("submitted"),
+        _submitted_when >= start, _submitted_when < end,
     ).all()
     if assigned_to:
         created_candidates = [j for j in created_candidates if _operator_name(db, j) == assigned_to]
@@ -2097,7 +2106,9 @@ def job_activity_chart(
         return counts
 
     new_counts = _bucket([j.created_at for j in created_candidates])
-    submitted_counts = _bucket([j.ai_submitted_at for j in submitted_candidates])
+    submitted_counts = _bucket([
+        j.ai_submitted_at or j.completed_at or j.created_at for j in submitted_candidates
+    ])
 
     days: list[JobActivityDay] = []
     cursor = start
