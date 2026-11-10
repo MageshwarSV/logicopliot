@@ -7713,6 +7713,90 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
     return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
 
 
+def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int:
+    """Give every product line a slot on every per-row field. Returns how many were created.
+
+    The slots are built during extraction from a line list read ONCE, near the start. A product
+    line written after that read gets no slot at all - and a line with no CTH ROW is worse than
+    one with a blank CTH: there is no box on the screen to fill, and nothing for the approval
+    gate to refuse, so the job can be filed with no tariff heading on that line and nothing
+    anywhere saying so. Found on JOB-8BA341: eleven products on the invoice, ten with a CTH,
+    and the job submittable.
+
+    Deliberately NOT an attempt to reason about every path that could add a line late. The line
+    list is read AGAIN, at the end, and anything missing is created. That holds whatever the
+    cause was - a re-read of the document, a late page, a hand-added line - and it holds at
+    eleven lines or at a thousand, because it compares the two SETS rather than trusting a
+    count taken earlier.
+
+    Created EMPTY, which is the honest state for a line nobody has answered: the gate already
+    refuses an empty mandatory CTH, so the operator is asked rather than the line going out
+    silently.
+    """
+    # A field keyed on its OWN standalone mark - ContainerTypeCode off container_type, say -
+    # is counted in containers, not products. It gets exactly one slot per ACTUAL container,
+    # and padding it out to the product count invents slots with no container to belong to:
+    # they render nowhere (Container Detail only ever shows real container rows) yet still
+    # count as "needs typing" and block the job. That is the same shape as the Bill of Lading
+    # bug this whole episode started with, arrived at from the other side - and a test caught
+    # it here before it shipped. Mirrors run_extraction's own field_keys rule exactly.
+    group = db.get(TemplateGroup, job.group_id)
+    standalone_labels = _standalone_mark_labels(group) if group else set()
+    per_row_cfs = [
+        c for c in custom_fields
+        if getattr(c, "per_row", False)
+        and not (
+            (c.kind or "") == "lookup"
+            and (getattr(c, "lookup_key_label", None) or "").strip() in standalone_labels
+        )
+    ]
+    if not per_row_cfs:
+        return 0
+    db.flush()
+    line_keys = {
+        ((r[0] or 1), r[1])
+        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name == "product_description")
+        .distinct().all()
+    }
+    if not line_keys:
+        return 0
+    created = 0
+    for cf in per_row_cfs:
+        have = {
+            ((r[0] or 1), r[1])
+            for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+            .filter(JobFieldValue.job_id == job.id,
+                    JobFieldValue.custom_field_id == cf.id,
+                    JobFieldValue.row_index.isnot(None)).all()
+        }
+        missing = sorted(line_keys - have)
+        if not missing:
+            continue
+        logger.warning(
+            "per-row field %r on job %s: %d product line(s) had NO slot after extraction and "
+            "were created empty - set/line %s. A line with no slot can be neither filled in "
+            "nor refused, so this is the gap that lets a blank tariff heading through.",
+            cf.label_name, job.id, len(missing), missing,
+        )
+        for key in missing:
+            db.add(
+                JobFieldValue(
+                    tenant_id=job.tenant_id,
+                    job_id=job.id,
+                    custom_field_id=cf.id,
+                    label_name=cf.label_name,
+                    extracted_value=cf.hardcoded_value or "",
+                    set_index=key[0],
+                    row_index=key[1],
+                )
+            )
+            created += 1
+    db.flush()
+    return created
+
+
 def run_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -8860,6 +8944,26 @@ def run_extraction(
         # depends on (see the sort above) still needs that field's row to actually be
         # QUERYABLE, not merely pending, the moment its own turn comes.
         db.flush()
+
+    # Every product line now has a slot on every per-row field. Checked here, not assumed.
+    #
+    # The slots above are built from line_keys, read ONCE near the top of this function. Any
+    # product line written after that read gets no slot at all - and a line with no CTH ROW is
+    # worse than one with a blank CTH: there is no box on the screen to fill, and nothing for
+    # the approval gate to refuse, so the job can be filed with no tariff heading on that line
+    # and nothing anywhere saying so. Found on JOB-8BA341: eleven products on the invoice, ten
+    # of them with a CTH, and the job submittable.
+    #
+    # Deliberately NOT an attempt to reason about every path that could add a line late. The
+    # line list is simply read AGAIN, here, at the end, and anything missing is created. That
+    # holds whatever the cause was - a re-read of the document, a late page, a hand-added line -
+    # and it holds at eleven lines or at a thousand, because it compares the two sets rather
+    # than trusting a count taken earlier.
+    #
+    # Created EMPTY, which is the honest state for a line nobody has answered: the gate already
+    # refuses an empty mandatory CTH, so the operator is asked rather than the line going out
+    # silently. One query per per-row field, on a path that has just made dozens of model calls.
+    _backfill_missing_per_row_slots(db, job, custom_fields)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
