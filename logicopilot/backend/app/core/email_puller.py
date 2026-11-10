@@ -27,6 +27,7 @@ poll for as long as it sits in the mailbox.
 import email
 import imaplib
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -293,6 +294,25 @@ def test_connection() -> dict:
             pass
 
 
+def _body_cids(msg: email.message.Message) -> set[str]:
+    """Every cid: the HTML body actually displays.
+
+    A part referenced this way IS the letter - the sender's logo, the AEO and FTWZ badges in
+    their footer, the little anniversary graphic. It is not a document anybody attached.
+    """
+    cids: set[str] = set()
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        raw = part.get_payload(decode=True) or b""
+        try:
+            html = raw.decode(part.get_content_charset() or "utf-8", "replace")
+        except (LookupError, UnicodeDecodeError):
+            html = raw.decode("utf-8", "replace")
+        cids |= {m.strip().lower() for m in re.findall(r"cid:([^\"'>\s)]+)", html, re.I)}
+    return cids
+
+
 def _extract_attachments(msg: email.message.Message) -> list[tuple[str, bytes]]:
     """Real attachments only - never an embedded signature image. The two conditions this
     used to have were redundant with each other (the second unconditionally re-applied the
@@ -303,11 +323,33 @@ def _extract_attachments(msg: email.message.Message) -> list[tuple[str, bytes]]:
     email, and could single-handedly stop an attachment-less email from taking the cheap
     no_documents short-circuit."""
     files: list[tuple[str, bytes]] = []
+    body_cids = _body_cids(msg)
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
         disp = (part.get("Content-Disposition") or "").lower()
         if "inline" in disp:
+            continue
+        # Content-Disposition: inline is only ONE of the ways a client embeds a signature
+        # image, and not the common one. Outlook and Zoho hang the logo off a Content-ID and
+        # reference it from the HTML as <img src="cid:...">, with either no disposition at all
+        # or (Outlook) "attachment" - so the inline check alone never sees it, and a footer
+        # logo arrives as a .png with a filename, gets OCR'd, classified by the AI, and lands
+        # on the job as a page nobody sent. Reported on 4S Logistics' own mail, whose footer
+        # carries a company logo plus AEO, FTWZ, MSME and anniversary badges.
+        #
+        # Two signals, both conservative:
+        #   * the cid is referenced in the HTML body - it is literally being displayed, so it
+        #     is the letter, whatever its disposition claims
+        #   * it has a Content-ID and is NOT explicitly marked "attachment" - a Content-ID
+        #     exists in order to be referenced from the body; a genuine attachment from any
+        #     ordinary client carries Content-Disposition: attachment
+        #
+        # A real document that happens to carry a Content-ID AND says "attachment" is still
+        # kept, which is the case worth protecting: losing a customer's invoice would be far
+        # worse than carrying a logo.
+        cid = (part.get("Content-ID") or "").strip().strip("<>").lower()
+        if cid and (cid in body_cids or "attachment" not in disp):
             continue
         fname = _decode(part.get_filename())
         if not fname:
