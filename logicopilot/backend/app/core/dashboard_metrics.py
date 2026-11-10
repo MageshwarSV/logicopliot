@@ -15,6 +15,12 @@ matched on Job.completed_at, same as the billing ledger's own convention) - reve
 this (2026-11-10) after a brief stint scoping to every job CREATED in the window, which the
 user asked restored to "just like old". Data Accuracy additionally now reports jobs_completed
 (renamed "Total Completed Jobs" in the UI) alongside its accuracy percentage.
+
+"Completed" here means Job.status == "completed" alone - an ERP entry that has merely been
+SUBMITTED (automated or direct) counts the same as one that has also been VERIFIED afterward,
+by explicit request (2026-11-10). This is deliberately looser than the Jobs list's own
+"completed" category (app.api.v1.jobs._category_condition), which requires an automated run to
+also be verified before it counts - these dashboards don't make that distinction.
 """
 from __future__ import annotations
 
@@ -23,7 +29,6 @@ from datetime import date as Date, datetime, time, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.api.v1.jobs import _category_condition
 from app.models.field_mark import FieldMark
 from app.models.job import Job, JobDocument, JobFieldValue
 from app.models.user import User
@@ -50,10 +55,18 @@ def range_bounds(start: Date, end: Date, tz_offset: int = IST_OFFSET_MINUTES) ->
 
 
 def _completed_jobs_query(db: Session, tenant_id: str, start: datetime, end: datetime, modes: list[str] | None):
+    """Submitted OR verified both count here - by explicit request (2026-11-10), unlike the
+    Jobs list's own stricter "completed" category (app.api.v1.jobs._category_condition), which
+    requires an automated run to also be human-verified before it leaves "ERP Submitted Jobs".
+    Job.status is set to "completed" the moment an ERP entry succeeds, automated or direct,
+    regardless of whether it has been verified afterward yet - see persist_run_outcome/
+    complete_job, and Job.completed_at's own stamping in app/db/job_history.py's before_flush
+    hook, which fires at that same moment. So a plain Job.status check already covers both
+    paths - no separate check on ai_submitted_at/erp_verified_at is needed here."""
     q = (
         db.query(Job)
         .filter(Job.tenant_id == tenant_id)
-        .filter(_category_condition("completed"))
+        .filter(Job.status == "completed")
         .filter(Job.completed_at.isnot(None))
         .filter(Job.completed_at >= start)
         .filter(Job.completed_at < end)
