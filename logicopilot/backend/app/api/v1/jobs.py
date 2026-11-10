@@ -6549,18 +6549,52 @@ def delete_job_document_row(
     # 1's row 1 and set 3's row 1 are different products. Blank normalises to 1, the same way
     # the per-row write loop and the screen itself both normalise it.
     set_index = jd.set_index or 1
+
+    # ...EXCEPT on a document whose rows are its own standalone table.
+    #
+    # A Bill of Lading's container rows are numbered 1, 2, 3 exactly as an invoice's product
+    # lines are, and they count containers, not products. Taking the union above on such a
+    # document deleted the PRODUCT's per-row fields at the same row number and then renumbered
+    # the rest to close the gap - so removing container 2 deleted product 2's CTH and shifted
+    # products 3..11's codes up one, onto the wrong products.
+    #
+    # Seen on JOB-8BA341 (production, 2026-11-10 13:13:33: "deleted product line 2 from
+    # <Bill of lading> (10 lines left)"). The visible symptom was product 11 losing its CTH
+    # box; the damage underneath was every code from product 3 onward sitting against the
+    # wrong line, which is a wrong customs declaration on nine products and nothing on screen
+    # to say so.
+    #
+    # Same test the screen and the extraction slot-builder both make: a document whose
+    # row-indexed labels are ALL standalone marks is its own table, and a delete there touches
+    # only its own rows.
+    group_for_doc = db.get(TemplateGroup, job.group_id)
+    standalone_labels = _standalone_mark_labels(group_for_doc) if group_for_doc else set()
+    own_row_labels = {
+        r[0]
+        for r in db.query(JobFieldValue.label_name)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd.id,
+                JobFieldValue.row_index.isnot(None))
+        .distinct().all()
+    }
+    doc_is_standalone_table = bool(own_row_labels) and own_row_labels <= standalone_labels
+
+    scope_filter = (
+        JobFieldValue.job_document_id == jd.id
+        if doc_is_standalone_table
+        else or_(
+            JobFieldValue.job_document_id == jd.id,
+            and_(
+                JobFieldValue.custom_field_id.isnot(None),
+                func.coalesce(JobFieldValue.set_index, 1) == set_index,
+            ),
+        )
+    )
     rows = (
         db.query(JobFieldValue)
         .filter(
             JobFieldValue.job_id == job.id,
             JobFieldValue.row_index.isnot(None),
-            or_(
-                JobFieldValue.job_document_id == jd.id,
-                and_(
-                    JobFieldValue.custom_field_id.isnot(None),
-                    func.coalesce(JobFieldValue.set_index, 1) == set_index,
-                ),
-            ),
+            scope_filter,
         )
         .all()
     )
