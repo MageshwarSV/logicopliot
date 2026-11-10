@@ -29,8 +29,20 @@ logger = logging.getLogger(__name__)
 DOC_TYPE_HINTS = {
     "BL": "bill of lading, sea/air waybill, B/L no, shipper, consignee, notify party, vessel, port of loading/discharge",
     "PackingList": "packing list, number of packages/cartons, net weight, gross weight, dimensions, marks & numbers",
-    "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code",
-    "Freight": "freight certificate/invoice, freight charges, ocean freight, THC, BAF, freight amount",
+    "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code - a"
+               " real GOODS invoice always lists actual products (part numbers, quantities, unit prices of physical"
+               " items), not just a payable total",
+    # A freight forwarder's own "Tax Invoice" for an air shipment is itself the freight
+    # certificate here - found live: Expeditors' own tax invoice, headed "Tax Invoice" with an
+    # ordinary invoice number/date, itemizing AIR FREIGHT CHARGES, FSC (fuel surcharge), ISS,
+    # CUSTOMS CLEARANCE, DELIVERY ORDER FEES, CHARGES COLLECT FEES and PICKUP FEES against an
+    # AWB/HAWB number - no product/goods line at all, because it bills for the SHIPPING
+    # SERVICE, not the cargo. That shape (forwarder-billed logistics service charges against an
+    # AWB, no goods) is Freight regardless of its own title.
+    "Freight": "freight certificate/invoice, air freight charges, ocean freight, THC, BAF, FSC (fuel surcharge),"
+               " ISS, customs clearance, delivery order fees, pickup fees, charges collect fees, freight amount -"
+               " billed by a freight forwarder/carrier against an AWB/HAWB/BL for the shipping service itself,"
+               " never a goods/product line",
 }
 
 # Words a customer uses when NAMING a slot, mapped to the built-in hint for that kind of
@@ -119,14 +131,22 @@ _TYPE_SIGNATURES: dict[str, dict] = {
         # carries this same charge line under its own heading, with no page ever printed
         # "freight certificate" - so a specific dollar-figure charge line is the required
         # signal, not the document's own title.
+        #
+        # "air freight" is its own required alternative (not folded into the plain "freight
+        # charges?" pattern) because a real one found live says "AIR FREIGHT CHARGES" as a
+        # line-item description, not a document heading - the page was titled "Tax Invoice"
+        # (an air freight forwarder's own GST invoice for the shipping service, Expeditors
+        # International) and went unclassified until this was added.
         "required": [
-            r"ocean\s*freight", r"freight\s*charges?", r"freight\s*amount",
+            r"ocean\s*freight", r"air\s*freight", r"freight\s*charges?", r"freight\s*amount",
             r"origin\s*charges", r"destination\s*charges", r"freight\s*certificate",
             r"freight\s*invoice",
         ],
         "supporting": [
-            r"\bthc\b", r"\bbaf\b", r"handling\s*charges", r"chargeable\s*weight",
-            r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}", r"tracking\s*no",
+            r"\bthc\b", r"\bbaf\b", r"\bfsc\b", r"\biss\b", r"handling\s*charges",
+            r"chargeable\s*weight", r"customs\s*clearance", r"delivery\s*order\s*fees?",
+            r"pickup\s*fees?", r"charges?\s*collect", r"(usd|inr|eur|gbp)\s*[\d,]+\.\d{2}",
+            r"tracking\s*no",
         ],
         "min_supporting": 1,
     },
@@ -383,7 +403,15 @@ def _classify_via_openai(filename: str, ocr_text: str | None, image_b64: str | N
         "real document of this type from this same customer, so it is the best evidence you "
         "have. Match on what the document IS, not on what it is titled: a slot called 'Freight "
         "Certificate' is still the right home for a document headed ARRIVAL NOTICE, if that is "
-        "where this customer's freight charges appear.\n\n"
+        "where this customer's freight charges appear. The same applies when a freight "
+        "forwarder or airline bills its OWN shipping service as a 'Tax Invoice' or 'Commercial "
+        "Invoice' with an ordinary invoice number/date: if its line items are freight/logistics "
+        "SERVICE charges against an AWB/HAWB (air freight, fuel surcharge/FSC, ISS, customs "
+        "clearance, delivery order fees, pickup fees, charges collect fees - never an actual "
+        "product/part number/quantity of physical goods), it is the Freight Certificate, not "
+        "the Invoice, regardless of its own 'Tax Invoice'/'Invoice No'/'Invoice Date' heading. "
+        "A real goods Invoice always lists what was actually shipped - parts, quantities, unit "
+        "prices of physical items.\n\n"
         f"Expected types:\n{cand_lines}\n\n"
         f'Filename: {filename}\n\n'
         'Return a JSON object: {"keys": [ ...matching key strings... ]}.'
