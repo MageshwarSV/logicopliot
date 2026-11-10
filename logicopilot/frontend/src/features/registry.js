@@ -16,10 +16,6 @@ export const superAdminFeatures = [
   // The step-by-step onboarding wizard - pairs a new customer with the template that reads
   // their documents.
   { path: "/super-admin/template-creation", navLabel: "Customer Template Mapping", group: "Platform Configuration", order: 3 },
-  // Content-match filter: an admin uploads a recurring boilerplate page (a cover sheet, a
-  // letterhead page) and any future email-pulled document containing a near-identical page
-  // has it dropped automatically - pure text comparison, never AI.
-  { path: "/super-admin/filter-pages", navLabel: "Page Filters", group: "Platform Configuration", order: 4 },
   // Where a template's marks and transformations are reviewed and approved - the work of
   // whoever built the template, not the customer's.
   { path: "/super-admin/data-transformation", navLabel: "Data Transformation", group: "Platform Configuration", order: 5 },
@@ -32,11 +28,6 @@ export const superAdminFeatures = [
   { path: "/super-admin/entry-browser", navLabel: "Entry Browser", group: "Integrations & Automation", order: 8 },
 
   { path: "/jobs", navLabel: "Jobs", group: "Operations", order: 9 },
-  // Mail the auto-router could not place on its own - the operator side of "ask which
-  // template this is" is manual template picking here, not a per-operator inbox: nobody
-  // can say which TENANT an unmatched email even belongs to, only Super Admin sees across
-  // all of them.
-  { path: "/super-admin/pending-mail", navLabel: "Unidentified Emails", group: "Operations", order: 10 },
 
   { path: "/super-admin/billing", navLabel: "Billing & Usage", group: "Finance & System", order: 11 },
   // Live kill switches for AI-dependent work (email pull, extraction) - Super Admin only,

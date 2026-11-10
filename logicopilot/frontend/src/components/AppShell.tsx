@@ -6,7 +6,7 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
-  BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon, FilterIcon,
+  BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
   CodeIcon, MonitorIcon, ArrowPathIcon,
 } from "./ui/icons";
 
@@ -18,13 +18,11 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/users": UsersIcon,
   "/super-admin/template-list": DocumentIcon,
   "/super-admin/template-creation": LayersIcon,
-  "/super-admin/filter-pages": FilterIcon,
   "/super-admin/data-transformation": ArrowPathIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,
   "/super-admin/entry-browser": MonitorIcon,
   "/jobs": BriefcaseIcon,
-  "/super-admin/pending-mail": MailIcon,
   "/super-admin/billing": CreditCardIcon,
   "/super-admin/settings": GearIcon,
 };
