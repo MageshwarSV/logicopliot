@@ -348,10 +348,24 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 # Which of THIS file's own pages actually carry the signature, not just
                 # whichever pages some OTHER, unrelated type already claimed - the whole-file
                 # match above only proves doc_type is present SOMEWHERE, never where. Falls
-                # back to matched_pages when the per-page check finds nothing precise (the
-                # signature's required/supporting markers are split across more than one page)
-                # or the file has no page markers to check at all (a single-page file).
+                # back to matched_pages only when the file has no page markers to check at all
+                # (a single-page file - nothing to be imprecise about). When the file DOES have
+                # per-page markers and NONE of its own pages individually carry the signature,
+                # that is not "split across pages" - it means the required/supporting markers
+                # the whole-file match saw are scattered across OTHER types' own pages (an
+                # ordinary invoice's routine "Freight Charges: $0.00" line plus some unrelated
+                # page's own supporting word, for instance - confirmed live on SIT, JOB-5D0F78:
+                # a plain commercial invoice's own zero-value freight line, no freight document
+                # anywhere in the file at all, used to make Freight claim every other type's
+                # pages wholesale). A claim with nowhere real to point is worse than no claim -
+                # drop it rather than fall back to the old wholesale behaviour.
                 precise_pages = _pages_matching_signature(text, doc_type)
+                if precise_pages is not None and not precise_pages:
+                    logger.info(
+                        "classify %s: keyword backstop for %s matched the file's whole text "
+                        "but no single page of it - treating as a false positive scattered "
+                        "across other types' pages, not claiming it", item.get("name"), doc_type)
+                    continue
                 claim_pages = precise_pages if precise_pages else matched_pages
                 claims[i].append({
                     "key": keys[0], "pages": claim_pages,
