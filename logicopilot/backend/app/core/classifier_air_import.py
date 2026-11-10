@@ -165,6 +165,43 @@ def _keyword_signature_match(text: str, doc_type: str) -> tuple[bool, int]:
     return hits >= sig["min_supporting"], hits
 
 
+_PAGE_MARKER_RE = re.compile(r"=== PAGE (\d+) ===\n")
+
+
+def _split_into_pages(text: str) -> list[tuple[int, str]] | None:
+    """[(page_number, that page's own text), ...] from the "=== PAGE n ===" blob every file's
+    own `text` is assembled as (see jobs.py's smart-upload text assembly) - the KEPT-page
+    numbering, same as everywhere else in this module. None if the text carries no page
+    markers at all (not this format - a caller should fall back to treating it as one page)."""
+    parts = _PAGE_MARKER_RE.split(text)
+    if len(parts) < 3:
+        return None
+    # re.split with a capturing group returns [before, num, after, num, after, ...] - the
+    # leading "before" (whatever sat before the first marker, normally empty) is discarded.
+    return [(int(parts[i]), parts[i + 1]) for i in range(1, len(parts), 2)]
+
+
+def _pages_matching_signature(text: str, doc_type: str) -> list[int] | None:
+    """Which of this file's OWN pages individually satisfy doc_type's keyword signature, or
+    None if `text` has no per-page markers to check pages against at all (a genuinely single-
+    page file, say) - the caller falls back to its own default in that case.
+
+    Exists because the whole-file signature match (_keyword_signature_match on the full,
+    concatenated text) only proves the type is present SOMEWHERE in the file - it says nothing
+    about WHICH pages. Checking every page's own slice individually, instead of just reusing
+    whatever pages some OTHER, unrelated type already claimed, is what keeps a large combined
+    upload's own Packing List pages (say) from being duplicated into a Freight Certificate
+    match that is genuinely only on the file's OWN separate Export Invoice pages - found live
+    on JOB-5D0F78: a 9-page combined upload (BL + Invoice + Packing List + two Export Invoice
+    pages), where the old "reuse whichever pages something else already claimed" fallback
+    pulled the Packing List's own 3 pages into Freight Certificate too, on a file that never
+    needed the fallback in the first place - it had page markers all along."""
+    pages = _split_into_pages(text)
+    if pages is None:
+        return None
+    return [n for n, page_text in pages if _keyword_signature_match(page_text, doc_type)[0]]
+
+
 def _ai_verify_second_type(filename: str, text: str, image_path: Path | None,
                            candidate: dict, already_types: list[str]) -> dict | None:
     """The regex backstop's fallback for wording it does not recognise: ask the model itself,
@@ -308,8 +345,16 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                 continue
             is_match, hits = _keyword_signature_match(text, doc_type)
             if is_match:
+                # Which of THIS file's own pages actually carry the signature, not just
+                # whichever pages some OTHER, unrelated type already claimed - the whole-file
+                # match above only proves doc_type is present SOMEWHERE, never where. Falls
+                # back to matched_pages when the per-page check finds nothing precise (the
+                # signature's required/supporting markers are split across more than one page)
+                # or the file has no page markers to check at all (a single-page file).
+                precise_pages = _pages_matching_signature(text, doc_type)
+                claim_pages = precise_pages if precise_pages else matched_pages
                 claims[i].append({
-                    "key": keys[0], "pages": matched_pages,
+                    "key": keys[0], "pages": claim_pages,
                     # Deterministic evidence, not a judgement call - see the
                     # specificity rule, which refuses to strip a claim carrying this.
                     "source": "signature",
@@ -319,8 +364,9 @@ def _augment_combined_document_claims(files: list[dict], candidates: list[dict],
                                    "that the model's own classification call missed entirely"),
                 })
                 logger.info(
-                    "classify %s: added %s by keyword backstop (%d supporting markers)%s",
-                    item.get("name"), doc_type, hits,
+                    "classify %s: added %s by keyword backstop (%d supporting markers, pages "
+                    "%s)%s",
+                    item.get("name"), doc_type, hits, claim_pages,
                     "" if ms else " - the model's own call matched nothing at all for this file")
                 continue
 
