@@ -198,14 +198,6 @@ export function SaasFinanceUsageBillingPage() {
                 </dt>
                 <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
               </div>
-              {usage.not_required_pages > 0 && (
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Not Required Pages ({usage.not_required_pages.toLocaleString()} pages × ₹{usage.not_required_rate})
-                  </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
-                </div>
-              )}
               <div className="flex justify-between border-t border-slate-200 pt-2 dark:border-slate-800">
                 <dt className="text-slate-500 dark:text-slate-400">Subtotal</dt>
                 <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.subtotal)}</dd>

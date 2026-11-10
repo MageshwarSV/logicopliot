@@ -5,7 +5,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
-import { DocumentIcon, TrashIcon, LayersIcon, CheckCircleIcon, ArrowPathIcon } from "../../components/ui/icons";
+import { DocumentIcon, TrashIcon, LayersIcon, ArrowPathIcon } from "../../components/ui/icons";
 import { ModeIcon } from "../../components/ModeIcon";
 import { JobBillingTable } from "../../components/billing/JobBillingTable";
 import { useAuth } from "../../auth/useAuth";
@@ -71,8 +71,8 @@ function statValue(n: number | null | undefined): string {
   return n == null ? "—" : n.toLocaleString();
 }
 
-/** The same 6 figures shown both on Usage Summary (wraps to 2 rows of 3 in its narrower,
- *  two-thirds-width column) and at the top of Job Details (one row of 6, full width) - one
+/** The same 5 figures shown both on Usage Summary (wraps to 2 rows in its narrower,
+ *  two-thirds-width column) and at the top of Job Details (one row, full width) - one
  *  component so the two can never show different numbers for what looks like the same row. */
 function UsageStatRow({
   usage, highlight, onSelect,
@@ -82,12 +82,11 @@ function UsageStatRow({
   onSelect: (h: JobBillingHighlight | null) => void;
 }) {
   return (
-    <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
       <StatCard
         icon={<DocumentIcon />} tone="indigo" label="Total Jobs" value={usage.total_jobs.toLocaleString()}
         onClick={() => onSelect(null)} active={highlight === null}
       />
-      <StatCard icon={<CheckCircleIcon />} tone="emerald" label="Active Jobs" value={statValue(usage.active_jobs_billed)} />
       <StatCard
         icon={<TrashIcon />} tone="rose" label="Deleted Jobs" value={statValue(usage.deleted_jobs_billed)}
         onClick={() => onSelect("deleted_jobs")} active={highlight === "deleted_jobs"}
@@ -351,15 +350,6 @@ export function BillingUsagePage() {
                   <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.tier2_amount)}</dd>
                 </div>
               )}
-              {usage.not_required_pages > 0 && (
-                <div className="flex justify-between">
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Not Required ({usage.not_required_pages.toLocaleString()} × ₹{usage.not_required_rate})
-                  </dt>
-                  <dd className="font-medium text-slate-900 dark:text-slate-100">{formatInr(usage.not_required_amount)}</dd>
-                </div>
-              )}
-
               <div className="flex justify-between rounded-lg bg-indigo-50 px-3 py-2.5 text-base dark:bg-indigo-500/10 sm:col-span-2">
                 <dt className="font-semibold text-indigo-900 dark:text-indigo-200">Subtotal (Before GST)</dt>
                 <dd className="font-semibold text-indigo-900 dark:text-indigo-200">{formatInr(usage.subtotal)}</dd>
