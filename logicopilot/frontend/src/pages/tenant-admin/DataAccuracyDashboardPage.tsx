@@ -162,8 +162,8 @@ export function DataAccuracyDashboardPage() {
                   <th className="pb-2 font-medium">Job</th>
                   <th className="pb-2 font-medium">Shipment Type</th>
                   <th className="pb-2 font-medium">Completed</th>
-                  <th className="pb-2 font-medium">Extracted</th>
-                  <th className="pb-2 font-medium">Edited</th>
+                  <th className="pb-2 font-medium">Extracted Fields</th>
+                  <th className="pb-2 font-medium">Edited Fields</th>
                   <th className="pb-2 font-medium">Accuracy</th>
                 </tr>
               </thead>
