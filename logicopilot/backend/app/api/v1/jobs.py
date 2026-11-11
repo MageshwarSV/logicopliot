@@ -10011,6 +10011,22 @@ def list_known_consignees(
     return _known_consignees(db, group_id)
 
 
+class CompositeExtraSet(BaseModel):
+    """One MORE format, for a different stretch of the job's product lines.
+
+    Set 1 lives in the parent payload's own pieces/separators, because it is the one that
+    becomes the consignee's remembered format. These are extras: they apply to the open job
+    and nowhere else, which is forced by what they are keyed on. A line RANGE is positional,
+    and positions do not survive to the next job - lines 1-3 of a four-line job are different
+    products from lines 1-3 of a thirty-six-line one, so "rows 1-3 get this format" is not a
+    statement that can be remembered about a consignee at all.
+    """
+    pieces: list[str | dict[str, str]]
+    separators: list[str] = []
+    # Required, unlike Set 1's: an extra set with no range of its own has nothing to apply to.
+    row_indexes: list[int]
+
+
 class CompositeFieldConfigUpdate(BaseModel):
     consignee: str
     label_name: str = "Combined Description"
@@ -10024,6 +10040,9 @@ class CompositeFieldConfigUpdate(BaseModel):
     # the operator counts products on screen). Empty/None applies to every line, which is the
     # behaviour every caller had before this existed.
     row_indexes: list[int] | None = None
+    # Sets 2, 3, ... - each its own format over its own lines of THIS job. Empty (every caller
+    # before this existed) behaves exactly as before.
+    extra_sets: list[CompositeExtraSet] = []
 
 
 class CompositeFieldConfigSaveResult(BaseModel):
@@ -10070,6 +10089,37 @@ def save_composite_field_config(
         if isinstance(piece, dict) and not (piece.get("fixed") or "").strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="A fixed-value piece cannot be empty.")
+
+    # Every set is checked BEFORE a single one is written. A job left half-reformatted - some
+    # lines in the new shape, some in the old, no message saying which - is worse than a save
+    # that was refused outright.
+    for n, extra in enumerate(payload.extra_sets, start=2):
+        if not extra.pieces:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Set {n} has no fields in it.")
+        for piece in extra.pieces:
+            if isinstance(piece, dict) and not (piece.get("fixed") or "").strip():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=f"Set {n}: a fixed-value piece cannot be empty.")
+        if not extra.row_indexes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Set {n} has no product lines to apply to.")
+
+    # Two sets both claiming the same line have no defined answer for it, so this refuses
+    # rather than letting the later one quietly win - exactly the rule the Bulk Update PQU
+    # screen already applies to its own ranges, so the two screens behave alike.
+    claimed: dict[int, int] = {}
+    all_sets = [(1, payload.row_indexes or [])] + [
+        (n, e.row_indexes) for n, e in enumerate(payload.extra_sets, start=2)
+    ]
+    for set_no, rows_for_set in all_sets:
+        for r in rows_for_set:
+            if r in claimed and claimed[r] != set_no:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(f"Set {claimed[r]} and set {set_no} both cover product line {r}. "
+                            "Give each set its own lines."))
+            claimed[r] = set_no
     separators = (list(payload.separators) + [""] * len(payload.pieces))[:len(payload.pieces)]
 
     composite_rows = (
@@ -10122,6 +10172,17 @@ def save_composite_field_config(
         composite_separators_override=separators,
         only_row_indexes=only,
     )
+    # Sets 2, 3, ... in order. Each writes only its own lines and leaves every other line
+    # exactly as it found it, so running them one after another is safe - the ranges were
+    # already proved not to overlap above. The LAST call's return is used because each one
+    # reports the field's full current state, not just the lines it touched.
+    for extra in payload.extra_sets:
+        extra_separators = (list(extra.separators) + [""] * len(extra.pieces))[:len(extra.pieces)]
+        values = _recompute_per_row_custom_field(
+            db, job, cf, composite_pieces_override=extra.pieces,
+            composite_separators_override=extra_separators,
+            only_row_indexes={int(n) for n in extra.row_indexes},
+        )
     return CompositeFieldConfigSaveResult(field_values=values)
 
 

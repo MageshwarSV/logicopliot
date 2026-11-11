@@ -781,6 +781,10 @@ export async function saveCompositeFieldConfig(
     /** jobId only: apply the new format to ONLY these 1-based line numbers of that job.
      *  Omitted/empty applies it to every line, which is what Save & Apply always did. */
     rowIndexes?: number[];
+    /** Sets 2, 3, ... - each its own format over its own lines of THIS job. Only set 1 (the
+     *  pieces/separators above) is remembered against the consignee: a line range is
+     *  positional, and positions mean different products on the next job. */
+    extraSets?: { pieces: CompositePiece[]; separators: string[]; rowIndexes: number[] }[];
   },
 ): Promise<CompositeFieldConfigSaveResult> {
   const { data } = await apiClient.put<CompositeFieldConfigSaveResult>(
@@ -792,6 +796,9 @@ export async function saveCompositeFieldConfig(
       separators: payload.separators,
       job_id: payload.jobId ?? null,
       row_indexes: payload.rowIndexes?.length ? payload.rowIndexes : null,
+      extra_sets: (payload.extraSets ?? []).map((s) => ({
+        pieces: s.pieces, separators: s.separators, row_indexes: s.rowIndexes,
+      })),
     },
   );
   return data;

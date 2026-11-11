@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
 import * as jobsApi from "../../api/jobs";
 import { Modal } from "../../components/ui/Modal";
@@ -11,6 +11,15 @@ import { Alert } from "../../components/ui/Alert";
 // automatically on that consignee's next job. See save_composite_field_config in
 // app/api/v1/jobs.py for the backend half of this - this screen replaced the job screen's
 // older inline "Combine fields" modal entirely (confirmed with the user).
+//
+// A job can carry SEVERAL sets: one format over lines 1-3, another over 4-6, and so on, since
+// a shipment can hold products that genuinely need different descriptions.
+//
+// Set 1 is the one the consignee REMEMBERS. The others apply to the open job and nowhere
+// else, and that is forced by what they are keyed on rather than chosen: a line range is
+// positional, and positions do not survive to the next job, where lines 1-3 are different
+// products entirely. "Rows 1-3 get this format" is simply not a statement that can be
+// remembered about a consignee.
 
 const SEPARATOR_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "(None)" },
@@ -26,6 +35,19 @@ interface ConfigRow {
   fieldLabel: string;
   fixedText: string;
   separator: string;
+}
+
+/** One format, plus the stretch of the open job's product lines it is for. */
+interface FormatSet {
+  id: string;
+  rows: ConfigRow[];
+  /** Blank on Set 1 means "every product line". Required on any other set. */
+  from: string;
+  to: string;
+}
+
+function newId(): string {
+  return Math.random().toString(36).slice(2);
 }
 
 function toRows(pieces: jobsApi.CompositePiece[], separators: string[]): ConfigRow[] {
@@ -67,8 +89,8 @@ interface Props {
   /** When set, Save & Apply also recomputes THIS job immediately and hands back its updated
    *  field values - opened from a job screen rather than a standalone configuration entry. */
   jobId?: string;
-  /** How many product lines the open job has. Drives the "Apply for Selected Products"
-   *  choice - without it there is nothing to range over, so the choice is not offered. */
+  /** How many product lines the open job has. Without it there is nothing to range over, so
+   *  the per-set line ranges and the "add another set" button are not offered at all. */
   productCount?: number;
   onSaved?: (fieldValues: jobsApi.CompositeFieldConfigSaveResult["field_values"]) => void;
 }
@@ -79,7 +101,7 @@ export function CombinedDescriptionConfigModal({
   const [consignees, setConsignees] = useState<string[]>([]);
   const [consignee, setConsignee] = useState("");
   const [labelName, setLabelName] = useState("Combined Description");
-  const [rows, setRows] = useState<ConfigRow[]>([]);
+  const [sets, setSets] = useState<FormatSet[]>([]);
   const [availableLabels, setAvailableLabels] = useState<string[]>([]);
   const [sampleRows, setSampleRows] = useState<Record<string, string>[]>([]);
   const [loadingConsignees, setLoadingConsignees] = useState(false);
@@ -87,26 +109,15 @@ export function CombinedDescriptionConfigModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  // Which lines of the OPEN job this save rewrites. The consignee's saved format is
-  // all-or-nothing by its nature - it is what the NEXT job computes from - but the job on
-  // screen may have lines a person already corrected by hand, and a format change is not a
-  // reason to throw those away on lines nobody asked about. Same two shapes the Bulk Update
-  // PQU screen already offers, so the two read alike.
-  const [applyScope, setApplyScope] = useState<"all" | "selected">("all");
-  const [rangeFrom, setRangeFrom] = useState("");
-  const [rangeTo, setRangeTo] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const canRange = !!jobId && (productCount ?? 0) > 0;
 
   useEffect(() => {
     if (!open) return;
     setConsignee(defaultConsignee ?? "");
     setSavedNote(null);
     setError(null);
-    // Reopening always starts at "all": the safe, expected default, never a narrow selection
-    // left over from last time that would silently skip most of the job.
-    setApplyScope("all");
-    setRangeFrom("");
-    setRangeTo("");
     setLoadingConsignees(true);
     jobsApi.getKnownConsignees(groupId)
       .then(setConsignees)
@@ -117,7 +128,7 @@ export function CombinedDescriptionConfigModal({
 
   useEffect(() => {
     if (!open || !consignee) {
-      setRows([]);
+      setSets([]);
       setAvailableLabels([]);
       setSampleRows([]);
       return;
@@ -126,7 +137,9 @@ export function CombinedDescriptionConfigModal({
     setError(null);
     jobsApi.getCompositeFieldConfig(groupId, consignee, labelName)
       .then((cfg) => {
-        setRows(toRows(cfg.pieces, cfg.separators));
+        // Always back to ONE set on open. A range left over from last time would otherwise
+        // silently skip most of the job on the next save.
+        setSets([{ id: newId(), rows: toRows(cfg.pieces, cfg.separators), from: "", to: "" }]);
         setAvailableLabels(cfg.available_labels);
         setSampleRows(cfg.sample_rows);
       })
@@ -141,36 +154,83 @@ export function CombinedDescriptionConfigModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, groupId, consignee]);
 
-  const unusedLabels = useMemo(
-    () => availableLabels.filter((l) => !rows.some((r) => r.kind === "field" && r.fieldLabel === l)),
-    [availableLabels, rows],
-  );
   const previewSample = sampleRows[0] ?? {};
-  const liveOutput = joinRows(rows, previewSample);
 
-  function updateRow(i: number, patch: Partial<ConfigRow>) {
-    setRows((arr) => arr.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  // ---- editing one set ---------------------------------------------------------------
+  function patchSet(id: string, patch: Partial<FormatSet>) {
+    setSets((arr) => arr.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }
-  function removeRow(i: number) {
-    setRows((arr) => arr.filter((_, idx) => idx !== i));
+  function patchRow(setId: string, i: number, patch: Partial<ConfigRow>) {
+    setSets((arr) => arr.map((s) => (s.id !== setId ? s : {
+      ...s, rows: s.rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)),
+    })));
   }
-  function addRow() {
-    const firstUnused = unusedLabels[0];
-    setRows((arr) => [
-      ...arr,
-      firstUnused
-        ? { kind: "field", fieldLabel: firstUnused, fixedText: "", separator: "" }
-        : { kind: "fixed", fieldLabel: "", fixedText: "", separator: "" },
-    ]);
+  function removeRow(setId: string, i: number) {
+    setSets((arr) => arr.map((s) => (s.id !== setId ? s : {
+      ...s, rows: s.rows.filter((_, idx) => idx !== i),
+    })));
   }
-  function move(i: number, dir: -1 | 1) {
-    setRows((arr) => {
-      const next = [...arr];
+  function addRow(setId: string) {
+    setSets((arr) => arr.map((s) => {
+      if (s.id !== setId) return s;
+      const used = s.rows.filter((r) => r.kind === "field").map((r) => r.fieldLabel);
+      const firstUnused = availableLabels.find((l) => !used.includes(l));
+      return {
+        ...s,
+        rows: [...s.rows, firstUnused
+          ? { kind: "field" as const, fieldLabel: firstUnused, fixedText: "", separator: "" }
+          : { kind: "fixed" as const, fieldLabel: "", fixedText: "", separator: "" }],
+      };
+    }));
+  }
+  function moveRow(setId: string, i: number, dir: -1 | 1) {
+    setSets((arr) => arr.map((s) => {
+      if (s.id !== setId) return s;
+      const next = [...s.rows];
       const j = i + dir;
-      if (j < 0 || j >= next.length) return arr;
+      if (j < 0 || j >= next.length) return s;
       [next[i], next[j]] = [next[j], next[i]];
-      return next;
+      return { ...s, rows: next };
+    }));
+  }
+
+  // ---- adding and removing whole sets ------------------------------------------------
+  function addSet() {
+    setError(null);
+    setSets((arr) => {
+      // Start the new set where the last one left off, so "1-3, then 4-6" needs two numbers
+      // typed instead of four, and cannot accidentally overlap.
+      const last = arr[arr.length - 1];
+      const lastTo = last ? Number(last.to) : NaN;
+      const nextFrom = Number.isFinite(lastTo) && last?.to.trim() ? String(lastTo + 1) : "";
+      return [...arr, { id: newId(), rows: [], from: nextFrom, to: "" }];
     });
+  }
+  function removeSet(id: string) {
+    setError(null);
+    setSets((arr) => arr.filter((s) => s.id !== id));
+  }
+
+  // ---- saving ------------------------------------------------------------------------
+  /** Expand one set's from/to into line numbers, or report what is wrong with it. */
+  function rangeOf(s: FormatSet, setNo: number, required: boolean): number[] | null | string {
+    const blank = !s.from.trim() && !s.to.trim();
+    if (blank) {
+      if (required) return `Set ${setNo}: enter the first and last product number.`;
+      return null;                       // Set 1 with no range = every product line
+    }
+    const from = Number(s.from);
+    const to = Number(s.to);
+    if (!s.from.trim() || !s.to.trim() || !Number.isFinite(from) || !Number.isFinite(to)) {
+      return `Set ${setNo}: enter both the first and last product number.`;
+    }
+    if (from < 1 || to > (productCount ?? 0)) {
+      return `Set ${setNo}: product numbers must be between 1 and ${productCount}.`;
+    }
+    if (from > to) return `Set ${setNo}: "from" (${from}) cannot be after "to" (${to}).`;
+    const out: number[] = [];
+    for (let i = from; i <= to; i++) out.push(i);
+    return out;
   }
 
   async function handleSave() {
@@ -178,57 +238,87 @@ export function CombinedDescriptionConfigModal({
       setError("Pick a consignee first.");
       return;
     }
-    if (rows.length === 0) {
-      setError("Add at least one row.");
+    if (sets.length === 0 || sets[0].rows.length === 0) {
+      setError("Add at least one row to set 1.");
       return;
     }
-    for (const row of rows) {
-      if (row.kind === "fixed" && !row.fixedText.trim()) {
-        setError("A fixed-text row cannot be empty.");
+    // Everything is checked BEFORE anything is sent: a job left half-reformatted, some lines
+    // in the new shape and some in the old, is worse than a save that was refused.
+    for (let n = 0; n < sets.length; n++) {
+      const s = sets[n];
+      if (s.rows.length === 0) {
+        setError(`Set ${n + 1} has no rows in it.`);
         return;
       }
-      if (row.kind === "field" && !row.fieldLabel) {
-        setError("Choose a source field for every row, or remove it.");
-        return;
+      for (const row of s.rows) {
+        if (row.kind === "fixed" && !row.fixedText.trim()) {
+          setError(`Set ${n + 1}: a fixed-text row cannot be empty.`);
+          return;
+        }
+        if (row.kind === "field" && !row.fieldLabel) {
+          setError(`Set ${n + 1}: choose a source field for every row, or remove it.`);
+          return;
+        }
       }
     }
-    // Work out which lines this touches BEFORE saving anything - a half-applied format is
-    // worse than one that was refused.
-    let rowIndexes: number[] | undefined;
-    if (jobId && applyScope === "selected" && (productCount ?? 0) > 0) {
-      const from = Number(rangeFrom);
-      const to = Number(rangeTo);
-      if (!rangeFrom.trim() || !rangeTo.trim() || !Number.isFinite(from) || !Number.isFinite(to)) {
-        setError("Enter the first and last product number to apply this to.");
-        return;
+
+    const ranges: (number[] | null)[] = [];
+    if (canRange) {
+      for (let n = 0; n < sets.length; n++) {
+        const r = rangeOf(sets[n], n + 1, n > 0);
+        if (typeof r === "string") {
+          setError(r);
+          return;
+        }
+        ranges.push(r);
       }
-      if (from < 1 || to > (productCount ?? 0)) {
-        setError(`Product numbers must be between 1 and ${productCount}.`);
-        return;
+      // Two sets both claiming a line have no defined answer for it. Caught here as well as
+      // server-side so the message names the sets while they are still on screen.
+      const claimed = new Map<number, number>();
+      for (let n = 0; n < ranges.length; n++) {
+        for (const line of ranges[n] ?? []) {
+          const owner = claimed.get(line);
+          if (owner !== undefined && owner !== n) {
+            setError(`Set ${owner + 1} and set ${n + 1} both cover product ${line}. `
+              + "Give each set its own products.");
+            return;
+          }
+          claimed.set(line, n);
+        }
       }
-      if (from > to) {
-        setError(`"From" (${from}) cannot be after "To" (${to}).`);
-        return;
-      }
-      rowIndexes = [];
-      for (let i = from; i <= to; i++) rowIndexes.push(i);
+    } else {
+      sets.forEach(() => ranges.push(null));
     }
+
+    const piecesOf = (s: FormatSet): jobsApi.CompositePiece[] =>
+      s.rows.map((r) => (r.kind === "fixed" ? { fixed: r.fixedText.trim() } : r.fieldLabel));
+
     setSaving(true);
     setError(null);
     setSavedNote(null);
     try {
-      const pieces: jobsApi.CompositePiece[] = rows.map((r) =>
-        r.kind === "fixed" ? { fixed: r.fixedText.trim() } : r.fieldLabel,
-      );
-      const separators = rows.map((r) => r.separator);
       const result = await jobsApi.saveCompositeFieldConfig(groupId, {
-        consignee: consignee.trim(), labelName, pieces, separators, jobId, rowIndexes,
+        consignee: consignee.trim(),
+        labelName,
+        pieces: piecesOf(sets[0]),
+        separators: sets[0].rows.map((r) => r.separator),
+        jobId,
+        rowIndexes: ranges[0] ?? undefined,
+        extraSets: sets.slice(1).map((s, i) => ({
+          pieces: piecesOf(s),
+          separators: s.rows.map((r) => r.separator),
+          rowIndexes: ranges[i + 1] ?? [],
+        })),
       });
+      const applied = sets
+        .map((s, i) => (ranges[i] ? `set ${i + 1} to products ${s.from}-${s.to}` : null))
+        .filter(Boolean)
+        .join(", ");
       setSavedNote(
-        rowIndexes
-          // Say WHICH lines moved. "Saved" alone, after choosing a range, reads as if the
-          // whole job was rewritten - the one thing the choice exists to avoid.
-          ? `Saved for ${consignee.trim()} — applied to products ${rangeFrom}-${rangeTo} on this job.`
+        applied
+          // Say WHICH lines moved. "Saved" alone, after choosing ranges, reads as if the whole
+          // job was rewritten - the one thing the ranges exist to avoid.
+          ? `Saved for ${consignee.trim()} — applied ${applied}.`
           : `Configuration saved for ${consignee.trim()}`,
       );
       onSaved?.(result.field_values);
@@ -246,11 +336,11 @@ export function CombinedDescriptionConfigModal({
     }
   }
 
-  async function copyOutput() {
+  async function copyOutput(s: FormatSet) {
     try {
-      await navigator.clipboard.writeText(liveOutput);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(joinRows(s.rows, previewSample));
+      setCopiedId(s.id);
+      setTimeout(() => setCopiedId(null), 1500);
     } catch {
       // Clipboard access can be blocked (permissions, insecure context) - nothing worth
       // surfacing as an error for a convenience button.
@@ -261,8 +351,9 @@ export function CombinedDescriptionConfigModal({
     <Modal open={open} onClose={onClose} title="Combined Description Configuration" maxWidth="max-w-4xl">
       <div className="flex flex-col gap-5">
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Set the format for combining fields. This configuration is saved at the consignee
-          level and will be used for all future jobs of this consignee.
+          Set the format for combining fields. Set 1 is saved against the consignee and used for
+          all their future jobs. Any further set applies to this job only, over the product
+          lines you give it.
         </p>
 
         <div className="flex flex-wrap items-end gap-3">
@@ -304,196 +395,202 @@ export function CombinedDescriptionConfigModal({
           <p className="text-sm text-slate-400">Loading…</p>
         ) : (
           <>
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                  Field Order and Format
-                </p>
-                <Button variant="secondary" size="sm" onClick={addRow}>+ Add Row</Button>
-              </div>
-              {rows.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400 dark:border-slate-700">
-                  No rows yet - add one to start building the format.
-                </p>
-              ) : (
-                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
-                      <tr>
-                        <th className="px-3 py-2 text-left">Order</th>
-                        <th className="w-56 px-3 py-2 text-left">Source Field</th>
-                        <th className="w-48 px-3 py-2 text-left">Separator (before)</th>
-                        <th className="px-3 py-2 text-left">Preview Piece</th>
-                        <th className="px-3 py-2 text-left">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {rows.map((row, i) => {
-                        const value = rowValue(row, previewSample);
-                        return (
-                          <tr key={i}>
-                            <td className="px-3 py-2">
-                              <div className="flex items-center gap-1">
-                                <span className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                                  {i + 1}
-                                </span>
-                                <button type="button" disabled={i === 0} onClick={() => move(i, -1)}
-                                  className="rounded px-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800" title="Move up">▲</button>
-                                <button type="button" disabled={i === rows.length - 1} onClick={() => move(i, 1)}
-                                  className="rounded px-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800" title="Move down">▼</button>
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <div className="flex flex-col gap-1.5">
-                                <select
-                                  value={row.kind === "fixed" ? "__fixed__" : row.fieldLabel}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    if (v === "__fixed__") updateRow(i, { kind: "fixed", fieldLabel: "" });
-                                    else updateRow(i, { kind: "field", fieldLabel: v, fixedText: "" });
-                                  }}
-                                  className="w-full min-w-[9rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                                >
-                                  <option value="__fixed__">Fixed Text</option>
-                                  {row.kind === "field" && row.fieldLabel && !availableLabels.includes(row.fieldLabel) && (
-                                    <option value={row.fieldLabel}>{row.fieldLabel}</option>
-                                  )}
-                                  {availableLabels
-                                    .filter((l) => l === row.fieldLabel || unusedLabels.includes(l))
-                                    .map((l) => (
-                                      <option key={l} value={l}>{l}</option>
-                                    ))}
-                                </select>
-                                {row.kind === "fixed" && (
-                                  <input
-                                    type="text"
-                                    value={row.fixedText}
-                                    onChange={(e) => updateRow(i, { fixedText: e.target.value })}
-                                    placeholder="Type the fixed text, e.g. ("
-                                    className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                                  />
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <select
-                                value={row.separator}
-                                onChange={(e) => updateRow(i, { separator: e.target.value })}
-                                className="w-full min-w-[8rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-                              >
-                                {SEPARATOR_OPTIONS.map((opt) => (
-                                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-3 py-2">
-                              <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
-                                {value || "—"}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2">
-                              <button type="button" onClick={() => removeRow(i)}
-                                className="rounded p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10" title="Delete row">
-                                🗑
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-                Live Output (updates automatically)
-              </p>
-              <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
-                <span className="flex-1 font-medium text-emerald-900 dark:text-emerald-100">
-                  {liveOutput || "—"}
-                </span>
-                <button type="button" onClick={copyOutput}
-                  className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-300">
-                  {copied ? "Copied!" : "Copy"}
-                </button>
-              </div>
-            </div>
-
-          </>
-        )}
-
-            {/* Which lines of the OPEN job this rewrites. Only offered when there IS an open
-                job with product lines - from the standalone configuration screen there is
-                nothing to range over, and the consignee format saves the same way regardless. */}
-            {jobId && (productCount ?? 0) > 0 && (
-              <div>
-                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Apply to this job
-                </p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => { setApplyScope("all"); setError(null); }}
-                    className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left ${
-                      applyScope === "all"
-                        ? "border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10"
-                        : "border-slate-200 hover:border-indigo-300 dark:border-slate-700"
-                    }`}
-                  >
-                    <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
-                      Apply for All Products
-                    </span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Rewrite the description on all {productCount} product lines.
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setApplyScope("selected"); setError(null); }}
-                    className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left ${
-                      applyScope === "selected"
-                        ? "border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10"
-                        : "border-slate-200 hover:border-indigo-300 dark:border-slate-700"
-                    }`}
-                  >
-                    <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
-                      Apply for Selected Products
-                    </span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Only a range of lines, by their position (e.g. 1-10). The rest keep what
-                      they have.
-                    </span>
-                  </button>
-                </div>
-                {applyScope === "selected" && (
-                  <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <Input
-                      label="From product"
-                      type="number"
-                      min={1}
-                      max={productCount}
-                      value={rangeFrom}
-                      onChange={(e) => setRangeFrom(e.target.value)}
-                      className="w-32"
-                    />
-                    <Input
-                      label="To product"
-                      type="number"
-                      min={1}
-                      max={productCount}
-                      value={rangeTo}
-                      onChange={(e) => setRangeTo(e.target.value)}
-                      className="w-32"
-                    />
-                    <p className="pb-2 text-xs text-slate-500 dark:text-slate-400">
-                      of {productCount} on this job
-                    </p>
+            {sets.map((s, setIdx) => {
+              const used = s.rows.filter((r) => r.kind === "field").map((r) => r.fieldLabel);
+              const liveOutput = joinRows(s.rows, previewSample);
+              const isFirst = setIdx === 0;
+              return (
+                <div
+                  key={s.id}
+                  className="rounded-xl border border-slate-200 p-4 dark:border-slate-700"
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+                        {setIdx + 1}
+                      </span>
+                      <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                        Set {setIdx + 1}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        isFirst
+                          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                          : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                      }`}>
+                        {isFirst ? "used for future jobs" : "this job only"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="secondary" size="sm" onClick={() => addRow(s.id)}>
+                        + Add Row
+                      </Button>
+                      {!isFirst && (
+                        <button
+                          type="button"
+                          onClick={() => removeSet(s.id)}
+                          className="rounded-md border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/10"
+                        >
+                          Remove set
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
+
+                  {s.rows.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400 dark:border-slate-700">
+                      No rows yet - add one to start building this format.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Order</th>
+                            <th className="w-56 px-3 py-2 text-left">Source Field</th>
+                            <th className="w-48 px-3 py-2 text-left">Separator (before)</th>
+                            <th className="px-3 py-2 text-left">Preview Piece</th>
+                            <th className="px-3 py-2 text-left">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {s.rows.map((row, i) => {
+                            const value = rowValue(row, previewSample);
+                            return (
+                              <tr key={i}>
+                                <td className="px-3 py-2">
+                                  <div className="flex items-center gap-1">
+                                    <span className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                      {i + 1}
+                                    </span>
+                                    <button type="button" disabled={i === 0} onClick={() => moveRow(s.id, i, -1)}
+                                      className="rounded px-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800" title="Move up">▲</button>
+                                    <button type="button" disabled={i === s.rows.length - 1} onClick={() => moveRow(s.id, i, 1)}
+                                      className="rounded px-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800" title="Move down">▼</button>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <div className="flex flex-col gap-1.5">
+                                    <select
+                                      value={row.kind === "fixed" ? "__fixed__" : row.fieldLabel}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        if (v === "__fixed__") patchRow(s.id, i, { kind: "fixed", fieldLabel: "" });
+                                        else patchRow(s.id, i, { kind: "field", fieldLabel: v, fixedText: "" });
+                                      }}
+                                      className="w-full min-w-[9rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                    >
+                                      <option value="__fixed__">Fixed Text</option>
+                                      {row.kind === "field" && row.fieldLabel && !availableLabels.includes(row.fieldLabel) && (
+                                        <option value={row.fieldLabel}>{row.fieldLabel}</option>
+                                      )}
+                                      {availableLabels
+                                        .filter((l) => l === row.fieldLabel || !used.includes(l))
+                                        .map((l) => (
+                                          <option key={l} value={l}>{l}</option>
+                                        ))}
+                                    </select>
+                                    {row.kind === "fixed" && (
+                                      <input
+                                        type="text"
+                                        value={row.fixedText}
+                                        onChange={(e) => patchRow(s.id, i, { fixedText: e.target.value })}
+                                        placeholder="Type the fixed text, e.g. ("
+                                        className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                      />
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <select
+                                    value={row.separator}
+                                    onChange={(e) => patchRow(s.id, i, { separator: e.target.value })}
+                                    className="w-full min-w-[8rem] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                                  >
+                                    {SEPARATOR_OPTIONS.map((opt) => (
+                                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+                                    {value || "—"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <button type="button" onClick={() => removeRow(s.id, i)}
+                                    className="rounded p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10" title="Delete row">
+                                    🗑
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div className="mt-3">
+                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                      Live output for set {setIdx + 1}
+                    </p>
+                    <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                      <span className="flex-1 font-medium text-emerald-900 dark:text-emerald-100">
+                        {liveOutput || "—"}
+                      </span>
+                      <button type="button" onClick={() => copyOutput(s)}
+                        className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-300">
+                        {copiedId === s.id ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {canRange && (
+                    <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-slate-100 pt-3 dark:border-slate-800">
+                      <Input
+                        label="From product"
+                        type="number"
+                        min={1}
+                        max={productCount}
+                        value={s.from}
+                        onChange={(e) => patchSet(s.id, { from: e.target.value })}
+                        className="w-32"
+                      />
+                      <Input
+                        label="To product"
+                        type="number"
+                        min={1}
+                        max={productCount}
+                        value={s.to}
+                        onChange={(e) => patchSet(s.id, { to: e.target.value })}
+                        className="w-32"
+                      />
+                      <p className="pb-2 text-xs text-slate-500 dark:text-slate-400">
+                        {isFirst
+                          ? `of ${productCount} on this job — leave both blank to apply set 1 to every product`
+                          : `of ${productCount} on this job`}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {canRange && (
+              <div>
+                <Button variant="secondary" size="sm" onClick={addSet}>
+                  + Add another set
+                </Button>
+                <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  A second set lets different products carry a different description — set 1 for
+                  products 1-3, set 2 for 4-6, and so on. Sets cannot cover the same product
+                  twice. Only set 1 is remembered for this consignee's future jobs, because a
+                  product's POSITION means something different on every job.
+                </p>
               </div>
             )}
+          </>
+        )}
 
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
