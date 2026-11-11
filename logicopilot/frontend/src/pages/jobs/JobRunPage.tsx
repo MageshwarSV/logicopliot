@@ -10,6 +10,7 @@ import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
 import { CalendarIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
+import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import * as jobsApi from "../../api/jobs";
@@ -5011,6 +5012,19 @@ function ExtractedField({
   // one edit rather than a setting.
   const [soloEdit, setSoloEdit] = useState(false);
 
+  // A NUMBER field - the admin picked "Number (decimals)" in the wizard, which saves the one
+  // shared NUMBER_PATTERN. Recognised here by that pattern rather than by the field's name,
+  // because naming is exactly what cannot be trusted for this: "CountryOfShipmentCode" and
+  // "ERP Consignee Country" both contain "count", "Gross Weight Unit" holds "KGS", and
+  // "Basic Duty/Notn." holds "057/2017" - a notification number, not an amount. Every one of
+  // those would have been caught by a list of numeric-sounding labels.
+  const numericField = isNumberPattern(fv.validation_pattern) && !readOnly;
+
+  // The format complaint, shown UNDER the box instead of in a window.alert. An alert steals
+  // focus, has to be dismissed before the value can be corrected, and is gone the moment it
+  // is - so the operator is left looking at a box with no indication of what was wrong.
+  const [formatError, setFormatError] = useState<string | null>(null);
+
   // A DATE field - FieldMark.date_picker / CustomField.date_picker, ticked once by an admin
   // in the Template Creation Wizard. Adds a calendar button at the right of the box; the box
   // itself is untouched and still typed into exactly as before.
@@ -5046,9 +5060,12 @@ function ExtractedField({
       // rather than crashing the save outright.
       try {
         if (!new RegExp(`^(?:${fv.validation_pattern})$`).test(transformed.trim())) {
-          window.alert(fv.validation_message || `${fv.label_name} does not match the required format.`);
+          setFormatError(
+            fv.validation_message || `${fv.label_name} does not match the required format.`,
+          );
           return;
         }
+        setFormatError(null);
       } catch {
         /* malformed pattern - treat as no restriction */
       }
@@ -5345,10 +5362,18 @@ function ExtractedField({
               inputMode={digitsOnly ? "numeric" : undefined}
               maxLength={digitsOnly ?? undefined}
               onChange={(e) => {
+                // React fires onChange for a PASTE, a drag-and-drop and an autofill just as it
+                // does for a keystroke, so sanitising here covers all of them - there is no
+                // separate onPaste handler to keep in step, and nothing can get in behind it.
                 const next = digitsOnly
                   ? e.target.value.replace(/\D/g, "").slice(0, digitsOnly)
-                  : e.target.value;
+                  : numericField
+                    ? sanitizeNumericInput(e.target.value)
+                    : e.target.value;
                 setDraft(next);
+                // Typing is how someone FIXES a rejected value, so the complaint goes away as
+                // soon as they start, rather than sitting there contradicting the box.
+                if (formatError) setFormatError(null);
                 onDraftChange?.(next);
               }}
               onFocus={() => {
@@ -5480,6 +5505,11 @@ function ExtractedField({
         </button>
       )}
       </div>
+      {formatError && (
+        <p className="mt-1 text-[11px] font-medium text-rose-700 dark:text-rose-400">
+          {formatError}
+        </p>
+      )}
       {note && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{note}</p>}
       {flagged && flagNote && (
         <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
