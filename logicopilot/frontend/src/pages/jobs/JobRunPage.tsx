@@ -309,27 +309,80 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // Fields whose dropdown options come from the server instead of the fixed list above - a
 // reference-backed (is_target_value) custom field's own table (e.g. every real Customs House
 // Code), fetched per-job via listCustomFieldReferenceOptions rather than hardcoded, so
-// updating the reference sheet changes the dropdown without a frontend redeploy. Each one is
-// narrowed to the rows relevant to THIS job by matching the table's own FIRST match column
-// against the current value of the other job field named here - a Chennai shipment only ever
-// needs to choose between Chennai's own codes (Sea vs Air), not every city's. The automatic
-// lookup still uses the SECOND key (transport mode) too, to pick the exact one by default -
-// only the dropdown's own option list is narrowed by just the first key, so the operator can
-// still correct the mode by picking the other code for the same city.
-const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
+// updating the reference sheet changes the dropdown without a frontend redeploy. Each entry
+// narrows that field's own option list to whatever is relevant to THIS job, keyed off the
+// CURRENT value of the other job field named by filterByLabel - two ways a field's reference
+// table can encode "relevant to this job":
+//   - "match-column": the table's own match column (matchSlot, default the first) was uploaded
+//     holding exactly the filter field's own vocabulary (e.g. a forwarder NAME) - narrow to the
+//     rows whose column equals the current value, exactly.
+//   - "value-suffix": the OPTION VALUE itself (not a separate column) encodes which of the
+//     filter field's values it belongs to, by how it's spelled (e.g. a Customs House Code's own
+//     last digit says which transport mode it is for) - narrow to values ending in one of the
+//     suffixes listed for the filter field's current value.
+// Both kinds go through the single narrowDynamicDropdownOptions() below, at every call site
+// that renders one of these fields' options.
+type DynamicDropdownFilterConfig =
+  | { kind: "match-column"; filterByLabel: string; matchSlot?: number }
+  | { kind: "value-suffix"; filterByLabel: string; suffixesByValue: Record<string, string[]> };
+const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, DynamicDropdownFilterConfig> = {
   // A forwarder's own branch list only ever matters once you know WHICH forwarder (ERP
   // Quotation Name / Erp Entry Name) - AIT's own branches, not Kuehne+Nagel's. Reference table
   // seeded from the Super Admin's own "Billing customers" sheet (Organization -> branch code,
   // one row per branch).
-  branch_name: "Erp Entry Name",
+  branch_name: { kind: "match-column", filterByLabel: "Erp Entry Name" },
+  // CustomsHouseCode's own code always ends in the digit for its transport mode (1 Sea, 4 Air,
+  // or 6 for a handful of codes usable under either) - narrowed on the CODE itself rather than
+  // a match column, since not every "6" code's reference row is tagged for both modes yet (the
+  // column approach would silently hide a valid code the moment its row for one mode is
+  // missing; the suffix is the one thing guaranteed to say what it is).
+  CustomsHouseCode: {
+    kind: "value-suffix",
+    filterByLabel: "TransportModeCode",
+    suffixesByValue: { A: ["4", "6"], S: ["1", "6"] },
+  },
 };
 // Of the fields above, these offer EVERY row their reference table holds instead of only the
-// rows matching the filter field's current value. The entry above is still what makes their
-// options get fetched at all - only the NARROWING is skipped. Empty for now (CustomsHouseCode
-// used to be the one entry here, before it moved to COMBOBOX_REFERENCE_FIELD_LABELS below,
-// whose own box is never narrowed in the first place) - kept around for whichever FILTER_BY
-// field needs this treatment next.
+// ones matching the filter field's current value. The entry above is still what makes their
+// options get fetched at all - only the NARROWING is skipped.
 const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set<string>([]);
+/** The single place every dropdown narrowed by DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY goes
+ *  through, so a field added to that map is narrowed identically wherever its options are
+ *  rendered (today: the Additional Details card and ExtractionReview's relocated-field cards),
+ *  rather than each call site growing its own copy of "read the filter field, then filter".
+ *  liveOverrides carries a value some caller already has in hand BEFORE it's saved to
+ *  job.field_values (e.g. Erp Entry Name's own live, not-yet-saved pick) - only ever read when
+ *  present; everything else (today: TransportModeCode) falls back to the saved value below. */
+function narrowDynamicDropdownOptions(
+  label: string,
+  rows: jobsApi.CustomFieldReferenceOption[],
+  job: JobDetail,
+  liveOverrides?: Record<string, string>,
+): string[] {
+  const allValues = () => dedupe(rows.map((r) => r.value));
+  const config = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[label];
+  if (!config) return allValues();
+  const filterValue = (
+    liveOverrides?.[config.filterByLabel] ??
+    job.field_values.find((x) => x.row_index == null && x.label_name === config.filterByLabel)
+      ?.corrected_value ??
+    job.field_values.find((x) => x.row_index == null && x.label_name === config.filterByLabel)
+      ?.extracted_value ??
+    ""
+  )
+    .trim()
+    .toUpperCase();
+  if (!filterValue || DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(label)) return allValues();
+  if (config.kind === "value-suffix") {
+    const suffixes = config.suffixesByValue[filterValue];
+    if (!suffixes) return allValues();
+    return dedupe(rows.map((r) => r.value).filter((v) => suffixes.some((s) => v.endsWith(s))));
+  }
+  const slot = config.matchSlot ?? 0;
+  return dedupe(
+    rows.filter((r) => (r.match_values[slot] ?? "").toUpperCase() === filterValue).map((r) => r.value),
+  );
+}
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
 // brand-new typed value - unlike that one, this never replaces free text with a closed
@@ -3829,50 +3882,22 @@ export function JobRunPage() {
                           (fv.dropdown_style === "search" || fv.dropdown_style === "search_free");
                         if (fixedChoicesSearchable) {
                           comboOptions = fv.fixed_options!;
-                        } else if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
-                          // dedupe() - the reference table is a LEARNED (raw text -> corrected
-                          // value) mapping, not a plain list of unique names: the same resolved
-                          // value legitimately gets re-learned from several different raw texts
-                          // (e.g. "EXPEDITORS INTERNATIONAL (INDIA) PVT LTD" corrected from both
-                          // "EXPEDITORS KOREA LTD." and its own name on two different jobs) - a
-                          // dropdown showing each resolved value once per row showed it twice.
-                          comboOptions = dedupe(
-                            (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value),
-                          );
-                        } else if (fv.custom_field_id && filterByLabel) {
-                          // e.g. branch_name ("ERP Quotation Branch") narrowed to the branches
-                          // of whichever forwarder is currently set as ERP Quotation Name
-                          // (Erp Entry Name) - same narrowing ExtractionReview's own copy of
-                          // this mechanism does for relocated fields (CustomsHouseCode).
-                          //
+                        } else if (fv.custom_field_id && (COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) || filterByLabel)) {
+                          // Both branches used to duplicate this narrowing by hand (one reading
+                          // comboReferenceOptions raw, the other filtering it by another job
+                          // field's current value first) - see narrowDynamicDropdownOptions'
+                          // own docstring for why that's now one function used everywhere a
+                          // DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field's options are rendered.
                           // Erp Entry Name specifically reads the LIVE, not-yet-saved pick (see
                           // liveErpEntryName above) rather than job.field_values' saved value -
                           // otherwise picking a name narrowed nothing until that pick was itself
                           // saved, so the operator had to save once just to see the branch list
-                          // narrow, then again to save the branch. Anything else this map might
-                          // ever filter by (today: nothing else in this card) falls back to the
-                          // saved value, same as before.
-                          const filterValue =
-                            filterByLabel === "Erp Entry Name"
-                              ? liveErpEntryName.toUpperCase()
-                              : (
-                                  job.field_values.find(
-                                    (x) => x.row_index == null && x.label_name === filterByLabel,
-                                  )?.corrected_value ??
-                                  job.field_values.find(
-                                    (x) => x.row_index == null && x.label_name === filterByLabel,
-                                  )?.extracted_value ??
-                                  ""
-                                )
-                                  .trim()
-                                  .toUpperCase();
-                          const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
-                          comboOptions = dedupe(
-                            (
-                              filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
-                                ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                                : rows
-                            ).map((o) => o.value),
+                          // narrow, then again to save the branch.
+                          comboOptions = narrowDynamicDropdownOptions(
+                            fv.label_name,
+                            comboReferenceOptions[fv.custom_field_id] ?? [],
+                            job,
+                            { "Erp Entry Name": liveErpEntryName.toUpperCase() },
                           );
                         }
                         return (
@@ -7215,17 +7240,9 @@ function ExtractionReview({
                     }
                   }
                   if (dynamicRows !== undefined) {
-                    const filterFv = job.field_values.find(
-                      (x) => x.row_index == null && x.label_name === filterByLabel,
+                    options = narrowDynamicDropdownOptions(fv.label_name, dynamicRows, job).map(
+                      (v) => ({ value: v, label: v }),
                     );
-                    const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
-                      .trim()
-                      .toUpperCase();
-                    const rows =
-                      filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
-                        ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                        : dynamicRows;
-                    options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
                   }
                   // "ERP Importer Address / Branch Code" - narrowed to the picked consignee's
                   // own branches server-side (see consigneeBranchOptions above), not via the
@@ -7261,7 +7278,11 @@ function ExtractionReview({
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
                   const comboOptions = fixedChoiceComboOptions ?? (
                     COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                      ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
+                      ? narrowDynamicDropdownOptions(
+                          fv.label_name,
+                          dynamicReferenceOptions[fv.custom_field_id] ?? [],
+                          job,
+                        )
                       : undefined
                   );
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;
