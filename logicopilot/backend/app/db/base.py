@@ -8,6 +8,7 @@ from app.models.refresh_token import RefreshToken  # noqa: F401
 from app.models.template_group import TemplateGroup  # noqa: F401
 from app.models.template_document import TemplateDocument  # noqa: F401
 from app.models.field_mark import FieldMark  # noqa: F401
+from app.models.notification_read import NotificationRead  # noqa: F401
 from app.models.cross_doc_link import CrossDocLink  # noqa: F401
 from app.models.job import Job, JobDocument, JobFieldValue, UnmatchedUploadPage  # noqa: F401
 from app.models.template_review import TemplateReview  # noqa: F401

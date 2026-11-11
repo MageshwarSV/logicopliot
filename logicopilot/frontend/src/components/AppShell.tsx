@@ -4,6 +4,7 @@ import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/registry";
 import * as jobsApi from "../api/jobs";
+import { NotificationBell } from "./NotificationBell";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
@@ -441,7 +442,14 @@ export function AppShell({
             <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
             {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
           </div>
-          {actions}
+          {/* The bell lives in the SHELL, not on any one page: an ERP submission finishes
+              minutes after the operator left that job, so it has to reach them wherever they
+              happen to be. Left of the page's own actions so the primary call to action on
+              each screen (+ New Job, Submit Entry) stays furthest right where it is expected. */}
+          <div className="flex items-center gap-3">
+            <NotificationBell />
+            {actions}
+          </div>
         </header>
         <main className="p-8">{children}</main>
       </div>

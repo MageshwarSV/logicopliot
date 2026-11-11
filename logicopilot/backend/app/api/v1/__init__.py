@@ -8,6 +8,7 @@ from app.api.v1.template_groups import router as template_groups_router
 from app.api.v1.template_documents import router as template_documents_router
 from app.api.v1.field_marks import router as field_marks_router
 from app.api.v1.jobs import router as jobs_router
+from app.api.v1.notifications import router as notifications_router
 from app.api.v1.reviews import router as reviews_router
 from app.api.v1.erp_scripts import router as erp_scripts_router
 from app.api.v1.email import router as email_router
@@ -30,6 +31,7 @@ api_router.include_router(template_groups_router)
 api_router.include_router(template_documents_router)
 api_router.include_router(field_marks_router)
 api_router.include_router(jobs_router)
+api_router.include_router(notifications_router)
 api_router.include_router(reviews_router)
 api_router.include_router(erp_scripts_router)
 api_router.include_router(email_router)
