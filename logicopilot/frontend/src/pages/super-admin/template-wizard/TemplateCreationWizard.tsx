@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DATE_FORMAT_CHOICES } from "../../../utils/fieldDates";
+import { NUMBER_PATTERN } from "../../../utils/fieldNumbers";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { AppShell } from "../../../components/AppShell";
@@ -31,8 +32,11 @@ function errText(err: unknown, fallback: string): string {
 // a friendlier picker than "type your own regex" for the shapes that come up constantly (a
 // fixed number of letters/digits, like Terms of Invoice's "exactly 3 letters"). "Custom" covers
 // anything that doesn't fit that shape (e.g. Customs House Code's "5 letters then 1 digit").
-type ValidationMode = "none" | "letters" | "digits" | "alnum" | "custom";
-const VALIDATION_CHAR_CLASS: Record<Exclude<ValidationMode, "none" | "custom">, string> = {
+type ValidationMode = "none" | "letters" | "digits" | "number" | "alnum" | "custom";
+
+// "number" is excluded too: it is one fixed shape (NUMBER_PATTERN), not a character class
+// repeated - buildValidationPattern returns it before ever reaching this map.
+const VALIDATION_CHAR_CLASS: Record<Exclude<ValidationMode, "none" | "custom" | "number">, string> = {
   letters: "A-Za-z",
   digits: "0-9",
   alnum: "A-Za-z0-9",
@@ -40,6 +44,9 @@ const VALIDATION_CHAR_CLASS: Record<Exclude<ValidationMode, "none" | "custom">, 
 function buildValidationPattern(mode: ValidationMode, length: string, custom: string): string | null {
   if (mode === "none") return null;
   if (mode === "custom") return custom.trim() || null;
+  // A length makes no sense for a number ("exactly 5 digits" is the "digits" mode), so this
+  // one shape is returned whatever is in the length box.
+  if (mode === "number") return NUMBER_PATTERN;
   const charClass = VALIDATION_CHAR_CLASS[mode];
   const len = length.trim();
   return len ? `[${charClass}]{${len}}` : `[${charClass}]+`;
@@ -49,6 +56,7 @@ function buildValidationPattern(mode: ValidationMode, length: string, custom: st
  *  shape) falls back to "custom" with the raw pattern shown as-is, never silently discarded. */
 function parseValidationPattern(pattern: string | null | undefined): { mode: ValidationMode; length: string; custom: string } {
   if (!pattern) return { mode: "none", length: "", custom: "" };
+  if (pattern === NUMBER_PATTERN) return { mode: "number", length: "", custom: "" };
   const m = /^\[(A-Za-z0-9|A-Za-z|0-9)\](?:\{(\d+)\}|(\+))$/.exec(pattern);
   if (m) {
     const mode: ValidationMode = m[1] === "A-Za-z0-9" ? "alnum" : m[1] === "A-Za-z" ? "letters" : "digits";
@@ -60,6 +68,7 @@ function validationModeLabel(mode: ValidationMode): string {
   return mode === "letters" ? "letters" : mode === "digits" ? "digits" : "characters";
 }
 function defaultValidationMessage(label: string, mode: ValidationMode, length: string): string {
+  if (mode === "number") return `${label} must be a number, e.g. 519.000`;
   const kind = validationModeLabel(mode);
   return length.trim()
     ? `${label} must be exactly ${length.trim()} ${kind}.`
@@ -1786,6 +1795,7 @@ export function TemplateCreationWizard() {
                           { key: "none", label: "No restriction" },
                           { key: "letters", label: "Letters only" },
                           { key: "digits", label: "Digits only" },
+                          { key: "number", label: "Number (decimals)" },
                           { key: "alnum", label: "Letters & digits" },
                           { key: "custom", label: "Custom pattern" },
                         ] as const).map((opt) => (
@@ -2631,6 +2641,7 @@ export function TemplateCreationWizard() {
                 { key: "none", label: "No restriction" },
                 { key: "letters", label: "Letters only" },
                 { key: "digits", label: "Digits only" },
+                { key: "number", label: "Number (decimals)" },
                 { key: "alnum", label: "Letters & digits" },
                 { key: "custom", label: "Custom pattern" },
               ] as const).map((opt) => (
@@ -3061,6 +3072,7 @@ export function TemplateCreationWizard() {
                 { key: "none", label: "No restriction" },
                 { key: "letters", label: "Letters only" },
                 { key: "digits", label: "Digits only" },
+                { key: "number", label: "Number (decimals)" },
                 { key: "alnum", label: "Letters & digits" },
                 { key: "custom", label: "Custom pattern" },
               ] as const).map((opt) => (
