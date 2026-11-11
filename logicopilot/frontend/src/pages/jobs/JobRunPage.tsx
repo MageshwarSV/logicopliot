@@ -13,6 +13,7 @@ import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
+import { FloatingPanel } from "../../components/ui/FloatingPanel";
 import * as jobsApi from "../../api/jobs";
 import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
 import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
@@ -4982,6 +4983,10 @@ function ExtractedField({
   }, [draft]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+  // Anchors the comboOptions/asyncSearchPicker dropdown panels below (see FloatingPanel) to
+  // this field's own input wrapper, so they can be portaled out from under this Card's own
+  // overflow-hidden instead of being clipped by it.
+  const boxWrapRef = useRef<HTMLDivElement | null>(null);
   const [comboOpen, setComboOpen] = useState(false);
   const [comboQuery, setComboQuery] = useState("");
   // asyncSearchPicker's own state - a debounced server-side search, same mechanism
@@ -5214,6 +5219,7 @@ function ExtractedField({
         {headerExtra && <div className="ml-auto shrink-0">{headerExtra}</div>}
       </div>
       <div
+        ref={boxWrapRef}
         className="relative"
         // Commits/closes the combo dropdown only once focus leaves this WHOLE box - the main
         // input, the panel's own search box, and every suggestion button all live inside this
@@ -5223,8 +5229,22 @@ function ExtractedField({
         // validation - and re-showed the alert - the moment the operator clicked back in to
         // keep typing, because the search box's autoFocus blurred the main input before a single
         // new character landed, and blur used to commit unconditionally on the input itself.
+        //
+        // The panel itself now renders through FloatingPanel (a portal, so it can escape this
+        // Card's own overflow-hidden instead of being clipped by it - see that component's own
+        // docstring) - its search box and buttons are no longer DOM descendants of this div, so
+        // e.currentTarget.contains() alone no longer sees focus moving into them. The
+        // data-floating-panel-root marker FloatingPanel stamps on its own portaled root covers
+        // that case too.
         onBlur={(e) => {
-          if (!comboOptions || e.currentTarget.contains(e.relatedTarget as Node)) return;
+          if (!comboOptions) return;
+          const related = e.relatedTarget as Node | null;
+          if (
+            e.currentTarget.contains(related) ||
+            (related instanceof Element && related.closest("[data-floating-panel-root]"))
+          ) {
+            return;
+          }
           setComboOpen(false);
           if (comboPickOnly) {
             setDraft(current);
@@ -5356,8 +5376,12 @@ function ExtractedField({
                 never silently do nothing. The actual server search still only fires once the
                 operator has typed enough to search against - this panel just makes clicking
                 in the first place look like it did something. */}
-            {searchOpen && (
-              <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+            <FloatingPanel
+              anchorRef={boxWrapRef}
+              open={searchOpen}
+              className="z-50 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800"
+            >
+              <>
                 {asyncSearchPicker.country !== undefined && !asyncSearchPicker.country.trim() ? (
                   <p className="px-3 py-2 text-slate-400">Pick a country first.</p>
                 ) : searchQuery.trim().length < 2 ? (
@@ -5384,8 +5408,8 @@ function ExtractedField({
                     </button>
                   ))
                 )}
-              </div>
-            )}
+              </>
+            </FloatingPanel>
           </>
         ) : (
           <>
@@ -5438,8 +5462,12 @@ function ExtractedField({
                 This panel's own search box (separate from the field itself) narrows the list
                 shown here instead; picking a suggestion sets the field outright (save path
                 still remembers a genuinely new typed value for next time - correct_field_value). */}
-            {comboOptions && comboOptions.length > 0 && comboOpen && (
-              <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+            <FloatingPanel
+              anchorRef={boxWrapRef}
+              open={!!(comboOptions && comboOptions.length > 0 && comboOpen)}
+              className="z-50 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800"
+            >
+              <>
                 <input
                   type="text"
                   autoFocus
@@ -5449,7 +5477,7 @@ function ExtractedField({
                   className="w-full border-b border-slate-200 px-3 py-2 text-xs focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                 />
                 <div className="max-h-56 overflow-y-auto">
-                  {comboOptions
+                  {(comboOptions ?? [])
                     .filter((opt) => opt.toLowerCase().includes(comboQuery.trim().toLowerCase()))
                     .map((opt) => (
                       <button
@@ -5468,8 +5496,8 @@ function ExtractedField({
                       </button>
                     ))}
                 </div>
-              </div>
-            )}
+              </>
+            </FloatingPanel>
           </>
         );
       })()}
@@ -5583,6 +5611,7 @@ function ReferenceSearchPicker({
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [picking, setPicking] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (query.trim().length < 2) {
@@ -5614,7 +5643,7 @@ function ReferenceSearchPicker({
   if (readOnly) return null;
 
   return (
-    <div className="relative mt-1.5">
+    <div ref={anchorRef} className="relative mt-1.5">
       <input
         type="text"
         value={query}
@@ -5628,15 +5657,24 @@ function ReferenceSearchPicker({
         placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${label}…`}
         className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
       />
-      {open && query.trim().length >= 2 && (
+      {
         // Locked to the input's own width (not wider, as this used to try) - found live: this
         // field sits in the RIGHT column of a 2-column grid, often close to the page's own
         // right edge, so a panel allowed to grow wider than its input could extend past the
         // visible area, leaving a result's text only reachable by scrolling the whole page
         // sideways. whitespace-normal + break-words still wraps a long result onto several
         // lines rather than ever clipping it - the trade this makes on purpose, so the full
-        // text is always visible without scrolling anything.
-        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800">
+        // text is always visible without scrolling anything. Rendered through FloatingPanel (a
+        // portal) so it escapes this field's own Card's overflow-hidden instead of being
+        // clipped by it - found live, under "ERP Reference Mapping": both this panel and ERP
+        // Quotation Name's own search panel sat invisibly cut off the moment results reached
+        // the Card's own bottom edge.
+      }
+      <FloatingPanel
+        anchorRef={anchorRef}
+        open={open && query.trim().length >= 2}
+        className="z-50 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs shadow-lg dark:border-slate-700 dark:bg-slate-800"
+      >
           {loading ? (
             <p className="px-3 py-2 text-slate-400">Searching…</p>
           ) : results.length === 0 ? (
@@ -5665,8 +5703,7 @@ function ReferenceSearchPicker({
               </button>
             ))
           )}
-        </div>
-      )}
+      </FloatingPanel>
     </div>
   );
 }
