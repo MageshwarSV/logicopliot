@@ -792,6 +792,23 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
         return "Completed"
     if job.stage_override:  # a manual override, for a job that has not settled anywhere yet
         return job.stage_override
+    # A FAILED ERP run deliberately leaves job.status on "extracted" so the job can be retried.
+    # Without this, the fall-through below then recomputes the stage from verification findings
+    # and the operator's own recorded progress - and lands on "Data Validation" for any job
+    # that never happened to record an "ERP Submission" event. The operator clicks a job the
+    # list has just badged "Failed", and opens on the validation tab, with no failure banner
+    # and no "Retry & Proceed" button anywhere in sight.
+    #
+    # Answered here rather than by setting stage_override at each of the three places a
+    # failure is recorded: this one place also fixes the jobs that have ALREADY failed (8 on
+    # production as of 2026-11-11, every one of them with stage_override None), needs no data
+    # migration, and cannot drift the way three separate assignments can. The explicit
+    # override above still wins, so the Retry endpoint's own stage_override is unaffected.
+    #
+    # The badge is NOT computed from this: _outer_status returns "Failed" from gk2_status
+    # before it ever looks at the stage, so a failed job still reads "Failed" everywhere.
+    if job.gk2_status == "failed":
+        return "ERP Submission"
     if job.status != "extracted":
         return "Document Capture"
     links = links if links is not None else (

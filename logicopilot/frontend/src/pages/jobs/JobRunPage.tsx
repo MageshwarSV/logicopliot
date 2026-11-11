@@ -631,8 +631,16 @@ function tabFromStage(job: JobDetail, isGk2: boolean): TabKey {
   // freshly-extracted job opens where there is still something to do, not past it. GK2
   // checks their OWN gk2_approved column — GK1 having approved everything already does not
   // mean GK2 has looked at a single document yet.
+  // ...except on a job whose ERP entry has FAILED. Such a job is deliberately left on
+  // status "extracted" so it can be retried, so this check still matches - and it then sent
+  // the operator to Data Extraction on a job the list has just badged "Failed", past the
+  // failure banner and the Retry button entirely. It bit GK2 hardest: documents are rarely
+  // gk2_approved on a job that reached the ERP through a GK2-skipped or GK1-only path, so
+  // for GK2 this matched on every failed job there is (all 8 on production, 2026-11-11).
+  // A failed job's business is the failure; whether a document was ticked comes after that.
   if (
     status === "extracted" &&
+    job.gk2_status !== "failed" &&
     documents.filter((d) => d.is_uploaded).some((d) => !(isGk2 ? d.gk2_approved : d.approved))
   ) {
     return "extraction";
