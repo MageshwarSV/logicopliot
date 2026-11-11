@@ -376,14 +376,27 @@ def _avg(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1) if values else None
 
 
+def _sum_of_averages(*averages: float | None) -> float | None:
+    """Avg. Total TAT = Avg. Extraction + Avg. Review + Avg. ERP Submission (by request,
+    2026-11-11) - NOT each job's own (completed_at - created_at). That span counted every hour
+    a job spent idle between re-extraction rounds or waiting for a reviewer as "processing
+    time", which could dwarf the three stage averages it sat beside (a single job re-extracted
+    three times over 11 days inflated a 3-job average to 97 hours, next to stage averages of
+    a few hours each) - confusing next to numbers that only ever measure a job's LAST pass.
+    None only when every stage average is itself None (no data at all); a stage with no data
+    contributes 0 to the sum rather than making the whole total None."""
+    present = [a for a in averages if a is not None]
+    return round(sum(present), 1) if present else None
+
+
 def compute_processing_time_metrics(
     db: Session, tenant_id: str, start: Date, end: Date, modes: list[str] | None = None,
 ) -> ProcessingTimeMetrics:
     """Scoped to jobs COMPLETED in this window (_completed_jobs_query), same population as Data
-    Accuracy/Workforce Productivity. avg_total_tat_minutes is the span from creation to
-    completion for each of them. The three stage averages (extraction/review/ERP submission)
-    don't require every stage to be present - _job_stage_durations already returns None for a
-    stage a job hasn't reached, which _avg() silently skips.
+    Accuracy/Workforce Productivity. avg_total_tat_minutes is the SUM of the three stage
+    averages (see _sum_of_averages), not each job's own creation-to-completion span. The three
+    stage averages don't require every stage to be present - _job_stage_durations already
+    returns None for a stage a job hasn't reached, which _avg() silently skips.
     """
     start_utc, end_utc = range_bounds(start, end)
     jobs = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
@@ -393,7 +406,9 @@ def compute_processing_time_metrics(
         out.trend = [TrendPoint(day=start + timedelta(days=i)) for i in range((end - start).days + 1)]
         return out
 
-    tats = [(j.completed_at - j.created_at).total_seconds() / 60 for j in jobs]
+    # One pass per job, kept per-day too (by_day) so the trend chart uses the identical
+    # definition as the headline figure, not a different one that happens to share its label.
+    by_day: dict[Date, list[tuple[float | None, float | None, float | None]]] = {}
     extractions, reviews, erps = [], [], []
     for j in jobs:
         ext, rev, erp = _job_stage_durations(j)
@@ -403,22 +418,25 @@ def compute_processing_time_metrics(
             reviews.append(rev)
         if erp is not None:
             erps.append(erp)
+        local_day = (j.completed_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
+        by_day.setdefault(local_day, []).append((ext, rev, erp))
 
-    out.avg_total_tat_minutes = _avg(tats)
     out.avg_extraction_minutes = _avg(extractions)
     out.avg_review_minutes = _avg(reviews)
     out.avg_erp_submission_minutes = _avg(erps)
+    out.avg_total_tat_minutes = _sum_of_averages(
+        out.avg_extraction_minutes, out.avg_review_minutes, out.avg_erp_submission_minutes,
+    )
     out.by_job = _job_timings(db, jobs)
 
     # Bucketed by COMPLETED day, matching total_jobs' own scoping.
-    by_day: dict[Date, list[float]] = {}
-    for j in jobs:
-        local_day = (j.completed_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
-        by_day.setdefault(local_day, []).append((j.completed_at - j.created_at).total_seconds() / 60)
-
     cursor = start
     while cursor <= end:
-        out.trend.append(TrendPoint(day=cursor, avg_total_tat_minutes=_avg(by_day.get(cursor, []))))
+        day_rows = by_day.get(cursor, [])
+        day_ext = _avg([r[0] for r in day_rows if r[0] is not None])
+        day_rev = _avg([r[1] for r in day_rows if r[1] is not None])
+        day_erp = _avg([r[2] for r in day_rows if r[2] is not None])
+        out.trend.append(TrendPoint(day=cursor, avg_total_tat_minutes=_sum_of_averages(day_ext, day_rev, day_erp)))
         cursor += timedelta(days=1)
 
     return out
