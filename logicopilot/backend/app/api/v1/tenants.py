@@ -46,6 +46,7 @@ from app.schemas.tenant import (
     JobAccuracyOut,
     JobBillingPageOut,
     JobBillingRowOut,
+    JobTimingOut,
     MarkInvoicePaid,
     ProcessingTimeDashboardOut,
     ProcessingTimeTrendPointOut,
@@ -660,6 +661,18 @@ def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tupl
     return start, end
 
 
+def _job_timings_out(rows: list) -> list[JobTimingOut]:
+    return [
+        JobTimingOut(
+            job_id=r.job_id, reference=r.reference, mode=r.mode,
+            completed_at=r.completed_at.isoformat() if r.completed_at else None,
+            extraction_minutes=r.extraction_minutes, review_minutes=r.review_minutes,
+            erp_submission_minutes=r.erp_submission_minutes,
+        )
+        for r in rows
+    ]
+
+
 def _resolve_dashboard_modes(mode: str | None) -> list[str] | None:
     if not mode:
         return None
@@ -738,6 +751,7 @@ def get_processing_time_dashboard(
         avg_review_minutes=m.avg_review_minutes,
         avg_erp_submission_minutes=m.avg_erp_submission_minutes,
         trend=[ProcessingTimeTrendPointOut(day=p.day.isoformat(), avg_total_tat_minutes=p.avg_total_tat_minutes) for p in m.trend],
+        by_job=_job_timings_out(m.by_job),
     )
 
 
@@ -772,6 +786,7 @@ def get_workforce_dashboard(
             )
             for r in m.by_employee
         ],
+        by_job=_job_timings_out(m.by_job),
     )
 
 

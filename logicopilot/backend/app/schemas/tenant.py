@@ -238,6 +238,16 @@ class ProcessingTimeTrendPointOut(BaseModel):
     avg_total_tat_minutes: float | None
 
 
+class JobTimingOut(BaseModel):
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: str | None
+    extraction_minutes: float | None
+    review_minutes: float | None
+    erp_submission_minutes: float | None
+
+
 class ProcessingTimeDashboardOut(BaseModel):
     total_jobs: int
     avg_total_tat_minutes: float | None
@@ -245,6 +255,7 @@ class ProcessingTimeDashboardOut(BaseModel):
     avg_review_minutes: float | None
     avg_erp_submission_minutes: float | None
     trend: list[ProcessingTimeTrendPointOut]
+    by_job: list[JobTimingOut]
 
 
 class EmployeeReviewRowOut(BaseModel):
@@ -262,6 +273,7 @@ class WorkforceDashboardOut(BaseModel):
     human_review_hours: float
     jobs_with_recorded_review: int
     by_employee: list[EmployeeReviewRowOut]
+    by_job: list[JobTimingOut]
 
 
 class InvoiceOut(BaseModel):

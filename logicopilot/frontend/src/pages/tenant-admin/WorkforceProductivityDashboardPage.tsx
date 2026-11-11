@@ -4,6 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { UsersIcon, ClockIcon, DocumentIcon } from "../../components/ui/icons";
 import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { JobTimingTable } from "../../components/tenant-admin/JobTimingTable";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { WorkforceDashboard } from "../../api/tenants";
@@ -127,6 +128,8 @@ export function WorkforceProductivityDashboardPage() {
           days/week) = {data.employee_requirement_fte ?? "—"} FTE.
         </Card>
       )}
+
+      <JobTimingTable jobs={data?.by_job ?? []} loading={loading} />
 
       <button
         type="button"

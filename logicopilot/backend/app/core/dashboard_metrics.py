@@ -273,6 +273,47 @@ def compute_accuracy_metrics(
 # ---------------------------------------------------------------------------
 
 @dataclass
+class JobTiming:
+    """One completed job's own extraction/review/ERP-entry durations - the "See More Details"
+    drill-down row shared by Job Processing Time and Workforce Productivity (same three stages
+    either page's aggregate cards already average), so a slow tenant-wide number can be traced
+    to the specific job(s) behind it."""
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: datetime | None
+    extraction_minutes: float | None
+    review_minutes: float | None
+    erp_submission_minutes: float | None
+
+
+def _group_modes(db: Session, jobs: list[Job]) -> dict[str, str | None]:
+    """group_id -> mode for exactly the groups these jobs use - one query, not one per job."""
+    group_ids = {j.group_id for j in jobs}
+    if not group_ids:
+        return {}
+    return {
+        g.id: g.mode
+        for g in db.query(TemplateGroup).filter(TemplateGroup.id.in_(group_ids)).all()
+    }
+
+
+def _job_timings(db: Session, jobs: list[Job]) -> list[JobTiming]:
+    modes = _group_modes(db, jobs)
+    rows = [
+        JobTiming(
+            job_id=j.id, reference=j.reference, mode=modes.get(j.group_id),
+            completed_at=j.completed_at,
+            extraction_minutes=ext, review_minutes=rev, erp_submission_minutes=erp,
+        )
+        for j in jobs
+        for ext, rev, erp in [_job_stage_durations(j)]
+    ]
+    rows.sort(key=lambda r: r.completed_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return rows
+
+
+@dataclass
 class ProcessingTimeMetrics:
     total_jobs: int = 0
     avg_total_tat_minutes: float | None = None
@@ -280,6 +321,7 @@ class ProcessingTimeMetrics:
     avg_review_minutes: float | None = None
     avg_erp_submission_minutes: float | None = None
     trend: list[TrendPoint] = field(default_factory=list)
+    by_job: list[JobTiming] = field(default_factory=list)
 
 
 def _extraction_end(job: Job) -> datetime | None:
@@ -366,6 +408,7 @@ def compute_processing_time_metrics(
     out.avg_extraction_minutes = _avg(extractions)
     out.avg_review_minutes = _avg(reviews)
     out.avg_erp_submission_minutes = _avg(erps)
+    out.by_job = _job_timings(db, jobs)
 
     # Bucketed by COMPLETED day, matching total_jobs' own scoping.
     by_day: dict[Date, list[float]] = {}
@@ -418,6 +461,10 @@ class WorkforceMetrics:
     # shown on the page so a low number here explains a small human_review_hours figure, same
     # spirit as Job Processing Time's own "not every job has this stage" note.
     jobs_with_recorded_review: int = 0
+    # Same per-job extraction/review/ERP-entry breakdown as Job Processing Time's own by_job -
+    # shared JobTiming shape, by request, so both "See More Details" pages show the identical
+    # three stage times per job.
+    by_job: list[JobTiming] = field(default_factory=list)
 
 
 def compute_workforce_metrics(
@@ -511,4 +558,5 @@ def compute_workforce_metrics(
         rows.sort(key=lambda r: -r.review_hours)
         out.by_employee = rows
 
+    out.by_job = _job_timings(db, jobs)
     return out

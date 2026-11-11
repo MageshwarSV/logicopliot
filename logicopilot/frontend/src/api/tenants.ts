@@ -380,6 +380,18 @@ export interface AccuracyDashboard {
   by_job: JobAccuracy[];
 }
 
+/** One completed job's own extraction/review/ERP-entry durations - shared drill-down row shape
+ *  for both Job Processing Time and Workforce Productivity's "Jobs" table. */
+export interface JobTiming {
+  job_id: string;
+  reference: string;
+  mode: string | null;
+  completed_at: string | null;
+  extraction_minutes: number | null;
+  review_minutes: number | null;
+  erp_submission_minutes: number | null;
+}
+
 export interface ProcessingTimeDashboard {
   /** Jobs completed in range - shown as "Total Completed Jobs". */
   total_jobs: number;
@@ -388,6 +400,7 @@ export interface ProcessingTimeDashboard {
   avg_review_minutes: number | null;
   avg_erp_submission_minutes: number | null;
   trend: DashboardTrendPoint[];
+  by_job: JobTiming[];
 }
 
 /** Executive Dashboard - Data Accuracy page. Scoped to completed jobs only (see
@@ -438,6 +451,7 @@ export interface WorkforceDashboard {
   human_review_hours: number;
   jobs_with_recorded_review: number;
   by_employee: EmployeeReviewRow[];
+  by_job: JobTiming[];
 }
 
 /** Executive Dashboard - Workforce Productivity page. Only covers jobs with a real recorded

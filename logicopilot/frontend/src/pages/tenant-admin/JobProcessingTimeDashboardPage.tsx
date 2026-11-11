@@ -5,6 +5,7 @@ import { Card, StatCard } from "../../components/ui/Card";
 import { ClockIcon, DocumentIcon, ArrowRightIcon } from "../../components/ui/icons";
 import { LineChart } from "../../components/charts/LineChart";
 import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { JobTimingTable } from "../../components/tenant-admin/JobTimingTable";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { ProcessingTimeDashboard } from "../../api/tenants";
@@ -137,6 +138,8 @@ export function JobProcessingTimeDashboardPage() {
           )}
         </Card>
       </div>
+
+      <JobTimingTable jobs={data?.by_job ?? []} loading={loading} />
 
       <button
         type="button"
