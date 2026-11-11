@@ -43,7 +43,7 @@ function ExecutiveOverview() {
           <p className="text-sm text-slate-500 dark:text-slate-400">Key performance overview</p>
         </div>
       </div>
-      <DashboardFilterBar value={range} onChange={setRange} />
+      <DashboardFilterBar value={range} onChange={setRange} tenantId={user?.tenant_id ?? ""} />
 
       <div className="flex flex-col gap-4">
         <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">

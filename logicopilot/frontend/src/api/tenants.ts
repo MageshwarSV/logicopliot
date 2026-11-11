@@ -402,6 +402,15 @@ export async function getAccuracyDashboard(
   return response.data;
 }
 
+/** This tenant's own first-ever completed job's date, in YYYY-MM-DD - what the Executive
+ *  Dashboard's "All time" quick filter actually means. Null when the tenant has none yet. */
+export async function getEarliestCompletedJobDate(tenantId: string): Promise<string | null> {
+  const response = await apiClient.get<{ date: string | null }>(
+    `/tenants/${tenantId}/dashboard/earliest-completed-job`,
+  );
+  return response.data.date;
+}
+
 /** Executive Dashboard - Job Processing Time page. */
 export async function getProcessingTimeDashboard(
   tenantId: string,

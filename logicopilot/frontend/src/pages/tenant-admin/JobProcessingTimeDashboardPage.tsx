@@ -60,7 +60,7 @@ export function JobProcessingTimeDashboardPage() {
       title="Job Processing Time"
       subtitle="End-to-end job processing time (Pre-Alert to ERP Submission), for jobs completed in this range."
     >
-      <DashboardFilterBar value={range} onChange={setRange} />
+      <DashboardFilterBar value={range} onChange={setRange} tenantId={user?.tenant_id ?? ""} />
 
       {error && <p className="mb-4 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
 

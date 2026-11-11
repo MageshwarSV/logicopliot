@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import * as onboardingApi from "../../api/onboarding";
+import * as tenantsApi from "../../api/tenants";
 
 export interface DashboardRange {
   /** YYYY-MM-DD, inclusive. */
@@ -26,8 +27,15 @@ type QuickKey = "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month"
  *  as the Jobs list's own Quick filter, so the two screens can never show different windows
  *  for what reads as the same label. "All time" is a real, explicit (not omitted) range: the
  *  dashboard endpoints default an omitted date_from/date_to to "this month so far", so leaving
- *  the params out would silently turn "All time" back into "This month". */
-function rangeFor(key: QuickKey): { from: string; to: string } {
+ *  the params out would silently turn "All time" back into "This month".
+ *
+ *  `allFrom` is this tenant's own first-ever completed job's date (fetched once, see
+ *  earliestDate below) - "All time" means exactly that, not an arbitrary fixed floor. Falls
+ *  back to today (an empty, one-day window) only before that fetch has resolved; the backend's
+ *  own 366-day range cap means a guessed floor far in the past fails outright instead of
+ *  quietly showing the wrong window, so "not loaded yet" is the safer default to render while
+ *  waiting, never a guess. */
+function rangeFor(key: QuickKey, allFrom: string | null): { from: string; to: string } {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const back = (days: number) => {
@@ -52,9 +60,7 @@ function rangeFor(key: QuickKey): { from: string; to: string } {
         to: localIso(new Date(today.getFullYear(), today.getMonth(), 0)),
       };
     case "all":
-      // An explicit, very early floor - well before this product (or this tenant) existed -
-      // rather than blank dates, which the dashboard endpoints read as "This month" instead.
-      return { from: "2000-01-01", to: localIso(today) };
+      return { from: allFrom ?? localIso(today), to: localIso(today) };
     default:
       return { from: "", to: "" };
   }
@@ -63,9 +69,9 @@ function rangeFor(key: QuickKey): { from: string; to: string } {
 /** Which named key, if any, the CURRENT dateFrom/dateTo matches - so the dropdown reopens
  *  showing the right label instead of always resetting to "custom" after a parent re-renders
  *  with a restored range. */
-function quickKeyFor(dateFrom: string, dateTo: string): QuickKey {
+function quickKeyFor(dateFrom: string, dateTo: string, allFrom: string | null): QuickKey {
   for (const key of ["today", "yesterday", "7", "30", "this_month", "prev_month", "all"] as const) {
-    const r = rangeFor(key);
+    const r = rangeFor(key, allFrom);
     if (r.from === dateFrom && r.to === dateTo) return key;
   }
   return "custom";
@@ -79,13 +85,16 @@ function quickKeyFor(dateFrom: string, dateTo: string): QuickKey {
  *  global MODES list, since a tenant with only a Sea Import template has no reason to see Road
  *  Export/Train Import/etc. in its own dashboard filter. */
 export function DashboardFilterBar({
-  value, onChange,
+  value, onChange, tenantId,
 }: {
   value: DashboardRange;
   onChange: (next: DashboardRange) => void;
+  /** Fetches this tenant's own first-ever completed job's date once, so "All time" means
+   *  exactly that instead of an arbitrary fixed floor. */
+  tenantId: string;
 }) {
-  const quick = quickKeyFor(value.dateFrom, value.dateTo);
   const [modes, setModes] = useState<string[]>([]);
+  const [allFrom, setAllFrom] = useState<string | null>(null);
 
   useEffect(() => {
     onboardingApi
@@ -97,6 +106,13 @@ export function DashboardFilterBar({
       })
       .catch(() => setModes([]));
   }, []);
+
+  useEffect(() => {
+    if (!tenantId) return;
+    tenantsApi.getEarliestCompletedJobDate(tenantId).then(setAllFrom).catch(() => setAllFrom(null));
+  }, [tenantId]);
+
+  const quick = quickKeyFor(value.dateFrom, value.dateTo, allFrom);
 
   const fieldClass =
     "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200";
@@ -112,7 +128,7 @@ export function DashboardFilterBar({
             // Fills From/To instead of blanking them, so the admin can SEE the window being
             // applied and can then nudge either end by hand without first working out what
             // "Last 30 days" started on.
-            const { from, to } = rangeFor(e.target.value as QuickKey);
+            const { from, to } = rangeFor(e.target.value as QuickKey, allFrom);
             onChange({ ...value, dateFrom: from, dateTo: to });
           }}
         >
@@ -165,6 +181,6 @@ export function DashboardFilterBar({
 
 /** This calendar month so far - matches the Billing & Usage page's own default. */
 export function defaultDashboardRange(): DashboardRange {
-  const { from, to } = rangeFor("this_month");
+  const { from, to } = rangeFor("this_month", null);
   return { dateFrom: from, dateTo: to, mode: "" };
 }

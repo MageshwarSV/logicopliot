@@ -42,7 +42,7 @@ export function DataAccuracyDashboardPage() {
       title="Data Accuracy"
       subtitle="Document extraction accuracy and manual corrections, for jobs completed in this range."
     >
-      <DashboardFilterBar value={range} onChange={setRange} />
+      <DashboardFilterBar value={range} onChange={setRange} tenantId={user?.tenant_id ?? ""} />
 
       {error && <p className="mb-4 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
 

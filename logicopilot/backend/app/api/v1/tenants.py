@@ -29,6 +29,7 @@ from app.core.openai_pool import (
 from app.core.security import hash_password
 from app.core.system_settings import InvalidOpenAIKey
 from app.models.invoice import Invoice
+from app.models.job import Job
 from app.models.openai_api_key import OpenAIApiKey
 from app.models.tenant import Tenant
 from app.models.tenant_billing_config import TenantBillingConfig
@@ -622,6 +623,27 @@ def export_billing_jobs(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{tenant_id}/dashboard/earliest-completed-job")
+def get_earliest_completed_job_date(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """The date of this tenant's own first-ever COMPLETED job - what the Executive Dashboard's
+    "All time" quick filter actually means, instead of an arbitrary fixed floor. Same read-access
+    rule as the dashboards themselves. None when the tenant has no completed job yet."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    earliest = (
+        db.query(Job.completed_at)
+        .filter(Job.tenant_id == tenant_id, Job.status == "completed", Job.completed_at.isnot(None))
+        .order_by(Job.completed_at.asc())
+        .first()
+    )
+    return {"date": earliest[0].date().isoformat() if earliest else None}
 
 
 def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
