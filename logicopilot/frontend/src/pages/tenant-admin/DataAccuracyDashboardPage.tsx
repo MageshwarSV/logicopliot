@@ -148,6 +148,66 @@ export function DataAccuracyDashboardPage() {
         </Card>
       </div>
 
+      <Card className="mt-4 p-5">
+        <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Jobs</h2>
+        {loading ? (
+          <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
+        ) : !data || data.by_job.length === 0 ? (
+          <p className="py-8 text-center text-sm text-slate-400">No completed jobs in this range.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
+                  <th className="pb-2 font-medium">Job</th>
+                  <th className="pb-2 font-medium">Shipment Type</th>
+                  <th className="pb-2 font-medium">Completed</th>
+                  <th className="pb-2 font-medium">Extracted</th>
+                  <th className="pb-2 font-medium">Edited</th>
+                  <th className="pb-2 font-medium">Accuracy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.by_job.map((row) => (
+                  <tr key={row.job_id} className="border-b border-slate-50 last:border-0 dark:border-slate-800/60">
+                    <td className="py-2">
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/jobs/${row.job_id}`)}
+                        className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                      >
+                        {row.reference}
+                      </button>
+                    </td>
+                    <td className="py-2 text-slate-500 dark:text-slate-400">{row.mode ?? "—"}</td>
+                    <td className="py-2 text-slate-500 dark:text-slate-400">
+                      {row.completed_at ? fmtDay(row.completed_at.slice(0, 10)) : "—"}
+                    </td>
+                    <td className="py-2 text-slate-700 dark:text-slate-200">{row.fields_extracted.toLocaleString()}</td>
+                    <td className="py-2 text-slate-700 dark:text-slate-200">{row.fields_edited.toLocaleString()}</td>
+                    <td className="py-2">
+                      <span
+                        className={
+                          row.accuracy_pct == null
+                            ? "text-slate-400"
+                            : row.accuracy_pct >= 85
+                              ? "font-medium text-emerald-600 dark:text-emerald-400"
+                              : row.accuracy_pct >= 75
+                                ? "font-medium text-amber-600 dark:text-amber-400"
+                                : "font-medium text-rose-600 dark:text-rose-400"
+                        }
+                      >
+                        {row.accuracy_pct != null ? `${row.accuracy_pct}%` : "—"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <button
         type="button"
         onClick={() => navigate("/tenant-admin")}

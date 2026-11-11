@@ -355,6 +355,16 @@ export interface DashboardTrendPoint {
   avg_total_tat_minutes?: number | null;
 }
 
+export interface JobAccuracy {
+  job_id: string;
+  reference: string;
+  mode: string | null;
+  completed_at: string | null;
+  fields_extracted: number;
+  fields_edited: number;
+  accuracy_pct: number | null;
+}
+
 export interface AccuracyDashboard {
   documents_processed: number;
   fields_extracted_by_ai: number;
@@ -365,6 +375,9 @@ export interface AccuracyDashboard {
   jobs_completed: number;
   by_document_type: DocTypeAccuracy[];
   trend: DashboardTrendPoint[];
+  /** One row per job in the window, newest-completed first - the drill-down table under the
+   *  aggregate cards. */
+  by_job: JobAccuracy[];
 }
 
 export interface ProcessingTimeDashboard {

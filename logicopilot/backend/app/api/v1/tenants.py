@@ -42,6 +42,7 @@ from app.schemas.tenant import (
     DocTypeAccuracyOut,
     EmployeeReviewRowOut,
     InvoiceOut,
+    JobAccuracyOut,
     JobBillingPageOut,
     JobBillingRowOut,
     MarkInvoicePaid,
@@ -679,6 +680,15 @@ def get_accuracy_dashboard(
             for d in m.by_document_type
         ],
         trend=[AccuracyTrendPointOut(day=p.day.isoformat(), accuracy_pct=p.accuracy_pct) for p in m.trend],
+        by_job=[
+            JobAccuracyOut(
+                job_id=j.job_id, reference=j.reference, mode=j.mode,
+                completed_at=j.completed_at.isoformat() if j.completed_at else None,
+                fields_extracted=j.fields_extracted, fields_edited=j.fields_edited,
+                accuracy_pct=j.accuracy_pct,
+            )
+            for j in m.by_job
+        ],
     )
 
 

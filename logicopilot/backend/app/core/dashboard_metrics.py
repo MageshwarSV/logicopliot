@@ -97,6 +97,17 @@ class TrendPoint:
 
 
 @dataclass
+class JobAccuracy:
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: datetime | None
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
+@dataclass
 class AccuracyMetrics:
     documents_processed: int = 0
     fields_extracted_by_ai: int = 0
@@ -108,6 +119,10 @@ class AccuracyMetrics:
     jobs_completed: int = 0
     by_document_type: list[DocTypeAccuracy] = field(default_factory=list)
     trend: list[TrendPoint] = field(default_factory=list)
+    # One row per job in the window, newest-completed first - the "See More Details" drill-down
+    # table under the aggregate cards, so an admin can see WHICH job(s) a low accuracy number
+    # actually came from instead of only the tenant-wide total.
+    by_job: list[JobAccuracy] = field(default_factory=list)
 
 
 def _accuracy_pct(extracted: int, edited: int) -> float | None:
@@ -155,6 +170,37 @@ def compute_accuracy_metrics(
         .filter(JobFieldValue.extracted_value.isnot(None))
         .filter(FieldMark.ask_operator.is_(False))
         .all()
+    )
+
+    # Same rows, grouped by job instead of by document type - the per-job drill-down table.
+    totals_by_job: dict[str, list[int]] = {}
+    for r in rows:
+        bucket = totals_by_job.setdefault(r.job_id, [0, 0])
+        bucket[0] += 1
+        if r.corrected_value is not None and r.corrected_value != r.extracted_value:
+            bucket[1] += 1
+    jobs_by_id = {
+        job.id: (job, mode)
+        for job, mode in (
+            db.query(Job, TemplateGroup.mode)
+            .join(TemplateGroup, Job.group_id == TemplateGroup.id)
+            .filter(Job.id.in_(job_ids))
+            .all()
+        )
+    } if job_ids else {}
+    out.by_job = sorted(
+        (
+            JobAccuracy(
+                job_id=job_id, reference=job.reference, mode=mode,
+                completed_at=job.completed_at,
+                fields_extracted=totals_by_job.get(job_id, [0, 0])[0],
+                fields_edited=totals_by_job.get(job_id, [0, 0])[1],
+                accuracy_pct=_accuracy_pct(*totals_by_job.get(job_id, [0, 0])),
+            )
+            for job_id, (job, mode) in jobs_by_id.items()
+        ),
+        key=lambda r: r.completed_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
     )
 
     doc_ids = {r.template_document_id for r in rows if r.template_document_id}

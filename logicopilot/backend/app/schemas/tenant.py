@@ -212,6 +212,16 @@ class AccuracyTrendPointOut(BaseModel):
     accuracy_pct: float | None
 
 
+class JobAccuracyOut(BaseModel):
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: str | None
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
 class AccuracyDashboardOut(BaseModel):
     documents_processed: int
     fields_extracted_by_ai: int
@@ -220,6 +230,7 @@ class AccuracyDashboardOut(BaseModel):
     jobs_completed: int
     by_document_type: list[DocTypeAccuracyOut]
     trend: list[AccuracyTrendPointOut]
+    by_job: list[JobAccuracyOut]
 
 
 class ProcessingTimeTrendPointOut(BaseModel):
