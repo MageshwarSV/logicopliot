@@ -7713,6 +7713,7 @@ function ExtractionReview({
         groupId={job.group_id}
         defaultConsignee={jobConsignee}
         jobId={jobId}
+        productCount={lineRows.length}
         onSaved={() => { void reload(); }}
       />
       <ProductQuantityUnitsModal
