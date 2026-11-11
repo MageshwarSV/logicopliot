@@ -212,6 +212,16 @@ class AccuracyTrendPointOut(BaseModel):
     accuracy_pct: float | None
 
 
+class JobAccuracyOut(BaseModel):
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: str | None
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
 class AccuracyDashboardOut(BaseModel):
     documents_processed: int
     fields_extracted_by_ai: int
@@ -220,11 +230,22 @@ class AccuracyDashboardOut(BaseModel):
     jobs_completed: int
     by_document_type: list[DocTypeAccuracyOut]
     trend: list[AccuracyTrendPointOut]
+    by_job: list[JobAccuracyOut]
 
 
 class ProcessingTimeTrendPointOut(BaseModel):
     day: str
     avg_total_tat_minutes: float | None
+
+
+class JobTimingOut(BaseModel):
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: str | None
+    extraction_minutes: float | None
+    review_minutes: float | None
+    erp_submission_minutes: float | None
 
 
 class ProcessingTimeDashboardOut(BaseModel):
@@ -234,6 +255,7 @@ class ProcessingTimeDashboardOut(BaseModel):
     avg_review_minutes: float | None
     avg_erp_submission_minutes: float | None
     trend: list[ProcessingTimeTrendPointOut]
+    by_job: list[JobTimingOut]
 
 
 class EmployeeReviewRowOut(BaseModel):
@@ -251,6 +273,7 @@ class WorkforceDashboardOut(BaseModel):
     human_review_hours: float
     jobs_with_recorded_review: int
     by_employee: list[EmployeeReviewRowOut]
+    by_job: list[JobTimingOut]
 
 
 class InvoiceOut(BaseModel):

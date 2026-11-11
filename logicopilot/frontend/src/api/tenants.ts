@@ -355,6 +355,16 @@ export interface DashboardTrendPoint {
   avg_total_tat_minutes?: number | null;
 }
 
+export interface JobAccuracy {
+  job_id: string;
+  reference: string;
+  mode: string | null;
+  completed_at: string | null;
+  fields_extracted: number;
+  fields_edited: number;
+  accuracy_pct: number | null;
+}
+
 export interface AccuracyDashboard {
   documents_processed: number;
   fields_extracted_by_ai: number;
@@ -365,6 +375,21 @@ export interface AccuracyDashboard {
   jobs_completed: number;
   by_document_type: DocTypeAccuracy[];
   trend: DashboardTrendPoint[];
+  /** One row per job in the window, newest-completed first - the drill-down table under the
+   *  aggregate cards. */
+  by_job: JobAccuracy[];
+}
+
+/** One completed job's own extraction/review/ERP-entry durations - shared drill-down row shape
+ *  for both Job Processing Time and Workforce Productivity's "Jobs" table. */
+export interface JobTiming {
+  job_id: string;
+  reference: string;
+  mode: string | null;
+  completed_at: string | null;
+  extraction_minutes: number | null;
+  review_minutes: number | null;
+  erp_submission_minutes: number | null;
 }
 
 export interface ProcessingTimeDashboard {
@@ -375,6 +400,7 @@ export interface ProcessingTimeDashboard {
   avg_review_minutes: number | null;
   avg_erp_submission_minutes: number | null;
   trend: DashboardTrendPoint[];
+  by_job: JobTiming[];
 }
 
 /** Executive Dashboard - Data Accuracy page. Scoped to completed jobs only (see
@@ -387,6 +413,15 @@ export async function getAccuracyDashboard(
     params: dashboardParams(filters),
   });
   return response.data;
+}
+
+/** This tenant's own first-ever completed job's date, in YYYY-MM-DD - what the Executive
+ *  Dashboard's "All time" quick filter actually means. Null when the tenant has none yet. */
+export async function getEarliestCompletedJobDate(tenantId: string): Promise<string | null> {
+  const response = await apiClient.get<{ date: string | null }>(
+    `/tenants/${tenantId}/dashboard/earliest-completed-job`,
+  );
+  return response.data.date;
 }
 
 /** Executive Dashboard - Job Processing Time page. */
@@ -416,6 +451,7 @@ export interface WorkforceDashboard {
   human_review_hours: number;
   jobs_with_recorded_review: number;
   by_employee: EmployeeReviewRow[];
+  by_job: JobTiming[];
 }
 
 /** Executive Dashboard - Workforce Productivity page. Only covers jobs with a real recorded

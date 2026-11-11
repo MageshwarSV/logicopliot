@@ -97,6 +97,17 @@ class TrendPoint:
 
 
 @dataclass
+class JobAccuracy:
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: datetime | None
+    fields_extracted: int
+    fields_edited: int
+    accuracy_pct: float | None
+
+
+@dataclass
 class AccuracyMetrics:
     documents_processed: int = 0
     fields_extracted_by_ai: int = 0
@@ -108,6 +119,10 @@ class AccuracyMetrics:
     jobs_completed: int = 0
     by_document_type: list[DocTypeAccuracy] = field(default_factory=list)
     trend: list[TrendPoint] = field(default_factory=list)
+    # One row per job in the window, newest-completed first - the "See More Details" drill-down
+    # table under the aggregate cards, so an admin can see WHICH job(s) a low accuracy number
+    # actually came from instead of only the tenant-wide total.
+    by_job: list[JobAccuracy] = field(default_factory=list)
 
 
 def _accuracy_pct(extracted: int, edited: int) -> float | None:
@@ -155,6 +170,37 @@ def compute_accuracy_metrics(
         .filter(JobFieldValue.extracted_value.isnot(None))
         .filter(FieldMark.ask_operator.is_(False))
         .all()
+    )
+
+    # Same rows, grouped by job instead of by document type - the per-job drill-down table.
+    totals_by_job: dict[str, list[int]] = {}
+    for r in rows:
+        bucket = totals_by_job.setdefault(r.job_id, [0, 0])
+        bucket[0] += 1
+        if r.corrected_value is not None and r.corrected_value != r.extracted_value:
+            bucket[1] += 1
+    jobs_by_id = {
+        job.id: (job, mode)
+        for job, mode in (
+            db.query(Job, TemplateGroup.mode)
+            .join(TemplateGroup, Job.group_id == TemplateGroup.id)
+            .filter(Job.id.in_(job_ids))
+            .all()
+        )
+    } if job_ids else {}
+    out.by_job = sorted(
+        (
+            JobAccuracy(
+                job_id=job_id, reference=job.reference, mode=mode,
+                completed_at=job.completed_at,
+                fields_extracted=totals_by_job.get(job_id, [0, 0])[0],
+                fields_edited=totals_by_job.get(job_id, [0, 0])[1],
+                accuracy_pct=_accuracy_pct(*totals_by_job.get(job_id, [0, 0])),
+            )
+            for job_id, (job, mode) in jobs_by_id.items()
+        ),
+        key=lambda r: r.completed_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
     )
 
     doc_ids = {r.template_document_id for r in rows if r.template_document_id}
@@ -227,6 +273,47 @@ def compute_accuracy_metrics(
 # ---------------------------------------------------------------------------
 
 @dataclass
+class JobTiming:
+    """One completed job's own extraction/review/ERP-entry durations - the "See More Details"
+    drill-down row shared by Job Processing Time and Workforce Productivity (same three stages
+    either page's aggregate cards already average), so a slow tenant-wide number can be traced
+    to the specific job(s) behind it."""
+    job_id: str
+    reference: str
+    mode: str | None
+    completed_at: datetime | None
+    extraction_minutes: float | None
+    review_minutes: float | None
+    erp_submission_minutes: float | None
+
+
+def _group_modes(db: Session, jobs: list[Job]) -> dict[str, str | None]:
+    """group_id -> mode for exactly the groups these jobs use - one query, not one per job."""
+    group_ids = {j.group_id for j in jobs}
+    if not group_ids:
+        return {}
+    return {
+        g.id: g.mode
+        for g in db.query(TemplateGroup).filter(TemplateGroup.id.in_(group_ids)).all()
+    }
+
+
+def _job_timings(db: Session, jobs: list[Job]) -> list[JobTiming]:
+    modes = _group_modes(db, jobs)
+    rows = [
+        JobTiming(
+            job_id=j.id, reference=j.reference, mode=modes.get(j.group_id),
+            completed_at=j.completed_at,
+            extraction_minutes=ext, review_minutes=rev, erp_submission_minutes=erp,
+        )
+        for j in jobs
+        for ext, rev, erp in [_job_stage_durations(j)]
+    ]
+    rows.sort(key=lambda r: r.completed_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return rows
+
+
+@dataclass
 class ProcessingTimeMetrics:
     total_jobs: int = 0
     avg_total_tat_minutes: float | None = None
@@ -234,6 +321,7 @@ class ProcessingTimeMetrics:
     avg_review_minutes: float | None = None
     avg_erp_submission_minutes: float | None = None
     trend: list[TrendPoint] = field(default_factory=list)
+    by_job: list[JobTiming] = field(default_factory=list)
 
 
 def _extraction_end(job: Job) -> datetime | None:
@@ -288,14 +376,27 @@ def _avg(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1) if values else None
 
 
+def _sum_of_averages(*averages: float | None) -> float | None:
+    """Avg. Total TAT = Avg. Extraction + Avg. Review + Avg. ERP Submission (by request,
+    2026-11-11) - NOT each job's own (completed_at - created_at). That span counted every hour
+    a job spent idle between re-extraction rounds or waiting for a reviewer as "processing
+    time", which could dwarf the three stage averages it sat beside (a single job re-extracted
+    three times over 11 days inflated a 3-job average to 97 hours, next to stage averages of
+    a few hours each) - confusing next to numbers that only ever measure a job's LAST pass.
+    None only when every stage average is itself None (no data at all); a stage with no data
+    contributes 0 to the sum rather than making the whole total None."""
+    present = [a for a in averages if a is not None]
+    return round(sum(present), 1) if present else None
+
+
 def compute_processing_time_metrics(
     db: Session, tenant_id: str, start: Date, end: Date, modes: list[str] | None = None,
 ) -> ProcessingTimeMetrics:
     """Scoped to jobs COMPLETED in this window (_completed_jobs_query), same population as Data
-    Accuracy/Workforce Productivity. avg_total_tat_minutes is the span from creation to
-    completion for each of them. The three stage averages (extraction/review/ERP submission)
-    don't require every stage to be present - _job_stage_durations already returns None for a
-    stage a job hasn't reached, which _avg() silently skips.
+    Accuracy/Workforce Productivity. avg_total_tat_minutes is the SUM of the three stage
+    averages (see _sum_of_averages), not each job's own creation-to-completion span. The three
+    stage averages don't require every stage to be present - _job_stage_durations already
+    returns None for a stage a job hasn't reached, which _avg() silently skips.
     """
     start_utc, end_utc = range_bounds(start, end)
     jobs = _completed_jobs_query(db, tenant_id, start_utc, end_utc, modes).all()
@@ -305,7 +406,9 @@ def compute_processing_time_metrics(
         out.trend = [TrendPoint(day=start + timedelta(days=i)) for i in range((end - start).days + 1)]
         return out
 
-    tats = [(j.completed_at - j.created_at).total_seconds() / 60 for j in jobs]
+    # One pass per job, kept per-day too (by_day) so the trend chart uses the identical
+    # definition as the headline figure, not a different one that happens to share its label.
+    by_day: dict[Date, list[tuple[float | None, float | None, float | None]]] = {}
     extractions, reviews, erps = [], [], []
     for j in jobs:
         ext, rev, erp = _job_stage_durations(j)
@@ -315,21 +418,25 @@ def compute_processing_time_metrics(
             reviews.append(rev)
         if erp is not None:
             erps.append(erp)
+        local_day = (j.completed_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
+        by_day.setdefault(local_day, []).append((ext, rev, erp))
 
-    out.avg_total_tat_minutes = _avg(tats)
     out.avg_extraction_minutes = _avg(extractions)
     out.avg_review_minutes = _avg(reviews)
     out.avg_erp_submission_minutes = _avg(erps)
+    out.avg_total_tat_minutes = _sum_of_averages(
+        out.avg_extraction_minutes, out.avg_review_minutes, out.avg_erp_submission_minutes,
+    )
+    out.by_job = _job_timings(db, jobs)
 
     # Bucketed by COMPLETED day, matching total_jobs' own scoping.
-    by_day: dict[Date, list[float]] = {}
-    for j in jobs:
-        local_day = (j.completed_at + timedelta(minutes=IST_OFFSET_MINUTES)).date()
-        by_day.setdefault(local_day, []).append((j.completed_at - j.created_at).total_seconds() / 60)
-
     cursor = start
     while cursor <= end:
-        out.trend.append(TrendPoint(day=cursor, avg_total_tat_minutes=_avg(by_day.get(cursor, []))))
+        day_rows = by_day.get(cursor, [])
+        day_ext = _avg([r[0] for r in day_rows if r[0] is not None])
+        day_rev = _avg([r[1] for r in day_rows if r[1] is not None])
+        day_erp = _avg([r[2] for r in day_rows if r[2] is not None])
+        out.trend.append(TrendPoint(day=cursor, avg_total_tat_minutes=_sum_of_averages(day_ext, day_rev, day_erp)))
         cursor += timedelta(days=1)
 
     return out
@@ -372,6 +479,10 @@ class WorkforceMetrics:
     # shown on the page so a low number here explains a small human_review_hours figure, same
     # spirit as Job Processing Time's own "not every job has this stage" note.
     jobs_with_recorded_review: int = 0
+    # Same per-job extraction/review/ERP-entry breakdown as Job Processing Time's own by_job -
+    # shared JobTiming shape, by request, so both "See More Details" pages show the identical
+    # three stage times per job.
+    by_job: list[JobTiming] = field(default_factory=list)
 
 
 def compute_workforce_metrics(
@@ -465,4 +576,5 @@ def compute_workforce_metrics(
         rows.sort(key=lambda r: -r.review_hours)
         out.by_employee = rows
 
+    out.by_job = _job_timings(db, jobs)
     return out

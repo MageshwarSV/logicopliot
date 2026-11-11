@@ -9464,11 +9464,23 @@ def correct_field_value(
 def _recompute_per_row_custom_field(
     db: Session, job: Job, cf: "CustomField", composite_pieces_override: list | None = None,
     composite_separators_override: list | None = None,
+    only_row_indexes: set[int] | None = None,
 ) -> list[JobFieldValueOut]:
     """The per-row half of recompute_custom_field's own logic, pulled out so a second, narrower
     entry point (saving a Combined Description Configuration while a job is open - see
     save_composite_field_config below) can reuse it without duplicating it, rather than only
     ever being reachable from that endpoint.
+
+    only_row_indexes: write back to ONLY these line numbers, leaving every other line's
+    existing value exactly as it is. None (the default, and every caller before this) rewrites
+    every line, unchanged.
+
+    This is what makes "Apply for Selected Products" mean anything. A Combined Description
+    format is saved against the CONSIGNEE and so is inherently all-or-nothing for future jobs -
+    but the job already open is a different matter: its lines may have been corrected by hand,
+    by a person, and a format change is not a reason to throw that away on lines they never
+    asked about. Enforced here rather than in the modal, because a filter that lives only in
+    the UI is not a filter - anything else calling this endpoint would still rewrite the lot.
 
     composite_pieces_override/composite_separators_override (kind="composite" only): compute
     THIS job with exactly this format instead of resolving it from the consignee/generic
@@ -9617,14 +9629,21 @@ def _recompute_per_row_custom_field(
                     JobFieldValue.set_index == set_index, JobFieldValue.row_index == row_index)
             .first()
         )
+        # A line the operator did not choose keeps whatever it already had. Narrowed here,
+        # AFTER the values were computed, so the calculation itself is unchanged - only which
+        # lines are written down.
+        chosen = only_row_indexes is None or row_index in only_row_indexes
         if existing is None:
+            if not chosen:
+                continue          # nothing there, and not asked for - nothing to create
             existing = JobFieldValue(
                 tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
                 label_name=cf.label_name, set_index=set_index, row_index=row_index,
             )
             db.add(existing)
-        existing.label_name = cf.label_name
-        existing.extracted_value = value
+        if chosen:
+            existing.label_name = cf.label_name
+            existing.extracted_value = value
         rows.append(existing)
     # A field turned per_row AFTER it already had a single job-level answer (row_index
     # None) leaves that old slot stranded once the per-line ones above take over - the
@@ -9984,6 +10003,10 @@ class CompositeFieldConfigUpdate(BaseModel):
     # that job is recomputed immediately with exactly what was just saved, and its updated
     # field values are returned, so the change is visible right away without a second request.
     job_id: str | None = None
+    # job_id only: apply the new format to ONLY these line numbers of that job (1-based, as
+    # the operator counts products on screen). Empty/None applies to every line, which is the
+    # behaviour every caller had before this existed.
+    row_indexes: list[int] | None = None
 
 
 class CompositeFieldConfigSaveResult(BaseModel):
@@ -10076,9 +10099,11 @@ def save_composite_field_config(
     if not payload.job_id:
         return CompositeFieldConfigSaveResult(field_values=None)
     job = _load_job(db, payload.job_id, scope, user)
+    only = {int(n) for n in payload.row_indexes} if payload.row_indexes else None
     values = _recompute_per_row_custom_field(
         db, job, cf, composite_pieces_override=payload.pieces,
         composite_separators_override=separators,
+        only_row_indexes=only,
     )
     return CompositeFieldConfigSaveResult(field_values=values)
 

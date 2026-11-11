@@ -778,6 +778,9 @@ export async function saveCompositeFieldConfig(
     pieces: CompositePiece[];
     separators: string[];
     jobId?: string;
+    /** jobId only: apply the new format to ONLY these 1-based line numbers of that job.
+     *  Omitted/empty applies it to every line, which is what Save & Apply always did. */
+    rowIndexes?: number[];
   },
 ): Promise<CompositeFieldConfigSaveResult> {
   const { data } = await apiClient.put<CompositeFieldConfigSaveResult>(
@@ -788,6 +791,7 @@ export async function saveCompositeFieldConfig(
       pieces: payload.pieces,
       separators: payload.separators,
       job_id: payload.jobId ?? null,
+      row_indexes: payload.rowIndexes?.length ? payload.rowIndexes : null,
     },
   );
   return data;

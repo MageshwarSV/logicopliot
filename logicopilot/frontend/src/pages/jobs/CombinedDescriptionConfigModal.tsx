@@ -67,11 +67,14 @@ interface Props {
   /** When set, Save & Apply also recomputes THIS job immediately and hands back its updated
    *  field values - opened from a job screen rather than a standalone configuration entry. */
   jobId?: string;
+  /** How many product lines the open job has. Drives the "Apply for Selected Products"
+   *  choice - without it there is nothing to range over, so the choice is not offered. */
+  productCount?: number;
   onSaved?: (fieldValues: jobsApi.CompositeFieldConfigSaveResult["field_values"]) => void;
 }
 
 export function CombinedDescriptionConfigModal({
-  open, onClose, groupId, defaultConsignee, jobId, onSaved,
+  open, onClose, groupId, defaultConsignee, jobId, productCount, onSaved,
 }: Props) {
   const [consignees, setConsignees] = useState<string[]>([]);
   const [consignee, setConsignee] = useState("");
@@ -85,12 +88,25 @@ export function CombinedDescriptionConfigModal({
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Which lines of the OPEN job this save rewrites. The consignee's saved format is
+  // all-or-nothing by its nature - it is what the NEXT job computes from - but the job on
+  // screen may have lines a person already corrected by hand, and a format change is not a
+  // reason to throw those away on lines nobody asked about. Same two shapes the Bulk Update
+  // PQU screen already offers, so the two read alike.
+  const [applyScope, setApplyScope] = useState<"all" | "selected">("all");
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
 
   useEffect(() => {
     if (!open) return;
     setConsignee(defaultConsignee ?? "");
     setSavedNote(null);
     setError(null);
+    // Reopening always starts at "all": the safe, expected default, never a narrow selection
+    // left over from last time that would silently skip most of the job.
+    setApplyScope("all");
+    setRangeFrom("");
+    setRangeTo("");
     setLoadingConsignees(true);
     jobsApi.getKnownConsignees(groupId)
       .then(setConsignees)
@@ -176,6 +192,27 @@ export function CombinedDescriptionConfigModal({
         return;
       }
     }
+    // Work out which lines this touches BEFORE saving anything - a half-applied format is
+    // worse than one that was refused.
+    let rowIndexes: number[] | undefined;
+    if (jobId && applyScope === "selected" && (productCount ?? 0) > 0) {
+      const from = Number(rangeFrom);
+      const to = Number(rangeTo);
+      if (!rangeFrom.trim() || !rangeTo.trim() || !Number.isFinite(from) || !Number.isFinite(to)) {
+        setError("Enter the first and last product number to apply this to.");
+        return;
+      }
+      if (from < 1 || to > (productCount ?? 0)) {
+        setError(`Product numbers must be between 1 and ${productCount}.`);
+        return;
+      }
+      if (from > to) {
+        setError(`"From" (${from}) cannot be after "To" (${to}).`);
+        return;
+      }
+      rowIndexes = [];
+      for (let i = from; i <= to; i++) rowIndexes.push(i);
+    }
     setSaving(true);
     setError(null);
     setSavedNote(null);
@@ -185,9 +222,15 @@ export function CombinedDescriptionConfigModal({
       );
       const separators = rows.map((r) => r.separator);
       const result = await jobsApi.saveCompositeFieldConfig(groupId, {
-        consignee: consignee.trim(), labelName, pieces, separators, jobId,
+        consignee: consignee.trim(), labelName, pieces, separators, jobId, rowIndexes,
       });
-      setSavedNote(`Configuration saved for ${consignee.trim()}`);
+      setSavedNote(
+        rowIndexes
+          // Say WHICH lines moved. "Saved" alone, after choosing a range, reads as if the
+          // whole job was rewritten - the one thing the choice exists to avoid.
+          ? `Saved for ${consignee.trim()} — applied to products ${rangeFrom}-${rangeTo} on this job.`
+          : `Configuration saved for ${consignee.trim()}`,
+      );
       onSaved?.(result.field_values);
       if (!consignees.includes(consignee.trim())) {
         setConsignees((arr) => [...arr, consignee.trim()].sort());
@@ -380,6 +423,77 @@ export function CombinedDescriptionConfigModal({
 
           </>
         )}
+
+            {/* Which lines of the OPEN job this rewrites. Only offered when there IS an open
+                job with product lines - from the standalone configuration screen there is
+                nothing to range over, and the consignee format saves the same way regardless. */}
+            {jobId && (productCount ?? 0) > 0 && (
+              <div>
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Apply to this job
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => { setApplyScope("all"); setError(null); }}
+                    className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left ${
+                      applyScope === "all"
+                        ? "border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10"
+                        : "border-slate-200 hover:border-indigo-300 dark:border-slate-700"
+                    }`}
+                  >
+                    <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                      Apply for All Products
+                    </span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      Rewrite the description on all {productCount} product lines.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setApplyScope("selected"); setError(null); }}
+                    className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left ${
+                      applyScope === "selected"
+                        ? "border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10"
+                        : "border-slate-200 hover:border-indigo-300 dark:border-slate-700"
+                    }`}
+                  >
+                    <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                      Apply for Selected Products
+                    </span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      Only a range of lines, by their position (e.g. 1-10). The rest keep what
+                      they have.
+                    </span>
+                  </button>
+                </div>
+                {applyScope === "selected" && (
+                  <div className="mt-3 flex flex-wrap items-end gap-3">
+                    <Input
+                      label="From product"
+                      type="number"
+                      min={1}
+                      max={productCount}
+                      value={rangeFrom}
+                      onChange={(e) => setRangeFrom(e.target.value)}
+                      className="w-32"
+                    />
+                    <Input
+                      label="To product"
+                      type="number"
+                      min={1}
+                      max={productCount}
+                      value={rangeTo}
+                      onChange={(e) => setRangeTo(e.target.value)}
+                      className="w-32"
+                    />
+                    <p className="pb-2 text-xs text-slate-500 dark:text-slate-400">
+                      of {productCount} on this job
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>

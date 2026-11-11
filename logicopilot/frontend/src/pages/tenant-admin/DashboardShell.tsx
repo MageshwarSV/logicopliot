@@ -43,7 +43,7 @@ function ExecutiveOverview() {
           <p className="text-sm text-slate-500 dark:text-slate-400">Key performance overview</p>
         </div>
       </div>
-      <DashboardFilterBar value={range} onChange={setRange} />
+      <DashboardFilterBar value={range} onChange={setRange} tenantId={user?.tenant_id ?? ""} />
 
       <div className="flex flex-col gap-4">
         <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
@@ -97,16 +97,16 @@ function ExecutiveOverview() {
           </div>
           <div className="grid flex-1 grid-cols-3 gap-4">
             <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Total Human Review Hours</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.human_review_hours ?? 0).toLocaleString()} hrs</p>
+            </div>
+            <div>
               <p className="text-xs text-slate-500 dark:text-slate-400">Avg. Review Time per Job</p>
               <p className="font-semibold text-slate-900 dark:text-slate-50">{fmtMinutes(workforce?.avg_review_minutes_per_job)}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500 dark:text-slate-400">Total Completed Jobs</p>
               <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.total_jobs ?? 0).toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Human Review Hours</p>
-              <p className="font-semibold text-slate-900 dark:text-slate-50">{(workforce?.human_review_hours ?? 0).toLocaleString()} hrs</p>
             </div>
           </div>
           <Button variant="secondary" size="sm" onClick={() => navigate("/tenant-admin/dashboard/workforce")}>

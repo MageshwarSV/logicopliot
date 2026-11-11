@@ -29,6 +29,7 @@ from app.core.openai_pool import (
 from app.core.security import hash_password
 from app.core.system_settings import InvalidOpenAIKey
 from app.models.invoice import Invoice
+from app.models.job import Job
 from app.models.openai_api_key import OpenAIApiKey
 from app.models.tenant import Tenant
 from app.models.tenant_billing_config import TenantBillingConfig
@@ -42,8 +43,10 @@ from app.schemas.tenant import (
     DocTypeAccuracyOut,
     EmployeeReviewRowOut,
     InvoiceOut,
+    JobAccuracyOut,
     JobBillingPageOut,
     JobBillingRowOut,
+    JobTimingOut,
     MarkInvoicePaid,
     ProcessingTimeDashboardOut,
     ProcessingTimeTrendPointOut,
@@ -623,6 +626,27 @@ def export_billing_jobs(
     )
 
 
+@router.get("/{tenant_id}/dashboard/earliest-completed-job")
+def get_earliest_completed_job_date(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """The date of this tenant's own first-ever COMPLETED job - what the Executive Dashboard's
+    "All time" quick filter actually means, instead of an arbitrary fixed floor. Same read-access
+    rule as the dashboards themselves. None when the tenant has no completed job yet."""
+    _require_billing_read_access(user, tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    earliest = (
+        db.query(Job.completed_at)
+        .filter(Job.tenant_id == tenant_id, Job.status == "completed", Job.completed_at.isnot(None))
+        .order_by(Job.completed_at.asc())
+        .first()
+    )
+    return {"date": earliest[0].date().isoformat() if earliest else None}
+
+
 def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
     """Defaults to the current calendar month so far, same shape as the billing page's own
     default. Both ends are plain dates (inclusive) - dashboard_metrics converts to IST-aware
@@ -635,6 +659,18 @@ def _resolve_dashboard_range(date_from: str | None, date_to: str | None) -> tupl
     if (end - start).days > 366:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Range too wide - pick 366 days or fewer")
     return start, end
+
+
+def _job_timings_out(rows: list) -> list[JobTimingOut]:
+    return [
+        JobTimingOut(
+            job_id=r.job_id, reference=r.reference, mode=r.mode,
+            completed_at=r.completed_at.isoformat() if r.completed_at else None,
+            extraction_minutes=r.extraction_minutes, review_minutes=r.review_minutes,
+            erp_submission_minutes=r.erp_submission_minutes,
+        )
+        for r in rows
+    ]
 
 
 def _resolve_dashboard_modes(mode: str | None) -> list[str] | None:
@@ -679,6 +715,15 @@ def get_accuracy_dashboard(
             for d in m.by_document_type
         ],
         trend=[AccuracyTrendPointOut(day=p.day.isoformat(), accuracy_pct=p.accuracy_pct) for p in m.trend],
+        by_job=[
+            JobAccuracyOut(
+                job_id=j.job_id, reference=j.reference, mode=j.mode,
+                completed_at=j.completed_at.isoformat() if j.completed_at else None,
+                fields_extracted=j.fields_extracted, fields_edited=j.fields_edited,
+                accuracy_pct=j.accuracy_pct,
+            )
+            for j in m.by_job
+        ],
     )
 
 
@@ -706,6 +751,7 @@ def get_processing_time_dashboard(
         avg_review_minutes=m.avg_review_minutes,
         avg_erp_submission_minutes=m.avg_erp_submission_minutes,
         trend=[ProcessingTimeTrendPointOut(day=p.day.isoformat(), avg_total_tat_minutes=p.avg_total_tat_minutes) for p in m.trend],
+        by_job=_job_timings_out(m.by_job),
     )
 
 
@@ -740,6 +786,7 @@ def get_workforce_dashboard(
             )
             for r in m.by_employee
         ],
+        by_job=_job_timings_out(m.by_job),
     )
 
 

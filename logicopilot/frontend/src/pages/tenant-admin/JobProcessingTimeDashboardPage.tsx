@@ -5,6 +5,7 @@ import { Card, StatCard } from "../../components/ui/Card";
 import { ClockIcon, DocumentIcon, ArrowRightIcon } from "../../components/ui/icons";
 import { LineChart } from "../../components/charts/LineChart";
 import { DashboardFilterBar, defaultDashboardRange, type DashboardRange } from "../../components/tenant-admin/DashboardFilterBar";
+import { JobTimingTable } from "../../components/tenant-admin/JobTimingTable";
 import { useAuth } from "../../auth/useAuth";
 import * as tenantsApi from "../../api/tenants";
 import type { ProcessingTimeDashboard } from "../../api/tenants";
@@ -60,7 +61,7 @@ export function JobProcessingTimeDashboardPage() {
       title="Job Processing Time"
       subtitle="End-to-end job processing time (Pre-Alert to ERP Submission), for jobs completed in this range."
     >
-      <DashboardFilterBar value={range} onChange={setRange} />
+      <DashboardFilterBar value={range} onChange={setRange} tenantId={user?.tenant_id ?? ""} />
 
       {error && <p className="mb-4 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
 
@@ -137,6 +138,8 @@ export function JobProcessingTimeDashboardPage() {
           )}
         </Card>
       </div>
+
+      <JobTimingTable jobs={data?.by_job ?? []} loading={loading} />
 
       <button
         type="button"
