@@ -6,8 +6,13 @@ because by then they have moved on to the next job.
 
 Nothing here is stored as a notification. Both kinds are DERIVED, live, from the jobs the user
 can already see, using the very same conditions the Jobs list sidebar counts with
-(_category_condition). That is what guarantees the bell and the sidebar can never disagree -
-and it means the feature works for jobs that already exist, with no backfill.
+(_category_condition) - and it means the feature works for jobs that already exist, with no
+backfill.
+
+Narrowed further to the jobs THIS user took part in (see _mine). Being able to see a job is
+not the same as it being yours: an operator with a shipment mode sees every job of that mode,
+a GK2 sees every job of theirs that reached GK2, a manager sees the whole tenant - and the
+bell used to announce all of it, so everyone got every colleague's ERP results.
 
 Only the READ side is stored (NotificationRead), so dismissing is per person: a Gate Keeper
 clearing their bell must not clear it for everyone else in the tenant.
@@ -17,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import TenantScope, get_db, get_tenant_scope, require_role
@@ -66,6 +72,19 @@ def _event_time(job: Job, kind: str) -> datetime | None:
     return job.updated_at
 
 
+def _mine(user: User):
+    """The jobs this person actually worked on: created it, had it routed to them, or gave it
+    the GK1 or GK2 approval. Applied on top of visibility, never instead of it, so the bell
+    still cannot announce a job the person cannot open. Same rule for every role - a manager
+    or admin who only watches the tenant has no ERP results of their own to be told about."""
+    return or_(
+        Job.created_by_id == user.id,
+        Job.assigned_operator_id == user.id,
+        Job.validation_approved_by_id == user.id,
+        Job.gk2_validation_approved_by_id == user.id,
+    )
+
+
 def _collect(db: Session, scope: TenantScope, user: User) -> list[tuple[str, Job]]:
     # Imported here rather than at module import time: jobs.py is a large module that imports
     # a great deal of the app, and importing it at the top of this one makes a circular import
@@ -80,6 +99,7 @@ def _collect(db: Session, scope: TenantScope, user: User) -> list[tuple[str, Job
         # announce a job the person cannot open.
         rows = (
             _jobs_visible_query(db, scope, user)
+            .filter(_mine(user))
             .filter(_category_condition(kind))
             .filter(Job.updated_at >= since)
             .order_by(Job.updated_at.desc())
