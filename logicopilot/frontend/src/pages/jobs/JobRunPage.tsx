@@ -72,6 +72,7 @@ const RELOCATED_FIELD_LABELS_BY_DOC_TYPE: Record<string, string[]> = {
   Invoice: [
     "Currency_type", "Product Value", "Consignee", "Shipper Address",
     "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
+    "ERP Branch Address",
   ],
   Custom: [
     "Frt_Currency", "Misc_Charge_Currency", "insurance_percentage", "insurance_amount",
@@ -93,7 +94,7 @@ const ALL_RELOCATED_FIELD_LABELS = new Set(
 //     under Additional Details.
 const DUPLICATED_ADDITIONAL_DETAILS_LABELS = new Set([
   "ERP Importer Address / Branch Code", "ERP Consignee Name", "ERP Consignee Country",
-  "Destination",
+  "ERP Branch Address", "Destination",
 ]);
 // Additional Details custom fields hidden outright, not relocated - "Cont Type" is a
 // separate, older field from "Consignment Type" (both read the same BL/Freight documents);
@@ -407,6 +408,26 @@ const QUOTATION_ADDRESS_LABEL = "quotation_address";
 // rows themselves are never deduped. The dropdown built FROM them must dedupe its own option
 // list, or a value learned twice shows twice.
 const dedupe = (values: string[]): string[] => [...new Set(values)];
+// "ERP Branch Address" - the street address of whichever branch was picked just above it,
+// resolved three-key (ERP Consignee Name + ERP Importer Address / Branch Code + ERP Consignee
+// Country) against its own reference table: one row per branch of every organization, ~31,000
+// of them, the same sheet the name and branch lists themselves came from.
+//
+// Unlike ERP Quotation Address above (read-only, UI-only, no JobFieldValue), this is a REAL
+// field. The resolved address is SAVED, so it survives a reload, can be corrected by hand
+// when the sheet is wrong, and is available to the Excel entry mapping like any other field.
+const BRANCH_ADDRESS_LABEL = "ERP Branch Address";
+// The server stores every match key through normalize_key (app/core/reference_cache.py):
+// upper case, single spaces, no surrounding punctuation. A value picked on this side has to
+// be put through the same shape before it can be compared against one - "ORAGADAM (8)" is
+// stored as "ORAGADAM (8", so a raw comparison silently matches nothing.
+const normalizeRefKey = (text: string): string =>
+  (text ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ")
+    .replace(/^[-\u2013\u2014:,;()]+|[-\u2013\u2014:,;()]+$/g, "")
+    .toUpperCase();
 // A combobox field whose starting value should be SUGGESTED (not forced) from another field on
 // the same job, fuzzy-matched against this field's own reference table - see
 // suggestCustomFieldValue. Different customers often carry a fixed, previously-quoted premium
@@ -585,6 +606,7 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
       labels: [
         "shipper", "Shipper Address", "Sold By / Buyer Name", "Sold By / Buyer Name Address", "Consignee",
         "ERP Consignee Country", "ERP Consignee Name", "ERP Importer Address / Branch Code",
+        "ERP Branch Address",
       ],
     },
     { heading: "Origin Details", labels: ["CountryOfOriginCode", "TOI"] },
@@ -6813,6 +6835,49 @@ function ExtractionReview({
     };
   }, [savedConsigneeName, consigneeBranchFieldId, jobId]);
 
+  // "ERP Branch Address" - narrowed server-side by the picked consignee exactly as the branch
+  // list above it is (same `key` param, same reason: ~31,000 rows is far too many to ship to
+  // the browser), then finished off here against the branch and the country. One organization
+  // has a handful of branches, so what comes back is small enough to match client-side.
+  const branchAddressFv = job.field_values.find(
+    (fv) => fv.row_index == null && fv.label_name === BRANCH_ADDRESS_LABEL,
+  );
+  const branchAddressFieldId = branchAddressFv?.custom_field_id;
+  const [branchAddressOptions, setBranchAddressOptions] = useState<
+    jobsApi.CustomFieldReferenceOption[]
+  >([]);
+  useEffect(() => {
+    if (!savedConsigneeName || !branchAddressFieldId) {
+      setBranchAddressOptions([]);
+      return;
+    }
+    let cancelled = false;
+    jobsApi
+      .listCustomFieldReferenceOptions(jobId, branchAddressFieldId, savedConsigneeName)
+      .then((options) => {
+        if (!cancelled) setBranchAddressOptions(options);
+      })
+      .catch(() => {
+        if (!cancelled) setBranchAddressOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [savedConsigneeName, branchAddressFieldId, jobId]);
+
+  const savedConsigneeBranch = (
+    job.field_values.find(
+      (fv) => fv.row_index == null && fv.label_name === "ERP Importer Address / Branch Code",
+    )?.corrected_value ??
+    job.field_values.find(
+      (fv) => fv.row_index == null && fv.label_name === "ERP Importer Address / Branch Code",
+    )?.extracted_value ??
+    ""
+  ).trim();
+  const savedBranchAddress = (
+    branchAddressFv?.corrected_value ?? branchAddressFv?.extracted_value ?? ""
+  ).trim();
+
   // ERP Consignee Country drives which country ERP Consignee Name's own search is scoped to
   // (see asyncSearchPicker.country) - read LIVE (not-yet-saved draft), same reasoning as
   // liveErpEntryName above: narrowing the Name search the instant the operator picks a
@@ -6831,6 +6896,55 @@ function ExtractionReview({
   useEffect(() => {
     setLiveConsigneeCountry(savedConsigneeCountry);
   }, [savedConsigneeCountry]);
+
+  // Every address on file for the branch that is currently picked. Usually exactly one; a few
+  // hundred branches in the sheet genuinely carry several (the same ABB office in Chennai is
+  // recorded at four different streets), which is why match_value_4 exists on those rows and
+  // why this is a list rather than a single answer.
+  const branchAddressMatches = useMemo(() => {
+    const branch = normalizeRefKey(savedConsigneeBranch);
+    const country = normalizeRefKey(savedConsigneeCountry);
+    if (!branch || !country) return [];
+    return dedupe(
+      branchAddressOptions
+        .filter(
+          (o) =>
+            (o.match_values[1] ?? "") === branch && (o.match_values[2] ?? "") === country,
+        )
+        .map((o) => o.value),
+    );
+  }, [branchAddressOptions, savedConsigneeBranch, savedConsigneeCountry]);
+
+  // Picking a branch IS picking its address - the operator should not have to go and find the
+  // same row again by hand. Only ever overwrites a value this effect put there itself, so an
+  // address corrected by hand is never clobbered, while changing the branch afterwards still
+  // refreshes what the previous pick had filled.
+  const autoFilledAddress = useRef<string | null>(null);
+  useEffect(() => {
+    if (readOnly || !branchAddressFv || branchAddressMatches.length === 0) return;
+    const next = branchAddressMatches[0];
+    if (savedBranchAddress === next) {
+      autoFilledAddress.current = next;
+      return;
+    }
+    if (savedBranchAddress && savedBranchAddress !== autoFilledAddress.current) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await jobsApi.correctFieldValue(branchAddressFv.id, next);
+        if (cancelled) return;
+        autoFilledAddress.current = next;
+        await reload();
+      } catch {
+        /* a failed auto-fill leaves the box empty for the operator - never blocks the job */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchAddressMatches, savedBranchAddress, branchAddressFv?.id, readOnly]);
+
   // The dropdown's own option list - every country ERP Consignee Name's reference table
   // actually has rows for, fetched once per field rather than hand-maintained separately (see
   // listCustomFieldReferenceCountries's own docstring).
@@ -7302,6 +7416,29 @@ function ExtractionReview({
                   if (fv.label_name === "ERP Consignee Country") {
                     options = consigneeCountryOptions.map((v) => ({ value: v, label: v }));
                   }
+                  // Both of these were plain closed <select>s. 169 countries and a long branch
+                  // list are quicker to type two letters into than to scroll, so they render as
+                  // the same searchable, pick-only combobox ERP Quotation Name/Branch already
+                  // use - typing filters, only a value from the list ever saves. Their option
+                  // lists are unchanged; this is how they are presented, not what they offer.
+                  if (
+                    (fv.label_name === "ERP Consignee Country" ||
+                      fv.label_name === "ERP Importer Address / Branch Code") &&
+                    options &&
+                    options.length
+                  ) {
+                    fixedChoiceComboOptions = options.map((o) => o.value);
+                    fixedChoiceComboPickOnly = true;
+                    options = undefined;
+                  }
+                  // "ERP Branch Address" - filled from the branch above it (see
+                  // branchAddressMatches). Never given `options`: that would render it as a
+                  // one-line <select>, and an address needs the taller box that grows to fit
+                  // what it holds. Where a branch has more than one address on file, the
+                  // alternatives are offered beside the label instead (headerExtra below).
+                  if (fv.label_name === BRANCH_ADDRESS_LABEL) {
+                    options = undefined;
+                  }
                   // Always offered, not just while blank - the operator can look up or correct
                   // Shipment Port Code at any time, the same way every other reference-backed
                   // field's own dropdown is always available regardless of its current value.
@@ -7425,7 +7562,33 @@ function ExtractionReview({
                         headerExtra={
                           DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name)
                             ? <DummyShipperSellerRadio />
-                            : undefined
+                            : fv.label_name === BRANCH_ADDRESS_LABEL &&
+                                branchAddressMatches.length > 1
+                              ? (
+                                // This branch is on file at more than one address, so there is
+                                // no single right answer to fill in. The first is filled (see
+                                // the auto-fill effect) and the rest are offered here, rather
+                                // than silently picking one and showing nothing to say the
+                                // others exist.
+                                <select
+                                  className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+                                  value={savedBranchAddress}
+                                  disabled={readOnly}
+                                  onChange={async (e) => {
+                                    autoFilledAddress.current = e.target.value;
+                                    await jobsApi.correctFieldValue(fv.id, e.target.value);
+                                    await reload();
+                                  }}
+                                  title={`${branchAddressMatches.length} addresses on file for this branch`}
+                                >
+                                  {branchAddressMatches.map((a, i) => (
+                                    <option key={a} value={a}>
+                                      {`address ${i + 1} of ${branchAddressMatches.length}`}
+                                    </option>
+                                  ))}
+                                </select>
+                              )
+                              : undefined
                         }
                       />
                       {showSearchFallback && (
