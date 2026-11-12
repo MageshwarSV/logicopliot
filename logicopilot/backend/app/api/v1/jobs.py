@@ -5083,6 +5083,53 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     )
 
 
+def learn_unscripted_alerts(db: Session, script, alerts: list[dict] | None) -> int:
+    """Write every alert a real run met that no step covered into the script itself.
+
+    Each becomes an "if this alert comes" step (a `dialog` step with is_optional - see
+    browser.is_alert_rule), placed right after the step it fired during, answering with the
+    button the run's default actually pressed. From then on a Super Admin can open the script and
+    change that button; whenever the alert appears again it gets their choice, and when it does
+    not appear the step does nothing. An alert already covered by a dialog step with matching
+    wording is never added twice. Does not commit. Returns how many steps were added.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.browser import alert_text_matches
+
+    if script is None or not alerts:
+        return 0
+    steps = list(script.steps or [])
+    added = 0
+    # Highest position first, so inserting one never moves where a later one belongs.
+    for alert in sorted(alerts, key=lambda a: a.get("during_step") or 0, reverse=True):
+        message = (alert.get("message") or "").strip()
+        if not message:
+            continue
+        if any(st.get("action") == "dialog" and (st.get("description") or "").strip()
+               and alert_text_matches(st.get("description"), message) for st in steps):
+            continue
+        at = min(max(int(alert.get("during_step") or 0) + 1, 0), len(steps))
+        steps.insert(at, {
+            "action": "dialog",
+            "value": "dismiss" if alert.get("answer") == "dismiss" else "accept",
+            "description": message,
+            "dialog_type": alert.get("type") or "alert",
+            "is_optional": True,
+            "auto_added": True,
+        })
+        # The checkpoint is stored by position - keep it on the same step.
+        if script.checkpoint_index is not None and at <= script.checkpoint_index:
+            script.checkpoint_index += 1
+        added += 1
+    if added:
+        script.steps = steps
+        flag_modified(script, "steps")
+        logger.info("ERP script %s: added %s 'if this alert comes' step(s) from a real run",
+                    script.id, added)
+    return added
+
+
 def persist_run_outcome(db: Session, job: Job, script, result: dict,
                         operator_id: str | None = None) -> dict:
     """Write down what an ERP run did, and decide the job's status from it.
@@ -5097,6 +5144,13 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     Returns the `erp_*` fields to hang on the response; the caller refreshes and builds its own
     detail, because the two callers return different shapes.
     """
+    # Alerts the ERP raised that the script never covered - written into the script so a
+    # person can choose their button from now on. Never allowed to fail the run's own record.
+    try:
+        learn_unscripted_alerts(db, script, result.get("unscripted_alerts"))
+    except Exception:  # noqa: BLE001
+        logger.exception("could not add the run's unscripted alerts to script %s",
+                         getattr(script, "id", None))
     # The reference the ERP generated (Bill of Entry number / acknowledgement) is the only
     # durable proof the entry happened on their side. Kept even on a failed or duplicate
     # outcome - a run that got far enough to read it is exactly when it is needed.
