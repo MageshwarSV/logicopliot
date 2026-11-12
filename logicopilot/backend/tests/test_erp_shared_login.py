@@ -241,3 +241,74 @@ def test_a_half_written_session_file_is_never_handed_to_a_job(tmp_path):
     stop.set()
     t.join(timeout=5)
     assert not bad, f"a reader saw {len(bad)} partially-written session file(s)"
+
+
+# --------------------------------------------------------------------------------------
+# The run slot: what makes raising erp_script_workers safe rather than merely faster.
+# A script with a shared session lets its jobs run together. One without has to take turns,
+# because every one of its runs replays the login.
+# --------------------------------------------------------------------------------------
+
+@pytest.fixture
+def slot_locks(tmp_path, monkeypatch):
+    """Keep the run lock files out of the real uploads directory."""
+    monkeypatch.setattr(erp_session, "SCRIPT_SLOT_WAIT_SECONDS", 2)
+    monkeypatch.setattr(erp_session, "_run_lock_path",
+                        lambda sid: str(tmp_path / f"{sid}.run.lock"))
+    return tmp_path
+
+
+def test_a_shared_session_lets_jobs_run_at_the_same_time(slot_locks):
+    """The whole feature: many tabs on one login, so nothing waits."""
+    with erp_session.script_slot("s1", shared_login=True) as a:
+        with erp_session.script_slot("s1", shared_login=True) as b:
+            assert a is True and b is True
+
+
+def test_without_a_shared_session_a_script_runs_one_job_at_a_time(slot_locks):
+    """Two runs means two logins, and the second login can kill the first run's session."""
+    order = []
+
+    def second():
+        with erp_session.script_slot("s2", shared_login=False):
+            order.append("second-started")
+
+    with erp_session.script_slot("s2", shared_login=False) as held:
+        assert held is True
+        t = threading.Thread(target=second)
+        t.start()
+        time.sleep(0.5)
+        assert order == [], "the second job started while the first was still running"
+        order.append("first-finished")
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert order == ["first-finished", "second-started"]
+
+
+def test_a_job_is_never_blocked_forever_by_a_wedged_run(slot_locks):
+    """Waiting is better than a second login. Never running at all is not."""
+    with erp_session.script_slot("s3", shared_login=False):
+        t0 = time.time()
+        with erp_session.script_slot("s3", shared_login=False) as got:
+            waited = time.time() - t0
+        assert got is False, "it should know it went ahead without the slot"
+        assert 2 <= waited < 7, f"waited {waited:.1f}s, expected about the slot timeout"
+
+
+def test_two_different_scripts_run_at_once_even_without_shared_sessions(slot_locks):
+    """Different scripts are different ERP accounts - there is nothing to serialise."""
+    with erp_session.script_slot("one", shared_login=False) as a:
+        with erp_session.script_slot("two", shared_login=False) as b:
+            assert a is True and b is True
+
+
+def test_the_slot_is_released_when_a_run_crashes(slot_locks):
+    """A crashed entry must not lock the script out of every later job."""
+    with pytest.raises(RuntimeError):
+        with erp_session.script_slot("s4", shared_login=False):
+            raise RuntimeError("the ERP entry blew up")
+
+    t0 = time.time()
+    with erp_session.script_slot("s4", shared_login=False) as got:
+        assert got is True, "the crashed run never gave the slot back"
+    assert time.time() - t0 < 1, "the next job had to wait out the timeout"

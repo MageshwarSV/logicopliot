@@ -3175,11 +3175,27 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     job.gk2_status = "entering_erp"
     db.commit()
 
+    # The same session reuse complete_job's Submit Entry has had all along, which this path
+    # - the one GK2's "Final Approve & Proceed" actually runs - never got. Without it every
+    # job here replays the full login, and with erp_script_workers above 1 that is several
+    # logins into one ERP account at once; SOFTLINK answers the second by offering to kill
+    # the first. See app/core/erp_session.py.
+    sess_file = None
+    ckpt = script.checkpoint_index if script.stay_open else None
+    if ckpt is not None:
+        sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+
+    from app.core.erp_session import script_slot
+
     try:
-        result = play_steps(
-            script.url, login, script.steps or [], values, headless=True, rows=rows,
-            downloads_dir=dl_dir, uploads=up_map, progress=_live,
-        )
+        # A script with no session to share has to take turns, however many workers are
+        # configured - see script_slot. One with a shared session does not.
+        with script_slot(script.id, shared_login=ckpt is not None):
+            result = play_steps(
+                script.url, login, script.steps or [], values, headless=True, rows=rows,
+                downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                checkpoint_index=ckpt, session_file=sess_file,
+            )
     except Exception as exc:  # noqa: BLE001
         _fail(f"The ERP entry could not be run: {exc}")
         return
@@ -5430,11 +5446,14 @@ def complete_job(
                 def _live(shot, log, debug=None, _jid=job.id):
                     live_runs.publish(_jid, shot, log, debug=debug)
 
-                result = play_steps(
-                    script.url, login, script.steps or [], values, headless=True, rows=rows,
-                    downloads_dir=dl_dir, checkpoint_index=ckpt, session_file=sess_file,
-                    uploads=up_map, progress=_live,
-                )
+                from app.core.erp_session import script_slot
+
+                with script_slot(script.id, shared_login=ckpt is not None):
+                    result = play_steps(
+                        script.url, login, script.steps or [], values, headless=True,
+                        rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
+                        session_file=sess_file, uploads=up_map, progress=_live,
+                    )
                 live_runs.publish(job.id, None, result.get("log") or [], done=True)
         except HTTPException:
             # Raised deliberately above (the workbook could not be built, or nothing would
