@@ -665,6 +665,7 @@ def _job_timings_out(rows: list) -> list[JobTimingOut]:
     return [
         JobTimingOut(
             job_id=r.job_id, reference=r.reference, mode=r.mode,
+            created_at=r.created_at.isoformat() if r.created_at else None,
             completed_at=r.completed_at.isoformat() if r.completed_at else None,
             extraction_minutes=r.extraction_minutes, review_minutes=r.review_minutes,
             erp_submission_minutes=r.erp_submission_minutes,

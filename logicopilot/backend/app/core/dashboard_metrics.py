@@ -281,6 +281,7 @@ class JobTiming:
     job_id: str
     reference: str
     mode: str | None
+    created_at: datetime | None
     completed_at: datetime | None
     extraction_minutes: float | None
     review_minutes: float | None
@@ -303,7 +304,7 @@ def _job_timings(db: Session, jobs: list[Job]) -> list[JobTiming]:
     rows = [
         JobTiming(
             job_id=j.id, reference=j.reference, mode=modes.get(j.group_id),
-            completed_at=j.completed_at,
+            created_at=j.created_at, completed_at=j.completed_at,
             extraction_minutes=ext, review_minutes=rev, erp_submission_minutes=erp,
         )
         for j in jobs

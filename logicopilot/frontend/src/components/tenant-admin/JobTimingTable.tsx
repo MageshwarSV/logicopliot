@@ -2,8 +2,13 @@ import { useNavigate } from "react-router-dom";
 import { Card } from "../ui/Card";
 import type { JobTiming } from "../../api/tenants";
 
-function fmtDay(iso: string): string {
-  const d = new Date(iso + "T00:00:00");
+/** Day + month in the viewer's local time, e.g. "11 Nov". Parsed as the full timestamp, not
+ *  its first 10 characters: the backend sends UTC, so slicing the date part would show the UTC
+ *  day, which is the previous day for anything created before 05:30 IST. */
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
 }
 
@@ -16,8 +21,8 @@ function fmtMinutes(m: number | null): string {
 }
 
 /** The "Jobs" drill-down table shared by Job Processing Time and Workforce Productivity - same
- *  three stage-time columns either page's own aggregate cards already average, per job, so a
- *  slow tenant-wide number can be traced to the specific job(s) behind it. */
+ *  three stages either page's aggregate cards average, but each row shows that ONE job's actual
+ *  time (not an average), so a slow tenant-wide number can be traced to the job(s) behind it. */
 export function JobTimingTable({ jobs, loading }: { jobs: JobTiming[]; loading: boolean }) {
   const navigate = useNavigate();
 
@@ -35,10 +40,11 @@ export function JobTimingTable({ jobs, loading }: { jobs: JobTiming[]; loading: 
               <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400 dark:border-slate-800">
                 <th className="pb-2 font-medium">Job</th>
                 <th className="pb-2 font-medium">Shipment Type</th>
+                <th className="pb-2 font-medium">Created</th>
                 <th className="pb-2 font-medium">Completed</th>
-                <th className="pb-2 font-medium">Avg Extracted Time</th>
-                <th className="pb-2 font-medium">Avg Review Time</th>
-                <th className="pb-2 font-medium">Avg Entry Time</th>
+                <th className="pb-2 font-medium">Extracted Time</th>
+                <th className="pb-2 font-medium">Review Time</th>
+                <th className="pb-2 font-medium">ERP Entry Time</th>
               </tr>
             </thead>
             <tbody>
@@ -54,8 +60,9 @@ export function JobTimingTable({ jobs, loading }: { jobs: JobTiming[]; loading: 
                     </button>
                   </td>
                   <td className="py-2 text-slate-500 dark:text-slate-400">{row.mode ?? "—"}</td>
+                  <td className="py-2 text-slate-500 dark:text-slate-400">{fmtDate(row.created_at)}</td>
                   <td className="py-2 text-slate-500 dark:text-slate-400">
-                    {row.completed_at ? fmtDay(row.completed_at.slice(0, 10)) : "—"}
+                    {fmtDate(row.completed_at)}
                   </td>
                   <td className="py-2 text-slate-700 dark:text-slate-200">{fmtMinutes(row.extraction_minutes)}</td>
                   <td className="py-2 text-slate-700 dark:text-slate-200">{fmtMinutes(row.review_minutes)}</td>
