@@ -23,7 +23,21 @@ argon2-cffi>=23.1
 typer>=0.12
 
 # Web automation — ERP recorder + entry playback
-playwright>=1.44
+# PINNED, unlike everything else here, because this one package carries an out-of-band
+# binary: the browser build lives in ~/.cache/ms-playwright and is downloaded separately,
+# keyed to the playwright version. A loose range means a FRESH venv installs whatever is
+# newest, which then demands a browser build nobody has downloaded, and every ERP submission
+# dies on "Executable doesn't exist at .../chrome-headless-shell". That is exactly what the
+# dev venv did on 2026-11-12: pip gave it 1.65.1 wanting build 1254, while SIT (1.64.1) and
+# production (1.64.0) both run build 1248.
+#
+# Existing installs were never at risk - pip does not upgrade a package that already
+# satisfies the range - so the damage only appears when a venv is rebuilt or a new server is
+# set up, which is the worst time to discover it.
+#
+# Raising this pin means downloading the matching browser on every box FIRST:
+#   ./venv/bin/playwright install chromium
+playwright==1.64.1
 
 # Document rendering (PDF -> page images, no system deps needed)
 PyMuPDF>=1.24
