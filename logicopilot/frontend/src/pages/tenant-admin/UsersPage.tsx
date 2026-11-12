@@ -145,7 +145,7 @@ function RowActions({
         ⋯
       </button>
       <FloatingPanel anchorRef={anchorRef} open={open} className="z-50 flex justify-end">
-        <div role="menu" className="mt-1 w-48 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900">
+        <div role="menu" className="mt-1 w-48 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900">
           {confirming ? (
             <div className="px-3.5 py-2">
               <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">Delete this account and its jobs?</p>
