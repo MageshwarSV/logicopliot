@@ -123,11 +123,29 @@ def _collect(db: Session, scope: TenantScope, user: User) -> list[tuple[str, Job
     return out[:MAX_ITEMS]
 
 
-def _read_keys(db: Session, user: User) -> set[tuple[str, str]]:
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """SQLite hands timestamps back without a timezone even from a timezone=True column;
+    Postgres does not. Both are UTC as written, so compare them as UTC."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _read_marks(db: Session, user: User) -> dict[tuple[str, str], NotificationRead]:
     return {
-        (r.job_id, r.kind)
+        (r.job_id, r.kind): r
         for r in db.query(NotificationRead).filter(NotificationRead.user_id == user.id).all()
     }
+
+
+def _is_read(mark: NotificationRead | None, job: Job, kind: str) -> bool:
+    """Read means read SINCE it last happened. A job that failed, was read, was retried and
+    failed again is a new failure: the read mark is older than this failure, so it is unread
+    again - otherwise the second failure would arrive already greyed out, with no pop-up."""
+    if mark is None:
+        return False
+    at = _as_utc(_event_time(job, kind))
+    return at is None or _as_utc(mark.read_at) >= at
 
 
 @router.get("", response_model=list[NotificationOut])
@@ -136,7 +154,7 @@ def list_notifications(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(*ROLES)),
 ) -> list[NotificationOut]:
-    read = _read_keys(db, user)
+    marks = _read_marks(db, user)
     items = []
     for kind, job in _collect(db, scope, user):
         items.append(NotificationOut(
@@ -146,24 +164,35 @@ def list_notifications(
             job_reference=job.reference,
             detail=(job.erp_reason or None) if kind == "failed" else None,
             at=_event_time(job, kind),
-            read=(job.id, kind) in read,
+            read=_is_read(marks.get((job.id, kind)), job, kind),
         ))
     return items
 
 
-def _mark(db: Session, user: User, pairs: list[tuple[str, str]]) -> int:
-    """Insert a read mark for each (kind, job), skipping any already there."""
-    if not pairs:
+def _mark(db: Session, user: User, items: list[tuple[str, Job]]) -> int:
+    """Mark each (kind, job) read now, skipping any already read since it last happened.
+
+    One row per person per job per kind (uq_notification_read): a stale mark - from before
+    the latest failure - is moved forward rather than a second row added. The tenant comes
+    from the JOB, not the user: a Super Admin has no tenant of their own, and the column is
+    NOT NULL.
+    """
+    if not items:
         return 0
-    already = _read_keys(db, user)
+    marks = _read_marks(db, user)
     now = datetime.now(timezone.utc)
     n = 0
-    for kind, job_id in pairs:
-        if (job_id, kind) in already:
+    for kind, job in items:
+        mark = marks.get((job.id, kind))
+        if _is_read(mark, job, kind):
             continue
-        db.add(NotificationRead(tenant_id=user.tenant_id, user_id=user.id,
-                                job_id=job_id, kind=kind, read_at=now))
-        already.add((job_id, kind))
+        if mark is None:
+            mark = NotificationRead(tenant_id=job.tenant_id, user_id=user.id,
+                                    job_id=job.id, kind=kind, read_at=now)
+            db.add(mark)
+            marks[(job.id, kind)] = mark
+        else:
+            mark.read_at = now
         n += 1
     db.commit()
     return n
@@ -182,18 +211,18 @@ def mark_read(
     a blanket timestamp: a job that failed while the panel was open is not something they have
     read, and must still be waiting afterwards.
     """
+    on_bell = _collect(db, scope, user)
     if payload.ids:
-        pairs = []
+        wanted = set()
         for raw in payload.ids:
             kind, _, job_id = raw.partition(":")
             if kind not in KINDS or not job_id:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail=f"not a notification id: {raw}")
-            pairs.append((kind, job_id))
+            wanted.add((kind, job_id))
         # Only ones they can actually see - an id is guessable, and marking something read is
         # still a write against a job.
-        visible = {(k, j.id) for k, j in _collect(db, scope, user)}
-        pairs = [p for p in pairs if p in visible]
+        items = [(k, j) for k, j in on_bell if (k, j.id) in wanted]
     else:
-        pairs = [(kind, job.id) for kind, job in _collect(db, scope, user)]
-    return {"marked": _mark(db, user, pairs)}
+        items = on_bell
+    return {"marked": _mark(db, user, items)}

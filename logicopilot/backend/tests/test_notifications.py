@@ -253,6 +253,47 @@ def test_a_failure_and_a_later_success_are_two_separate_notifications(client, db
     assert items[0]["read"] is False, "the success was silenced by having read the failure"
 
 
+def test_failing_again_after_a_retry_is_a_new_unread_notification(client, db_session):
+    """Read means read since it last happened. Retried and failed again, the job is a NEW
+    failure - it must not arrive already greyed out, or no pop-up would ever announce it."""
+    tenant, op, other, group = _setup(db_session)
+    job = _job(db_session, tenant, group, op, "JOB-AGAIN", status="failed", erp_status="error")
+    login(client, op.email)
+    assert client.post("/api/v1/notifications/read", json={}).json()["marked"] == 1
+    # First failure ten minutes ago, read five minutes ago.
+    now = datetime.now(timezone.utc)
+    job.updated_at = now - timedelta(minutes=10)
+    db_session.query(NotificationRead).one().read_at = now - timedelta(minutes=5)
+    db_session.commit()
+    assert _get(client)[0]["read"] is True
+
+    # The retry fails again now: the job row moves forward (updated_at's onupdate), the read
+    # mark does not.
+    job.erp_reason = "Second attempt: the ERP rejected the HS code"
+    db_session.commit()
+
+    items = _get(client)
+    assert items[0]["read"] is False
+    assert items[0]["detail"] == "Second attempt: the ERP rejected the HS code"
+    # Reading it again moves the one existing mark forward rather than piling up rows.
+    assert client.post("/api/v1/notifications/read", json={}).json()["marked"] == 1
+    assert _get(client)[0]["read"] is True
+    assert db_session.query(NotificationRead).count() == 1
+
+
+def test_a_super_admin_can_mark_their_own_notification_read(client, db_session):
+    """A Super Admin has no tenant; the read mark takes the job's tenant (the column is NOT
+    NULL), so this used to fail on insert."""
+    tenant, op, other, group = _setup(db_session)
+    sa = make_user(db_session, role="super_admin", email="sa-n@example.com")
+    _job(db_session, tenant, group, sa, "JOB-SA", status="failed", erp_status="error")
+    login(client, sa.email)
+    r = client.post("/api/v1/notifications/read", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["marked"] == 1
+    assert _get(client)[0]["read"] is True
+
+
 def test_something_old_is_not_a_notification(client, db_session):
     """A six-week-old event is a report, not a notification - and the Jobs list is already the
     report. This is also what keeps "mark all as read" bounded."""
