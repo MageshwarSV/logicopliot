@@ -386,6 +386,7 @@ export interface JobTiming {
   job_id: string;
   reference: string;
   mode: string | null;
+  created_at: string | null;
   completed_at: string | null;
   extraction_minutes: number | null;
   review_minutes: number | null;

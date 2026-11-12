@@ -2978,6 +2978,8 @@ def mark_erp_submitted(
     job.gk2_status = "submitted"
     if job.ai_submitted_at is None:
         job.ai_submitted_at = datetime.now(timezone.utc)
+    # A manual mark has no run to time - submitted and completed are the same moment.
+    job.erp_submitted_at = datetime.now(timezone.utc)
     job.erp_status = "ok"
     job.erp_reason = (
         f"Manually confirmed by {user.email}: the ERP entry actually succeeded "
@@ -3008,6 +3010,8 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     grp = db.get(TemplateGroup, job.group_id)
     is_excel_entry = grp is not None and (grp.entry_mode or "fields") == "excel"
     job.gk2_status = "preparing_erp"
+    # This submission's own start - overwritten on every attempt (see Job.erp_submitted_at).
+    job.erp_submitted_at = datetime.now(timezone.utc)
     # Clear the LAST attempt's result the moment a new one starts - otherwise the "ERP
     # replay result" banner (job.erp_status, shown regardless of gk2_status) keeps showing
     # "Entered into the ERP and submitted" from a previous run while THIS run is still only
@@ -5083,6 +5087,53 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     )
 
 
+def learn_unscripted_alerts(db: Session, script, alerts: list[dict] | None) -> int:
+    """Write every alert a real run met that no step covered into the script itself.
+
+    Each becomes an "if this alert comes" step (a `dialog` step with is_optional - see
+    browser.is_alert_rule), placed right after the step it fired during, answering with the
+    button the run's default actually pressed. From then on a Super Admin can open the script and
+    change that button; whenever the alert appears again it gets their choice, and when it does
+    not appear the step does nothing. An alert already covered by a dialog step with matching
+    wording is never added twice. Does not commit. Returns how many steps were added.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.browser import alert_text_matches
+
+    if script is None or not alerts:
+        return 0
+    steps = list(script.steps or [])
+    added = 0
+    # Highest position first, so inserting one never moves where a later one belongs.
+    for alert in sorted(alerts, key=lambda a: a.get("during_step") or 0, reverse=True):
+        message = (alert.get("message") or "").strip()
+        if not message:
+            continue
+        if any(st.get("action") == "dialog" and (st.get("description") or "").strip()
+               and alert_text_matches(st.get("description"), message) for st in steps):
+            continue
+        at = min(max(int(alert.get("during_step") or 0) + 1, 0), len(steps))
+        steps.insert(at, {
+            "action": "dialog",
+            "value": "dismiss" if alert.get("answer") == "dismiss" else "accept",
+            "description": message,
+            "dialog_type": alert.get("type") or "alert",
+            "is_optional": True,
+            "auto_added": True,
+        })
+        # The checkpoint is stored by position - keep it on the same step.
+        if script.checkpoint_index is not None and at <= script.checkpoint_index:
+            script.checkpoint_index += 1
+        added += 1
+    if added:
+        script.steps = steps
+        flag_modified(script, "steps")
+        logger.info("ERP script %s: added %s 'if this alert comes' step(s) from a real run",
+                    script.id, added)
+    return added
+
+
 def persist_run_outcome(db: Session, job: Job, script, result: dict,
                         operator_id: str | None = None) -> dict:
     """Write down what an ERP run did, and decide the job's status from it.
@@ -5097,6 +5148,13 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     Returns the `erp_*` fields to hang on the response; the caller refreshes and builds its own
     detail, because the two callers return different shapes.
     """
+    # Alerts the ERP raised that the script never covered - written into the script so a
+    # person can choose their button from now on. Never allowed to fail the run's own record.
+    try:
+        learn_unscripted_alerts(db, script, result.get("unscripted_alerts"))
+    except Exception:  # noqa: BLE001
+        logger.exception("could not add the run's unscripted alerts to script %s",
+                         getattr(script, "id", None))
     # The reference the ERP generated (Bill of Entry number / acknowledgement) is the only
     # durable proof the entry happened on their side. Kept even on a failed or duplicate
     # outcome - a run that got far enough to read it is exactly when it is needed.
@@ -5288,6 +5346,7 @@ def complete_job(
     if script is None:
         erp = {"erp_status": "no_script", "erp_log": ["No ready ERP script is configured for this template."]}
         # Nothing was entered anywhere, but the operator's work on the job IS finished.
+        job.erp_submitted_at = datetime.now(timezone.utc)
         job.status = "completed"
         # Same rule as persist_run_outcome's own completion - waits on an explicit Verify
         # press before counting as ERP Verified, not just this screen's own completion.
@@ -5306,6 +5365,7 @@ def complete_job(
         # Mark it Running so the list/dashboard shows live progress while the background
         # ERP entry is in flight (visible to a concurrent viewer / after this returns).
         job.status = "processing"
+        job.erp_submitted_at = datetime.now(timezone.utc)
         db.commit()
         # Always run in the background (headless) — no OS browser window pops up. The
         # Super Admin Entry Browser streams the same run into the app panel to watch/edit.

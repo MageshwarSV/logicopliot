@@ -42,6 +42,9 @@ export interface ErpStep {
    *  "are you sure?" confirm, a new-version notice. Recorded as an ordinary click, each of
    *  those breaks every run where it does NOT appear. */
   is_optional?: boolean | null;
+  /** On a `dialog` step with is_optional: a REAL job met this alert with no step for it, pressed
+   *  the default button, and wrote this "if this alert comes" step in by itself. */
+  auto_added?: boolean | null;
   /** Strip the element's `disabled` state (JS, best-effort) right before a click/double_click -
    *  for a control that starts disabled until something the script never does would normally
    *  enable it (e.g. a dependent dropdown auto-filled and locked when there's only one option).

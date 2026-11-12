@@ -43,6 +43,9 @@ type TabKey =
 // button, the blocker text, the "Next: X" prompts - so the two can read differently (e.g.
 // "Data Extraction" internally, "Required Details Review" on screen) without touching what
 // is actually stored or compared.
+// How long the "Submitting to the ERP" popup stays up before moving the user to the dashboard.
+const ERP_LEAVE_SECONDS = 10;
+
 const STEPS: { key: TabKey; label: string; displayLabel: string; built: boolean }[] = [
   { key: "capture", label: "Document Capture", displayLabel: "Document Capture", built: true },
   { key: "extraction", label: "Data Extraction", displayLabel: "Required Details Review", built: true },
@@ -310,27 +313,80 @@ const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
 // Fields whose dropdown options come from the server instead of the fixed list above - a
 // reference-backed (is_target_value) custom field's own table (e.g. every real Customs House
 // Code), fetched per-job via listCustomFieldReferenceOptions rather than hardcoded, so
-// updating the reference sheet changes the dropdown without a frontend redeploy. Each one is
-// narrowed to the rows relevant to THIS job by matching the table's own FIRST match column
-// against the current value of the other job field named here - a Chennai shipment only ever
-// needs to choose between Chennai's own codes (Sea vs Air), not every city's. The automatic
-// lookup still uses the SECOND key (transport mode) too, to pick the exact one by default -
-// only the dropdown's own option list is narrowed by just the first key, so the operator can
-// still correct the mode by picking the other code for the same city.
-const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, string> = {
+// updating the reference sheet changes the dropdown without a frontend redeploy. Each entry
+// narrows that field's own option list to whatever is relevant to THIS job, keyed off the
+// CURRENT value of the other job field named by filterByLabel - two ways a field's reference
+// table can encode "relevant to this job":
+//   - "match-column": the table's own match column (matchSlot, default the first) was uploaded
+//     holding exactly the filter field's own vocabulary (e.g. a forwarder NAME) - narrow to the
+//     rows whose column equals the current value, exactly.
+//   - "value-suffix": the OPTION VALUE itself (not a separate column) encodes which of the
+//     filter field's values it belongs to, by how it's spelled (e.g. a Customs House Code's own
+//     last digit says which transport mode it is for) - narrow to values ending in one of the
+//     suffixes listed for the filter field's current value.
+// Both kinds go through the single narrowDynamicDropdownOptions() below, at every call site
+// that renders one of these fields' options.
+type DynamicDropdownFilterConfig =
+  | { kind: "match-column"; filterByLabel: string; matchSlot?: number }
+  | { kind: "value-suffix"; filterByLabel: string; suffixesByValue: Record<string, string[]> };
+const DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY: Record<string, DynamicDropdownFilterConfig> = {
   // A forwarder's own branch list only ever matters once you know WHICH forwarder (ERP
   // Quotation Name / Erp Entry Name) - AIT's own branches, not Kuehne+Nagel's. Reference table
   // seeded from the Super Admin's own "Billing customers" sheet (Organization -> branch code,
   // one row per branch).
-  branch_name: "Erp Entry Name",
+  branch_name: { kind: "match-column", filterByLabel: "Erp Entry Name" },
+  // CustomsHouseCode's own code always ends in the digit for its transport mode (1 Sea, 4 Air,
+  // or 6 for a handful of codes usable under either) - narrowed on the CODE itself rather than
+  // a match column, since not every "6" code's reference row is tagged for both modes yet (the
+  // column approach would silently hide a valid code the moment its row for one mode is
+  // missing; the suffix is the one thing guaranteed to say what it is).
+  CustomsHouseCode: {
+    kind: "value-suffix",
+    filterByLabel: "TransportModeCode",
+    suffixesByValue: { A: ["4", "6"], S: ["1", "6"] },
+  },
 };
 // Of the fields above, these offer EVERY row their reference table holds instead of only the
-// rows matching the filter field's current value. The entry above is still what makes their
-// options get fetched at all - only the NARROWING is skipped. Empty for now (CustomsHouseCode
-// used to be the one entry here, before it moved to COMBOBOX_REFERENCE_FIELD_LABELS below,
-// whose own box is never narrowed in the first place) - kept around for whichever FILTER_BY
-// field needs this treatment next.
+// ones matching the filter field's current value. The entry above is still what makes their
+// options get fetched at all - only the NARROWING is skipped.
 const DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL = new Set<string>([]);
+/** The single place every dropdown narrowed by DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY goes
+ *  through, so a field added to that map is narrowed identically wherever its options are
+ *  rendered (today: the Additional Details card and ExtractionReview's relocated-field cards),
+ *  rather than each call site growing its own copy of "read the filter field, then filter".
+ *  liveOverrides carries a value some caller already has in hand BEFORE it's saved to
+ *  job.field_values (e.g. Erp Entry Name's own live, not-yet-saved pick) - only ever read when
+ *  present; everything else (today: TransportModeCode) falls back to the saved value below. */
+function narrowDynamicDropdownOptions(
+  label: string,
+  rows: jobsApi.CustomFieldReferenceOption[],
+  job: JobDetail,
+  liveOverrides?: Record<string, string>,
+): string[] {
+  const allValues = () => dedupe(rows.map((r) => r.value));
+  const config = DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY[label];
+  if (!config) return allValues();
+  const filterValue = (
+    liveOverrides?.[config.filterByLabel] ??
+    job.field_values.find((x) => x.row_index == null && x.label_name === config.filterByLabel)
+      ?.corrected_value ??
+    job.field_values.find((x) => x.row_index == null && x.label_name === config.filterByLabel)
+      ?.extracted_value ??
+    ""
+  )
+    .trim()
+    .toUpperCase();
+  if (!filterValue || DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(label)) return allValues();
+  if (config.kind === "value-suffix") {
+    const suffixes = config.suffixesByValue[filterValue];
+    if (!suffixes) return allValues();
+    return dedupe(rows.map((r) => r.value).filter((v) => suffixes.some((s) => v.endsWith(s))));
+  }
+  const slot = config.matchSlot ?? 0;
+  return dedupe(
+    rows.filter((r) => (r.match_values[slot] ?? "").toUpperCase() === filterValue).map((r) => r.value),
+  );
+}
 // Fields that offer every previously-typed value as a dropdown (same server-side reference
 // table as DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY, fetched the same way) while still taking a
 // brand-new typed value - unlike that one, this never replaces free text with a closed
@@ -728,8 +784,19 @@ export function JobRunPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [gk2Busy, setGk2Busy] = useState(false);
+  // Seconds left on the "Submitting to the ERP" popup before it moves the user to the
+  // dashboard; null = popup closed. See leaveWhileErpRuns.
+  const [erpLeaveIn, setErpLeaveIn] = useState<number | null>(null);
+  useEffect(() => {
+    if (erpLeaveIn === null) return;
+    if (erpLeaveIn <= 0) {
+      navigate(backToJobsPath);
+      return;
+    }
+    const t = setTimeout(() => setErpLeaveIn((s) => (s === null ? s : s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [erpLeaveIn, navigate, backToJobsPath]);
   // GK2's own "Approve & Proceed" press on IRN Processing - a dummy stand-in gate, like Data
   // Validation's "Approved and Proceed", since nothing real runs here yet for GK2. Kept
   // client-side (not persisted): this step has no real backend state of its own for GK2, and
@@ -1403,48 +1470,28 @@ export function JobRunPage() {
     }
   }
 
-  async function submitEntry() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const j = await jobsApi.completeJob(jobId);
-      setJob(j);
-      // Only advance to Completed if the ERP entry actually went through.
-      if (j.status === "completed") setActiveTab("submission");
-      else if (j.erp_status === "error" || j.erp_status === "failed")
-        // Both retries keep the extracted data now: "Run failed job again" submits straight
-        // away, "Rerun job" just clears the failure and stands it ready.
-        setError(
-          j.erp_failed_field
-            ? `The ERP rejected “${j.erp_failed_field}”. It's outlined in red below — correct it, press Save, then Run failed job again.`
-            : "The ERP entry failed. Check the details below, correct anything wrong, then Run failed job again.",
-        );
-    } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not submit the entry.");
-    } finally {
-      setSubmitting(false);
-    }
+  /** The real ERP run has started on the server (gk2_status preparing_erp / entering_erp).
+   *  It runs in the background there and takes minutes, so the user is told so and moved to
+   *  the dashboard instead of being held on a "Running the ERP entry..." screen; the
+   *  notification bell reports "Submitted to ERP" or "Failed to submit to ERP" when it ends. */
+  function isErpRunning(j: JobDetail): boolean {
+    return j.gk2_status === "preparing_erp" || j.gk2_status === "entering_erp";
+  }
+  function leaveWhileErpRuns() {
+    setErpLeaveIn(ERP_LEAVE_SECONDS);
   }
 
   /** GK1 (operator) presses "Final Submit for Approval" — normally hands the job to GK2's own
    *  queue (gk2_status "pending"). When this tenant has turned GK2 review off for this job's
-   *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped);
-   *  poll it through to a final outcome exactly as GK2's own "Final Approve & Proceed" does,
-   *  since nobody else is going to press a button to move it along. */
+   *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped),
+   *  and the user is moved to the dashboard while it runs (see leaveWhileErpRuns). */
   async function submitForGk2Approval() {
     setGk2Busy(true);
     setError(null);
     try {
-      let fresh = await jobsApi.submitForGk2Approval(jobId);
+      const fresh = await jobsApi.submitForGk2Approval(jobId);
       setJob(fresh);
-      if (fresh.gk2_skipped) {
-        for (let i = 0; i < 60; i++) {
-          if (fresh.gk2_status !== "preparing_erp" && fresh.gk2_status !== "entering_erp") break;
-          await new Promise((r) => setTimeout(r, 3000));
-          fresh = await jobsApi.getJob(jobId);
-          setJob(fresh);
-        }
-      }
+      if (fresh.gk2_skipped && isErpRunning(fresh)) leaveWhileErpRuns();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not submit this for GK2 approval.");
     } finally {
@@ -1456,20 +1503,16 @@ export function JobRunPage() {
    *  ("AI - Preparing for ERP") right away, builds the import workbook, then to "entering_erp"
    *  ("ERP Entry Process Started") once it actually starts replaying the ERP script for real -
    *  a real browser run (login, ~30 recorded steps, upload, submit) that can take well over a
-   *  minute, nothing like the old placeholder's fixed few seconds. Poll through BOTH of those
-   *  non-final states; stop only once gk2_status lands on "submitted" or "failed". */
+   *  minute. That runs in the background on the server, so GK2 is moved to the dashboard
+   *  while it does (see leaveWhileErpRuns). An approval that parks the job for IRN signing
+   *  instead does not start the ERP, and stays on this screen. */
   async function gk2ApproveAndProceed() {
     setGk2Busy(true);
     setError(null);
     try {
-      setJob(await jobsApi.gk2Approve(jobId));
-      // Up to 60 tries, 3s apart (3 minutes) — comfortably past a real script run.
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const fresh = await jobsApi.getJob(jobId);
-        setJob(fresh);
-        if (fresh.gk2_status !== "preparing_erp" && fresh.gk2_status !== "entering_erp") break;
-      }
+      const fresh = await jobsApi.gk2Approve(jobId);
+      setJob(fresh);
+      if (isErpRunning(fresh)) leaveWhileErpRuns();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not record the GK2 approval.");
     } finally {
@@ -3416,7 +3459,7 @@ export function JobRunPage() {
               the same value had two homes, and the one being read was not always the one
               being typed into. */}
           {/* ERP replay result — shown after Submit Entry */}
-          {!submitting && job.erp_status && (
+          {job.erp_status && (
             <div
               className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
                 job.erp_status === "ok"
@@ -3830,50 +3873,22 @@ export function JobRunPage() {
                           (fv.dropdown_style === "search" || fv.dropdown_style === "search_free");
                         if (fixedChoicesSearchable) {
                           comboOptions = fv.fixed_options!;
-                        } else if (fv.custom_field_id && COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name)) {
-                          // dedupe() - the reference table is a LEARNED (raw text -> corrected
-                          // value) mapping, not a plain list of unique names: the same resolved
-                          // value legitimately gets re-learned from several different raw texts
-                          // (e.g. "EXPEDITORS INTERNATIONAL (INDIA) PVT LTD" corrected from both
-                          // "EXPEDITORS KOREA LTD." and its own name on two different jobs) - a
-                          // dropdown showing each resolved value once per row showed it twice.
-                          comboOptions = dedupe(
-                            (comboReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value),
-                          );
-                        } else if (fv.custom_field_id && filterByLabel) {
-                          // e.g. branch_name ("ERP Quotation Branch") narrowed to the branches
-                          // of whichever forwarder is currently set as ERP Quotation Name
-                          // (Erp Entry Name) - same narrowing ExtractionReview's own copy of
-                          // this mechanism does for relocated fields (CustomsHouseCode).
-                          //
+                        } else if (fv.custom_field_id && (COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) || filterByLabel)) {
+                          // Both branches used to duplicate this narrowing by hand (one reading
+                          // comboReferenceOptions raw, the other filtering it by another job
+                          // field's current value first) - see narrowDynamicDropdownOptions'
+                          // own docstring for why that's now one function used everywhere a
+                          // DYNAMIC_REFERENCE_DROPDOWN_FILTER_BY field's options are rendered.
                           // Erp Entry Name specifically reads the LIVE, not-yet-saved pick (see
                           // liveErpEntryName above) rather than job.field_values' saved value -
                           // otherwise picking a name narrowed nothing until that pick was itself
                           // saved, so the operator had to save once just to see the branch list
-                          // narrow, then again to save the branch. Anything else this map might
-                          // ever filter by (today: nothing else in this card) falls back to the
-                          // saved value, same as before.
-                          const filterValue =
-                            filterByLabel === "Erp Entry Name"
-                              ? liveErpEntryName.toUpperCase()
-                              : (
-                                  job.field_values.find(
-                                    (x) => x.row_index == null && x.label_name === filterByLabel,
-                                  )?.corrected_value ??
-                                  job.field_values.find(
-                                    (x) => x.row_index == null && x.label_name === filterByLabel,
-                                  )?.extracted_value ??
-                                  ""
-                                )
-                                  .trim()
-                                  .toUpperCase();
-                          const rows = comboReferenceOptions[fv.custom_field_id] ?? [];
-                          comboOptions = dedupe(
-                            (
-                              filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
-                                ? rows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                                : rows
-                            ).map((o) => o.value),
+                          // narrow, then again to save the branch.
+                          comboOptions = narrowDynamicDropdownOptions(
+                            fv.label_name,
+                            comboReferenceOptions[fv.custom_field_id] ?? [],
+                            job,
+                            { "Erp Entry Name": liveErpEntryName.toUpperCase() },
                           );
                         }
                         return (
@@ -4289,8 +4304,10 @@ export function JobRunPage() {
       {/* ONE FIELD AT A TIME. Submit used to paint a banner naming what was missing and leave
           the operator to find each one on the page - on a fourteen-line invoice that is a hunt
           through eighty boxes. This asks for them in order, says which line each belongs to,
-          and counts down. The last one submits the entry itself, so nothing has to be found
-          again afterwards. */}
+          and counts down. The last one submits the job itself - through the SAME Final Submit
+          for Approval the button runs, so it goes to GK2 (or straight to the ERP when GK2 is
+          off for this shipment type). It used to call the old direct ERP entry instead,
+          which skipped GK2 entirely for any job that had a field left to fill. */}
       <Modal
         open={fixOpen}
         onClose={() => setFixOpen(false)}
@@ -4303,16 +4320,16 @@ export function JobRunPage() {
         {fixQueue.length === 0 ? (
           <div>
             <p className="text-sm text-slate-600 dark:text-slate-300">
-              Everything is filled in. Submitting the entry now.
+              Everything is filled in. Submitting the job now.
             </p>
             <div className="mt-4 flex justify-end">
               <Button
                 onClick={() => {
                   setFixOpen(false);
-                  submitEntry();
+                  void submitForGk2Approval();
                 }}
               >
-                Submit entry
+                Submit
               </Button>
             </div>
           </div>
@@ -4336,7 +4353,7 @@ export function JobRunPage() {
                 const remaining = fixQueue.length - 1;
                 if (remaining <= 0) {
                   setFixOpen(false);
-                  submitEntry();
+                  void submitForGk2Approval();
                 } else {
                   setFixAt(0);
                   setFixDraft("");
@@ -4407,13 +4424,40 @@ export function JobRunPage() {
                     Close and fill them on the page instead
                   </button>
                   <Button onClick={save} isLoading={fixSaving}>
-                    {fixQueue.length === 1 ? "Save and submit entry" : "Save and next →"}
+                    {fixQueue.length === 1 ? "Save and submit" : "Save and next →"}
                   </Button>
                 </div>
               </div>
             );
           })()
         )}
+      </Modal>
+
+      {/* The ERP run has started and continues on the server: say how long it takes and where
+          the result will turn up, then move on. Not dismissible - closing it would leave the
+          user on a screen with nothing left to do but wait. */}
+      <Modal
+        open={erpLeaveIn !== null}
+        onClose={() => navigate(backToJobsPath)}
+        title="Submitting to the ERP"
+        dismissible={false}
+      >
+        <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+          <p>
+            <span className="font-semibold text-slate-900 dark:text-slate-50">{job.reference}</span>{" "}
+            is being entered in the ERP. This takes a few minutes, so there's no need to wait on
+            this screen.
+          </p>
+          <p>
+            You'll get a notification in the bell when it has been submitted, or if it fails.
+          </p>
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <span className="text-xs text-slate-400">
+              Taking you to the dashboard in {Math.max(erpLeaveIn ?? 0, 0)}s…
+            </span>
+            <Button onClick={() => navigate(backToJobsPath)}>Go to dashboard now</Button>
+          </div>
+        </div>
       </Modal>
     </AppShell>
   );
@@ -7252,17 +7296,9 @@ function ExtractionReview({
                     }
                   }
                   if (dynamicRows !== undefined) {
-                    const filterFv = job.field_values.find(
-                      (x) => x.row_index == null && x.label_name === filterByLabel,
+                    options = narrowDynamicDropdownOptions(fv.label_name, dynamicRows, job).map(
+                      (v) => ({ value: v, label: v }),
                     );
-                    const filterValue = (filterFv?.corrected_value ?? filterFv?.extracted_value ?? "")
-                      .trim()
-                      .toUpperCase();
-                    const rows =
-                      filterValue && !DYNAMIC_REFERENCE_DROPDOWN_SHOW_ALL.has(fv.label_name)
-                        ? dynamicRows.filter((r) => (r.match_values[0] ?? "").toUpperCase() === filterValue)
-                        : dynamicRows;
-                    options = dedupe(rows.map((r) => r.value)).map((v) => ({ value: v, label: v }));
                   }
                   // "ERP Importer Address / Branch Code" - narrowed to the picked consignee's
                   // own branches server-side (see consigneeBranchOptions above), not via the
@@ -7298,7 +7334,11 @@ function ExtractionReview({
                     SEARCHABLE_REFERENCE_FIELD_LABELS.has(fv.label_name) && !!fv.custom_field_id;
                   const comboOptions = fixedChoiceComboOptions ?? (
                     COMBOBOX_REFERENCE_FIELD_LABELS.has(fv.label_name) && fv.custom_field_id
-                      ? dedupe((dynamicReferenceOptions[fv.custom_field_id] ?? []).map((o) => o.value))
+                      ? narrowDynamicDropdownOptions(
+                          fv.label_name,
+                          dynamicReferenceOptions[fv.custom_field_id] ?? [],
+                          job,
+                        )
                       : undefined
                   );
                   const suggestedDefault = fv.custom_field_id ? suggestedValues[fv.custom_field_id] : undefined;

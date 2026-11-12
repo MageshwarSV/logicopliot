@@ -1589,6 +1589,17 @@ export function ErpScriptRecorderPage() {
     });
   }
 
+  /** "If this alert pops up, press …" - a dialog step marked optional. It is a rule for the
+   *  whole run, not a step at one position: whenever an alert with matching wording appears it
+   *  gets the chosen button, and when it never appears nothing happens. So where it sits in the
+   *  list does not matter - it is simply added at the end. */
+  function addAlertStep() {
+    setSteps((s) => [
+      ...s,
+      { action: "dialog", value: "accept", description: "", dialog_type: "confirm", is_optional: true },
+    ]);
+  }
+
   function addManualStep() {
     // Strip the fields the chosen action doesn't use, so a step never carries a stale
     // capture_as or timeout left over from a different action the user was looking at.
@@ -2560,7 +2571,15 @@ export function ErpScriptRecorderPage() {
               )}
               {s.is_optional && (
                 <span className="whitespace-nowrap rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">
-                  optional — skip if absent
+                  {s.action === "dialog" ? "only if this alert pops up" : "optional — skip if absent"}
+                </span>
+              )}
+              {s.action === "dialog" && s.auto_added && (
+                <span
+                  className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+                  title="A real job met this alert with no step for it, pressed the default button, and added this step by itself. Check the button below."
+                >
+                  added from a real job — check the button
                 </span>
               )}
               {s.is_success_check && (
@@ -2734,9 +2753,29 @@ export function ErpScriptRecorderPage() {
               <div className="ml-9 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/5">
                 <span className="mt-0.5 text-base leading-none">⚠️</span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs text-amber-900 dark:text-amber-200">
-                    {s.description || "(no message captured)"}
-                  </p>
+                  {s.is_optional ? (
+                    /* An "if this alert comes" step answers any alert whose wording matches
+                       this text, so the text has to be editable: trim it to the part that never
+                       changes ("Credit Limit ... has exhausted") and it matches every customer. */
+                    <input
+                      type="text"
+                      value={s.description ?? ""}
+                      onChange={(e) => patchStep(i, { description: e.target.value })}
+                      placeholder="Alert wording to match (empty = any alert)"
+                      title="This step answers any alert whose message contains or closely matches this text"
+                      className="w-full rounded border border-amber-300 bg-white px-2 py-0.5 text-xs text-amber-900 placeholder:text-amber-400 focus:border-amber-500 focus:outline-none dark:border-amber-500/30 dark:bg-slate-900 dark:text-amber-200"
+                    />
+                  ) : (
+                    <p className="truncate text-xs text-amber-900 dark:text-amber-200">
+                      {s.description || "(no message captured)"}
+                    </p>
+                  )}
+                  {s.is_optional && (
+                    <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+                      If this alert pops up — anywhere in the run — press the button below. If it
+                      never pops up, this step is skipped.
+                    </p>
+                  )}
                   {s.dialog_type === "prompt" && s.value !== "dismiss" && (
                     <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
                       types: <span className="font-mono">{s.prompt_text || "(empty)"}</span>
@@ -2745,7 +2784,8 @@ export function ErpScriptRecorderPage() {
                   <div className="mt-1.5 flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => patchStep(i, { value: "accept" })}
+                      // Choosing a button is checking it - the "check the button" badge goes.
+                      onClick={() => patchStep(i, { value: "accept", auto_added: false })}
                       className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
                         s.value !== "dismiss"
                           ? "bg-emerald-600 text-white"
@@ -2757,7 +2797,7 @@ export function ErpScriptRecorderPage() {
                     {s.dialog_type !== "alert" && (
                       <button
                         type="button"
-                        onClick={() => patchStep(i, { value: "dismiss" })}
+                        onClick={() => patchStep(i, { value: "dismiss", auto_added: false })}
                         className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
                           s.value === "dismiss"
                             ? "bg-rose-600 text-white"
@@ -2925,6 +2965,17 @@ export function ErpScriptRecorderPage() {
             )}
             </div>
           ))}
+        </div>
+
+        {/* For an alert that never came while recording but does turn up on real jobs. */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button type="button" variant="secondary" onClick={addAlertStep}>
+            + If an alert pops up…
+          </Button>
+          <span className="text-[11px] text-slate-500">
+            Adds a step that answers an alert only when it appears — type its wording and pick OK
+            or Cancel. Alerts a real job meets with no step are added here by themselves.
+          </span>
         </div>
 
         {/* Manual step add — still available for tweaks */}

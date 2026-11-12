@@ -242,6 +242,7 @@ class JobTimingOut(BaseModel):
     job_id: str
     reference: str
     mode: str | None
+    created_at: str | None = None
     completed_at: str | None
     extraction_minutes: float | None
     review_minutes: float | None

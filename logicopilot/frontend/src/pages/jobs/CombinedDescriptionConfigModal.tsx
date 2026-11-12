@@ -203,7 +203,11 @@ export function CombinedDescriptionConfigModal({
       const last = arr[arr.length - 1];
       const lastTo = last ? Number(last.to) : NaN;
       const nextFrom = Number.isFinite(lastTo) && last?.to.trim() ? String(lastTo + 1) : "";
-      return [...arr, { id: newId(), rows: [], from: nextFrom, to: "" }];
+      // Start from a copy of set 1's rows rather than an empty table: a second format is
+      // usually set 1 with a piece or two changed, and rebuilding it row by row is how pieces
+      // get missed. Each row is copied, so editing the new set leaves set 1 untouched.
+      const rows = (arr[0]?.rows ?? []).map((r) => ({ ...r }));
+      return [...arr, { id: newId(), rows, from: nextFrom, to: "" }];
     });
   }
   function removeSet(id: string) {
@@ -583,7 +587,8 @@ export function CombinedDescriptionConfigModal({
                 </Button>
                 <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
                   A second set lets different products carry a different description — set 1 for
-                  products 1-3, set 2 for 4-6, and so on. Sets cannot cover the same product
+                  products 1-3, set 2 for 4-6, and so on. A new set starts as a copy of set 1's
+                  rows; change only what differs. Sets cannot cover the same product
                   twice. Only set 1 is remembered for this consignee's future jobs, because a
                   product's POSITION means something different on every job.
                 </p>

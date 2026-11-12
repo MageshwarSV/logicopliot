@@ -69,6 +69,12 @@ class ErpStep(BaseModel):
     # breaks every run where it does. Optional is the honest answer: dismiss it when it is
     # there, ignore it when it is not.
     is_optional: bool | None = None
+    # A `dialog` step marked is_optional is an "if this alert comes" step: whenever an alert
+    # whose wording matches `description` pops up - anywhere in the run - it gets the button in
+    # `value` (accept = OK, dismiss = Cancel); when it never pops up, nothing happens. True here
+    # means a REAL job met this alert with no step for it, so the run answered with the default
+    # and wrote this step in by itself - the Super Admin should check its button.
+    auto_added: bool | None = None
 
     # Strip the element's `disabled` state (via JS, best-effort) immediately before a
     # click/double_click - some controls (a dependent <select>, say) start disabled until
