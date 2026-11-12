@@ -171,6 +171,13 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # read right now.
     ai_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # When this job was LAST submitted to the ERP - overwritten on EVERY submission (GK2 Final
+    # Approve, Submit Entry, an Entry Browser rerun, Mark ERP Submitted), unlike ai_submitted_at
+    # above, which only ever keeps the first. "ERP Entry Time" on the dashboards is
+    # completed_at - this, so a job that failed and was retried weeks later is timed on its
+    # last attempt, not on the whole gap since the first one. See migration f3erpsub01.
+    erp_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # A human confirming the AI/ERP automation actually went through - closes a loop that
     # otherwise never closes: ai_submitted_at being set never moves on to anything else by
     # itself. None = still awaiting that confirmation. The direct Submit Entry path

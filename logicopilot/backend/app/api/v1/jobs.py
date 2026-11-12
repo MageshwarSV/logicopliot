@@ -2978,6 +2978,8 @@ def mark_erp_submitted(
     job.gk2_status = "submitted"
     if job.ai_submitted_at is None:
         job.ai_submitted_at = datetime.now(timezone.utc)
+    # A manual mark has no run to time - submitted and completed are the same moment.
+    job.erp_submitted_at = datetime.now(timezone.utc)
     job.erp_status = "ok"
     job.erp_reason = (
         f"Manually confirmed by {user.email}: the ERP entry actually succeeded "
@@ -3008,6 +3010,8 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     grp = db.get(TemplateGroup, job.group_id)
     is_excel_entry = grp is not None and (grp.entry_mode or "fields") == "excel"
     job.gk2_status = "preparing_erp"
+    # This submission's own start - overwritten on every attempt (see Job.erp_submitted_at).
+    job.erp_submitted_at = datetime.now(timezone.utc)
     # Clear the LAST attempt's result the moment a new one starts - otherwise the "ERP
     # replay result" banner (job.erp_status, shown regardless of gk2_status) keeps showing
     # "Entered into the ERP and submitted" from a previous run while THIS run is still only
@@ -5342,6 +5346,7 @@ def complete_job(
     if script is None:
         erp = {"erp_status": "no_script", "erp_log": ["No ready ERP script is configured for this template."]}
         # Nothing was entered anywhere, but the operator's work on the job IS finished.
+        job.erp_submitted_at = datetime.now(timezone.utc)
         job.status = "completed"
         # Same rule as persist_run_outcome's own completion - waits on an explicit Verify
         # press before counting as ERP Verified, not just this screen's own completion.
@@ -5360,6 +5365,7 @@ def complete_job(
         # Mark it Running so the list/dashboard shows live progress while the background
         # ERP entry is in flight (visible to a concurrent viewer / after this returns).
         job.status = "processing"
+        job.erp_submitted_at = datetime.now(timezone.utc)
         db.commit()
         # Always run in the background (headless) — no OS browser window pops up. The
         # Super Admin Entry Browser streams the same run into the app panel to watch/edit.

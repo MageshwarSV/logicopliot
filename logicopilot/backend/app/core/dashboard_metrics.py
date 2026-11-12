@@ -348,8 +348,9 @@ def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | 
     for a job submitted directly (ai_submitted_at never set), to completed_at itself, since a
     direct Submit Entry has no separate "review" vs "ERP entry" split; one human action did
     both in real time.
-    ERP submission: ai_submitted_at to completed_at - only meaningful (and only returned) for
-    a job that actually went through that path.
+    ERP submission: the LAST submission (erp_submitted_at) to completed_at. A job submitted
+    more than once - failed, retried, finished days later - is timed on its final attempt
+    only; see _erp_entry_minutes.
     """
     events = sorted(job.events, key=lambda e: e.created_at)
     extraction_start = None
@@ -366,11 +367,41 @@ def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | 
     if extraction_end and review_end and review_end > extraction_end:
         review_minutes = (review_end - extraction_end).total_seconds() / 60
 
-    erp_minutes = None
-    if job.ai_submitted_at and job.completed_at and job.completed_at > job.ai_submitted_at:
-        erp_minutes = (job.completed_at - job.ai_submitted_at).total_seconds() / 60
+    return extraction_minutes, review_minutes, _erp_entry_minutes(job, events)
 
-    return extraction_minutes, review_minutes, erp_minutes
+
+# A job that went through any of these AFTER being submitted was submitted again before it
+# finally completed: failed and retried, flagged duplicate, re-extracted, or completed and then
+# reopened.
+_RESUBMIT_SIGNS = {"failed", "duplicate", "extracting", "completed"}
+
+
+def _erp_entry_minutes(job: Job, events: list) -> float | None:
+    """Last ERP submission -> completion, in minutes.
+
+    erp_submitted_at is overwritten on every submission, so it is the last one. Jobs completed
+    before that column existed only have ai_submitted_at, which is the FIRST submission. That
+    is still correct for a job submitted exactly once, but for one submitted again later it
+    measured the whole gap (502h / 624h on production). Such a job's last submission time was
+    never recorded anywhere, so it gets None ("—") rather than a made-up number.
+    """
+    end = job.completed_at
+    if end is None:
+        return None
+    start = job.erp_submitted_at
+    if start is None:
+        start = job.ai_submitted_at
+        if start is None:
+            return None
+        # Anything between that first submission and the final completion (with a second's
+        # slack either side, since both ends are stamped in the same save as their own events)
+        # means it was submitted again later.
+        lo, hi = start + timedelta(seconds=1), end - timedelta(seconds=1)
+        if any(lo < ev.created_at < hi and ev.status in _RESUBMIT_SIGNS for ev in events):
+            return None
+    if end < start:
+        return None
+    return (end - start).total_seconds() / 60
 
 
 def _avg(values: list[float]) -> float | None:
