@@ -4694,11 +4694,41 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         # the invoice serial, so a product stays attached to the invoice it was billed on.
         rows[LINE_SET_KEY] = [str(k[0]) for k in line_keys]
 
-    # Job-level fields: first NON-EMPTY wins, whole-job documents first, then invoice 1.
+    # Which sets actually hold an INVOICE. A packing list whose own "Invoice No" was blank, or
+    # listed several numbers at once ("CD…210/CD…211/…"), never pairs with its invoice and
+    # lands in a set of its own (see doc_sets.assign_sets). That set is not an invoice: counting
+    # it as one put a blank - or bogus - extra row on the INVOICES sheet (found live: JOB-F53CB5,
+    # JOB-19D603 on SIT, MAA/SI/03698/26-27 on production), and the only workaround was typing
+    # the invoice number into the packing list by hand so it paired again.
+    _doc_types = {
+        td.id: (td.doc_type or "").strip().lower()
+        for td in db.query(TemplateDocument).filter(TemplateDocument.group_id == job.group_id).all()
+    }
+
+    def _is_invoice_doc(fv: JobFieldValue) -> bool:
+        return _doc_types.get(fv.template_document_id or "") == "invoice"
+
+    invoice_sets = {fv.set_index for fv in job_fvs
+                    if fv.row_index is None and fv.set_index and _is_invoice_doc(fv)}
+
+    def _priority(fv: JobFieldValue) -> tuple:
+        """Read order where a LATER non-empty value wins: whole-job documents, then sets with
+        no invoice in them, then the real invoice sets - and within one set, the Invoice
+        document's own reading after (so over) a packing list's copy of the same label. A job
+        with no orphan set and no label shared across documents reads exactly as before."""
+        if not fv.set_index:
+            bucket = 0
+        elif invoice_sets and fv.set_index not in invoice_sets:
+            bucket = 1
+        else:
+            bucket = 2
+        return (bucket, fv.set_index or 0, 1 if _is_invoice_doc(fv) else 0, fv.id)
+
+    # Job-level fields: whole-job documents first, then invoice by invoice (see _priority).
     # Keying by label alone let whichever row the database returned last decide, so with
     # three invoices the header fields came from an arbitrary one of them.
     values: dict[str, str] = {}
-    for fv in sorted(job_fvs, key=lambda f: (f.set_index or 0, f.id)):
+    for fv in sorted(job_fvs, key=_priority):
         if fv.row_index is not None:
             continue
         v = fv.value or ""
@@ -4729,8 +4759,11 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
     # attached when the job really has several, so a single-invoice job produces exactly the
     # workbook it produced before this change.
     per_set: dict[int, dict[str, str]] = {}
-    for fv in job_fvs:
+    for fv in sorted(job_fvs, key=_priority):
         if fv.row_index is None and fv.set_index:
+            # A set with no invoice in it is a stray packing list, not an invoice of its own.
+            if invoice_sets and fv.set_index not in invoice_sets:
+                continue
             d = per_set.setdefault(fv.set_index, {})
             v = fv.value or ""
             if v.strip() or fv.label_name not in d:
