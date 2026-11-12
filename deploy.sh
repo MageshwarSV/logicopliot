@@ -34,10 +34,33 @@ BRANCH="${DEPLOY_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}"
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
   BRANCH=main
 fi
+# Per-checkout settings, if this checkout has any. A box that runs TWO instances (SIT and
+# dev live side by side on .28) keeps each one's ports in its own deploy.env rather than
+# relying on whoever types the command to remember them. Gitignored: it describes the box,
+# not the code.
+if [ -f "$ROOT/deploy.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/deploy.env"
+fi
+
 # Same on UAT and SIT today. Overridable so a box that differs needs no edit here:
 #   BACKEND_PORT=31299 ./deploy.sh
 BACKEND_PORT="${BACKEND_PORT:-30299}"
 FRONTEND_PORT="${FRONTEND_PORT:-30300}"
+
+# Which pm2 apps THIS checkout owns. Derived from the checkout's own directory name, not
+# hardcoded - /root/logicopilot gives logicopilot-backend/-frontend exactly as before, and
+# /root/logicopilot-dev gives logicopilot-dev-backend/-frontend.
+#
+# They WERE hardcoded, and on 2026-11-12 that did the one thing a second instance must never
+# do: run from /root/logicopilot-dev, it built dev's code and then restarted SIT's processes.
+# Dev never picked up its own build, SIT took a restart nobody asked for, and the health check
+# still said "backend OK on :30399" - because dev's backend was already up on that port, just
+# not the thing that had been restarted. A deploy that reports success while bouncing the
+# wrong instance is worse than one that fails outright.
+APP_PREFIX="${APP_PREFIX:-$(basename "$ROOT")}"
+BACKEND_APP="${BACKEND_APP:-$APP_PREFIX-backend}"
+FRONTEND_APP="${FRONTEND_APP:-$APP_PREFIX-frontend}"
 CHECK=${1:-}
 
 cd "$ROOT"
@@ -130,11 +153,23 @@ cd "$APP/frontend"
 npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
 npm run build 2>&1 | tail -5
 
-say "6/6  restarting"
+say "6/6  restarting $BACKEND_APP + $FRONTEND_APP"
 # Only these two. These boxes also run other apps under the same pm2 - meeting,
-# oos, productflow, ql, vessel-orch, wb-leads, workbooster, unified-orchestrator -
-# and none of them are ours to bounce.
-pm2 restart logicopilot-backend logicopilot-frontend --update-env >/dev/null
+# oos, productflow, ql, vessel-orch, wb-leads, workbooster, unified-orchestrator,
+# and the OTHER logicopilot instance - and none of them are ours to bounce.
+#
+# Refuse rather than guess: pm2 restart on a name that does not exist is a no-op that still
+# exits 0, so a typo or a renamed app would sail through to a health check that passes off
+# the instance already running on that port.
+for app in "$BACKEND_APP" "$FRONTEND_APP"; do
+  pm2 describe "$app" >/dev/null 2>&1 || {
+    echo "     *** no pm2 app called '$app' - refusing to restart anything."
+    echo "     This checkout is $ROOT, so it expects $BACKEND_APP and $FRONTEND_APP."
+    echo "     Set APP_PREFIX/BACKEND_APP/FRONTEND_APP in $ROOT/deploy.env if they differ."
+    exit 1
+  }
+done
+pm2 restart "$BACKEND_APP" "$FRONTEND_APP" --update-env >/dev/null
 sleep 4
 pm2 list --no-color | grep -E "logicopilot|name" | sed 's/^/     /'
 
@@ -143,11 +178,11 @@ for i in $(seq 1 15); do
   if curl -fsS -m 3 "http://127.0.0.1:$BACKEND_PORT/docs" >/dev/null 2>&1; then
     echo "     backend OK on :$BACKEND_PORT"; break
   fi
-  [ "$i" = 15 ] && { echo "     *** backend NOT answering - check: pm2 logs logicopilot-backend"; exit 1; }
+  [ "$i" = 15 ] && { echo "     *** backend NOT answering - check: pm2 logs $BACKEND_APP"; exit 1; }
   sleep 2
 done
 curl -fsS -m 3 "http://127.0.0.1:$FRONTEND_PORT" >/dev/null 2>&1 \
   && echo "     frontend OK on :$FRONTEND_PORT" \
-  || echo "     *** frontend not answering - check: pm2 logs logicopilot-frontend"
+  || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
 
 say "deployed: $(git log --oneline -1)"
