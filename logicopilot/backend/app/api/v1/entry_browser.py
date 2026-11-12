@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.api.v1.jobs import entry_uploads, entry_values_and_rows, persist_run_outcome
@@ -199,6 +200,10 @@ def rerun_live(job_id: str, db: Session = Depends(get_db), _=Depends(require_rol
         finally:
             own.close()
 
+    # This rerun is a new submission - its own start, not the first one's, is what ERP Entry
+    # Time is measured from (see Job.erp_submitted_at).
+    job.erp_submitted_at = datetime.now(timezone.utc)
+    db.commit()
     sid = playback_manager.start(script.url, login, script.steps or [], values,
                                  rows=rows, uploads=uploads, downloads_dir=out_dir,
                                  on_done=_record)

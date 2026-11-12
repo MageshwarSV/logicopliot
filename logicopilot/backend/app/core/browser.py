@@ -1663,6 +1663,97 @@ _DIALOG_ANSWERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _DESTRUCTIVE_DIALOG_WORDS = ("close", "leave", "discard", "cancel", "unsaved", "lose")
 
 
+# "If this alert pops up, press X" - a `dialog` step marked optional (is_optional) is not armed
+# at its position like an ordinary dialog step. It is a RULE for the whole run: whenever an
+# alert whose wording matches it appears - at any point, as often as it appears - it gets the
+# button that step names; when it never appears, the step simply does nothing. Built for alerts
+# that never showed up while the script was recorded but do turn up on real jobs (a credit-limit
+# warning for one customer, a duplicate-invoice confirm). Rules live per browser CONTEXT, so
+# every tab the ERP opens is covered.
+_DIALOG_RULES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+# How alike an alert's wording must be to a rule's recorded wording to count as the same alert
+# when neither contains the other - the same alert usually differs only in the customer name,
+# invoice number or amount it quotes. Measured on real wording: the credit-limit alert for two
+# different customers scores 0.77; a different alert sharing "do you want to continue?" 0.5.
+ALERT_SIMILARITY = 0.7
+# ... and the same alert around a long customer name can fall under any ratio, so this too
+# counts: the same opening AND the same ending, only the middle (the name, the number) differing.
+ALERT_SAME_ENDS = 12
+
+
+def _norm_alert(text: str | None) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def alert_text_matches(expected: str | None, message: str | None) -> bool:
+    """Does this alert's wording match a rule's? Empty expected text matches any alert (a
+    deliberate catch-all a Super Admin can set up by clearing the wording)."""
+    import difflib
+
+    e, m = _norm_alert(expected), _norm_alert(message)
+    if not e:
+        return True
+    if not m:
+        return False
+    if e in m or m in e:
+        return True
+    if difflib.SequenceMatcher(None, e, m).ratio() >= ALERT_SIMILARITY:
+        return True
+    import os.path
+
+    head = len(os.path.commonprefix([e, m]))
+    tail = len(os.path.commonprefix([e[::-1], m[::-1]]))
+    return head >= ALERT_SAME_ENDS and tail >= ALERT_SAME_ENDS
+
+
+def is_alert_rule(step: dict) -> bool:
+    """A dialog step marked optional is an "if this alert comes" rule, not a positional arm."""
+    return (step or {}).get("action") == "dialog" and bool((step or {}).get("is_optional"))
+
+
+def _rule_from_step(step: dict, step_no: int) -> dict:
+    return {
+        "step_no": step_no,
+        "text": step.get("description") or "",
+        "accept": str(step.get("value") or "accept").strip().lower() != "dismiss",
+        "reply": step.get("prompt_text") or "",
+    }
+
+
+def set_dialog_rules(ctx, steps: list[dict]) -> int:
+    """Register every "if this alert comes" step of a script on this browser context. Returns
+    how many there were, for the log."""
+    rules = [_rule_from_step(st, n + 1) for n, st in enumerate(steps or []) if is_alert_rule(st)]
+    try:
+        _DIALOG_RULES[ctx] = rules
+    except TypeError:   # not weak-referenceable (a test double) - rules simply do not apply
+        return 0
+    return len(rules)
+
+
+def add_dialog_rule(ctx, step: dict, step_no: int) -> None:
+    """One rule more, for the recorder's step-by-step replay, which reaches steps one at a time."""
+    try:
+        rules = _DIALOG_RULES.setdefault(ctx, [])
+    except TypeError:
+        return
+    rules[:] = [r for r in rules if r["step_no"] != step_no] + [_rule_from_step(step, step_no)]
+
+
+def matching_dialog_rule(page, message: str | None) -> dict | None:
+    """The "if this alert comes" step that covers this alert, if any. Rules with wording are
+    tried before a catch-all with none, so a specific answer always beats a general one."""
+    try:
+        rules = _DIALOG_RULES.get(page.context) if page is not None else None
+    except Exception:  # noqa: BLE001 - closed page, test double: no rule
+        rules = None
+    for rule in sorted(rules or [], key=lambda r: not r["text"]):
+        if alert_text_matches(rule["text"], message):
+            return rule
+    return None
+
+
 def _dialog_answer(page, message: str = "", assume_pick_confirm: bool = False) -> tuple[bool, str]:
     """How the popup on this page should be answered: (accept?, text for a prompt).
 
@@ -1691,7 +1782,13 @@ def _dialog_answer(page, message: str = "", assume_pick_confirm: bool = False) -
     passes it when a double_click (always a list-picker row selection here, never anything
     else) just ran - the popup confirming it wants to close right after a row was picked IS
     the pick, not a warning about losing work.
+
+    An "if this alert comes" step (matching_dialog_rule) beats all of the above: it is a
+    person's explicit choice for exactly this alert, so it is trusted as given.
     """
+    rule = matching_dialog_rule(page, message)
+    if rule is not None:
+        return rule["accept"], rule["reply"]
     try:
         cell = _DIALOG_ANSWERS.get(page) if page is not None else None
     except TypeError:      # not weak-referenceable
@@ -3277,7 +3374,13 @@ class RecorderSession:
                     # used to accept them all - which meant a replayed `dialog` step recorded
                     # as "dismiss" could never dismiss: this fired first and accepted. Ask the
                     # armed answer instead. Nothing armed (i.e. plain recording) = accept.
-                    accept, reply = _dialog_answer(getattr(d, "page", None))
+                    # An "if this alert comes" step covering it wins (see matching_dialog_rule);
+                    # otherwise exactly as before - the armed answer, or accept.
+                    rule = matching_dialog_rule(getattr(d, "page", None), d.message or "")
+                    if rule is not None:
+                        accept, reply = rule["accept"], rule["reply"]
+                    else:
+                        accept, reply = _dialog_answer(getattr(d, "page", None))
                     try:
                         d.accept(reply) if accept else d.dismiss()
                     except Exception:  # noqa: BLE001
@@ -3744,6 +3847,9 @@ class RecorderSession:
         """
         steps = steps or []
         end = min(end, len(steps))
+        # "If this alert comes" steps cover the whole replay, wherever they sit in the list.
+        if self._ctx is not None:
+            set_dialog_rules(self._ctx, steps)
         i = start
         # The page can CHANGE mid-replay: a switch_tab step moves the recorder to another tab
         # and everything after it belongs to that tab. Holding the original page would run the
@@ -3820,6 +3926,12 @@ class RecorderSession:
                         pass
                     _settle(page)
                     log.append(f"{i + 1}. switch_tab -> {page.url}")
+                    i += 1
+                    continue
+                elif act == "dialog" and is_alert_rule(st):
+                    log.append(f"{i + 1}. alert step: if {(st.get('description') or 'any alert')[:80]!r} "
+                               f"pops up, press {'Cancel' if st.get('value') == 'dismiss' else 'OK'} "
+                               f"(skipped when it does not)")
                     i += 1
                     continue
                 elif act == "dialog":
@@ -4480,6 +4592,15 @@ class RecorderSession:
                 self._done_components += 1
                 return {"ok": True, "status": "skipped", "action": "ai_action",
                         "note": "AI step — use the auto rerun for AI takeover.", "ran": ran}
+            if action == "dialog" and is_alert_rule(step):
+                if self._ctx is not None:
+                    add_dialog_rule(self._ctx, step, self._idx + 1)
+                self._done_set.add(self._idx)
+                self._idx += 1
+                self._done_components += 1
+                return {"ok": True, "status": "ok", "action": "dialog",
+                        "description": "If this alert pops up it will be answered - skipped when it does not",
+                        "ran": ran}
             if action == "dialog":
                 # A native alert/confirm blocks the page until answered, and Playwright
                 # dismisses by default - so a confirm-on-submit would silently CANCEL the
@@ -4959,7 +5080,22 @@ def _safe_close(ctx, browser) -> None:
         pass
 
 
-def play_steps(
+def play_steps(*args, **kwargs) -> dict:
+    """Replay a saved step sequence - see _play_steps for everything it does.
+
+    This wrapper adds one thing to whatever comes back: `unscripted_alerts`, every native alert
+    the ERP raised that no step of the script covered, with the button that was pressed and the
+    step it fired during. persist_run_outcome writes each one back into the script as an
+    "if this alert comes" step, so a Super Admin can choose its button from then on.
+    """
+    alerts: list[dict] = []
+    res = _play_steps(*args, _unscripted_alerts=alerts, **kwargs)
+    if isinstance(res, dict) and alerts:
+        res["unscripted_alerts"] = alerts
+    return res
+
+
+def _play_steps(
     url: str,
     login: dict | None,
     steps: list[dict],
@@ -4976,6 +5112,7 @@ def play_steps(
     job_gate=None,        # JobGate — park at the checkpoint and wait for a job (see parked.py)
     cancel=None,          # callable() -> True when somebody has pressed Stop
     stall_after: int = STALL_SECONDS,   # give up on ONE step that never moves on
+    _unscripted_alerts: list | None = None,   # filled by play_steps' own wrapper - see there
 ) -> dict:
     """Replay a saved step sequence. `values` maps field_label -> value; a step's value
     may be a literal or a [[field_label]] placeholder resolved from values. Returns status
@@ -5170,11 +5307,42 @@ def play_steps(
             # one the script expected next. Set the moment a double_click actually runs;
             # overwritten by whatever action runs after it.
             last_action_was_double_click: dict = {"flag": False}
+            # Which step (0-based) the run is on, so an alert nobody scripted can be written
+            # back into the script right where it fired - see _answer_dialog below.
+            _current_step: dict = {"i": 0}
+
+            # "If this alert comes" steps cover every tab, from the first moment.
+            n_rules = set_dialog_rules(ctx, steps)
+            if n_rules:
+                log.append(f"{n_rules} 'if this alert comes' step(s) ready")
 
             def _answer_dialog(d):
-                accept, reply = _dialog_answer(getattr(d, "page", None), d.message,
+                d_page = getattr(d, "page", None)
+                rule = matching_dialog_rule(d_page, d.message)
+                accept, reply = _dialog_answer(d_page, d.message,
                                                assume_pick_confirm=last_action_was_double_click["flag"])
-                if not accept:
+                if rule is None:
+                    # Not covered by an "if this alert comes" step. Answered by the default as
+                    # always - but remembered, so it can be written into the script and a
+                    # person can choose its button from then on. An ordinary armed dialog step
+                    # whose own wording matches counts as covered, not as unscripted.
+                    try:
+                        cell = _DIALOG_ANSWERS.get(d_page) if d_page is not None else None
+                    except TypeError:
+                        cell = None
+                    armed_text = (cell[2] if cell and len(cell) > 2 else "") or ""
+                    covered = bool(cell) and alert_text_matches(armed_text, d.message)
+                    if not covered and _unscripted_alerts is not None:
+                        msg = (d.message or "").strip()[:400]
+                        if not any(alert_text_matches(a["message"], msg) for a in _unscripted_alerts):
+                            _unscripted_alerts.append({
+                                "type": d.type, "message": msg,
+                                "answer": "accept" if accept else "dismiss",
+                                "during_step": _current_step["i"],
+                            })
+                # A Cancel the script itself chose is not the "close the form?" safety dismiss
+                # the save-again recovery is built for - leave that flag alone for it.
+                if not accept and rule is None:
                     dismissed_destructive["flag"] = True
                 # Unlike the recorder's own _remember_dialog, this one used to answer the
                 # popup and say nothing about it - so "Quotation is mandatory for job", the
@@ -5189,6 +5357,7 @@ def play_steps(
                     log.append(
                         f"ALERT: the ERP raised a {d.type} - {(d.message or '').strip()[:300]!r} "
                         f"- {'accepted' if accept else 'dismissed'}"
+                        + (f" (as alert step {rule['step_no']} says)" if rule is not None else "")
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -5514,6 +5683,7 @@ def play_steps(
                     lease.touch()
 
             while i < len(steps) and safety < len(steps) * 4 + 12:
+                _current_step["i"] = i
                 maybe_save_checkpoint()
                 # ---- PARKED SESSION: wait at the checkpoint for a job to arrive ----------
                 # This is what "stay open" means. The setup steps have just finished, so the
@@ -5640,6 +5810,17 @@ def play_steps(
                         _settle(page, timeout=budget_ms, network_wait=min(budget_ms, 5000))
                         _settle_postback(page, timeout=budget_ms)
                         log.append(f"step {i + 1} wait_full_load ok")
+                        executed.add(i)
+                        i += 1
+                        continue
+                    if action == "dialog" and is_alert_rule(step):
+                        # Already registered for the whole run (set_dialog_rules) - nothing to
+                        # do at this position, and nothing to fail when the alert never comes.
+                        log.append(
+                            f"step {i + 1} alert step: if "
+                            f"{(step.get('description') or 'any alert')[:80]!r} pops up, press "
+                            f"{'Cancel' if step.get('value') == 'dismiss' else 'OK'} "
+                            f"(skipped when it does not)")
                         executed.add(i)
                         i += 1
                         continue

@@ -179,12 +179,37 @@ def test_a_gk2_is_told_only_about_the_jobs_they_approved(client, db_session):
     assert _get(client) == []
 
 
-def test_a_manager_watching_the_tenant_gets_no_colleagues_results(client, db_session):
+def test_a_manager_and_a_tenant_admin_see_every_erp_result_in_their_tenant(client, db_session):
+    """Oversight roles, by explicit request: watching the whole tenant's ERP outcomes is their
+    job, so they are told about every operator's - but still never another tenant's."""
     tenant, op, other, group = _setup(db_session)
     manager = make_user(db_session, role="manager", tenant=tenant, email="mgr-n@example.com")
     _job(db_session, tenant, group, op, "JOB-A", status="completed",
          ai_submitted_at=datetime.now(timezone.utc))
-    login(client, manager.email)
+    _job(db_session, tenant, group, other, "JOB-B", status="failed", erp_status="error")
+
+    stranger_tenant = make_tenant(db_session, name="Someone Else")
+    make_user(db_session, role=TENANT_ADMIN, tenant=stranger_tenant, email="ta-x@example.com")
+    stranger = make_user(db_session, role="operator", tenant=stranger_tenant,
+                         email="op-x@example.com")
+    g2 = TemplateGroup(tenant_id=stranger_tenant.id, name="Theirs", mode="Sea Import")
+    db_session.add(g2)
+    db_session.commit()
+    _job(db_session, stranger_tenant, g2, stranger, "JOB-THEIRS", status="failed",
+         erp_status="error")
+
+    for email in (manager.email, "ta-n@example.com"):
+        login(client, email)
+        assert sorted(n["job_reference"] for n in _get(client)) == ["JOB-A", "JOB-B"], email
+
+
+def test_a_platform_admin_is_told_only_about_their_own_jobs(client, db_session):
+    """Admin sees every tenant - a bell of the whole platform's results would be noise."""
+    tenant, op, other, group = _setup(db_session)
+    admin = make_user(db_session, role="admin", email="admin-n@example.com")
+    _job(db_session, tenant, group, op, "JOB-A", status="completed",
+         ai_submitted_at=datetime.now(timezone.utc))
+    login(client, admin.email)
     assert _get(client) == []
 
 
@@ -226,6 +251,47 @@ def test_a_failure_and_a_later_success_are_two_separate_notifications(client, db
     items = _get(client)
     assert [n["kind"] for n in items] == ["submitted"]
     assert items[0]["read"] is False, "the success was silenced by having read the failure"
+
+
+def test_failing_again_after_a_retry_is_a_new_unread_notification(client, db_session):
+    """Read means read since it last happened. Retried and failed again, the job is a NEW
+    failure - it must not arrive already greyed out, or no pop-up would ever announce it."""
+    tenant, op, other, group = _setup(db_session)
+    job = _job(db_session, tenant, group, op, "JOB-AGAIN", status="failed", erp_status="error")
+    login(client, op.email)
+    assert client.post("/api/v1/notifications/read", json={}).json()["marked"] == 1
+    # First failure ten minutes ago, read five minutes ago.
+    now = datetime.now(timezone.utc)
+    job.updated_at = now - timedelta(minutes=10)
+    db_session.query(NotificationRead).one().read_at = now - timedelta(minutes=5)
+    db_session.commit()
+    assert _get(client)[0]["read"] is True
+
+    # The retry fails again now: the job row moves forward (updated_at's onupdate), the read
+    # mark does not.
+    job.erp_reason = "Second attempt: the ERP rejected the HS code"
+    db_session.commit()
+
+    items = _get(client)
+    assert items[0]["read"] is False
+    assert items[0]["detail"] == "Second attempt: the ERP rejected the HS code"
+    # Reading it again moves the one existing mark forward rather than piling up rows.
+    assert client.post("/api/v1/notifications/read", json={}).json()["marked"] == 1
+    assert _get(client)[0]["read"] is True
+    assert db_session.query(NotificationRead).count() == 1
+
+
+def test_a_super_admin_can_mark_their_own_notification_read(client, db_session):
+    """A Super Admin has no tenant; the read mark takes the job's tenant (the column is NOT
+    NULL), so this used to fail on insert."""
+    tenant, op, other, group = _setup(db_session)
+    sa = make_user(db_session, role="super_admin", email="sa-n@example.com")
+    _job(db_session, tenant, group, sa, "JOB-SA", status="failed", erp_status="error")
+    login(client, sa.email)
+    r = client.post("/api/v1/notifications/read", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["marked"] == 1
+    assert _get(client)[0]["read"] is True
 
 
 def test_something_old_is_not_a_notification(client, db_session):
