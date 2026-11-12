@@ -6,6 +6,7 @@ import { ROLE_HOME } from "../auth/roleHome";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { Alert } from "../components/ui/Alert";
+import { EyeIcon, EyeSlashIcon } from "../components/ui/icons";
 
 // The only thing ever remembered is the email address itself - never the password, and only
 // when the user explicitly ticks the box. Wrapped in try/catch everywhere it's touched, same
@@ -190,9 +191,10 @@ export function LoginPage() {
                   onClick={() => setShowPassword((v) => !v)}
                   tabIndex={-1}
                   title={showPassword ? "Hide password" : "Show password"}
-                  className="text-base leading-none text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="flex items-center rounded p-0.5 text-slate-400 transition-colors hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
                 >
-                  {showPassword ? "🙈" : "👁️"}
+                  {showPassword ? <EyeSlashIcon className="h-5 w-5" /> : <EyeIcon className="h-5 w-5" />}
                 </button>
               }
             />
