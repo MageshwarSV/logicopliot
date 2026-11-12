@@ -36,6 +36,7 @@ redundantly is a far smaller problem than a job that does not run.
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -50,6 +51,11 @@ logger = logging.getLogger(__name__)
 # on a good day. Generous on purpose: waiting costs one job some seconds, while a redundant
 # login can cost ANOTHER job its session.
 LOGIN_WAIT_SECONDS = 120
+
+# How long a job waits for its turn on a script that CANNOT share a login. A real ERP entry
+# runs in a minute or three, so this covers a couple of jobs queued ahead. On expiry the run
+# goes ahead anyway: a job that never runs is worse than one that risks a second login.
+SCRIPT_SLOT_WAIT_SECONDS = 300
 
 _POLL_SECONDS = 0.5
 
@@ -108,7 +114,7 @@ class SessionLease:
         """
         if self.leader or not self.session_file:
             return
-        got = _take(str(self.session_file), wait_seconds=LOGIN_WAIT_SECONDS)
+        got = _take(_login_lock_path(self.session_file), wait_seconds=LOGIN_WAIT_SECONDS)
         if got is None:
             # Someone else is already replaying the login. Let this run do its own rather
             # than stall any longer - it has already spent its wait.
@@ -150,18 +156,8 @@ class SessionLease:
         handle, self._handle = self._handle, None
         local, self._local = self._local, None
         self.leader = False
-        if handle is not None:
-            try:
-                if fcntl is not None:
-                    fcntl.flock(handle, fcntl.LOCK_UN)
-                handle.close()
-            except Exception:  # noqa: BLE001
-                pass
-        if local is not None:
-            try:
-                local.release()
-            except Exception:  # noqa: BLE001
-                pass
+        if local is not None or handle is not None:
+            _drop((local, handle))
 
 
 def atomic_write(fp: Path, text: str) -> None:
@@ -187,17 +183,30 @@ def atomic_write(fp: Path, text: str) -> None:
             pass
 
 
-def _take(key: str, *, wait_seconds: float = 0.0):
-    """Try to become the one that logs in. Returns (local_lock, flock_handle) or None.
+def _login_lock_path(session_file) -> str:
+    """Who is allowed to perform the login for this script."""
+    return str(session_file) + ".login.lock"
+
+
+def _run_lock_path(script_id) -> str:
+    """Who is allowed to be RUNNING this script right now - only used by scripts that cannot
+    share a login, where one run at a time is the only safe answer."""
+    from app.core.config import get_settings
+
+    return str(Path(get_settings().uploads_dir) / "erp_sessions" / f"{script_id}.run.lock")
+
+
+def _take(lock_path: str, *, wait_seconds: float = 0.0):
+    """Take a lock, optionally waiting for it. Returns (local_lock, flock_handle) or None.
 
     Both locks or neither: holding the in-process one while failing the file one would block
     every thread here behind a lock the holder never actually won.
     """
     deadline = time.time() + wait_seconds
-    local = _local_lock_for(key)
+    local = _local_lock_for(lock_path)
     while True:
         if local.acquire(blocking=False):
-            handle = _flock(key)
+            handle = _flock(lock_path)
             if handle is not None or fcntl is None:
                 return local, handle
             local.release()
@@ -206,15 +215,32 @@ def _take(key: str, *, wait_seconds: float = 0.0):
         time.sleep(_POLL_SECONDS)
 
 
-def _flock(key: str):
+def _drop(got) -> None:
+    """Release what _take returned. Never raises - this runs in `finally` blocks."""
+    local, handle = got
+    if handle is not None:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if local is not None:
+        try:
+            local.release()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _flock(lock_path: str):
     if fcntl is None:  # Windows: the in-process lock is the whole story here
         return None
     try:
-        p = Path(key + ".login.lock")
+        p = Path(lock_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         handle = open(p, "w")
     except Exception:  # noqa: BLE001 - an unwritable dir must not stop the run
-        logger.debug("could not open the login lock file", exc_info=True)
+        logger.debug("could not open the lock file %s", lock_path, exc_info=True)
         return None
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -222,6 +248,39 @@ def _flock(key: str):
         handle.close()
         return None
     return handle
+
+
+@contextmanager
+def script_slot(script_id, *, shared_login: bool):
+    """Hold this script's run slot for the length of one ERP entry.
+
+    This is what makes raising erp_script_workers safe rather than merely faster.
+
+    A script WITH a checkpoint and "stay open" shares one login between every job running on
+    it (the lease above), so any number may run at once - tabs on one session, which is the
+    whole point. A script WITHOUT one has no session to share: every run replays the login,
+    so two at once is two logins into the same ERP account, and SOFTLINK answers the second
+    by offering to kill the first. Those runs take turns instead, exactly as they did when
+    the worker count was 1.
+
+    So turning the workers up speeds up the scripts that are set up to share a session and
+    changes nothing for the ones that are not, instead of quietly making them unsafe.
+    """
+    if shared_login:
+        yield True   # nothing to serialise: they are all on one login
+        return
+    got = _take(_run_lock_path(script_id), wait_seconds=SCRIPT_SLOT_WAIT_SECONDS)
+    if got is None:
+        logger.warning(
+            "script %s has no shared session and another job has been running it for over "
+            "%ss - going ahead anyway. If the ERP asks to kill the other session, that job "
+            "may lose its screen. Give this script a checkpoint and 'stay open' to let its "
+            "jobs share one login.", script_id, SCRIPT_SLOT_WAIT_SECONDS)
+    try:
+        yield got is not None
+    finally:
+        if got is not None:
+            _drop(got)
 
 
 def acquire(session_file) -> SessionLease:
@@ -232,14 +291,14 @@ def acquire(session_file) -> SessionLease:
     if not session_file:
         return SessionLease(None, None, None, leader=False, local=None, handle=None)
 
-    key = str(session_file)
+    key = _login_lock_path(session_file)
     state, url = _load(session_file)
     if state:
         return SessionLease(session_file, state, url, leader=False, local=None, handle=None)
 
     got = _take(key)
     if got is not None:
-        logger.info("no ERP session saved - this job logs in and shares it (%s)", key)
+        logger.info("no ERP session saved - this job logs in and shares it (%s)", session_file)
         return SessionLease(session_file, None, None, leader=True, local=got[0], handle=got[1])
 
     # Another job is logging in. Wait for its session rather than starting a second login
