@@ -43,6 +43,9 @@ type TabKey =
 // button, the blocker text, the "Next: X" prompts - so the two can read differently (e.g.
 // "Data Extraction" internally, "Required Details Review" on screen) without touching what
 // is actually stored or compared.
+// How long the "Submitting to the ERP" popup stays up before moving the user to the dashboard.
+const ERP_LEAVE_SECONDS = 5;
+
 const STEPS: { key: TabKey; label: string; displayLabel: string; built: boolean }[] = [
   { key: "capture", label: "Document Capture", displayLabel: "Document Capture", built: true },
   { key: "extraction", label: "Data Extraction", displayLabel: "Required Details Review", built: true },
@@ -781,8 +784,19 @@ export function JobRunPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [gk2Busy, setGk2Busy] = useState(false);
+  // Seconds left on the "Submitting to the ERP" popup before it moves the user to the
+  // dashboard; null = popup closed. See leaveWhileErpRuns.
+  const [erpLeaveIn, setErpLeaveIn] = useState<number | null>(null);
+  useEffect(() => {
+    if (erpLeaveIn === null) return;
+    if (erpLeaveIn <= 0) {
+      navigate(backToJobsPath);
+      return;
+    }
+    const t = setTimeout(() => setErpLeaveIn((s) => (s === null ? s : s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [erpLeaveIn, navigate, backToJobsPath]);
   // GK2's own "Approve & Proceed" press on IRN Processing - a dummy stand-in gate, like Data
   // Validation's "Approved and Proceed", since nothing real runs here yet for GK2. Kept
   // client-side (not persisted): this step has no real backend state of its own for GK2, and
@@ -1456,48 +1470,28 @@ export function JobRunPage() {
     }
   }
 
-  async function submitEntry() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const j = await jobsApi.completeJob(jobId);
-      setJob(j);
-      // Only advance to Completed if the ERP entry actually went through.
-      if (j.status === "completed") setActiveTab("submission");
-      else if (j.erp_status === "error" || j.erp_status === "failed")
-        // Both retries keep the extracted data now: "Run failed job again" submits straight
-        // away, "Rerun job" just clears the failure and stands it ready.
-        setError(
-          j.erp_failed_field
-            ? `The ERP rejected “${j.erp_failed_field}”. It's outlined in red below — correct it, press Save, then Run failed job again.`
-            : "The ERP entry failed. Check the details below, correct anything wrong, then Run failed job again.",
-        );
-    } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not submit the entry.");
-    } finally {
-      setSubmitting(false);
-    }
+  /** The real ERP run has started on the server (gk2_status preparing_erp / entering_erp).
+   *  It runs in the background there and takes minutes, so the user is told so and moved to
+   *  the dashboard instead of being held on a "Running the ERP entry..." screen; the
+   *  notification bell reports "Submitted to ERP" or "Failed to submit to ERP" when it ends. */
+  function isErpRunning(j: JobDetail): boolean {
+    return j.gk2_status === "preparing_erp" || j.gk2_status === "entering_erp";
+  }
+  function leaveWhileErpRuns() {
+    setErpLeaveIn(ERP_LEAVE_SECONDS);
   }
 
   /** GK1 (operator) presses "Final Submit for Approval" — normally hands the job to GK2's own
    *  queue (gk2_status "pending"). When this tenant has turned GK2 review off for this job's
-   *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped);
-   *  poll it through to a final outcome exactly as GK2's own "Final Approve & Proceed" does,
-   *  since nobody else is going to press a button to move it along. */
+   *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped),
+   *  and the user is moved to the dashboard while it runs (see leaveWhileErpRuns). */
   async function submitForGk2Approval() {
     setGk2Busy(true);
     setError(null);
     try {
-      let fresh = await jobsApi.submitForGk2Approval(jobId);
+      const fresh = await jobsApi.submitForGk2Approval(jobId);
       setJob(fresh);
-      if (fresh.gk2_skipped) {
-        for (let i = 0; i < 60; i++) {
-          if (fresh.gk2_status !== "preparing_erp" && fresh.gk2_status !== "entering_erp") break;
-          await new Promise((r) => setTimeout(r, 3000));
-          fresh = await jobsApi.getJob(jobId);
-          setJob(fresh);
-        }
-      }
+      if (fresh.gk2_skipped && isErpRunning(fresh)) leaveWhileErpRuns();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not submit this for GK2 approval.");
     } finally {
@@ -1509,20 +1503,16 @@ export function JobRunPage() {
    *  ("AI - Preparing for ERP") right away, builds the import workbook, then to "entering_erp"
    *  ("ERP Entry Process Started") once it actually starts replaying the ERP script for real -
    *  a real browser run (login, ~30 recorded steps, upload, submit) that can take well over a
-   *  minute, nothing like the old placeholder's fixed few seconds. Poll through BOTH of those
-   *  non-final states; stop only once gk2_status lands on "submitted" or "failed". */
+   *  minute. That runs in the background on the server, so GK2 is moved to the dashboard
+   *  while it does (see leaveWhileErpRuns). An approval that parks the job for IRN signing
+   *  instead does not start the ERP, and stays on this screen. */
   async function gk2ApproveAndProceed() {
     setGk2Busy(true);
     setError(null);
     try {
-      setJob(await jobsApi.gk2Approve(jobId));
-      // Up to 60 tries, 3s apart (3 minutes) — comfortably past a real script run.
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const fresh = await jobsApi.getJob(jobId);
-        setJob(fresh);
-        if (fresh.gk2_status !== "preparing_erp" && fresh.gk2_status !== "entering_erp") break;
-      }
+      const fresh = await jobsApi.gk2Approve(jobId);
+      setJob(fresh);
+      if (isErpRunning(fresh)) leaveWhileErpRuns();
     } catch (err) {
       if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not record the GK2 approval.");
     } finally {
@@ -3469,7 +3459,7 @@ export function JobRunPage() {
               the same value had two homes, and the one being read was not always the one
               being typed into. */}
           {/* ERP replay result — shown after Submit Entry */}
-          {!submitting && job.erp_status && (
+          {job.erp_status && (
             <div
               className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
                 job.erp_status === "ok"
@@ -4314,8 +4304,10 @@ export function JobRunPage() {
       {/* ONE FIELD AT A TIME. Submit used to paint a banner naming what was missing and leave
           the operator to find each one on the page - on a fourteen-line invoice that is a hunt
           through eighty boxes. This asks for them in order, says which line each belongs to,
-          and counts down. The last one submits the entry itself, so nothing has to be found
-          again afterwards. */}
+          and counts down. The last one submits the job itself - through the SAME Final Submit
+          for Approval the button runs, so it goes to GK2 (or straight to the ERP when GK2 is
+          off for this shipment type). It used to call the old direct ERP entry instead,
+          which skipped GK2 entirely for any job that had a field left to fill. */}
       <Modal
         open={fixOpen}
         onClose={() => setFixOpen(false)}
@@ -4328,16 +4320,16 @@ export function JobRunPage() {
         {fixQueue.length === 0 ? (
           <div>
             <p className="text-sm text-slate-600 dark:text-slate-300">
-              Everything is filled in. Submitting the entry now.
+              Everything is filled in. Submitting the job now.
             </p>
             <div className="mt-4 flex justify-end">
               <Button
                 onClick={() => {
                   setFixOpen(false);
-                  submitEntry();
+                  void submitForGk2Approval();
                 }}
               >
-                Submit entry
+                Submit
               </Button>
             </div>
           </div>
@@ -4361,7 +4353,7 @@ export function JobRunPage() {
                 const remaining = fixQueue.length - 1;
                 if (remaining <= 0) {
                   setFixOpen(false);
-                  submitEntry();
+                  void submitForGk2Approval();
                 } else {
                   setFixAt(0);
                   setFixDraft("");
@@ -4432,13 +4424,40 @@ export function JobRunPage() {
                     Close and fill them on the page instead
                   </button>
                   <Button onClick={save} isLoading={fixSaving}>
-                    {fixQueue.length === 1 ? "Save and submit entry" : "Save and next →"}
+                    {fixQueue.length === 1 ? "Save and submit" : "Save and next →"}
                   </Button>
                 </div>
               </div>
             );
           })()
         )}
+      </Modal>
+
+      {/* The ERP run has started and continues on the server: say how long it takes and where
+          the result will turn up, then move on. Not dismissible - closing it would leave the
+          user on a screen with nothing left to do but wait. */}
+      <Modal
+        open={erpLeaveIn !== null}
+        onClose={() => navigate(backToJobsPath)}
+        title="Submitting to the ERP"
+        dismissible={false}
+      >
+        <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+          <p>
+            <span className="font-semibold text-slate-900 dark:text-slate-50">{job.reference}</span>{" "}
+            is being entered in the ERP. This takes a few minutes, so there's no need to wait on
+            this screen.
+          </p>
+          <p>
+            You'll get a notification in the bell when it has been submitted, or if it fails.
+          </p>
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <span className="text-xs text-slate-400">
+              Taking you to the dashboard in {Math.max(erpLeaveIn ?? 0, 0)}s…
+            </span>
+            <Button onClick={() => navigate(backToJobsPath)}>Go to dashboard now</Button>
+          </div>
+        </div>
       </Modal>
     </AppShell>
   );
