@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 MATCH_SLOTS = 4
 
+# match_value_1..4 are String(255) (app/models/custom_field_reference.py). A key longer than
+# that - a 319-character Juniper product description on JOB-E66A9F/JOB-7B0698 - made Postgres
+# refuse the insert, and because remembering runs inside the same save as the operator's own
+# value, the CTH they typed or ticked was thrown away with it ("could not save", tick that never
+# sticks). Capped in normalize_key, so the stored key and every later lookup of it are cut
+# identically and still match each other.
+MAX_KEY_LENGTH = 255
+
 # Two machine-read company names carry more incidental noise (OCR, spacing/punctuation around
 # "&"/"+", a legal suffix present on one and not the other) than the page-filter's two copies
 # of the same PDF page, so this is a touch looser than that feature's 0.85 - the substring
@@ -77,7 +85,8 @@ def normalize_key(text: str) -> str:
     import of a name that starts with an underscore there - two modules relying on each other's
     "private" helper is how one changes shape under the other without anyone noticing.
     """
-    return " ".join(str(text or "").split()).strip(" -–—:,;()").upper()
+    normalized = " ".join(str(text or "").split()).strip(" -–—:,;()").upper()
+    return normalized[:MAX_KEY_LENGTH].rstrip()
 
 
 def _padded_slots(match_values) -> list[str]:

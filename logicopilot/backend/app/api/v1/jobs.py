@@ -9169,6 +9169,29 @@ def _line_key_values(db: Session, job_id: str, set_index: int | None, row_index:
     return material_from(code, desc), desc
 
 
+def _remember_safely(db: Session, **kwargs) -> None:
+    """remember_reference, but never at the cost of the operator's own save.
+
+    Remembering is a convenience for the NEXT job; the value just typed or ticked is the work
+    itself. They used to share one transaction, so anything the reference table refused - a
+    319-character product description against its 255-character key column, found live on
+    JOB-E66A9F - rolled back the operator's CTH too: "could not save" when typed, a tick that
+    never stuck when picked. Run in a savepoint instead: if remembering fails, only the
+    remembering is undone, logged, and the save goes through.
+    """
+    from app.core.reference_cache import remember_reference
+
+    # Flush the operator's own change OUTSIDE the savepoint first - otherwise a rollback of the
+    # savepoint would take that pending write down with it.
+    db.flush()
+    try:
+        with db.begin_nested():
+            remember_reference(db, **kwargs)
+            db.flush()
+    except Exception:  # noqa: BLE001 - a failed remember must never fail the save
+        logger.exception("reference learning skipped for %s", kwargs.get("custom_field_id") or kwargs.get("mark_id"))
+
+
 def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
     """Write ONE corrected value, and everything that has to happen alongside it.
 
@@ -9206,14 +9229,14 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
     # that would let a one-off manual override of a correct dump answer poison every future line
     # that legitimately matches the dump.
     if fv.custom_field_id and not (fv.extracted_value or "").strip():
-        from app.core.reference_cache import remember_reference
         from app.models.custom_field import CustomField
 
         cf = db.get(CustomField, fv.custom_field_id)
         if cf is not None and cf.kind == "lookup":
             material, desc = _line_key_values(
                 db, fv.job_id, fv.set_index, fv.row_index, key_label=cf.lookup_key_label)
-            remember_reference(db, cf.id, [material, desc], value)
+            _remember_safely(db, custom_field_id=cf.id, match_values=[material, desc],
+                             resolved_value=value)
         elif cf is not None and cf.ask_operator and cf.label_name != "insurance_percentage":
             # A plain ask_operator field with no extraction of its own (e.g. "Erp Entry Name",
             # purely operator-typed) has nothing else to key on - what was just typed is both
@@ -9226,8 +9249,8 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
             # An operator picking a different customer's rate for one odd job - or typing an
             # outlier - must never rewrite what every FUTURE job for that same customer gets
             # suggested; only the one job's own saved value changes.
-            remember_reference(db, cf.id, [value],
-                                value, fuzzy=cf.fuzzy_match)
+            _remember_safely(db, custom_field_id=cf.id, match_values=[value],
+                             resolved_value=value, fuzzy=cf.fuzzy_match)
     # is_target_value (mark or custom field): the reference table had nothing for what this
     # field actually extracted (target_value_raw), now filled in by hand - remember it against
     # THAT raw value, so the same raw extraction is resolved automatically next time instead of
@@ -9238,8 +9261,6 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
     # win first, silently skipping this remember for every target-value CUSTOM field (a mark
     # has no custom_field_id at all, so it was the only case this ever actually ran for).
     if fv.target_value_raw and not (fv.extracted_value or "").strip():
-        from app.core.reference_cache import remember_reference
-
         fuzzy = False
         if fv.custom_field_id:
             from app.models.custom_field import CustomField as _CF
@@ -9251,7 +9272,7 @@ def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
         # "||"-joined when _resolve_target_value was keyed off more than one other job-level
         # field (see its own comment) - split back into the same ordered keys. A single key
         # (no "||" present) round-trips as the one-element list it always was.
-        remember_reference(
+        _remember_safely(
             db, custom_field_id=fv.custom_field_id, mark_id=fv.mark_id,
             match_values=(fv.target_value_raw or "").split("||"), resolved_value=value,
             fuzzy=fuzzy,
