@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Button } from "./Button";
 
 interface PaginationProps {
@@ -5,6 +6,10 @@ interface PaginationProps {
   pageSize: number;
   total: number;
   onPageChange: (page: number) => void;
+  /** What's being counted in "Showing 1–5 of N ___". Defaults to "jobs" so existing call sites keep working. */
+  noun?: string;
+  /** Extra control shown just before the page buttons, e.g. a rows-per-page select. */
+  extra?: ReactNode;
 }
 
 /** Windowed page-number control: first, last, current ±2, "…" for gaps. No existing precedent
@@ -22,7 +27,7 @@ function pageWindow(current: number, lastPage: number): (number | "…")[] {
   return out;
 }
 
-export function Pagination({ page, pageSize, total, onPageChange }: PaginationProps) {
+export function Pagination({ page, pageSize, total, onPageChange, noun = "jobs", extra }: PaginationProps) {
   if (total === 0) return null;
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
   const from = (page - 1) * pageSize + 1;
@@ -31,9 +36,10 @@ export function Pagination({ page, pageSize, total, onPageChange }: PaginationPr
   return (
     <div className="flex flex-col items-center justify-between gap-3 border-t border-slate-100 pt-4 sm:flex-row dark:border-slate-800">
       <p className="text-xs text-slate-500 dark:text-slate-400">
-        Showing {from.toLocaleString()}–{to.toLocaleString()} of {total.toLocaleString()} jobs
+        Showing {from.toLocaleString()}–{to.toLocaleString()} of {total.toLocaleString()} {noun}
       </p>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        {extra}
         <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
           ‹
         </Button>
