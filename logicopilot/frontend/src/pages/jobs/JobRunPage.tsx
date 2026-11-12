@@ -44,7 +44,7 @@ type TabKey =
 // "Data Extraction" internally, "Required Details Review" on screen) without touching what
 // is actually stored or compared.
 // How long the "Submitting to the ERP" popup stays up before moving the user to the dashboard.
-const ERP_LEAVE_SECONDS = 5;
+const ERP_LEAVE_SECONDS = 10;
 
 const STEPS: { key: TabKey; label: string; displayLabel: string; built: boolean }[] = [
   { key: "capture", label: "Document Capture", displayLabel: "Document Capture", built: true },
