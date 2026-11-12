@@ -179,12 +179,37 @@ def test_a_gk2_is_told_only_about_the_jobs_they_approved(client, db_session):
     assert _get(client) == []
 
 
-def test_a_manager_watching_the_tenant_gets_no_colleagues_results(client, db_session):
+def test_a_manager_and_a_tenant_admin_see_every_erp_result_in_their_tenant(client, db_session):
+    """Oversight roles, by explicit request: watching the whole tenant's ERP outcomes is their
+    job, so they are told about every operator's - but still never another tenant's."""
     tenant, op, other, group = _setup(db_session)
     manager = make_user(db_session, role="manager", tenant=tenant, email="mgr-n@example.com")
     _job(db_session, tenant, group, op, "JOB-A", status="completed",
          ai_submitted_at=datetime.now(timezone.utc))
-    login(client, manager.email)
+    _job(db_session, tenant, group, other, "JOB-B", status="failed", erp_status="error")
+
+    stranger_tenant = make_tenant(db_session, name="Someone Else")
+    make_user(db_session, role=TENANT_ADMIN, tenant=stranger_tenant, email="ta-x@example.com")
+    stranger = make_user(db_session, role="operator", tenant=stranger_tenant,
+                         email="op-x@example.com")
+    g2 = TemplateGroup(tenant_id=stranger_tenant.id, name="Theirs", mode="Sea Import")
+    db_session.add(g2)
+    db_session.commit()
+    _job(db_session, stranger_tenant, g2, stranger, "JOB-THEIRS", status="failed",
+         erp_status="error")
+
+    for email in (manager.email, "ta-n@example.com"):
+        login(client, email)
+        assert sorted(n["job_reference"] for n in _get(client)) == ["JOB-A", "JOB-B"], email
+
+
+def test_a_platform_admin_is_told_only_about_their_own_jobs(client, db_session):
+    """Admin sees every tenant - a bell of the whole platform's results would be noise."""
+    tenant, op, other, group = _setup(db_session)
+    admin = make_user(db_session, role="admin", email="admin-n@example.com")
+    _job(db_session, tenant, group, op, "JOB-A", status="completed",
+         ai_submitted_at=datetime.now(timezone.utc))
+    login(client, admin.email)
     assert _get(client) == []
 
 
