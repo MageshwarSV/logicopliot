@@ -4843,11 +4843,15 @@ def save_checkpoint_session(path, ctx, url: str) -> bool:
     if not path:
         return False
     try:
-        fp = pathlib.Path(path)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(
+        from app.core.erp_session import atomic_write
+
+        # Rename into place rather than truncate-then-write. Another job may be reading this
+        # exact file right now to skip its own login (app/core/erp_session.py), and the window
+        # between truncate and write hands it half a JSON document - which costs that job the
+        # redundant ERP login the shared session exists to avoid.
+        atomic_write(
+            pathlib.Path(path),
             json.dumps({"saved_at": _t.time(), "url": url, "state": ctx.storage_state()}),
-            encoding="utf-8",
         )
         return True
     except Exception:  # noqa: BLE001
@@ -5100,6 +5104,9 @@ def play_steps(
             return item or ""
         return v
 
+    # This run's claim on the script's shared ERP login (app/core/erp_session.py). Taken at
+    # the checkpoint resume below, released in the `finally` at the end whatever happens.
+    lease = None
     try:
         sweep_stale_browser_tmp()  # reclaim dirs orphaned by killed runs
         with sync_playwright() as pw:
@@ -5112,7 +5119,14 @@ def play_steps(
             # (or no saved session) => this is all None and the run behaves exactly as before.
             sess_state, sess_url = (None, None)
             if checkpoint_index is not None:
-                sess_state, sess_url = load_checkpoint_session(session_file)
+                # Not a plain read of the file. With erp_script_workers > 1 several jobs start
+                # together; the one that finds no session logs in while the others WAIT for
+                # it, instead of every job opening its own login against the same ERP account
+                # - which is how SOFTLINK gets asked to kill a session a job is still using.
+                from app.core import erp_session
+
+                lease = erp_session.acquire(session_file)
+                sess_state, sess_url = lease.state, lease.url
             ctx = browser.new_context(
                 viewport=VIEWPORT, user_agent=_UA, ignore_https_errors=True,
                 storage_state=sess_state or None,
@@ -5458,6 +5472,10 @@ def play_steps(
                         if checkpoint_saved else
                         f"checkpoint reached at step {checkpoint_index + 1} - session could NOT be saved"
                     )
+                    if checkpoint_saved and lease is not None:
+                        # Other jobs are parked on exactly this file. Hand the login over the
+                        # moment it exists rather than leaving them on the poll interval.
+                        lease.published()
 
             if resumed:
                 # The setup steps did not run, but they are SATISFIED — the saved session put us
@@ -5478,9 +5496,22 @@ def play_steps(
                     resumed = False
                     executed.clear()  # they really do have to run now
                     i = 0
+                    if lease is not None:
+                        # Several resumed jobs can find the session dead in the same second.
+                        # Claim the login before replaying it so the rest wait for this one,
+                        # instead of stacking a second and third login onto an ERP that has
+                        # just decided it does not know us.
+                        lease.become_leader_for_replay()
                     page.goto(url, wait_until="domcontentloaded", timeout=45000)
                     _settle(page)
                     emit(page)
+                elif probe is not None and lease is not None:
+                    # The probe passed, so this session demonstrably still reaches the entry
+                    # screen - it is alive NOW. Stamp it, or a script kept busy all day throws
+                    # a working session away every 30 minutes (CHECKPOINT_MAX_AGE) and logs in
+                    # again, and that login is the event that can kill the session another job
+                    # is in the middle of an entry on.
+                    lease.touch()
 
             while i < len(steps) and safety < len(steps) * 4 + 12:
                 maybe_save_checkpoint()
@@ -6449,3 +6480,9 @@ def play_steps(
                     "screenshot": shot, "captured": captured}
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "error": str(exc), "log": log, "reason": f"Playback crashed: {exc}"}
+    finally:
+        # A run that claimed the login and then crashed before saving must not leave every
+        # other job waiting out the full LOGIN_WAIT_SECONDS on a leader that is already gone.
+        # Harmless when the session was published earlier - releasing twice is a no-op.
+        if lease is not None:
+            lease.release()
