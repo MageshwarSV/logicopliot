@@ -6630,11 +6630,20 @@ function ExtractionReview({
       const linesOnThisDocument = activeDocIsStandalone
         ? new Set<number>()
         : new Set(rowCells.keys());
+      // ...and only THIS invoice's lines. On a job with two invoices, each has its own line 1,
+      // 2, 3 - the per-row custom fields tell them apart only by set_index. Matching on the
+      // line number alone made Invoice 1 demand Invoice 2's missing CTH (JOB-3FD847: Invoice
+      // 1's CTHs were all filled from the Dump, Invoice 2 had one blank, and Invoice 1 could
+      // not be approved). Same (set, row) rule - blank set = 1 - the product cards below
+      // (lookedUpByRow) and the backend already use to decide which line a field belongs to.
+      const activeSet = active.set_index ?? 1;
       const productRows = job.field_values.filter(
         (fv) =>
           fv.row_index != null &&
           (fv.job_document_id === active.id ||
-            (fv.job_document_id == null && linesOnThisDocument.has(fv.row_index))) &&
+            (fv.job_document_id == null &&
+              (fv.set_index ?? 1) === activeSet &&
+              linesOnThisDocument.has(fv.row_index))) &&
           !fv.standalone_multi_value &&
           (fv.self_filled !== true ||
             (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
