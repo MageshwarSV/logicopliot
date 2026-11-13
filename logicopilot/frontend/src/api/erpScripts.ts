@@ -449,6 +449,39 @@ export async function getParkedStatus(scriptId: string): Promise<ParkedStatus> {
   return data;
 }
 
+/** The one login this script's jobs share.
+ *
+ *  state:
+ *    off        - not set up to share: every job logs in for itself (no checkpoint, or
+ *                 "stay open" off), and its runs are serialised so two logins never collide.
+ *    none       - set up to share, nothing saved yet; the next job logs in for everyone.
+ *    logging_in - a job is logging in right now and the others are waiting on it.
+ *    live       - saved and still young enough to reuse.
+ *    expired    - saved but too old, so the next job logs in again. */
+export interface SharedSessionStatus {
+  state: "off" | "none" | "logging_in" | "live" | "expired";
+  shared_login: boolean;
+  age_seconds: number | null;
+  expires_in_seconds: number | null;
+  max_age_seconds: number | null;
+  url: string | null;
+  checkpoint_index: number | null;
+  stay_open: boolean;
+  discarded?: boolean;
+}
+
+export async function getSharedSession(scriptId: string): Promise<SharedSessionStatus> {
+  const { data } = await apiClient.get(`/erp-scripts/${scriptId}/session`);
+  return data;
+}
+
+/** Throw the shared login away so the NEXT job logs in fresh. A job already running keeps
+ *  the browser it is holding, so this never cuts an entry off half way. */
+export async function refreshSharedSession(scriptId: string): Promise<SharedSessionStatus> {
+  const { data } = await apiClient.post(`/erp-scripts/${scriptId}/session/refresh`);
+  return data;
+}
+
 /** Tear down the parked browser and park a fresh one (after a login or ERP change). */
 export async function restartParked(scriptId: string): Promise<ParkedStatus> {
   const { data } = await apiClient.post(`/erp-scripts/${scriptId}/parked/restart`);
