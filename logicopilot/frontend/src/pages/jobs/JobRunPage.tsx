@@ -591,7 +591,9 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     },
     {
       heading: "Package & Weight Details",
-      labels: ["package_count", "Gross Wt", "Gross Weight Unit", "Package Unit"],
+      // Each value beside its own unit on the 2-column grid: Package Count | Package Unit,
+      // then Gross Weight | Gross Weight Unit (by request - it was count, weight / unit, unit).
+      labels: ["package_count", "Package Unit", "Gross Wt", "Gross Weight Unit"],
     },
     {
       heading: "Shipper Details",
