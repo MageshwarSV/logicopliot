@@ -6997,21 +6997,33 @@ function ExtractionReview({
   // same row again by hand. Only ever overwrites a value this effect put there itself, so an
   // address corrected by hand is never clobbered, while changing the branch afterwards still
   // refreshes what the previous pick had filled.
+  //
+  // Except when the BRANCH itself changes: the address belongs to the branch, so a new branch
+  // always replaces it, hand-typed or not, with that branch's address, or with nothing when
+  // the sheet has none. Never keep the previous branch's address under a different branch.
   const autoFilledAddress = useRef<string | null>(null);
+  const addressForBranch = useRef<string | null>(null);
   useEffect(() => {
-    if (readOnly || !branchAddressFv || branchAddressMatches.length === 0) return;
-    const next = branchAddressMatches[0];
+    if (readOnly || !branchAddressFv) return;
+    const branchChanged =
+      addressForBranch.current !== null &&
+      normalizeRefKey(addressForBranch.current) !== normalizeRefKey(savedConsigneeBranch);
+    addressForBranch.current = savedConsigneeBranch;
+    const next = branchAddressMatches[0] ?? "";
     if (savedBranchAddress === next) {
-      autoFilledAddress.current = next;
+      autoFilledAddress.current = next || null;
       return;
     }
-    if (savedBranchAddress && savedBranchAddress !== autoFilledAddress.current) return;
+    if (!branchChanged) {
+      if (!next) return;
+      if (savedBranchAddress && savedBranchAddress !== autoFilledAddress.current) return;
+    }
     let cancelled = false;
     void (async () => {
       try {
         await jobsApi.correctFieldValue(branchAddressFv.id, next);
         if (cancelled) return;
-        autoFilledAddress.current = next;
+        autoFilledAddress.current = next || null;
         await reload();
       } catch {
         /* a failed auto-fill leaves the box empty for the operator - never blocks the job */
@@ -7021,7 +7033,52 @@ function ExtractionReview({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchAddressMatches, savedBranchAddress, branchAddressFv?.id, readOnly]);
+  }, [branchAddressMatches, savedBranchAddress, savedConsigneeBranch, branchAddressFv?.id, readOnly]);
+
+  // Importer cascade: Country -> Name -> Branch -> Address. A child picked under one parent
+  // means nothing under another, so changing a parent clears everything below it rather than
+  // leaving a value the new parent's list does not even offer (it would still be saved and
+  // still exported). Watches the SAVED values, so every way of picking (the country select,
+  // the name search, the branch combobox) goes through this one place. The very first values
+  // a job opens with are only recorded, never treated as a change.
+  //   Country changed -> clear Name, Branch, Address
+  //   Name changed    -> clear Branch, Address
+  // (Branch changed -> Address is handled by the auto-fill effect just above.)
+  const cascadeParents = useRef<{ country: string; name: string } | null>(null);
+  useEffect(() => {
+    const prev = cascadeParents.current;
+    cascadeParents.current = { country: savedConsigneeCountry, name: savedConsigneeName };
+    if (readOnly || !prev) return;
+    const countryChanged = normalizeRefKey(prev.country) !== normalizeRefKey(savedConsigneeCountry);
+    const nameChanged = normalizeRefKey(prev.name) !== normalizeRefKey(savedConsigneeName);
+    if (!countryChanged && !nameChanged) return;
+    const byLabel = (label: string) =>
+      job.field_values.find((fv) => fv.row_index == null && fv.label_name === label);
+    const children = [
+      ...(countryChanged ? [byLabel("ERP Consignee Name")] : []),
+      byLabel("ERP Importer Address / Branch Code"),
+      branchAddressFv,
+    ].filter(
+      (fv): fv is NonNullable<typeof fv> =>
+        !!fv && (fv.corrected_value ?? fv.extracted_value ?? "").trim() !== "",
+    );
+    if (children.length === 0) return;
+    autoFilledAddress.current = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        for (const fv of children) await jobsApi.correctFieldValue(fv.id, "");
+        if (!cancelled) await reload();
+      } catch {
+        /* a failed reset leaves the old values visible to the operator rather than half-cleared silently */
+        if (!cancelled) await reload();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedConsigneeCountry, savedConsigneeName, readOnly]);
 
   // The dropdown's own option list - every country ERP Consignee Name's reference table
   // actually has rows for, fetched once per field rather than hand-maintained separately (see
