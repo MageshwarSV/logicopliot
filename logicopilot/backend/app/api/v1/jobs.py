@@ -430,6 +430,31 @@ def _is_valid_container_number(value) -> bool:
     return bool(_CONTAINER_NUMBER_RE.match(str(value or "").strip().upper()))
 
 
+# A container number as carriers actually PRINT it: "FFAU 810832-9", "FFAU-810832-9",
+# "FFAU 8108329", or run straight into the seal ("FFAU8108329 SEAL SITA222875"). Letters may
+# not be the tail of a longer word, and the check digit may not be followed by more digits.
+_CONTAINER_IN_TEXT_RE = re.compile(r"(?<![A-Z])([A-Z]{4})[\s./-]*(\d{6})[\s./-]*(\d)(?!\d)")
+
+
+def _normalize_container_number(value) -> str:
+    """The 11-character ISO 6346 form of whatever the model returned for a container_number.
+
+    The format check above is strict on purpose (it is what keeps seal numbers out), but it
+    was being handed the number exactly as printed. A real container written "FFAU 810832-9",
+    or returned with its seal glued on, failed it and was DROPPED - while the same container's
+    other fields (its type, read in their own pass) were kept. JOB-88572C showed the result:
+    a "Container 1" card with a type and no container-number box at all, and an ERP import
+    sent with the container number blank. Pulling the one real container number out first
+    means a correct read is no longer thrown away; anything with no container number in it at
+    all comes back unchanged, so the format check still refuses it.
+    """
+    raw = str(value or "").strip().upper()
+    if _CONTAINER_NUMBER_RE.match(raw):
+        return raw
+    m = _CONTAINER_IN_TEXT_RE.search(raw)
+    return "".join(m.groups()) if m else raw
+
+
 _BL_DATE_NEVER_FUTURE_LABELS = {"HBL Date", "MBL Date"}
 
 
@@ -7812,6 +7837,70 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
     return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
 
 
+def _standalone_table_key(mark) -> str:
+    """Which standalone table a mark belongs to on its document. Marks sharing a heading
+    ("Container") - or sharing none - are columns of the same table."""
+    return (getattr(mark, "standalone_group_heading", None) or "").strip().lower()
+
+
+def _backfill_missing_standalone_cells(db: Session, job: Job, group: TemplateGroup) -> int:
+    """Give every row of a standalone table (Container Detail) a box for every one of its
+    columns. Returns how many were created.
+
+    Each standalone mark is read in its own pass (see run_extraction), so a table's columns
+    come back with their own row counts. When one column's read is filtered away - a container
+    number that failed the ISO 6346 check - its siblings still have that row, and the screen
+    shows "Container 1" with a type and NO container-number box: nothing to type the number
+    into, and an ERP import that goes out with it blank (JOB-88572C). Same reasoning as
+    _backfill_missing_per_row_slots: compare the rows that exist against the columns that
+    should, and create the missing cells empty - the honest state for a value nobody has
+    given yet. Rows are never added: a column only gets a box on a row some other column of
+    the same table actually has.
+    """
+    db.flush()
+    created = 0
+    tdocs = {tdoc.id: tdoc for tdoc in group.documents}
+    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+        tdoc = tdocs.get(jd.template_document_id)
+        if tdoc is None:
+            continue
+        tables: dict[str, list] = {}
+        for m in tdoc.marks:
+            if m.is_multi_value and m.standalone_multi_value:
+                tables.setdefault(_standalone_table_key(m), []).append(m)
+        for marks in tables.values():
+            if len(marks) < 2:
+                continue
+            cells = (
+                db.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd.id,
+                        JobFieldValue.mark_id.in_([m.id for m in marks]),
+                        JobFieldValue.row_index.isnot(None))
+                .all()
+            )
+            by_row: dict[int, dict[str, JobFieldValue]] = {}
+            for c in cells:
+                by_row.setdefault(c.row_index, {})[c.mark_id] = c
+            for row_index, have in sorted(by_row.items()):
+                sibling = next(iter(have.values()))
+                for m in marks:
+                    if m.id in have:
+                        continue
+                    logger.warning(
+                        "standalone table on %s (job %s): row %d had no %r cell - created "
+                        "empty so it can be filled in rather than going out blank",
+                        tdoc.name, job.id, row_index, m.label_name,
+                    )
+                    db.add(JobFieldValue(
+                        tenant_id=job.tenant_id, job_id=job.id, mark_id=m.id,
+                        template_document_id=tdoc.id, job_document_id=jd.id,
+                        set_index=sibling.set_index, label_name=m.label_name,
+                        row_index=row_index, extracted_value=None,
+                    ))
+                    created += 1
+    return created
+
+
 def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int:
     """Give every product line a slot on every per-row field. Returns how many were created.
 
@@ -8518,6 +8607,9 @@ def run_extraction(
                     image_paths, row_specs, detected_row_count or None, model=model_override,
                     tenant_id=job.tenant_id)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
+                for r in rows:
+                    if r.get("container_number"):
+                        r["container_number"] = _normalize_container_number(r["container_number"])
                 before = len(rows)
                 rows = [r for r in rows if _is_valid_container_number(r.get("container_number"))]
                 if len(rows) != before:
@@ -9063,6 +9155,10 @@ def run_extraction(
     # refuses an empty mandatory CTH, so the operator is asked rather than the line going out
     # silently. One query per per-row field, on a path that has just made dozens of model calls.
     _backfill_missing_per_row_slots(db, job, custom_fields)
+    # The same guarantee for standalone tables (Container Detail): every container row gets a
+    # box for every container column, so a container number filtered away by the ISO 6346
+    # check leaves an empty box to fill instead of no box at all. See the helper.
+    _backfill_missing_standalone_cells(db, job, group)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
