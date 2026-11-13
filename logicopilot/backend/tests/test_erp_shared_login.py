@@ -312,3 +312,94 @@ def test_the_slot_is_released_when_a_run_crashes(slot_locks):
     with erp_session.script_slot("s4", shared_login=False) as got:
         assert got is True, "the crashed run never gave the slot back"
     assert time.time() - t0 < 1, "the next job had to wait out the timeout"
+
+
+# --------------------------------------------------------------------------------------
+# What the Super Admin screen reads: the state of the one login a script's jobs share.
+# --------------------------------------------------------------------------------------
+
+def test_a_script_that_does_not_share_a_login_says_so(tmp_path):
+    """No checkpoint, or "stay open" off: every job logs in for itself, and the screen should
+    say that rather than pretending there is a session to report on."""
+    got = erp_session.session_status(tmp_path / "s.json", shared_login=False)
+    assert got["state"] == "off"
+    assert got["shared_login"] is False
+    assert got["age_seconds"] is None
+
+
+def test_set_up_to_share_but_nothing_saved_yet(tmp_path):
+    got = erp_session.session_status(tmp_path / "s.json", shared_login=True)
+    assert got["state"] == "none", "the next job logs in and the rest will use what it saves"
+    assert got["shared_login"] is True
+
+
+def test_a_live_session_reports_how_long_it_has_left(tmp_path):
+    f = tmp_path / "s.json"
+    _write_session(f, age=600)
+    got = erp_session.session_status(f, shared_login=True)
+    assert got["state"] == "live"
+    assert 595 <= got["age_seconds"] <= 605
+    assert got["expires_in_seconds"] > 0
+    assert got["age_seconds"] + got["expires_in_seconds"] == got["max_age_seconds"]
+    assert got["url"] == "https://erp.example/entry"
+
+
+def test_a_session_past_its_age_reports_expired(tmp_path):
+    f = tmp_path / "s.json"
+    _write_session(f, age=3600)
+    got = erp_session.session_status(f, shared_login=True)
+    assert got["state"] == "expired"
+    assert got["expires_in_seconds"] is None
+
+
+def test_while_a_job_is_logging_in_the_screen_says_so(tmp_path):
+    """Nothing saved AND the login lock held means a job is logging in this instant and the
+    others are waiting on it - a different thing from "nothing here yet"."""
+    f = tmp_path / "s.json"
+    lease = erp_session.acquire(f)
+    assert lease.leader is True
+    try:
+        assert erp_session.session_status(f, shared_login=True)["state"] == "logging_in"
+    finally:
+        lease.release()
+
+
+def test_reading_the_status_does_not_steal_the_login(tmp_path):
+    """A page refresh must never disturb a run. Reading the status takes the lock to test it
+    and hands it straight back, so the next job can still become the leader."""
+    f = tmp_path / "s.json"
+    erp_session.session_status(f, shared_login=True)
+    lease = erp_session.acquire(f)
+    try:
+        assert lease.leader is True, "the status read kept hold of the login lock"
+    finally:
+        lease.release()
+
+
+def test_a_corrupt_session_file_does_not_break_the_screen(tmp_path):
+    f = tmp_path / "s.json"
+    f.write_text("{ not json", encoding="utf-8")
+    got = erp_session.session_status(f, shared_login=True)
+    assert got["state"] in ("none", "logging_in"), got
+
+
+def test_discarding_the_session_makes_the_next_job_log_in(tmp_path):
+    f = tmp_path / "s.json"
+    _write_session(f, age=10)
+    assert erp_session.acquire(f).state is not None, "it was reusable before"
+
+    assert erp_session.discard_session(f) is True
+    assert not f.exists()
+    lease = erp_session.acquire(f)
+    try:
+        assert lease.state is None and lease.leader is True
+    finally:
+        lease.release()
+
+
+def test_discarding_when_there_is_nothing_to_discard_is_harmless():
+    assert erp_session.discard_session(None) is False
+
+
+def test_discarding_a_session_that_was_already_gone(tmp_path):
+    assert erp_session.discard_session(tmp_path / "never-existed.json") is False

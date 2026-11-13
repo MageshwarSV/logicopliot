@@ -323,3 +323,78 @@ def acquire(session_file) -> SessionLease:
         "If the ERP asks to kill the other session, that other job may lose its screen.",
         LOGIN_WAIT_SECONDS)
     return SessionLease(session_file, None, None, leader=False, local=None, handle=None)
+
+
+def session_status(session_file, *, shared_login: bool) -> dict:
+    """What the shared login for one script looks like right now, for the screen.
+
+    Read-only and never raises: this answers a page refresh, and a page refresh must not be
+    able to disturb a run in flight.
+
+    `state` is one of:
+      off        - this script is not set up to share a login at all (no checkpoint, or
+                   "stay open" is off), so every job logs in for itself.
+      none       - set up to share, but nothing is saved yet: the next job logs in and the
+                   rest of them will use what it saves.
+      logging_in - a job is logging in right now and the others are waiting on it.
+      live       - a session is saved and still young enough to reuse.
+      expired    - saved but past CHECKPOINT_MAX_AGE, so the next job logs in again.
+    """
+    import json
+
+    out = {"state": "off", "shared_login": bool(shared_login), "age_seconds": None,
+           "expires_in_seconds": None, "url": None, "max_age_seconds": None}
+    if not shared_login or not session_file:
+        return out
+    try:
+        from app.core.browser import CHECKPOINT_MAX_AGE
+
+        out["max_age_seconds"] = CHECKPOINT_MAX_AGE
+        out["state"] = "none"
+        fp = Path(session_file)
+        if fp.exists():
+            blob = json.loads(fp.read_text(encoding="utf-8"))
+            age = time.time() - float(blob.get("saved_at") or 0)
+            out["age_seconds"] = max(0, int(age))
+            out["url"] = blob.get("url") or None
+            if age <= CHECKPOINT_MAX_AGE:
+                out["state"] = "live"
+                # From the age we just reported, not from the raw float: truncating both
+                # independently leaves them a second short of max_age, and the screen shows
+                # the two side by side where that reads as a bug.
+                out["expires_in_seconds"] = max(0, CHECKPOINT_MAX_AGE - out["age_seconds"])
+            else:
+                out["state"] = "expired"
+        else:
+            # Nothing saved. Is that because a job is logging in this instant? Taking the
+            # lock non-blocking answers it without disturbing anyone: it FAILS while a real
+            # leader holds it, and when it succeeds nobody was logging in, so handing it
+            # straight back costs nothing.
+            got = _take(_login_lock_path(session_file))
+            if got is None:
+                out["state"] = "logging_in"
+            else:
+                _drop(got)
+    except Exception:  # noqa: BLE001 - a status read must never fail the page
+        logger.debug("could not read the ERP session status", exc_info=True)
+    return out
+
+
+def discard_session(session_file) -> bool:
+    """Throw the shared login away so the next job logs in fresh.
+
+    For when the ERP has gone strange and a stale cookie is the suspect. Only removes the
+    saved file - any job already running keeps the browser it is holding, so this never cuts
+    an entry off half way; it only decides what the NEXT job starts from.
+    """
+    if not session_file:
+        return False
+    try:
+        fp = Path(session_file)
+        existed = fp.exists()
+        fp.unlink(missing_ok=True)
+        logger.info("shared ERP session discarded by hand (%s)", session_file)
+        return existed
+    except Exception:  # noqa: BLE001
+        logger.exception("could not discard the shared ERP session at %s", session_file)
+        return False
