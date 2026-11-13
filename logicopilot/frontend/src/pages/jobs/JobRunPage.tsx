@@ -838,6 +838,8 @@ export function JobRunPage() {
   const [excelError, setExcelError] = useState<string | null>(null);
   const [smartBusy, setSmartBusy] = useState(false);
   const [reclassifyBusy, setReclassifyBusy] = useState(false);
+  // Not an error: reclassify outlives its own HTTP request (see handleReclassifyDocuments).
+  const [reclassifyNote, setReclassifyNote] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   // Set when Submit is pressed with something still empty. The button used to be disabled
   // instead, which says "you cannot" without ever saying WHAT is missing.
@@ -1406,6 +1408,7 @@ export function JobRunPage() {
     }
     setReclassifyBusy(true);
     setError(null);
+    setReclassifyNote(null);
     setSmartResult(null);
     try {
       const res = await jobsApi.reclassifyDocuments(jobId);
@@ -1413,7 +1416,35 @@ export function JobRunPage() {
       setSmartResult(res.results);
       await refreshUnclassifiedPages();
     } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Reclassify failed.");
+      // Reclassify re-reads AND re-extracts every document on the job - minutes of work on a
+      // job with many pages, well past the 60 seconds nginx gives a single request. The
+      // connection is cut long before the work stops, and this used to report that as
+      // "Reclassify failed." while the job was in fact being rebuilt successfully - so the
+      // operator pressed it again, on a job already half way through.
+      //
+      // A cut connection tells us nothing about the outcome, so do not claim one. Re-read the
+      // job: the run sets it to "extracting", which the poll above already follows to
+      // completion and the "AI Processing…" badge already shows.
+      const connectionCut =
+        axios.isAxiosError(err) &&
+        (!err.response || err.code === "ECONNABORTED" ||
+          [502, 503, 504].includes(err.response.status));
+      if (connectionCut) {
+        setReclassifyNote(
+          "Still re-classifying — this takes a few minutes on a job with many pages. " +
+            "It is running on the server and will finish on its own; this page updates as it goes. " +
+            "Pressing the button again would start it over.",
+        );
+        try {
+          // load() re-reads the job AND the unclassified pile (see its own comment), which is
+          // exactly what a run still in flight will keep changing underneath us.
+          await load();
+        } catch {
+          /* the note above already says where to look */
+        }
+      } else if (axios.isAxiosError(err)) {
+        setError(err.response?.data?.detail ?? "Reclassify failed.");
+      }
     } finally {
       setReclassifyBusy(false);
     }
@@ -2679,6 +2710,13 @@ export function JobRunPage() {
                   >
                     Re-classify documents
                   </Button>
+                )}
+                {reclassifyNote && (
+                  // Deliberately not <Alert> - that is styled for a failure, and this is the
+                  // opposite: the work is going fine, it is just outliving its own request.
+                  <span className="inline-flex max-w-xl items-start gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+                    {reclassifyNote}
+                  </span>
                 )}
                 {job.status === "extracting" ? (
                   // Extraction now starts on its own once every slot is filled — nothing left

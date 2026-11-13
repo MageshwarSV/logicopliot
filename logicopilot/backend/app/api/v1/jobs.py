@@ -7507,14 +7507,30 @@ def reclassify_documents(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job has no uploaded documents to reclassify.",
         )
-    # Read every existing file's bytes BEFORE anything is deleted below - the source for this
-    # run is each document's own already-uploaded content, same as what the operator originally
-    # sent in, not whatever (now possibly stale) interpretation was made of it at the time.
-    files: list[tuple[str, bytes]] = []
-    for jd in existing_docs:
-        path = Path(jd.file_path)
-        if path.exists():
-            files.append((jd.original_name or path.name, path.read_bytes()))
+    # The attachments AS THEY ARRIVED, whenever this job came from an email - not the
+    # documents currently sitting in its slots.
+    #
+    # Re-feeding the slots cannot work for a combined attachment. One "Commercial Invoice &
+    # Packing List" PDF legitimately fills two slots, so each slot holds its own copy under
+    # the SAME original name; handing both back to the classifier is handing it the same
+    # document twice. They merge into one document carrying every invoice twice (stored as
+    # "<name> +1 more"), and each further reclassify compounds it - production JOB-CB9B46
+    # ended up with a 6-page Invoice reading 8667395, 8667396, 8667395, T&C, 8667396, T&C.
+    #
+    # The slots stay the fallback for a job with no email behind it (Excel entry, a manual
+    # upload): there the placed files are the only copy there has ever been.
+    from app.core.job_email import original_attachments
+
+    files: list[tuple[str, bytes]] = original_attachments(job.id)
+    source = "the original email attachments"
+    if not files:
+        source = "the documents currently in this job's slots (no original email kept)"
+        for jd in existing_docs:
+            path = Path(jd.file_path)
+            if path.exists():
+                files.append((jd.original_name or path.name, path.read_bytes()))
+    logger.info("reclassify %s: re-running classification over %s - %d file(s): %s",
+                job.reference, source, len(files), ", ".join(n for n, _ in files))
     if not files:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
