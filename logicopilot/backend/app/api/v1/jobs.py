@@ -6916,15 +6916,19 @@ def _classify_and_place_files(
         if item["real_page_count"] <= already:
             return
         extra_raw: list[str] = []
+        extra_tokens: list[list[dict]] = []
         with fitz.open(stream=item["blob"], filetype="pdf") as doc:
             for i in range(already + 1, item["real_page_count"] + 1):
                 png = item["fdir"] / "pages" / f"page_{i}.png"
                 if not png.exists():
                     doc[i - 1].get_pixmap(dpi=150).save(png)
                 try:
-                    extra_raw.append(ocr_page_image(png).get("text", ""))
+                    got = ocr_page_image(png)
+                    extra_raw.append(got.get("text", ""))
+                    extra_tokens.append(got.get("tokens") or [])
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
+                    extra_tokens.append([])
         # Billed the same way as the initial OCR pass above (real text only) - these pages past
         # the <=6-page cap are only ever rendered and OCR'd here, the first time a claim
         # actually needs them, so this IS their one OCR pass, whatever this function's own
@@ -6937,6 +6941,12 @@ def _classify_and_place_files(
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
         item["kept_original"] = item["kept_original"] + extra_kept_original
+        # kept_tokens must stay the same length as kept_pages, or index i of one stops being
+        # index i of the other and the layout read answers for the wrong page.
+        kept_drop = set(extra_dropped)
+        item["kept_tokens"] = (item.get("kept_tokens") or []) + [
+            toks for n, toks in enumerate(extra_tokens, start=1) if n not in kept_drop
+        ]
 
     try:
         # PREPARE every file first, then assign them together. One slot can only take one file
@@ -6970,12 +6980,19 @@ def _classify_and_place_files(
                         page_count = i
                 # OCR EVERY page (labelled) so a page-1-BL / page-2-PL combo is detected.
                 raw_pages = []
+                # Each page's WORDS with their positions, kept beside its text. The flat text
+                # cannot tell a column header from the value printed under it (see
+                # doc_sets.invoice_number_from_tokens); the geometry can.
+                raw_tokens: list[list[dict]] = []
                 for i in range(1, page_count + 1):
                     try:
-                        t = ocr_page_image(fdir / "pages" / f"page_{i}.png").get("text", "")
+                        got = ocr_page_image(fdir / "pages" / f"page_{i}.png")
+                        t = got.get("text", "")
+                        raw_tokens.append(got.get("tokens") or [])
                     except Exception:  # noqa: BLE001 — OCR down; fall back to image classify
                         logger.warning("OCR unavailable for %s page %s; classifying from image", name, i)
                         t = ""
+                        raw_tokens.append([])
                     raw_pages.append(t)
                 # Billed HERE, not when (or if) a page ends up in a real document - every page
                 # with real OCR text in this loop was just sent to Document AI, which costs the
@@ -7015,6 +7032,11 @@ def _classify_and_place_files(
                              # use for the multi-invoice-per-file split below.
                              "real_page_count": real_page_count,
                              "fdir": fdir, "kept_pages": kept_pages,
+                             # Same pages as kept_pages, same order - filtered through the
+                             # identical kept->original map so index i of one is index i of
+                             # the other.
+                             "kept_tokens": [raw_tokens[o - 1] for o in kept_original
+                                             if o - 1 < len(raw_tokens)],
                              "kept_original": kept_original,
                              # Every kept page's own image, keyed by its KEPT-page number -
                              # used only by the vision engine's per-page classifier
@@ -7215,7 +7237,13 @@ def _classify_and_place_files(
                         p: item["kept_pages"][p - 1] for p in claim_pages
                         if 1 <= p <= len(item["kept_pages"])
                     }
-                    sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(doc_type, page_texts)
+                    kept_toks = item.get("kept_tokens") or []
+                    page_tokens = {
+                        p: kept_toks[p - 1] for p in claim_pages
+                        if 1 <= p <= len(kept_toks)
+                    }
+                    sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(
+                        doc_type, page_texts, page_tokens)
                 for pages in sub_page_groups:
                     sub_claim = {**claim, "pages": pages}
                     number = None
@@ -7226,7 +7254,15 @@ def _classify_and_place_files(
                         page_text = "\n".join(
                             item["kept_pages"][p - 1] for p in pages
                             if 1 <= p <= len(item["kept_pages"]))
-                        number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
+                        kept_toks = item.get("kept_tokens") or []
+                        number = next(
+                            (n for n in (
+                                doc_sets.page_invoice_number(
+                                    doc_type, item["kept_pages"][p - 1],
+                                    kept_toks[p - 1] if p - 1 < len(kept_toks) else None)
+                                for p in pages if 1 <= p <= len(item["kept_pages"]))
+                             if n), None,
+                        ) or doc_sets.extract_invoice_number_from_text(doc_type, page_text)
                     pending.append({"item": item, "claim": sub_claim, "key": sub_claim["key"], "number": number})
                     item_pending_count += 1
             # A combined file needs its pages carved apart whenever it ends up contributing

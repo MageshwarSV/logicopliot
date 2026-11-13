@@ -82,6 +82,96 @@ _INVOICE_NUMBER_PATTERNS = {
 GROUPABLE_DOC_TYPES = frozenset(_INVOICE_NUMBER_PATTERNS)
 
 
+_DATE_LIKE = (
+    re.compile(r"\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}"),       # 23-SEP-2026
+    re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"),           # 23/09/2026
+    re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}"),             # 2026-09-23
+)
+
+
+def looks_like_invoice_number(text: str) -> bool:
+    """Could this token actually BE an invoice number?
+
+    The one rule that matters: it has to carry a digit. Without it a header word sitting
+    where a value was expected gets taken as the number, and - far worse than returning
+    nothing - the SAME wrong word is read off every page, so two different invoices look
+    like one and are merged. Live on JOB-1130B4: this supplier prints its header row and
+    value row as separate bands,
+
+        Invoice No:   Invoice Date:   Customer No.:   Currency:
+        8667395       23-SEP-2026     130385798       USD
+
+    so the flat OCR stream reads "Invoice No: Invoice Date: ..." and the pattern below
+    captured the word "Invoice" on BOTH pages of a two-invoice file.
+    """
+    t = (text or "").strip().strip(":,;.")
+    if not (MIN_KEY_LEN <= len(t) <= 25):
+        return False
+    if not any(ch.isdigit() for ch in t):
+        return False
+    return not any(p.fullmatch(t) for p in _DATE_LIKE)
+
+
+def invoice_number_from_tokens(doc_type: str, tokens: list[dict] | None) -> str | None:
+    """The invoice number read off the page's LAYOUT: find the "Invoice No" label, then take
+    the value printed directly under it (or immediately to its right).
+
+    `tokens` is what docai.ocr_page_image returns - one dict per word with normalised
+    coordinates: {"text", "x0", "y0", "x1", "y1"}. Returns None whenever there is nothing to
+    be sure about, and the caller falls back to the flat-text pattern.
+
+    This exists because the flat word stream cannot be trusted on a table. Document AI did
+    not detect this supplier's header/value bands as a table at all, so neither the flat text
+    nor the layout text keeps a label next to its own value - but the geometry still does:
+    the label "Invoice" sits at x0=0.0236, y0=0.1671 and its number 8667395 at x0=0.0236,
+    y0=0.1820. Directly underneath, to the pixel.
+    """
+    if doc_type not in GROUPABLE_DOC_TYPES or not tokens:
+        return None
+    try:
+        words = [t for t in tokens if (t.get("text") or "").strip()]
+        for i, tok in enumerate(words):
+            if (tok.get("text") or "").strip().lower().rstrip(":.") != "invoice":
+                continue
+            nxt = words[i + 1] if i + 1 < len(words) else None
+            if nxt is None:
+                continue
+            after = (nxt.get("text") or "").strip().lower().rstrip(":.")
+            if after not in ("no", "number", "nr"):
+                continue
+            # The label's own box - both words of it.
+            lx0 = min(tok["x0"], nxt["x0"])
+            lx1 = max(tok["x1"], nxt["x1"])
+            ly1 = max(tok["y1"], nxt["y1"])
+            ly0 = min(tok["y0"], nxt["y0"])
+
+            def below(c: dict) -> bool:
+                # Starts under the label's band, within about one table row of it, and shares
+                # the label's column.
+                return (ly1 - 0.004 <= c["y0"] <= ly1 + 0.06
+                        and c["x0"] < lx1 + 0.02 and c["x1"] > lx0 - 0.02)
+
+            def right(c: dict) -> bool:
+                # Same band, just after the label - and CLOSE, or the next column's value
+                # (three columns over) would answer for this one.
+                return (abs(c["y0"] - ly0) < 0.012
+                        and lx1 <= c["x0"] <= lx1 + 0.15)
+
+            for pick in (below, right):
+                hits = [c for c in words
+                        if c is not tok and c is not nxt
+                        and looks_like_invoice_number(c.get("text", "")) and pick(c)]
+                if hits:
+                    hits.sort(key=lambda c: (round(c["y0"], 3), c["x0"]))
+                    key = normalise_key(hits[0]["text"].strip().strip(":,;."))
+                    if len(key) >= MIN_KEY_LEN:
+                        return key
+    except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency: a token
+        # dict missing a coordinate must cost the layout read, not the classification.
+        pass
+    return None
+
+
 def extract_invoice_number_from_text(doc_type: str, text: str) -> str | None:
     """The invoice number a claim's own pages carry, read directly off their raw OCR text -
     used to decide whether two claims (from the same file or different ones) belong in the
@@ -91,8 +181,14 @@ def extract_invoice_number_from_text(doc_type: str, text: str) -> str | None:
     splits) when nothing matches - a Smart Upload that cannot read a number off the page falls
     back to today's one-claim-one-document behavior rather than guessing."""
     for pattern in _INVOICE_NUMBER_PATTERNS.get(doc_type or "", []):
-        m = re.search(pattern, text or "", re.IGNORECASE)
-        if m:
+        # Every match, not just the first: where a header row runs into a value row the first
+        # capture is the NEXT column's label ("Invoice No: Invoice Date: ..."), and taking it
+        # is worse than finding nothing - the same wrong word comes off every page, so two
+        # different invoices read as one. Skip anything that cannot be a number and keep
+        # looking; still returns None when none of them can be, exactly as before.
+        for m in re.finditer(pattern, text or "", re.IGNORECASE):
+            if not looks_like_invoice_number(m.group(1)):
+                continue
             key = normalise_key(m.group(1))
             if len(key) >= MIN_KEY_LEN:
                 return key
@@ -112,7 +208,18 @@ def same_number(a: str, b: str) -> bool:
     return len(short) >= MIN_KEY_LEN and len(short) < len(long) and long.endswith(short)
 
 
-def split_claim_pages_by_invoice_number(doc_type: str, page_texts: dict[int, str]) -> list[list[int]]:
+def page_invoice_number(doc_type: str, text: str, tokens: list[dict] | None = None) -> str | None:
+    """One page's invoice number: off the layout when the page's tokens are to hand, else off
+    the flat text. The layout is tried FIRST because it is the only one of the two that can
+    tell a label from the value printed under it."""
+    return (invoice_number_from_tokens(doc_type, tokens)
+            or extract_invoice_number_from_text(doc_type, text))
+
+
+def split_claim_pages_by_invoice_number(
+    doc_type: str, page_texts: dict[int, str],
+    page_tokens: dict[int, list[dict]] | None = None,
+) -> list[list[int]]:
     """Split ONE classified claim's own pages into separate invoices, wherever the invoice
     number actually printed on them changes partway through.
 
@@ -142,7 +249,7 @@ def split_claim_pages_by_invoice_number(doc_type: str, page_texts: dict[int, str
     current: list[int] = []
     current_number: str | None = None
     for p in pages:
-        number = extract_invoice_number_from_text(doc_type, page_texts[p])
+        number = page_invoice_number(doc_type, page_texts[p], (page_tokens or {}).get(p))
         if (
             number and current_number and current
             and not same_number(number, current_number)
