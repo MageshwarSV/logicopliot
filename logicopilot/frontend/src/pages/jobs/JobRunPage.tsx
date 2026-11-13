@@ -604,7 +604,9 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No"] },
     {
       heading: "Value & Quantity Details",
-      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Gross Wt"],
+      // Gross Wt Unit straight after Gross Wt, so on the 2-column grid each value sits beside
+      // its own unit: Total Quantity | Total Quantity Unit, then Gross Wt | Gross Wt Unit.
+      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Gross Wt", "Gross Wt Unit"],
     },
     {
       heading: "Party Details",
