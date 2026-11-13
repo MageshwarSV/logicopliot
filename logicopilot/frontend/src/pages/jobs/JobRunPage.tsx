@@ -620,7 +620,16 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   ],
   PackingList: [
     { heading: "Shipment Reference", labels: ["Invoice No", "Invoice Date", "HBL No"] },
-    { heading: "Package & Weight Details", labels: ["package_count", "total_quantity", "Gross Wt"] },
+    {
+      heading: "Package & Weight Details",
+      // Each value beside its own unit on the 2-column grid: Total Quantity | Total Quantity
+      // Unit ("unit"), Gross Wt | Gross Wt Unit, Net Weight | Net Weight Unit, then Package
+      // Count on its own last row so it doesn't push every pair out of line.
+      labels: [
+        "total_quantity", "unit", "Gross Wt", "Gross Wt Unit", "Net Weight", "Net Weight Unit",
+        "package_count",
+      ],
+    },
   ],
   Custom: [
     { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
