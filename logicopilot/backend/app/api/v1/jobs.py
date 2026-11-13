@@ -9250,6 +9250,9 @@ def run_extraction(
     # box for every container column, so a container number filtered away by the ISO 6346
     # check leaves an empty box to fill instead of no box at all. See the helper.
     _backfill_missing_standalone_cells(db, job, group)
+    # "Fill only when <another field> has a value" (CustomField.requires_value_of) - now
+    # that every field has its final reading, a MAWB Date with no MAWB Number is emptied.
+    _enforce_requires_value_of(db, job)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -9475,6 +9478,55 @@ def _remember_safely(db: Session, **kwargs) -> None:
             db.flush()
     except Exception:  # noqa: BLE001 - a failed remember must never fail the save
         logger.exception("reference learning skipped for %s", kwargs.get("custom_field_id") or kwargs.get("mark_id"))
+
+
+def _job_level_value(db: Session, job_id: str, label: str) -> str:
+    """This job's current job-level value for `label` (corrected over extracted), "" if none.
+    A label on several documents (Invoice No on the Invoice and the Packing List) counts as
+    filled when ANY of them carries a value."""
+    for fv in (db.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job_id, JobFieldValue.label_name == label,
+                       JobFieldValue.row_index.is_(None)).all()):
+        v = (fv.corrected_value if fv.corrected_value is not None else fv.extracted_value) or ""
+        if v.strip():
+            return v.strip()
+    return ""
+
+
+def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str | None = None) -> list[str]:
+    """Blank every job-level custom field whose requires_value_of field is empty on this job.
+
+    CustomField.requires_value_of - "fill only when <another field> has a value". MAWB Date
+    requires MAWB Number: a plain House Air Waybill has no master waybill and so no master
+    date, and the two are read off the document separately, so a date could come back on a
+    page with no master number at all - the house date, in the wrong box. Run after
+    extraction, after a recompute, and when an operator saves the required field (pass its
+    label as only_required_label to look at just the fields depending on it). Does not commit.
+    Returns the labels it blanked.
+    """
+    from app.models.custom_field import CustomField
+
+    q = db.query(CustomField).filter(CustomField.group_id == job.group_id,
+                                     CustomField.requires_value_of.isnot(None),
+                                     CustomField.per_row.is_(False))
+    if only_required_label is not None:
+        q = q.filter(CustomField.requires_value_of == only_required_label)
+    blanked: list[str] = []
+    db.flush()
+    for cf in q.all():
+        required = (cf.requires_value_of or "").strip()
+        if not required or _job_level_value(db, job.id, required):
+            continue
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if (fv.extracted_value or "").strip() or (fv.corrected_value or "").strip():
+                fv.extracted_value = ""
+                fv.corrected_value = None
+                blanked.append(cf.label_name)
+    if blanked:
+        logger.info("job %s: %s left empty - the field(s) they require are empty", job.id, blanked)
+    return blanked
 
 
 def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
@@ -9740,7 +9792,18 @@ def correct_field_value(
     # the shared helper is what actually enforces an operator's own-job restriction and a
     # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
     # either restriction could be bypassed just by knowing/guessing a value's id.
-    _load_job(db, fv.job_id, scope, user)
+    job_for_rules = _load_job(db, fv.job_id, scope, user)
+    if fv.custom_field_id and fv.row_index is None and (payload.corrected_value or "").strip():
+        from app.models.custom_field import CustomField as _CFr
+
+        own_cf = db.get(_CFr, fv.custom_field_id)
+        required = ((own_cf.requires_value_of if own_cf else None) or "").strip()
+        if required and not _job_level_value(db, fv.job_id, required):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{fv.label_name} can only be filled when {required} has a value - "
+                       f"fill {required} first.",
+            )
     # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
     # read site in this file already defensively does `.strip()` - this was the one write site
     # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
@@ -9753,6 +9816,10 @@ def correct_field_value(
     # frontend already walked the link forwards; nothing walked it back, so typing into the
     # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
     _carry_to_synced_partners(db, fv, payload.corrected_value or "")
+    # A required field cleared takes every field that depends on it with it (MAWB Number
+    # emptied -> MAWB Date emptied) - see _enforce_requires_value_of.
+    if fv.row_index is None and not (payload.corrected_value or "").strip():
+        _enforce_requires_value_of(db, job_for_rules, only_required_label=fv.label_name)
     db.commit()
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None
@@ -10136,6 +10203,7 @@ def recompute_custom_field(
     existing.label_name = cf.label_name
     existing.extracted_value = value
     existing.target_value_raw = raw_value if getattr(cf, "is_target_value", False) else None
+    _enforce_requires_value_of(db, job)
     db.commit()
     db.refresh(existing)
     return [JobFieldValueOut(

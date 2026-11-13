@@ -5229,8 +5229,14 @@ function ExtractedField({
       } else {
         await reload();
       }
-    } catch {
+    } catch (err) {
       setFailed(true);
+      // A save the server refused ON PURPOSE says why (e.g. "MAWB Date can only be filled when
+      // MAWB Number has a value") - show that under the box instead of a bare "could not save".
+      if (axios.isAxiosError(err) && err.response?.status === 400
+          && typeof err.response.data?.detail === "string") {
+        setFormatError(err.response.data.detail);
+      }
     } finally {
       setSaving(false);
     }
