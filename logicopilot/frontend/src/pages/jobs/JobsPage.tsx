@@ -7,6 +7,8 @@ import { BUCKETS, GROUP_LABELS } from "../../components/JobsOverview";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { DataTable, type Column } from "../../components/ui/DataTable";
+import { Pagination } from "../../components/ui/Pagination";
+import { CalendarIcon } from "../../components/ui/icons";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Input";
 import { Alert } from "../../components/ui/Alert";
@@ -820,7 +822,27 @@ export function JobsPage() {
     });
   }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
 
+  // Page-by-page display over the filtered list. Every job is still loaded in the background
+  // (see the auto-continue effect) and filtered client-side above, so this only decides which
+  // slice is on screen - the batch loading and live refresh underneath are untouched. Back to
+  // page 1 whenever WHAT is listed changes (menu, tab, any filter, rows per page), but not
+  // when a background batch simply adds more rows to the same list.
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(20);
+  useEffect(() => {
+    setListPage(1);
+  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket]);
+  const listLastPage = Math.max(1, Math.ceil(visibleJobs.length / listPageSize));
+  const currentListPage = Math.min(listPage, listLastPage);
+  const pageJobs = visibleJobs.slice((currentListPage - 1) * listPageSize, currentListPage * listPageSize);
+  // S.No counts across pages (page 2 of 20-per-page starts at 21), in the list's own order.
+  const slNoById = useMemo(() => new Map(visibleJobs.map((j, i) => [j.id, i + 1])), [visibleJobs]);
+
   const columns: Column<Job>[] = [
+    {
+      header: "S.No",
+      render: (j) => <span className="tabular-nums text-slate-500 dark:text-slate-400">{slNoById.get(j.id)}</span>,
+    },
     {
       // A placeholder button only, for now — opens a blank tab of its own so a real E-docket
       // feature has somewhere to land later without this column having to change again.
@@ -840,20 +862,30 @@ export function JobsPage() {
       ),
     },
     {
-      header: "Date",
+      // Created date and ETA in one column: the created date/time on top (click for the status
+      // history, as before), the ETA under it with a calendar icon that opens the date picker.
+      header: "Date / ETA",
       render: (j) => (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            openHistory(j);
-          }}
-          title="View full status history"
-          className="text-left text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
-        >
-          <span className="block underline decoration-dotted underline-offset-2">{when(j.created_at, false)}</span>
-          <span className="block text-[11px] text-slate-400 dark:text-slate-500">{timeOnly(j.created_at)}</span>
-        </button>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openHistory(j);
+            }}
+            title="View full status history"
+            className="text-left text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
+          >
+            <span className="font-medium underline decoration-dotted underline-offset-2">{when(j.created_at, false)}</span>
+            <span className="text-slate-500 dark:text-slate-400">, {timeOnly(j.created_at)}</span>
+          </button>
+          <EtaCell
+            etaDate={j.eta_date ?? ""}
+            canEdit={canEditEta}
+            saving={savingEtaId === j.id}
+            onChange={(v) => handleEtaChange(j, v)}
+          />
+        </div>
       ),
     },
     {
@@ -866,19 +898,6 @@ export function JobsPage() {
       header: "BL No",
       render: (j) => (
         <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
-      ),
-    },
-    {
-      header: "ETA",
-      render: (j) => (
-        <input
-          type="date"
-          value={j.eta_date ?? ""}
-          disabled={!canEditEta || savingEtaId === j.id}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => handleEtaChange(j, e.target.value)}
-          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-400 disabled:cursor-default disabled:border-transparent disabled:bg-transparent disabled:px-0 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-        />
       ),
     },
     {
@@ -1248,7 +1267,7 @@ export function JobsPage() {
               `/jobs/${j.id}${category ? `?from=${category}` : ""}`, "_blank", "noopener",
             )}
             columns={columns}
-            rows={visibleJobs}
+            rows={pageJobs}
             keyFor={(j) => j.id}
             emptyMessage={
               filterLabel
@@ -1260,6 +1279,29 @@ export function JobsPage() {
                     : "No jobs yet — create one to process a transaction."
             }
           />
+        )}
+        {!loading && visibleJobs.length > 0 && (
+          <div className="px-5 pb-4">
+            <Pagination
+              page={currentListPage}
+              pageSize={listPageSize}
+              total={visibleJobs.length}
+              onPageChange={setListPage}
+              noun="jobs"
+              extra={
+                <label className="mr-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  Rows per page
+                  <select
+                    value={listPageSize}
+                    onChange={(e) => setListPageSize(Number(e.target.value))}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              }
+            />
+          </div>
         )}
       </Card>
       {/* The next batch loads itself in the background (see the auto-continue effect) - this
@@ -1317,5 +1359,74 @@ export function JobsPage() {
         )}
       </Modal>
     </AppShell>
+  );
+}
+
+
+/** "14 Oct, 2026" from the stored "2026-10-14" - parsed as a local calendar date, never through
+ *  Date's UTC parsing, which would show the previous day west of UTC. */
+function formatEta(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(y, m - 1, d);
+  return `${dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}, ${y}`;
+}
+
+/** The ETA line under a job's created date. The calendar icon opens the browser's own date
+ *  picker on a hidden <input type="date">, so changing it saves exactly as the old ETA column
+ *  did; without edit rights it is plain text. Every click stops here so it never also opens
+ *  the job (the whole row is a link). */
+function EtaCell({
+  etaDate, canEdit, saving, onChange,
+}: {
+  etaDate: string;
+  canEdit: boolean;
+  saving: boolean;
+  onChange: (value: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const label = etaDate ? `ETA: ${formatEta(etaDate)}` : "ETA: Not set";
+
+  function openPicker(e: React.MouseEvent) {
+    e.stopPropagation();
+    const input = inputRef.current;
+    if (!input || !canEdit || saving) return;
+    try {
+      input.showPicker();
+    } catch {
+      input.focus();
+      input.click();
+    }
+  }
+
+  return (
+    <div className="relative flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400" onClick={(e) => e.stopPropagation()}>
+      {canEdit ? (
+        <button
+          type="button"
+          onClick={openPicker}
+          disabled={saving}
+          title={etaDate ? "Change ETA" : "Set ETA"}
+          aria-label={etaDate ? "Change ETA" : "Set ETA"}
+          className="rounded p-0.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 disabled:opacity-50 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-400"
+        >
+          <CalendarIcon className="h-3.5 w-3.5" />
+        </button>
+      ) : (
+        <CalendarIcon className="h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
+      )}
+      <span className={etaDate ? "" : "italic text-slate-400"}>{saving ? "Saving…" : label}</span>
+      {canEdit && (
+        <input
+          ref={inputRef}
+          type="date"
+          value={etaDate}
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => onChange(e.target.value)}
+          className="pointer-events-none absolute left-0 top-full h-0 w-0 opacity-0"
+        />
+      )}
+    </div>
   );
 }

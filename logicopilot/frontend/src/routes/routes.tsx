@@ -310,7 +310,7 @@ export function AppRoutes() {
       <Route
         path="/account"
         element={
-          <ProtectedRoute allowedRoles={["tenant_admin", "operator", "gk2", "saas_finance"]}>
+          <ProtectedRoute allowedRoles={["super_admin", "tenant_admin", "admin", "operator", "gk2", "manager", "saas_finance"]}>
             <AccountSettingsPage />
           </ProtectedRoute>
         }

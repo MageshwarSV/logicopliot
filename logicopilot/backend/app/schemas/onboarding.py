@@ -155,6 +155,7 @@ class CustomFieldOut(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class CustomFieldCreate(BaseModel):
@@ -202,6 +203,7 @@ class CustomFieldCreate(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class CustomFieldEdit(BaseModel):
@@ -253,6 +255,7 @@ class CustomFieldEdit(BaseModel):
     date_picker: bool | None = None
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class DocumentDetailOut(DocumentOut):

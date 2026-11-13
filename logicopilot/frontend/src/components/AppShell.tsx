@@ -1,14 +1,16 @@
-import { useEffect, useState, type ReactNode, type SVGProps } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/registry";
 import * as jobsApi from "../api/jobs";
 import { NotificationBell } from "./NotificationBell";
+import { ChangePasswordModal } from "./ChangePasswordModal";
+import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
-  CodeIcon, MonitorIcon, ArrowPathIcon,
+  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -317,10 +319,6 @@ export function AppShell({
                       ))}
                     </div>
                   )}
-
-                  <Link to="/account" className={navClass("/account")}>
-                    <GearIcon /> Settings
-                  </Link>
                 </div>
               </div>
 
@@ -347,9 +345,6 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
-                <Link to="/account" className={navClass("/account")}>
-                  Settings
-                </Link>
               </div>
             </div>
           )}
@@ -368,9 +363,6 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
-                <Link to="/account" className={navClass("/account")}>
-                  Settings
-                </Link>
               </div>
             </div>
           )}
@@ -396,7 +388,6 @@ export function AppShell({
                   { to: "/saas-finance/payments", label: "Payments" },
                   { to: "/saas-finance/pricing-plans", label: "Pricing & Plans" },
                   { to: "/saas-finance/reports", label: "Reports" },
-                  { to: "/account", label: "Settings" },
                 ].map((item) => (
                   <Link key={item.to} to={item.to} className={navClass(item.to)}>
                     {item.label}
@@ -409,28 +400,11 @@ export function AppShell({
           )}
         </nav>
 
-        <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-          <div className="mb-3 flex items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">
-              {user ? initials(user.full_name) : ""}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user?.full_name}</p>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</p>
-            </div>
-          </div>
-          {user && <RoleBadge role={user.role} />}
-          <button
-            type="button"
-            onClick={() => logout()}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Log out
-          </button>
-        </div>
+        <UserMenu
+          user={user}
+          initials={user ? initials(user.full_name) : ""}
+          onLogout={() => logout()}
+        />
       </aside>
 
       <div className="flex-1 overflow-y-auto">
@@ -453,6 +427,83 @@ export function AppShell({
         </header>
         <main className="p-8">{children}</main>
       </div>
+    </div>
+  );
+}
+
+
+/** The account card at the bottom of the sidebar, and the menu it opens: Profile, Change
+ *  Password, Log out. This replaced the separate "Settings" sidebar link (it only ever led to
+ *  the same account page) and the always-visible Log out button. The menu opens upward, since
+ *  the card sits at the very bottom of the screen. */
+function UserMenu({
+  user, initials, onLogout,
+}: {
+  user: ReturnType<typeof useAuth>["user"];
+  initials: string;
+  onLogout: () => void;
+}) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const item =
+    "flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800";
+
+  return (
+    <div ref={rootRef} className="relative border-t border-slate-200 p-4 dark:border-slate-800">
+      {open && (
+        <div
+          role="menu"
+          className="absolute inset-x-4 bottom-full z-30 mb-2 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900"
+        >
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); navigate("/account"); }}>
+            <UserIcon className="h-4 w-4 text-slate-500" /> Profile
+          </button>
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); setChangePasswordOpen(true); }}>
+            <LockIcon className="h-4 w-4 text-slate-500" /> Change Password
+          </button>
+          <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); onLogout(); }}>
+            <LogoutIcon className="h-4 w-4 text-slate-500" /> Log out
+          </button>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="-m-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
+      >
+        <Avatar name={user?.full_name ?? initials} url={user?.avatar_url} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user?.full_name}</p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</p>
+        </div>
+        <ChevronDownIcon className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {user && <div className="mt-3"><RoleBadge role={user.role} /></div>}
+
+      <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
     </div>
   );
 }

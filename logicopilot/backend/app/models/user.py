@@ -65,6 +65,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Self-service Profile fields (see migration j7profile01). avatar_path is relative to
+    # settings.uploads_dir; avatar_url below is what the browser actually loads.
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    avatar_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_by_id: Mapped[str | None] = mapped_column(
@@ -137,3 +141,12 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     tenant: Mapped["Tenant | None"] = relationship(back_populates="users")
     user_type: Mapped["UserType | None"] = relationship()
+
+    @property
+    def avatar_url(self) -> str | None:
+        """The photo's URL, or None. Carries the upload's own timestamp (from avatar_path's file
+        name) as ?v=, so a new photo is a new URL and no browser keeps showing the old one."""
+        if not self.avatar_path:
+            return None
+        version = self.avatar_path.rsplit("-", 1)[-1].split(".", 1)[0]
+        return f"/api/v1/auth/avatar/{self.id}?v={version}"

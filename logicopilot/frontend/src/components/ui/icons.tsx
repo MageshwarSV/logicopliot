@@ -293,3 +293,32 @@ export function EyeSlashIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function UserIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx={12} cy={8} r={4} />
+      <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+    </Icon>
+  );
+}
+
+export function LockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={4.5} y={10.5} width={15} height={10} rx={2} />
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+      <circle cx={12} cy={15.5} r={1} fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function LogoutIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+      <path d="M9 16l-4-4 4-4" />
+      <path d="M5 12h11" />
+    </Icon>
+  );
+}
