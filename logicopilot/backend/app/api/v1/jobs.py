@@ -1902,6 +1902,21 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 # deliberately resets - see that function's own docstring) checked before job.status. This one
 # is for filtering the query itself before rows are even loaded; _job_category is for a single
 # already-loaded Job object (list rows, _build_detail).
+def _erp_submitted_when():
+    """THE date an ERP-submitted job counts on, everywhere: the stamp printed under its status
+    badge on the Jobs list (completed_at), falling back to arrival for a job with none.
+
+    One definition, because three screens date the same jobs and two of them disagreed: the
+    sidebar's "ERP Submitted Jobs" badge and the Jobs list used completed_at, while the
+    dashboard's Job Activity chart used ai_submitted_at - the FIRST submission, which never
+    moves. A job first sent in October and completed again in November after a retry was
+    therefore November on the badge and October on the chart: 94 vs 92 on the same screen for
+    the same month. The frontend's Jobs list applies the same rule client-side (rowDate in
+    JobsPage.tsx); keep the two together.
+    """
+    return func.coalesce(Job.completed_at, Job.created_at)
+
+
 def _category_condition(category: str):
     not_ai_submitted = Job.ai_submitted_at.is_(None)
     # "completed" and "submitted" are now the SAME condition - the separate "ERP Verified
@@ -2038,7 +2053,7 @@ def job_category_counts(
     # Coalesced to arrival for a job finished before completed_at existed, matching the
     # ordering, so a job can never fall out of both windows and vanish from the count.
     erp_base = _jobs_visible_query(db, scope, user)
-    _erp_when = func.coalesce(Job.completed_at, Job.created_at)
+    _erp_when = _erp_submitted_when()
     if lo is not None:
         erp_base = erp_base.filter(_erp_when >= lo)
     if hi is not None:
@@ -2118,10 +2133,15 @@ def job_activity_chart(
     badge and the Jobs list itself use - not a bare ai_submitted_at check: a job that went
     through the direct Submit Entry path without ai_submitted_at ever being set (an older,
     legacy shape) still counts, same as everywhere else since the ERP Submitted/Verified merge
-    (2026-11-10). Bucketed by ai_submitted_at when it is set (the precise moment automation hit
-    the ERP), falling back to completed_at for that legacy shape - found live: a job with no
-    ai_submitted_at at all was invisible to this chart in every month, despite correctly
-    showing on the Jobs list's own "ERP Submitted Jobs" screen."""
+    (2026-11-10). Bucketed by _erp_submitted_when - the SAME date the sidebar badge and the Jobs
+    list's ERP Submitted screen use (completed_at, falling back to arrival). It used to bucket
+    by ai_submitted_at first, which is the FIRST submission and never moves, so a job retried
+    into November sat in October here and in November on the badge beside it (92 vs 94).
+
+    pending_jobs: of the jobs that ARRIVED this month, how many have not reached the ERP yet -
+    a real count. It used to be worked out on screen as new minus submitted, two different
+    sets of jobs: a job created in October and submitted in November lowered it, and a job
+    created this month that failed was counted or not depending on the arithmetic."""
     try:
         year, mon = (int(x) for x in month.split("-"))
         start = datetime(year, mon, 1, tzinfo=IST)
@@ -2130,8 +2150,15 @@ def job_activity_chart(
     end = datetime(year + (1 if mon == 12 else 0), 1 if mon == 12 else mon + 1, 1, tzinfo=IST)
 
     base = _jobs_visible_query(db, scope, user)
-    created_candidates = base.filter(Job.created_at >= start, Job.created_at < end).all()
-    _submitted_when = func.coalesce(Job.ai_submitted_at, Job.completed_at, Job.created_at)
+    created_in_month = base.filter(Job.created_at >= start, Job.created_at < end)
+    created_candidates = created_in_month.all()
+    # Which of this month's arrivals are ERP-submitted NOW - by the same category rule as the
+    # submitted bars, so "pending" is exactly "arrived this month, not submitted yet".
+    submitted_now_ids = {
+        row[0] for row in created_in_month.filter(_category_condition("submitted"))
+        .with_entities(Job.id).all()
+    }
+    _submitted_when = _erp_submitted_when()
     submitted_candidates = base.filter(
         _category_condition("submitted"),
         _submitted_when >= start, _submitted_when < end,
@@ -2139,6 +2166,7 @@ def job_activity_chart(
     if assigned_to:
         created_candidates = [j for j in created_candidates if _operator_name(db, j) == assigned_to]
         submitted_candidates = [j for j in submitted_candidates if _operator_name(db, j) == assigned_to]
+    pending_jobs = sum(1 for j in created_candidates if j.id not in submitted_now_ids)
 
     def _bucket(timestamps: list[datetime]) -> dict[date, int]:
         counts: dict[date, int] = {}
@@ -2148,9 +2176,7 @@ def job_activity_chart(
         return counts
 
     new_counts = _bucket([j.created_at for j in created_candidates])
-    submitted_counts = _bucket([
-        j.ai_submitted_at or j.completed_at or j.created_at for j in submitted_candidates
-    ])
+    submitted_counts = _bucket([j.completed_at or j.created_at for j in submitted_candidates])
 
     days: list[JobActivityDay] = []
     cursor = start
@@ -2162,7 +2188,7 @@ def job_activity_chart(
             erp_submitted_jobs=submitted_counts.get(day, 0),
         ))
         cursor += timedelta(days=1)
-    return JobActivityChartOut(days=days)
+    return JobActivityChartOut(days=days, pending_jobs=pending_jobs)
 
 
 @router.get("/jobs", response_model=list[JobOut])
@@ -2212,7 +2238,7 @@ def list_jobs(
         # history was too old to backfill from) - those sort by arrival, as they always did,
         # rather than sinking to the bottom as NULLs.
         query = query.order_by(
-            func.coalesce(Job.completed_at, Job.created_at).desc(), Job.created_at.desc()
+            _erp_submitted_when().desc(), Job.created_at.desc()
         )
     else:
         query = query.order_by(Job.created_at.desc())
