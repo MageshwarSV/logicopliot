@@ -463,26 +463,39 @@ const MULTILINE_FIELD_LABELS = new Set([
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
-// Dummy placeholder, by request - a plain Shipper/Seller/None radio shown beside these two
-// fields only, local to this render (never saved, never read back). No behavior is wired to
-// it yet; what it should actually do is still to be decided.
-const DUMMY_SHIPPER_SELLER_RADIO_LABELS = new Set(["shipper", "Sold By / Buyer Name"]);
-function DummyShipperSellerRadio() {
-  const [choice, setChoice] = useState<"Shipper" | "Seller" | "None">("Shipper");
+// "Use this value" - which party is the SUPPLIER on the ERP entry (Excel INVOICES
+// Supplier_Name / Supplier_Address). A checkbox beside each candidate NAME field, only one ticked
+// at a time; the choice is saved in the hidden "Supplier Source" field as the ticked field's own
+// label, and the Excel columns read whichever field it names (see excel_entry._picked_field /
+// "pick_by"). Nothing saved yet = the first candidate (Shipper), the same default the Excel uses.
+// Shown only on a template that HAS a "Supplier Source" field - November 5 today - so adding it
+// to another template is a template setting, not a code change.
+const SUPPLIER_SOURCE_LABEL = "Supplier Source";
+const SUPPLIER_SOURCE_NAME_LABELS = ["shipper", "Sold By / Buyer Name"];
+function SupplierSourceCheckbox({
+  checked, disabled, onPick,
+}: { checked: boolean; disabled: boolean; onPick: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
   return (
-    <div className="flex items-center gap-2.5 text-xs font-normal text-slate-600 dark:text-slate-300">
-      {(["Shipper", "Seller", "None"] as const).map((opt) => (
-        <label key={opt} className="flex items-center gap-1 whitespace-nowrap">
-          <input
-            type="radio"
-            name="dummy-shipper-seller"
-            checked={choice === opt}
-            onChange={() => setChoice(opt)}
-          />
-          {opt}
-        </label>
-      ))}
-    </div>
+    <label
+      className="flex items-center gap-1.5 whitespace-nowrap text-xs font-normal text-slate-600 dark:text-slate-300"
+      title="Use this party as the Supplier (name and address) in the ERP Excel"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled || busy || checked}
+        onChange={async () => {
+          setBusy(true);
+          try {
+            await onPick();
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      Use this value
+    </label>
   );
 }
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
@@ -6377,6 +6390,14 @@ function ExtractionReview({
   insuranceMode: "percentage" | "amount" | null;
   onToggleInsuranceMode: (toAmount: boolean) => void;
 }) {
+  // The hidden "Supplier Source" field (see SupplierSourceCheckbox) - present only on a template
+  // set up for it. Its saved value is the label of the ticked name field; none yet = Shipper.
+  const supplierSourceFv = job.field_values.find(
+    (x) => x.row_index == null && x.label_name === SUPPLIER_SOURCE_LABEL,
+  );
+  const supplierSourceChoice =
+    (supplierSourceFv?.corrected_value ?? supplierSourceFv?.extracted_value ?? "").trim()
+    || SUPPLIER_SOURCE_NAME_LABELS[0];
   const files = useMemo(
     () =>
       // The order the API sends, which is the template's own — Bill of lading, Invoice,
@@ -7717,10 +7738,17 @@ function ExtractionReview({
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
                         headerExtra={
-                          // Air Import only - Sea Import has a "shipper" field too, and the radio
-                          // was showing there by name alone.
-                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name) && job.mode === "Air Import"
-                            ? <DummyShipperSellerRadio />
+                          supplierSourceFv && SUPPLIER_SOURCE_NAME_LABELS.includes(fv.label_name)
+                            ? (
+                              <SupplierSourceCheckbox
+                                checked={supplierSourceChoice === fv.label_name}
+                                disabled={readOnly}
+                                onPick={async () => {
+                                  await jobsApi.correctFieldValue(supplierSourceFv.id, fv.label_name);
+                                  await reload();
+                                }}
+                              />
+                            )
                             : fv.label_name === BRANCH_ADDRESS_LABEL &&
                                 branchAddressMatches.length > 1
                               ? (
