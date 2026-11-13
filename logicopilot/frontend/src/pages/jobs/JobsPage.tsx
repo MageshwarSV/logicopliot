@@ -7,6 +7,7 @@ import { BUCKETS, GROUP_LABELS } from "../../components/JobsOverview";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { DataTable, type Column } from "../../components/ui/DataTable";
+import { Pagination } from "../../components/ui/Pagination";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Input";
 import { Alert } from "../../components/ui/Alert";
@@ -820,7 +821,27 @@ export function JobsPage() {
     });
   }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
 
+  // Page-by-page display over the filtered list. Every job is still loaded in the background
+  // (see the auto-continue effect) and filtered client-side above, so this only decides which
+  // slice is on screen - the batch loading and live refresh underneath are untouched. Back to
+  // page 1 whenever WHAT is listed changes (menu, tab, any filter, rows per page), but not
+  // when a background batch simply adds more rows to the same list.
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(20);
+  useEffect(() => {
+    setListPage(1);
+  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket]);
+  const listLastPage = Math.max(1, Math.ceil(visibleJobs.length / listPageSize));
+  const currentListPage = Math.min(listPage, listLastPage);
+  const pageJobs = visibleJobs.slice((currentListPage - 1) * listPageSize, currentListPage * listPageSize);
+  // S.No counts across pages (page 2 of 20-per-page starts at 21), in the list's own order.
+  const slNoById = useMemo(() => new Map(visibleJobs.map((j, i) => [j.id, i + 1])), [visibleJobs]);
+
   const columns: Column<Job>[] = [
+    {
+      header: "S.No",
+      render: (j) => <span className="tabular-nums text-slate-500 dark:text-slate-400">{slNoById.get(j.id)}</span>,
+    },
     {
       // A placeholder button only, for now — opens a blank tab of its own so a real E-docket
       // feature has somewhere to land later without this column having to change again.
@@ -1248,7 +1269,7 @@ export function JobsPage() {
               `/jobs/${j.id}${category ? `?from=${category}` : ""}`, "_blank", "noopener",
             )}
             columns={columns}
-            rows={visibleJobs}
+            rows={pageJobs}
             keyFor={(j) => j.id}
             emptyMessage={
               filterLabel
@@ -1260,6 +1281,29 @@ export function JobsPage() {
                     : "No jobs yet — create one to process a transaction."
             }
           />
+        )}
+        {!loading && visibleJobs.length > 0 && (
+          <div className="px-5 pb-4">
+            <Pagination
+              page={currentListPage}
+              pageSize={listPageSize}
+              total={visibleJobs.length}
+              onPageChange={setListPage}
+              noun="jobs"
+              extra={
+                <label className="mr-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  Rows per page
+                  <select
+                    value={listPageSize}
+                    onChange={(e) => setListPageSize(Number(e.target.value))}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              }
+            />
+          </div>
         )}
       </Card>
       {/* The next batch loads itself in the background (see the auto-continue effect) - this
