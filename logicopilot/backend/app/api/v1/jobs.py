@@ -430,6 +430,31 @@ def _is_valid_container_number(value) -> bool:
     return bool(_CONTAINER_NUMBER_RE.match(str(value or "").strip().upper()))
 
 
+# A container number as carriers actually PRINT it: "FFAU 810832-9", "FFAU-810832-9",
+# "FFAU 8108329", or run straight into the seal ("FFAU8108329 SEAL SITA222875"). Letters may
+# not be the tail of a longer word, and the check digit may not be followed by more digits.
+_CONTAINER_IN_TEXT_RE = re.compile(r"(?<![A-Z])([A-Z]{4})[\s./-]*(\d{6})[\s./-]*(\d)(?!\d)")
+
+
+def _normalize_container_number(value) -> str:
+    """The 11-character ISO 6346 form of whatever the model returned for a container_number.
+
+    The format check above is strict on purpose (it is what keeps seal numbers out), but it
+    was being handed the number exactly as printed. A real container written "FFAU 810832-9",
+    or returned with its seal glued on, failed it and was DROPPED - while the same container's
+    other fields (its type, read in their own pass) were kept. JOB-88572C showed the result:
+    a "Container 1" card with a type and no container-number box at all, and an ERP import
+    sent with the container number blank. Pulling the one real container number out first
+    means a correct read is no longer thrown away; anything with no container number in it at
+    all comes back unchanged, so the format check still refuses it.
+    """
+    raw = str(value or "").strip().upper()
+    if _CONTAINER_NUMBER_RE.match(raw):
+        return raw
+    m = _CONTAINER_IN_TEXT_RE.search(raw)
+    return "".join(m.groups()) if m else raw
+
+
 _BL_DATE_NEVER_FUTURE_LABELS = {"HBL Date", "MBL Date"}
 
 
@@ -1877,6 +1902,21 @@ def _jobs_visible_query(db: Session, scope: TenantScope, user: User):
 # deliberately resets - see that function's own docstring) checked before job.status. This one
 # is for filtering the query itself before rows are even loaded; _job_category is for a single
 # already-loaded Job object (list rows, _build_detail).
+def _erp_submitted_when():
+    """THE date an ERP-submitted job counts on, everywhere: the stamp printed under its status
+    badge on the Jobs list (completed_at), falling back to arrival for a job with none.
+
+    One definition, because three screens date the same jobs and two of them disagreed: the
+    sidebar's "ERP Submitted Jobs" badge and the Jobs list used completed_at, while the
+    dashboard's Job Activity chart used ai_submitted_at - the FIRST submission, which never
+    moves. A job first sent in October and completed again in November after a retry was
+    therefore November on the badge and October on the chart: 94 vs 92 on the same screen for
+    the same month. The frontend's Jobs list applies the same rule client-side (rowDate in
+    JobsPage.tsx); keep the two together.
+    """
+    return func.coalesce(Job.completed_at, Job.created_at)
+
+
 def _category_condition(category: str):
     not_ai_submitted = Job.ai_submitted_at.is_(None)
     # "completed" and "submitted" are now the SAME condition - the separate "ERP Verified
@@ -2013,7 +2053,7 @@ def job_category_counts(
     # Coalesced to arrival for a job finished before completed_at existed, matching the
     # ordering, so a job can never fall out of both windows and vanish from the count.
     erp_base = _jobs_visible_query(db, scope, user)
-    _erp_when = func.coalesce(Job.completed_at, Job.created_at)
+    _erp_when = _erp_submitted_when()
     if lo is not None:
         erp_base = erp_base.filter(_erp_when >= lo)
     if hi is not None:
@@ -2093,10 +2133,15 @@ def job_activity_chart(
     badge and the Jobs list itself use - not a bare ai_submitted_at check: a job that went
     through the direct Submit Entry path without ai_submitted_at ever being set (an older,
     legacy shape) still counts, same as everywhere else since the ERP Submitted/Verified merge
-    (2026-11-10). Bucketed by ai_submitted_at when it is set (the precise moment automation hit
-    the ERP), falling back to completed_at for that legacy shape - found live: a job with no
-    ai_submitted_at at all was invisible to this chart in every month, despite correctly
-    showing on the Jobs list's own "ERP Submitted Jobs" screen."""
+    (2026-11-10). Bucketed by _erp_submitted_when - the SAME date the sidebar badge and the Jobs
+    list's ERP Submitted screen use (completed_at, falling back to arrival). It used to bucket
+    by ai_submitted_at first, which is the FIRST submission and never moves, so a job retried
+    into November sat in October here and in November on the badge beside it (92 vs 94).
+
+    pending_jobs: of the jobs that ARRIVED this month, how many have not reached the ERP yet -
+    a real count. It used to be worked out on screen as new minus submitted, two different
+    sets of jobs: a job created in October and submitted in November lowered it, and a job
+    created this month that failed was counted or not depending on the arithmetic."""
     try:
         year, mon = (int(x) for x in month.split("-"))
         start = datetime(year, mon, 1, tzinfo=IST)
@@ -2105,8 +2150,15 @@ def job_activity_chart(
     end = datetime(year + (1 if mon == 12 else 0), 1 if mon == 12 else mon + 1, 1, tzinfo=IST)
 
     base = _jobs_visible_query(db, scope, user)
-    created_candidates = base.filter(Job.created_at >= start, Job.created_at < end).all()
-    _submitted_when = func.coalesce(Job.ai_submitted_at, Job.completed_at, Job.created_at)
+    created_in_month = base.filter(Job.created_at >= start, Job.created_at < end)
+    created_candidates = created_in_month.all()
+    # Which of this month's arrivals are ERP-submitted NOW - by the same category rule as the
+    # submitted bars, so "pending" is exactly "arrived this month, not submitted yet".
+    submitted_now_ids = {
+        row[0] for row in created_in_month.filter(_category_condition("submitted"))
+        .with_entities(Job.id).all()
+    }
+    _submitted_when = _erp_submitted_when()
     submitted_candidates = base.filter(
         _category_condition("submitted"),
         _submitted_when >= start, _submitted_when < end,
@@ -2114,6 +2166,7 @@ def job_activity_chart(
     if assigned_to:
         created_candidates = [j for j in created_candidates if _operator_name(db, j) == assigned_to]
         submitted_candidates = [j for j in submitted_candidates if _operator_name(db, j) == assigned_to]
+    pending_jobs = sum(1 for j in created_candidates if j.id not in submitted_now_ids)
 
     def _bucket(timestamps: list[datetime]) -> dict[date, int]:
         counts: dict[date, int] = {}
@@ -2123,9 +2176,7 @@ def job_activity_chart(
         return counts
 
     new_counts = _bucket([j.created_at for j in created_candidates])
-    submitted_counts = _bucket([
-        j.ai_submitted_at or j.completed_at or j.created_at for j in submitted_candidates
-    ])
+    submitted_counts = _bucket([j.completed_at or j.created_at for j in submitted_candidates])
 
     days: list[JobActivityDay] = []
     cursor = start
@@ -2137,7 +2188,7 @@ def job_activity_chart(
             erp_submitted_jobs=submitted_counts.get(day, 0),
         ))
         cursor += timedelta(days=1)
-    return JobActivityChartOut(days=days)
+    return JobActivityChartOut(days=days, pending_jobs=pending_jobs)
 
 
 @router.get("/jobs", response_model=list[JobOut])
@@ -2187,7 +2238,7 @@ def list_jobs(
         # history was too old to backfill from) - those sort by arrival, as they always did,
         # rather than sinking to the bottom as NULLs.
         query = query.order_by(
-            func.coalesce(Job.completed_at, Job.created_at).desc(), Job.created_at.desc()
+            _erp_submitted_when().desc(), Job.created_at.desc()
         )
     else:
         query = query.order_by(Job.created_at.desc())
@@ -2742,6 +2793,7 @@ def submit_for_gk2_approval(
         return _build_detail(db, job)
 
     job.gk2_skipped = True
+    job.erp_submitted_by_id = user.id    # GK1's own press goes straight to the ERP here
     _finalize_job_approval(db, job)
     db.refresh(job)
     return _build_detail(db, job)
@@ -2878,6 +2930,8 @@ def gk2_approve(
             status_code=status.HTTP_409_CONFLICT,
             detail="Approve Cross Docs Verification (GK2's own review) before the final approval.",
         )
+    # Whoever pressed it - GK2, or GK1 retrying a failed run - is told how it ends.
+    job.erp_submitted_by_id = user.id
     _finalize_job_approval(db, job)
     return _build_detail(db, job)
 
@@ -5363,6 +5417,7 @@ def complete_job(
         erp = {"erp_status": "no_script", "erp_log": ["No ready ERP script is configured for this template."]}
         # Nothing was entered anywhere, but the operator's work on the job IS finished.
         job.erp_submitted_at = datetime.now(timezone.utc)
+        job.erp_submitted_by_id = user.id
         job.status = "completed"
         # Same rule as persist_run_outcome's own completion - waits on an explicit Verify
         # press before counting as ERP Verified, not just this screen's own completion.
@@ -5382,6 +5437,7 @@ def complete_job(
         # ERP entry is in flight (visible to a concurrent viewer / after this returns).
         job.status = "processing"
         job.erp_submitted_at = datetime.now(timezone.utc)
+        job.erp_submitted_by_id = user.id
         db.commit()
         # Always run in the background (headless) — no OS browser window pops up. The
         # Super Admin Entry Browser streams the same run into the app panel to watch/edit.
@@ -6879,15 +6935,19 @@ def _classify_and_place_files(
         if item["real_page_count"] <= already:
             return
         extra_raw: list[str] = []
+        extra_tokens: list[list[dict]] = []
         with fitz.open(stream=item["blob"], filetype="pdf") as doc:
             for i in range(already + 1, item["real_page_count"] + 1):
                 png = item["fdir"] / "pages" / f"page_{i}.png"
                 if not png.exists():
                     doc[i - 1].get_pixmap(dpi=150).save(png)
                 try:
-                    extra_raw.append(ocr_page_image(png).get("text", ""))
+                    got = ocr_page_image(png)
+                    extra_raw.append(got.get("text", ""))
+                    extra_tokens.append(got.get("tokens") or [])
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
+                    extra_tokens.append([])
         # Billed the same way as the initial OCR pass above (real text only) - these pages past
         # the <=6-page cap are only ever rendered and OCR'd here, the first time a claim
         # actually needs them, so this IS their one OCR pass, whatever this function's own
@@ -6900,6 +6960,12 @@ def _classify_and_place_files(
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
         item["kept_pages"] = item["kept_pages"] + extra_kept
         item["kept_original"] = item["kept_original"] + extra_kept_original
+        # kept_tokens must stay the same length as kept_pages, or index i of one stops being
+        # index i of the other and the layout read answers for the wrong page.
+        kept_drop = set(extra_dropped)
+        item["kept_tokens"] = (item.get("kept_tokens") or []) + [
+            toks for n, toks in enumerate(extra_tokens, start=1) if n not in kept_drop
+        ]
 
     try:
         # PREPARE every file first, then assign them together. One slot can only take one file
@@ -6933,12 +6999,19 @@ def _classify_and_place_files(
                         page_count = i
                 # OCR EVERY page (labelled) so a page-1-BL / page-2-PL combo is detected.
                 raw_pages = []
+                # Each page's WORDS with their positions, kept beside its text. The flat text
+                # cannot tell a column header from the value printed under it (see
+                # doc_sets.invoice_number_from_tokens); the geometry can.
+                raw_tokens: list[list[dict]] = []
                 for i in range(1, page_count + 1):
                     try:
-                        t = ocr_page_image(fdir / "pages" / f"page_{i}.png").get("text", "")
+                        got = ocr_page_image(fdir / "pages" / f"page_{i}.png")
+                        t = got.get("text", "")
+                        raw_tokens.append(got.get("tokens") or [])
                     except Exception:  # noqa: BLE001 — OCR down; fall back to image classify
                         logger.warning("OCR unavailable for %s page %s; classifying from image", name, i)
                         t = ""
+                        raw_tokens.append([])
                     raw_pages.append(t)
                 # Billed HERE, not when (or if) a page ends up in a real document - every page
                 # with real OCR text in this loop was just sent to Document AI, which costs the
@@ -6978,6 +7051,11 @@ def _classify_and_place_files(
                              # use for the multi-invoice-per-file split below.
                              "real_page_count": real_page_count,
                              "fdir": fdir, "kept_pages": kept_pages,
+                             # Same pages as kept_pages, same order - filtered through the
+                             # identical kept->original map so index i of one is index i of
+                             # the other.
+                             "kept_tokens": [raw_tokens[o - 1] for o in kept_original
+                                             if o - 1 < len(raw_tokens)],
                              "kept_original": kept_original,
                              # Every kept page's own image, keyed by its KEPT-page number -
                              # used only by the vision engine's per-page classifier
@@ -7178,7 +7256,13 @@ def _classify_and_place_files(
                         p: item["kept_pages"][p - 1] for p in claim_pages
                         if 1 <= p <= len(item["kept_pages"])
                     }
-                    sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(doc_type, page_texts)
+                    kept_toks = item.get("kept_tokens") or []
+                    page_tokens = {
+                        p: kept_toks[p - 1] for p in claim_pages
+                        if 1 <= p <= len(kept_toks)
+                    }
+                    sub_page_groups = doc_sets.split_claim_pages_by_invoice_number(
+                        doc_type, page_texts, page_tokens)
                 for pages in sub_page_groups:
                     sub_claim = {**claim, "pages": pages}
                     number = None
@@ -7189,7 +7273,15 @@ def _classify_and_place_files(
                         page_text = "\n".join(
                             item["kept_pages"][p - 1] for p in pages
                             if 1 <= p <= len(item["kept_pages"]))
-                        number = doc_sets.extract_invoice_number_from_text(doc_type, page_text)
+                        kept_toks = item.get("kept_tokens") or []
+                        number = next(
+                            (n for n in (
+                                doc_sets.page_invoice_number(
+                                    doc_type, item["kept_pages"][p - 1],
+                                    kept_toks[p - 1] if p - 1 < len(kept_toks) else None)
+                                for p in pages if 1 <= p <= len(item["kept_pages"]))
+                             if n), None,
+                        ) or doc_sets.extract_invoice_number_from_text(doc_type, page_text)
                     pending.append({"item": item, "claim": sub_claim, "key": sub_claim["key"], "number": number})
                     item_pending_count += 1
             # A combined file needs its pages carved apart whenever it ends up contributing
@@ -7470,14 +7562,30 @@ def reclassify_documents(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job has no uploaded documents to reclassify.",
         )
-    # Read every existing file's bytes BEFORE anything is deleted below - the source for this
-    # run is each document's own already-uploaded content, same as what the operator originally
-    # sent in, not whatever (now possibly stale) interpretation was made of it at the time.
-    files: list[tuple[str, bytes]] = []
-    for jd in existing_docs:
-        path = Path(jd.file_path)
-        if path.exists():
-            files.append((jd.original_name or path.name, path.read_bytes()))
+    # The attachments AS THEY ARRIVED, whenever this job came from an email - not the
+    # documents currently sitting in its slots.
+    #
+    # Re-feeding the slots cannot work for a combined attachment. One "Commercial Invoice &
+    # Packing List" PDF legitimately fills two slots, so each slot holds its own copy under
+    # the SAME original name; handing both back to the classifier is handing it the same
+    # document twice. They merge into one document carrying every invoice twice (stored as
+    # "<name> +1 more"), and each further reclassify compounds it - production JOB-CB9B46
+    # ended up with a 6-page Invoice reading 8667395, 8667396, 8667395, T&C, 8667396, T&C.
+    #
+    # The slots stay the fallback for a job with no email behind it (Excel entry, a manual
+    # upload): there the placed files are the only copy there has ever been.
+    from app.core.job_email import original_attachments
+
+    files: list[tuple[str, bytes]] = original_attachments(job.id)
+    source = "the original email attachments"
+    if not files:
+        source = "the documents currently in this job's slots (no original email kept)"
+        for jd in existing_docs:
+            path = Path(jd.file_path)
+            if path.exists():
+                files.append((jd.original_name or path.name, path.read_bytes()))
+    logger.info("reclassify %s: re-running classification over %s - %d file(s): %s",
+                job.reference, source, len(files), ", ".join(n for n, _ in files))
     if not files:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -7492,6 +7600,19 @@ def reclassify_documents(
     for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
         shutil.rmtree(_job_doc_dir(jd.id), ignore_errors=True)
         db.delete(jd)
+    # The staged Unclassified pages go with them. This run stages every page again from
+    # scratch (see _classify_and_place_files) and prunes whatever a claim covers, so leaving
+    # the previous run's rows behind simply piles them up: JOB-1130B4 reached 14 of them
+    # after a handful of re-runs, listing pages that were sitting in real documents all
+    # along. A page that still belongs nowhere after this run will be staged again by it.
+    stale = db.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.job_id == job.id).all()
+    for row in stale:
+        if row.image_path:
+            Path(row.image_path).unlink(missing_ok=True)
+        db.delete(row)
+    if stale:
+        logger.info("reclassify %s: cleared %d stale Unclassified page(s)",
+                    job.reference, len(stale))
     db.flush()
     for tdoc in group.documents:
         db.add(JobDocument(tenant_id=job.tenant_id, job_id=job.id, template_document_id=tdoc.id))
@@ -7824,6 +7945,70 @@ def _effective_composite_config(db: Session, job: Job, cf: "CustomField") -> tup
         if override is not None:
             return list(override.source_labels or []), override.separators
     return (getattr(cf, "composite_source_labels", None) or []), getattr(cf, "composite_separators", None)
+
+
+def _standalone_table_key(mark) -> str:
+    """Which standalone table a mark belongs to on its document. Marks sharing a heading
+    ("Container") - or sharing none - are columns of the same table."""
+    return (getattr(mark, "standalone_group_heading", None) or "").strip().lower()
+
+
+def _backfill_missing_standalone_cells(db: Session, job: Job, group: TemplateGroup) -> int:
+    """Give every row of a standalone table (Container Detail) a box for every one of its
+    columns. Returns how many were created.
+
+    Each standalone mark is read in its own pass (see run_extraction), so a table's columns
+    come back with their own row counts. When one column's read is filtered away - a container
+    number that failed the ISO 6346 check - its siblings still have that row, and the screen
+    shows "Container 1" with a type and NO container-number box: nothing to type the number
+    into, and an ERP import that goes out with it blank (JOB-88572C). Same reasoning as
+    _backfill_missing_per_row_slots: compare the rows that exist against the columns that
+    should, and create the missing cells empty - the honest state for a value nobody has
+    given yet. Rows are never added: a column only gets a box on a row some other column of
+    the same table actually has.
+    """
+    db.flush()
+    created = 0
+    tdocs = {tdoc.id: tdoc for tdoc in group.documents}
+    for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
+        tdoc = tdocs.get(jd.template_document_id)
+        if tdoc is None:
+            continue
+        tables: dict[str, list] = {}
+        for m in tdoc.marks:
+            if m.is_multi_value and m.standalone_multi_value:
+                tables.setdefault(_standalone_table_key(m), []).append(m)
+        for marks in tables.values():
+            if len(marks) < 2:
+                continue
+            cells = (
+                db.query(JobFieldValue)
+                .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd.id,
+                        JobFieldValue.mark_id.in_([m.id for m in marks]),
+                        JobFieldValue.row_index.isnot(None))
+                .all()
+            )
+            by_row: dict[int, dict[str, JobFieldValue]] = {}
+            for c in cells:
+                by_row.setdefault(c.row_index, {})[c.mark_id] = c
+            for row_index, have in sorted(by_row.items()):
+                sibling = next(iter(have.values()))
+                for m in marks:
+                    if m.id in have:
+                        continue
+                    logger.warning(
+                        "standalone table on %s (job %s): row %d had no %r cell - created "
+                        "empty so it can be filled in rather than going out blank",
+                        tdoc.name, job.id, row_index, m.label_name,
+                    )
+                    db.add(JobFieldValue(
+                        tenant_id=job.tenant_id, job_id=job.id, mark_id=m.id,
+                        template_document_id=tdoc.id, job_document_id=jd.id,
+                        set_index=sibling.set_index, label_name=m.label_name,
+                        row_index=row_index, extracted_value=None,
+                    ))
+                    created += 1
+    return created
 
 
 def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int:
@@ -8532,6 +8717,9 @@ def run_extraction(
                     image_paths, row_specs, detected_row_count or None, model=model_override,
                     tenant_id=job.tenant_id)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
+                for r in rows:
+                    if r.get("container_number"):
+                        r["container_number"] = _normalize_container_number(r["container_number"])
                 before = len(rows)
                 rows = [r for r in rows if _is_valid_container_number(r.get("container_number"))]
                 if len(rows) != before:
@@ -9077,6 +9265,10 @@ def run_extraction(
     # refuses an empty mandatory CTH, so the operator is asked rather than the line going out
     # silently. One query per per-row field, on a path that has just made dozens of model calls.
     _backfill_missing_per_row_slots(db, job, custom_fields)
+    # The same guarantee for standalone tables (Container Detail): every container row gets a
+    # box for every container column, so a container number filtered away by the ISO 6346
+    # check leaves an empty box to fill instead of no box at all. See the helper.
+    _backfill_missing_standalone_cells(db, job, group)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -9470,14 +9662,22 @@ def carry_across_rows(
     if cf is None or cf.tenant_id != job.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
 
+    # Only the lines of the invoice the operator is working on. With two invoices on a job,
+    # "every product line" meant BOTH invoices' lines, so ticking Dump on Invoice 1, or typing
+    # its CTH, rewrote Invoice 2's CTHs too - a different supplier's goods, often a different
+    # commodity. Blank set = 1, as everywhere else a line's set is compared.
+    only_set = (payload.set_index or 1) if payload.set_index is not None else None
     rows: dict[tuple, dict[str, JobFieldValue]] = {}
     for fv in (
         db.query(JobFieldValue)
         .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
         .all()
     ):
-        if fv.custom_field_id:
-            rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
+        if not fv.custom_field_id:
+            continue
+        if only_set is not None and (fv.set_index or 1) != only_set:
+            continue
+        rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
 
     sync_ids = _synced_partner_ids(db, cf)
     previous = (payload.previous or "").strip()

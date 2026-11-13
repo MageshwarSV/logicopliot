@@ -591,7 +591,9 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     },
     {
       heading: "Package & Weight Details",
-      labels: ["package_count", "Gross Wt", "Gross Weight Unit", "Package Unit"],
+      // Each value beside its own unit on the 2-column grid: Package Count | Package Unit,
+      // then Gross Weight | Gross Weight Unit (by request - it was count, weight / unit, unit).
+      labels: ["package_count", "Package Unit", "Gross Wt", "Gross Weight Unit"],
     },
     {
       heading: "Shipper Details",
@@ -838,6 +840,8 @@ export function JobRunPage() {
   const [excelError, setExcelError] = useState<string | null>(null);
   const [smartBusy, setSmartBusy] = useState(false);
   const [reclassifyBusy, setReclassifyBusy] = useState(false);
+  // Not an error: reclassify outlives its own HTTP request (see handleReclassifyDocuments).
+  const [reclassifyNote, setReclassifyNote] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   // Set when Submit is pressed with something still empty. The button used to be disabled
   // instead, which says "you cannot" without ever saying WHAT is missing.
@@ -1406,6 +1410,7 @@ export function JobRunPage() {
     }
     setReclassifyBusy(true);
     setError(null);
+    setReclassifyNote(null);
     setSmartResult(null);
     try {
       const res = await jobsApi.reclassifyDocuments(jobId);
@@ -1413,7 +1418,45 @@ export function JobRunPage() {
       setSmartResult(res.results);
       await refreshUnclassifiedPages();
     } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Reclassify failed.");
+      // Reclassify re-reads AND re-extracts every document on the job - minutes of work on a
+      // job with many pages, well past the 60 seconds nginx gives a single request. The
+      // connection is cut long before the work stops, and this used to report that as
+      // "Reclassify failed." while the job was in fact being rebuilt successfully - so the
+      // operator pressed it again, on a job already half way through.
+      //
+      // A cut connection tells us nothing about the outcome, so do not claim one. Re-read the
+      // job: the run sets it to "extracting", which the poll above already follows to
+      // completion and the "AI Processing…" badge already shows.
+      const connectionCut =
+        axios.isAxiosError(err) &&
+        (!err.response || err.code === "ECONNABORTED" ||
+          [502, 503, 504].includes(err.response.status));
+      if (connectionCut) {
+        setReclassifyNote(
+          "Still re-classifying — this takes a few minutes on a job with many pages. " +
+            "It is running on the server and will finish on its own; this page updates as it goes. " +
+            "Pressing the button again would start it over.",
+        );
+        // Re-read QUIETLY. Not load(): its own catch sets "Failed to load the job.", and a
+        // read that fails here says no more about the outcome than the cut connection did -
+        // the server may simply be mid-rebuild. Printing that in red directly above a note
+        // saying the work is fine is the worst of both, and it happened on the first run.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            setJob(await jobsApi.getJob(jobId));
+            break;
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+        }
+        try {
+          await refreshUnclassifiedPages();
+        } catch {
+          /* the note above already says where to look */
+        }
+      } else if (axios.isAxiosError(err)) {
+        setError(err.response?.data?.detail ?? "Reclassify failed.");
+      }
     } finally {
       setReclassifyBusy(false);
     }
@@ -2679,6 +2722,13 @@ export function JobRunPage() {
                   >
                     Re-classify documents
                   </Button>
+                )}
+                {reclassifyNote && (
+                  // Deliberately not <Alert> - that is styled for a failure, and this is the
+                  // opposite: the work is going fine, it is just outliving its own request.
+                  <span className="inline-flex max-w-xl items-start gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+                    {reclassifyNote}
+                  </span>
                 )}
                 {job.status === "extracting" ? (
                   // Extraction now starts on its own once every slot is filled — nothing left
@@ -6630,11 +6680,20 @@ function ExtractionReview({
       const linesOnThisDocument = activeDocIsStandalone
         ? new Set<number>()
         : new Set(rowCells.keys());
+      // ...and only THIS invoice's lines. On a job with two invoices, each has its own line 1,
+      // 2, 3 - the per-row custom fields tell them apart only by set_index. Matching on the
+      // line number alone made Invoice 1 demand Invoice 2's missing CTH (JOB-3FD847: Invoice
+      // 1's CTHs were all filled from the Dump, Invoice 2 had one blank, and Invoice 1 could
+      // not be approved). Same (set, row) rule - blank set = 1 - the product cards below
+      // (lookedUpByRow) and the backend already use to decide which line a field belongs to.
+      const activeSet = active.set_index ?? 1;
       const productRows = job.field_values.filter(
         (fv) =>
           fv.row_index != null &&
           (fv.job_document_id === active.id ||
-            (fv.job_document_id == null && linesOnThisDocument.has(fv.row_index))) &&
+            (fv.job_document_id == null &&
+              (fv.set_index ?? 1) === activeSet &&
+              linesOnThisDocument.has(fv.row_index))) &&
           !fv.standalone_multi_value &&
           (fv.self_filled !== true ||
             (fv.custom_field_id != null && answerFieldIds.has(fv.custom_field_id))) &&
@@ -6938,21 +6997,33 @@ function ExtractionReview({
   // same row again by hand. Only ever overwrites a value this effect put there itself, so an
   // address corrected by hand is never clobbered, while changing the branch afterwards still
   // refreshes what the previous pick had filled.
+  //
+  // Except when the BRANCH itself changes: the address belongs to the branch, so a new branch
+  // always replaces it, hand-typed or not, with that branch's address, or with nothing when
+  // the sheet has none. Never keep the previous branch's address under a different branch.
   const autoFilledAddress = useRef<string | null>(null);
+  const addressForBranch = useRef<string | null>(null);
   useEffect(() => {
-    if (readOnly || !branchAddressFv || branchAddressMatches.length === 0) return;
-    const next = branchAddressMatches[0];
+    if (readOnly || !branchAddressFv) return;
+    const branchChanged =
+      addressForBranch.current !== null &&
+      normalizeRefKey(addressForBranch.current) !== normalizeRefKey(savedConsigneeBranch);
+    addressForBranch.current = savedConsigneeBranch;
+    const next = branchAddressMatches[0] ?? "";
     if (savedBranchAddress === next) {
-      autoFilledAddress.current = next;
+      autoFilledAddress.current = next || null;
       return;
     }
-    if (savedBranchAddress && savedBranchAddress !== autoFilledAddress.current) return;
+    if (!branchChanged) {
+      if (!next) return;
+      if (savedBranchAddress && savedBranchAddress !== autoFilledAddress.current) return;
+    }
     let cancelled = false;
     void (async () => {
       try {
         await jobsApi.correctFieldValue(branchAddressFv.id, next);
         if (cancelled) return;
-        autoFilledAddress.current = next;
+        autoFilledAddress.current = next || null;
         await reload();
       } catch {
         /* a failed auto-fill leaves the box empty for the operator - never blocks the job */
@@ -6962,7 +7033,52 @@ function ExtractionReview({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchAddressMatches, savedBranchAddress, branchAddressFv?.id, readOnly]);
+  }, [branchAddressMatches, savedBranchAddress, savedConsigneeBranch, branchAddressFv?.id, readOnly]);
+
+  // Importer cascade: Country -> Name -> Branch -> Address. A child picked under one parent
+  // means nothing under another, so changing a parent clears everything below it rather than
+  // leaving a value the new parent's list does not even offer (it would still be saved and
+  // still exported). Watches the SAVED values, so every way of picking (the country select,
+  // the name search, the branch combobox) goes through this one place. The very first values
+  // a job opens with are only recorded, never treated as a change.
+  //   Country changed -> clear Name, Branch, Address
+  //   Name changed    -> clear Branch, Address
+  // (Branch changed -> Address is handled by the auto-fill effect just above.)
+  const cascadeParents = useRef<{ country: string; name: string } | null>(null);
+  useEffect(() => {
+    const prev = cascadeParents.current;
+    cascadeParents.current = { country: savedConsigneeCountry, name: savedConsigneeName };
+    if (readOnly || !prev) return;
+    const countryChanged = normalizeRefKey(prev.country) !== normalizeRefKey(savedConsigneeCountry);
+    const nameChanged = normalizeRefKey(prev.name) !== normalizeRefKey(savedConsigneeName);
+    if (!countryChanged && !nameChanged) return;
+    const byLabel = (label: string) =>
+      job.field_values.find((fv) => fv.row_index == null && fv.label_name === label);
+    const children = [
+      ...(countryChanged ? [byLabel("ERP Consignee Name")] : []),
+      byLabel("ERP Importer Address / Branch Code"),
+      branchAddressFv,
+    ].filter(
+      (fv): fv is NonNullable<typeof fv> =>
+        !!fv && (fv.corrected_value ?? fv.extracted_value ?? "").trim() !== "",
+    );
+    if (children.length === 0) return;
+    autoFilledAddress.current = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        for (const fv of children) await jobsApi.correctFieldValue(fv.id, "");
+        if (!cancelled) await reload();
+      } catch {
+        /* a failed reset leaves the old values visible to the operator rather than half-cleared silently */
+        if (!cancelled) await reload();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedConsigneeCountry, savedConsigneeName, readOnly]);
 
   // The dropdown's own option list - every country ERP Consignee Name's reference table
   // actually has rows for, fetched once per field rather than hand-maintained separately (see
@@ -7159,8 +7275,13 @@ function ExtractionReview({
   // explicit pick itself (see DualSourcePicker's own choose()), not an ongoing sync -
   // correcting one line afterwards (typing a new value directly, or picking the other side
   // back just for that line) never touches the rest again.
+  // ...every other line of THIS INVOICE, not the job: with two invoices on one job, Invoice
+  // 2's lines are a different supplier's goods, and a choice made on Invoice 1 must not
+  // reach them. Same (set, row) scoping as the product cards (lookedUpByRow).
   const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
-    await jobsApi.carryAcrossRows(jobId, { custom_field_id: customFieldId, mode: "pick", which });
+    await jobsApi.carryAcrossRows(jobId, {
+      custom_field_id: customFieldId, mode: "pick", which, set_index: active?.set_index ?? 1,
+    });
     await reload();
   };
 
@@ -7218,8 +7339,10 @@ function ExtractionReview({
   const applyCthValueToAllRows = async (
     customFieldId: string, value: string, previous: string,
   ) => {
+    // Within this invoice only - see applyPairChoiceToAllRows.
     await jobsApi.carryAcrossRows(jobId, {
       custom_field_id: customFieldId, mode: "value", value, previous,
+      set_index: active?.set_index ?? 1,
     });
     await reload();
   };
@@ -7503,7 +7626,9 @@ function ExtractionReview({
                     >
                       <ExtractedField
                         fv={fv}
-                        readOnly={readOnly}
+                        // ERP Branch Address is read-only: it is always the address of the branch picked
+                        // above it, never typed. To change it, pick a different branch.
+                        readOnly={readOnly || fv.label_name === BRANCH_ADDRESS_LABEL}
                         reload={reload}
                         tone={isMark ? "document" : "computed"}
                         onFocusField={isMark ? setFocusedFv : undefined}

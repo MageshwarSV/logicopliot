@@ -198,3 +198,89 @@ def test_an_unknown_field_is_a_404_not_a_silent_no_op(client, db_session):
     r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
         "custom_field_id": "no-such-field", "mode": "pick", "which": "other"})
     assert r.status_code == 404
+
+
+# ---- a job with TWO invoices: a carry stays inside the invoice it was made on --------------
+
+def _two_invoices(client, db_session):
+    """Invoice 1 (set 1) and Invoice 2 (set 2), each with lines 1 and 2. Invoice 2's line 1 CTH
+    happens to hold the same code as Invoice 1's line 1, so a carry that wrongly crossed over
+    would have something to rewrite."""
+    job, dump, document, cth = _setup(client, db_session, lines=2)
+    for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all():
+        fv.set_index = 1
+    for n in (1, 2):
+        for cf, extracted in (
+            (dump, f"3000000{n}"),
+            (document, f"4000000{n}"),
+            (cth, "10000001" if n == 1 else f"3000000{n}"),
+        ):
+            db_session.add(JobFieldValue(
+                tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
+                label_name=cf.label_name, set_index=2, row_index=n, extracted_value=extracted,
+            ))
+    db_session.commit()
+    return job, dump, document, cth
+
+
+def _by_set(db_session, job, cf):
+    db_session.expire_all()
+    out = {}
+    for fv in db_session.query(JobFieldValue).filter(
+            JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id).all():
+        out[(fv.set_index or 1, fv.row_index)] = (
+            fv.corrected_value if fv.corrected_value is not None else fv.extracted_value)
+    return out
+
+
+def test_a_pick_on_invoice_1_does_not_touch_invoice_2(client, db_session):
+    job, dump, document, cth = _two_invoices(client, db_session)
+    r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": dump.id, "mode": "pick", "which": "other", "set_index": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["rows_written"] == 2
+    assert _by_set(db_session, job, cth) == {
+        (1, 1): "20000001", (1, 2): "20000002",           # Invoice 1 took the document side
+        (2, 1): "10000001", (2, 2): "30000002",           # Invoice 2 exactly as it was
+    }
+
+
+def test_typing_a_cth_on_invoice_1_does_not_touch_invoice_2(client, db_session):
+    """Invoice 2's line 1 holds the very code Invoice 1's line 1 held before the edit - the
+    'was following along' rule alone would have rewritten it."""
+    job, dump, document, cth = _two_invoices(client, db_session)
+    client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": cth.id, "mode": "value", "value": "99999999",
+        "previous": "10000001", "set_index": 1})
+    got = _by_set(db_session, job, cth)
+    assert got[(1, 1)] == "99999999"
+    assert (got[(2, 1)], got[(2, 2)]) == ("10000001", "30000002")
+
+
+def test_removing_a_cth_on_invoice_1_does_not_blank_invoice_2(client, db_session):
+    job, dump, document, cth = _two_invoices(client, db_session)
+    client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": cth.id, "mode": "value", "value": "",
+        "previous": "10000001", "set_index": 1})
+    got = _by_set(db_session, job, cth)
+    assert got[(1, 1)] == ""
+    assert got[(2, 1)] == "10000001"
+
+
+def test_a_pick_on_invoice_2_stays_on_invoice_2(client, db_session):
+    job, dump, document, cth = _two_invoices(client, db_session)
+    client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": dump.id, "mode": "pick", "which": "other", "set_index": 2})
+    got = _by_set(db_session, job, cth)
+    assert (got[(1, 1)], got[(1, 2)]) == ("10000001", "10000002")
+    assert (got[(2, 1)], got[(2, 2)]) == ("40000001", "40000002")
+
+
+def test_a_single_invoice_job_with_no_set_recorded_still_carries_to_every_line(client, db_session):
+    """Lines of a one-invoice job carry no set_index at all; the screen sends set 1 for it.
+    Blank set = 1, so every line is still reached."""
+    job, dump, document, cth = _setup(client, db_session)
+    r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows", json={
+        "custom_field_id": dump.id, "mode": "pick", "which": "other", "set_index": 1})
+    assert r.json()["rows_written"] == 3
+    assert _values(db_session, job, cth) == [(1, "20000001"), (2, "20000002"), (3, "20000003")]

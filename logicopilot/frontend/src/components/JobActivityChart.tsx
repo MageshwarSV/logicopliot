@@ -72,6 +72,7 @@ export function JobActivityChart({
   const [assignedTo, setAssignedTo] = useState("");
   const [operators, setOperators] = useState<User[]>([]);
   const [days, setDays] = useState<JobActivityDay[]>([]);
+  const [pendingJobs, setPendingJobs] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -100,8 +101,16 @@ export function JobActivityChart({
       if (first) setLoading(true);
       jobsApi
         .getJobActivityChart(month, assignedTo || undefined)
-        .then((d) => { if (!cancelled) setDays(d); })
-        .catch(() => { if (!cancelled && first) setDays([]); })
+        .then((d) => {
+          if (cancelled) return;
+          setDays(d.days);
+          setPendingJobs(d.pendingJobs);
+        })
+        .catch(() => {
+          if (cancelled || !first) return;
+          setDays([]);
+          setPendingJobs(0);
+        })
         .finally(() => { if (!cancelled) { setLoading(false); first = false; } });
     };
     load();
@@ -114,9 +123,10 @@ export function JobActivityChart({
   const { top: niceMax, ticks } = niceTicks(max);
   const totalNew = days.reduce((sum, d) => sum + d.new_jobs, 0);
   const totalSubmitted = days.reduce((sum, d) => sum + d.erp_submitted_jobs, 0);
-  // New Jobs minus ERP Submitted Jobs, for this same month/Assigned To selection - not a
-  // separate count of its own, just this chart's own two totals read together.
-  const totalPending = Math.max(0, totalNew - totalSubmitted);
+  // Jobs that ARRIVED this month (same month/Assigned To selection) and have not reached the
+  // ERP yet - counted on the server. It used to be New minus Submitted, which subtracts two
+  // different sets of jobs: an October arrival submitted in November made it smaller.
+  const totalPending = pendingJobs;
 
   const dayWidth = 72;
   const barWidth = 22;

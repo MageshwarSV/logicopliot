@@ -25,6 +25,44 @@ def job_email_dir(job_id: str) -> Path:
     return Path(get_settings().uploads_dir) / EMAIL_DIR / job_id
 
 
+def original_attachments(job_id: str) -> list[tuple[str, bytes]]:
+    """The attachments EXACTLY as they arrived, for a job created from an email.
+
+    Empty list when this job has no email behind it (Excel entry, a manual upload) or the
+    copy could not be read - the caller falls back to whatever it would have used before.
+
+    This exists for reclassify. Re-running classification over a job's own PLACED documents
+    cannot work for a combined attachment: one "Commercial Invoice & Packing List" PDF
+    legitimately fills two slots, so each slot holds a copy of it, and feeding the slots back
+    in hands the classifier the same document twice - under the same original name. They then
+    merge into one document holding every invoice twice (stored as "<name> +1 more"), and
+    every further reclassify compounds it. Seen on production JOB-CB9B46.
+    """
+    import json as _json
+
+    try:
+        out = job_email_dir(job_id)
+        meta_path = out / "meta.json"
+        att_dir = out / "attachments"
+        if not meta_path.exists() or not att_dir.is_dir():
+            return []
+        meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+        files: list[tuple[str, bytes]] = []
+        for att in meta.get("attachments") or []:
+            stored = att.get("stored_as")
+            if not stored:
+                continue
+            # Never follow a name out of this job's own folder.
+            path = (att_dir / stored).resolve()
+            if not path.is_file() or att_dir.resolve() not in path.parents:
+                continue
+            files.append((att.get("name") or stored, path.read_bytes()))
+        return files
+    except Exception:  # noqa: BLE001 - a missing/odd copy must only cost the fallback
+        logger.exception("could not read the original attachments for job %s", job_id)
+        return []
+
+
 def save_original_email(job_id: str, msg, files: list[tuple[str, bytes]],
                         sender: str, subject: str, received_by: str | None = None) -> None:
     """Keep the raw message (when there is one) and its as-received attachments for this job.
