@@ -27,6 +27,9 @@ def _setup(db_session):
 
 
 def _job(db_session, tenant, group, op, ref, **kw):
+    """A job `op` created and submitted to the ERP (override erp_submitted_by_id to change
+    who submitted it)."""
+    kw.setdefault("erp_submitted_by_id", op.id)
     job = Job(tenant_id=tenant.id, group_id=group.id, reference=ref,
               created_by_id=op.id, assigned_operator_id=op.id, **kw)
     db_session.add(job)
@@ -110,18 +113,17 @@ def test_the_notifications_stay_in_the_list_after_being_read(client, db_session)
 
 
 def test_marking_read_is_per_person(client, db_session):
-    """A Gate Keeper clearing their own bell must not clear everyone else's. Both people worked
-    on this job (op created it, other gave the GK1 approval), so it is on both bells."""
+    """Clearing your own bell must not clear anyone else's. The job is on two bells: op's
+    (they submitted it) and the Tenant Admin's (who sees every result in the tenant)."""
     tenant, op, other, group = _setup(db_session)
-    _give_modes(db_session, op, other)      # so the job routed to op is visible to other too
     _job(db_session, tenant, group, op, "JOB-A", status="completed",
-         ai_submitted_at=datetime.now(timezone.utc), validation_approved_by_id=other.id)
+         ai_submitted_at=datetime.now(timezone.utc))
 
     login(client, op.email)
     client.post("/api/v1/notifications/read", json={})
     assert all(n["read"] for n in _get(client))
 
-    login(client, other.email)
+    login(client, "ta-n@example.com")
     items = _get(client)
     assert [n["job_reference"] for n in items] == ["JOB-A"]
     assert items[0]["read"] is False
@@ -151,11 +153,12 @@ def test_another_operators_job_in_the_same_mode_is_not_on_my_bell(client, db_ses
     assert [n["job_reference"] for n in _get(client)] == ["JOB-MINE"]
 
 
-def test_a_shared_job_i_approved_is_on_my_bell(client, db_session):
-    """An email job nobody was routed to, picked up and approved by this operator, is theirs."""
+def test_a_shared_job_i_submitted_is_on_my_bell(client, db_session):
+    """An email job nobody was routed to, picked up and submitted by this operator, is theirs."""
     tenant, op, other, group = _setup(db_session)
+    _give_modes(db_session, op, other)
     job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-SHARED",
-              status="failed", erp_status="error", validation_approved_by_id=op.id)
+              status="failed", erp_status="error", erp_submitted_by_id=op.id)
     db_session.add(job)
     db_session.commit()
 
@@ -165,18 +168,22 @@ def test_a_shared_job_i_approved_is_on_my_bell(client, db_session):
     assert _get(client) == []
 
 
-def test_a_gk2_is_told_only_about_the_jobs_they_approved(client, db_session):
+def test_only_the_person_who_submitted_is_told_not_everyone_who_touched_it(client, db_session):
+    """op created it and gave the GK1 approval; gk2_a gave the GK2 approval and pressed Final
+    Approve & Proceed. Only gk2_a submitted it, so only gk2_a's bell gets the result."""
     tenant, op, other, group = _setup(db_session)
     gk2_a = make_user(db_session, role="gk2", tenant=tenant, email="gk2a-n@example.com")
     gk2_b = make_user(db_session, role="gk2", tenant=tenant, email="gk2b-n@example.com")
-    _give_modes(db_session, gk2_a, gk2_b)
+    _give_modes(db_session, op, gk2_a, gk2_b)
     _job(db_session, tenant, group, op, "JOB-GK2", status="completed", gk2_status="submitted",
-         ai_submitted_at=datetime.now(timezone.utc), gk2_validation_approved_by_id=gk2_a.id)
+         ai_submitted_at=datetime.now(timezone.utc), validation_approved_by_id=op.id,
+         gk2_validation_approved_by_id=gk2_a.id, erp_submitted_by_id=gk2_a.id)
 
     login(client, gk2_a.email)
     assert [n["job_reference"] for n in _get(client)] == ["JOB-GK2"]
-    login(client, gk2_b.email)
-    assert _get(client) == []
+    for email in (gk2_b.email, op.email):
+        login(client, email)
+        assert _get(client) == [], email
 
 
 def test_a_manager_and_a_tenant_admin_see_every_erp_result_in_their_tenant(client, db_session):
@@ -319,6 +326,44 @@ def test_another_tenants_job_never_appears(client, db_session):
          ai_submitted_at=datetime.now(timezone.utc))
 
     login(client, op.email)
+    assert _get(client) == []
+
+
+def test_pressing_submit_records_the_submitter_and_only_their_bell_gets_the_result(
+        client, db_session, session_factory):
+    """End to end through the real button: GK1's Final Submit for Approval with GK2 turned
+    off for the mode sends the job to the ERP; the ERP run ends; the bell of the operator who
+    pressed it has the result and a colleague's does not."""
+    import time
+    from unittest.mock import patch
+
+    real_sleep = time.sleep              # the patch below stubs time.sleep for the ERP thread
+    tenant, op, other, group = _setup(db_session)
+    tenant.gk2_required_by_mode = {"Sea Import": False}
+    group.status = "approved"
+    db_session.commit()
+    _give_modes(db_session, op, other)
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-PRESSED",
+              status="extracted", validation_approved=True, created_by_id=other.id)
+    db_session.add(job)
+    db_session.commit()
+
+    login(client, op.email)
+    with patch("time.sleep", return_value=None), \
+         patch("app.db.session.SessionLocal", session_factory):
+        r = client.post(f"/api/v1/jobs/{job.id}/gk2/submit-for-approval")
+        assert r.status_code == 200, r.text
+        for _ in range(40):
+            db_session.expire_all()
+            if db_session.get(Job, job.id).gk2_status == "submitted":
+                break
+            real_sleep(0.05)
+
+    fresh = db_session.get(Job, job.id)
+    assert fresh.erp_submitted_by_id == op.id
+    assert fresh.gk2_status == "submitted"
+    assert [n["job_reference"] for n in _get(client)] == ["JOB-PRESSED"]
+    login(client, other.email)           # created the job, did not submit it
     assert _get(client) == []
 
 

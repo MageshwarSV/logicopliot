@@ -102,11 +102,14 @@ export interface JobActivityDay {
 export async function getJobActivityChart(
   month: string,
   assignedTo?: string,
-): Promise<JobActivityDay[]> {
-  const { data } = await apiClient.get<{ days: JobActivityDay[] }>("/jobs/activity-chart", {
-    params: { month, assigned_to: assignedTo || undefined },
-  });
-  return data.days;
+): Promise<{ days: JobActivityDay[]; pendingJobs: number }> {
+  const { data } = await apiClient.get<{ days: JobActivityDay[]; pending_jobs?: number }>(
+    "/jobs/activity-chart",
+    { params: { month, assigned_to: assignedTo || undefined } },
+  );
+  // pending_jobs = jobs that arrived this month and have not reached the ERP yet, counted on
+  // the server. Not new minus submitted: those are two different sets of jobs.
+  return { days: data.days, pendingJobs: data.pending_jobs ?? 0 };
 }
 
 /** How far through its steps a run has got. `total` is 0 when nothing knows the length yet -
@@ -601,6 +604,9 @@ export async function carryAcrossRows(
     which?: "primary" | "other";
     value?: string;
     previous?: string;
+    /** The invoice whose lines to carry across (blank set = 1). Omitted = every line on the
+     *  job, which on a job with several invoices reaches into the others too. */
+    set_index?: number;
   },
 ): Promise<{ rows_written: number }> {
   const { data } = await apiClient.post<{ rows_written: number }>(

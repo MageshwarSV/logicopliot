@@ -9,10 +9,10 @@ can already see, using the very same conditions the Jobs list sidebar counts wit
 (_category_condition) - and it means the feature works for jobs that already exist, with no
 backfill.
 
-Narrowed further to the jobs THIS user took part in (see _mine). Being able to see a job is
-not the same as it being yours: an operator with a shipment mode sees every job of that mode,
-a GK2 sees every job of theirs that reached GK2 - and the bell used to announce all of it, so
-everyone got every colleague's ERP results.
+Narrowed further to the jobs THIS user submitted to the ERP (see _mine). Being able to see a
+job is not the same as it being yours: an operator with a shipment mode sees every job of that
+mode, a GK2 sees every job of theirs that reached GK2 - and the bell used to announce all of
+it, so everyone got every colleague's ERP results.
 
 Except a Manager and a Tenant Admin (OVERSIGHT_ROLES), by explicit request: watching the
 whole tenant's ERP outcomes IS their job, so they keep every result their Jobs list can show.
@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import TenantScope, get_db, get_tenant_scope, require_role
@@ -81,15 +80,13 @@ def _event_time(job: Job, kind: str) -> datetime | None:
 
 
 def _mine(user: User):
-    """The jobs this person actually worked on: created it, had it routed to them, or gave it
-    the GK1 or GK2 approval. Applied on top of visibility, never instead of it, so the bell
+    """The jobs this person SUBMITTED to the ERP - only they are told how the run ended.
+
+    Was "created it, had it routed to them, or gave it the GK1 or GK2 approval", which put one
+    job's result on up to four bells: the person who submitted it saw it, and so did everyone
+    else who had touched it. Applied on top of visibility, never instead of it, so the bell
     still cannot announce a job the person cannot open. Not applied to OVERSIGHT_ROLES."""
-    return or_(
-        Job.created_by_id == user.id,
-        Job.assigned_operator_id == user.id,
-        Job.validation_approved_by_id == user.id,
-        Job.gk2_validation_approved_by_id == user.id,
-    )
+    return Job.erp_submitted_by_id == user.id
 
 
 def _collect(db: Session, scope: TenantScope, user: User) -> list[tuple[str, Job]]:

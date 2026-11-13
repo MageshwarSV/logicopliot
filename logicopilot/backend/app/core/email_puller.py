@@ -1123,6 +1123,7 @@ def _process_one_message(
     from app.core.classifier_common import AIServiceUnavailable, classifier_module, identify_customer
     from app.core.custom_page_filter import filter_pages_with_custom
     from app.core.docai import ocr_page_image
+    from app.core import doc_sets
     from app.core.page_filter import claim_fingerprint, extract_pdf_pages, kept_page_to_original
 
     single_group = ctx["single_group"]
@@ -1306,13 +1307,19 @@ def _process_one_message(
                             first_png = png
                         pages = i
                 raw_pages = []
+                # Each page's WORDS with their positions, kept beside its text - the flat
+                # text cannot tell a column header from the value printed under it (see
+                # doc_sets.invoice_number_from_tokens), the geometry can.
+                raw_tokens: list[list[dict]] = []
                 for i in range(1, pages + 1):
                     try:
-                        got = ocr_page_image(
-                            fdir / "pages" / f"page_{i}.png").get("text", "")
+                        res = ocr_page_image(fdir / "pages" / f"page_{i}.png")
+                        got = res.get("text", "")
+                        raw_tokens.append(res.get("tokens") or [])
                     except Exception:  # noqa: BLE001
                         logger.warning("OCR unavailable for %s p%s", name, i)
                         got = ""
+                        raw_tokens.append([])
                     raw_pages.append(got)
                     pages_done += 1
                     if job is not None and total_pages:
@@ -1347,6 +1354,9 @@ def _process_one_message(
                              "text": text, "image": first_png,
                              "drop_pages": list(dropped), "page_count": pages,
                              "page_images": page_images, "kept_pages": kept,
+                             # Same pages as kept_pages, same order - see jobs.py's own copy.
+                             "kept_tokens": [raw_tokens[o - 1] for o in kept_to_orig
+                                             if o - 1 < len(raw_tokens)],
                              # How many of this file's pages actually had real OCR text, for
                              # billing - counted here, where raw_pages (before carrier-terms
                              # filtering) is still in scope, since a job may not exist yet at
@@ -1599,6 +1609,47 @@ def _process_one_message(
                     "silently duplicating into that slot",
                     item["name"], slot_meta.get(c["key"], {}).get("name", c["key"]),
                     c["pages"])
+            # A combined multi-invoice file (several invoices back to back in one PDF)
+            # looks like ONE claim to the classifier: every page equally looks like "an
+            # Invoice page", so there is nothing for it to tell them apart with up front.
+            # Split each claim wherever the invoice number printed on the pages actually
+            # changes, BEFORE placement below - which already copes with a file producing
+            # several claims for the same slot (it adds a row per claim, see file_index).
+            #
+            # THE SAME SPLIT SMART UPLOAD HAS HAD SINCE 2026-11-02 (20aafae). It was only
+            # ever wired into _classify_and_place_files, and email has its own placement
+            # code, so a customer whose supplier sends two invoices in one PDF got them as
+            # ONE document by mail and two by hand. Found on JOB-1130B4 / JOB-CB9B46:
+            # "[20261023] Commercial Invoice 380.PDF" is [inv 8667395, T&C, inv 8667396,
+            # T&C] and arrived whole in the Invoice slot, read as a single invoice.
+            split_claims: list[dict] = []
+            for c in strong_claims:
+                c_pages = c.get("pages") or []
+                c_doc_type = slot_meta.get(c["key"], {}).get("doc_type")
+                kept = item.get("kept_pages") or []
+                page_texts = {
+                    p: kept[p - 1] for p in c_pages if 1 <= p <= len(kept)
+                }
+                if (c_doc_type in doc_sets.GROUPABLE_DOC_TYPES
+                        and len(c_pages) > 1 and len(page_texts) > 1):
+                    kept_toks = item.get("kept_tokens") or []
+                    page_tokens = {
+                        p: kept_toks[p - 1] for p in c_pages if 1 <= p <= len(kept_toks)
+                    }
+                    groups = doc_sets.split_claim_pages_by_invoice_number(
+                        c_doc_type, page_texts, page_tokens) or [c_pages]
+                else:
+                    groups = [c_pages]
+                if len(groups) > 1:
+                    logger.info(
+                        "email classify: %s - %s holds %d separate invoices (%s), each "
+                        "placed as its own document",
+                        item["name"], slot_meta.get(c["key"], {}).get("name", c["key"]),
+                        len(groups), groups)
+                for g in groups:
+                    split_claims.append({**c, "pages": g})
+            strong_claims = split_claims
+
             keys = [c["key"] for c in strong_claims]
             # Every page a STRONG claim actually covers is now a real JobDocument - its
             # staging row has done its job (and would otherwise show the operator a

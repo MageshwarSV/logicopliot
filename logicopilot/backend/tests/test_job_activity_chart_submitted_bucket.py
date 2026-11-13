@@ -92,3 +92,101 @@ def test_a_failed_job_is_not_counted_as_submitted_even_with_a_stale_ai_submitted
     resp = client.get("/api/v1/jobs/activity-chart", params={"month": "2026-10"})
     assert resp.status_code == 200, resp.text
     assert sum(d["erp_submitted_jobs"] for d in resp.json()["days"]) == 0
+
+
+# ---- the chart and the sidebar badge count the same jobs; Pending is a real count -----------
+
+def _dashboard(db_session, email):
+    """A tenant with an active Tenant Admin (operators cannot log in without one) and an
+    operator to look at the dashboard as."""
+    tenant = make_tenant(db_session)
+    make_user(db_session, role="tenant_admin", tenant=tenant, email=f"ta-{email}")
+    group = _make_group(db_session, tenant)
+    op = make_user(db_session, role="operator", tenant=tenant, email=email)
+    return tenant, group, op
+
+
+def _utc(y, m, d, h=7):
+    return datetime(y, m, d, h, 0, tzinfo=timezone.utc)
+
+
+def _chart(client, month):
+    r = client.get("/api/v1/jobs/activity-chart", params={"month": month})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _badge_submitted(client, date_from, date_to):
+    """What the dashboard's sidebar asks for: the chart's month as a date range."""
+    r = client.get("/api/v1/jobs/category-counts",
+                   params={"date_from": date_from, "date_to": date_to})
+    assert r.status_code == 200, r.text
+    return r.json()["submitted"]
+
+
+def test_a_job_retried_into_november_is_november_on_the_chart_and_the_badge(client, db_session):
+    """First sent in October, failed, completed again in November. The badge and the Jobs list
+    date it by that completion; the chart used the first submission and put it in October -
+    the 94 vs 92 seen on the dashboard."""
+    tenant, group, op = _dashboard(db_session, "act-retry@example.com")
+    _make_job(db_session, tenant, group, reference="JOB-RETRIED", status="completed",
+              created_at=_utc(2026, 10, 20), ai_submitted_at=_utc(2026, 10, 30),
+              completed_at=_utc(2026, 11, 5))
+    login(client, op.email)
+
+    nov = _chart(client, "2026-11")
+    assert {d["date"]: d["erp_submitted_jobs"] for d in nov["days"]}["2026-11-05"] == 1
+    assert sum(d["erp_submitted_jobs"] for d in _chart(client, "2026-10")["days"]) == 0
+    assert _badge_submitted(client, "2026-11-01", "2026-11-30") == 1
+
+
+def test_the_chart_total_always_equals_the_sidebar_badge_for_the_same_month(client, db_session):
+    tenant, group, op = _dashboard(db_session, "act-agree@example.com")
+    shapes = [
+        # retried: first submission October, completed November
+        dict(status="completed", created_at=_utc(2026, 10, 20), ai_submitted_at=_utc(2026, 10, 30),
+             completed_at=_utc(2026, 11, 5)),
+        # arrived October, submitted November
+        dict(status="completed", created_at=_utc(2026, 10, 31), ai_submitted_at=_utc(2026, 11, 2),
+             completed_at=_utc(2026, 11, 2)),
+        # ordinary November job
+        dict(status="completed", created_at=_utc(2026, 11, 3), ai_submitted_at=_utc(2026, 11, 3),
+             completed_at=_utc(2026, 11, 3)),
+        # legacy: completed, never had ai_submitted_at
+        dict(status="completed", created_at=_utc(2026, 11, 4), completed_at=_utc(2026, 11, 6)),
+        # GK2 path: submitted but its status never became "completed"
+        dict(status="extracted", gk2_status="submitted", created_at=_utc(2026, 11, 7),
+             ai_submitted_at=_utc(2026, 11, 8)),
+        # submitted entirely in October - in neither November number
+        dict(status="completed", created_at=_utc(2026, 10, 2), ai_submitted_at=_utc(2026, 10, 3),
+             completed_at=_utc(2026, 10, 3)),
+    ]
+    for i, kw in enumerate(shapes):
+        _make_job(db_session, tenant, group, reference=f"JOB-S{i}", **kw)
+    login(client, op.email)
+
+    chart_total = sum(d["erp_submitted_jobs"] for d in _chart(client, "2026-11")["days"])
+    assert chart_total == _badge_submitted(client, "2026-11-01", "2026-11-30") == 5
+
+
+def test_pending_is_this_months_arrivals_that_have_not_reached_the_erp(client, db_session):
+    """Arrived in November: one submitted, one still in review, one failed -> 2 pending. An
+    October arrival submitted in November is not one of November's jobs at all. The old
+    on-screen sum (new 3 - submitted 2 = 1) got this wrong."""
+    tenant, group, op = _dashboard(db_session, "act-pending@example.com")
+    _make_job(db_session, tenant, group, reference="JOB-DONE", status="completed",
+              created_at=_utc(2026, 11, 3), ai_submitted_at=_utc(2026, 11, 4),
+              completed_at=_utc(2026, 11, 4))
+    _make_job(db_session, tenant, group, reference="JOB-REVIEW", status="extracted",
+              created_at=_utc(2026, 11, 5))
+    _make_job(db_session, tenant, group, reference="JOB-FAILED", status="failed",
+              erp_status="error", created_at=_utc(2026, 11, 6))
+    _make_job(db_session, tenant, group, reference="JOB-OCT", status="completed",
+              created_at=_utc(2026, 10, 30), ai_submitted_at=_utc(2026, 11, 2),
+              completed_at=_utc(2026, 11, 2))
+    login(client, op.email)
+
+    nov = _chart(client, "2026-11")
+    assert sum(d["new_jobs"] for d in nov["days"]) == 3
+    assert sum(d["erp_submitted_jobs"] for d in nov["days"]) == 2
+    assert nov["pending_jobs"] == 2
