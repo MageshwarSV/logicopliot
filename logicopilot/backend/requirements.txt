@@ -51,3 +51,7 @@ google-cloud-documentai>=2.29
 # LLM — OpenAI (prompt generation + extraction pipeline)
 openai>=1.30
 psycopg2-binary>=2.9
+# The durable ERP submission queue (app/core/erp_redis_queue.py). Optional at run
+# time: with no REDIS_URL set the app queues in-process exactly as it always did, so a
+# box without Redis needs no change.
+redis>=5.0

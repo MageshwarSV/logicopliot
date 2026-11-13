@@ -3079,28 +3079,20 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     db.commit()
     db.refresh(job)
 
-    import time
-
-    from app.core.erp_queue import submit_erp_run
+    from app.core.erp_redis_queue import enqueue
     from app.core.system_settings import get_erp_script_workers
-    from app.db.session import SessionLocal
 
     job_id = job.id
     workers = get_erp_script_workers(db)
-
-    def _go() -> None:
-        # Building the workbook genuinely takes well under a second - too fast for anyone to
-        # actually see "AI - Preparing for ERP" before it's already replaced by the outcome.
-        # This pause changes WHEN the already-decided outcome is allowed to land, never WHAT
-        # it is - the work and its real result happen after it, not during it.
-        time.sleep(2)
-        db2 = SessionLocal()
-        try:
-            _run_gk2_submission(db2, job_id, is_excel_entry)
-        finally:
-            db2.close()
-
-    submit_erp_run(workers, _go)
+    # The queue holds the job's ID, not a closure, so the backlog survives this process - a
+    # deploy landing between approval and submission used to drop every job still waiting,
+    # leaving it on "AI - Preparing for ERP" with nothing to re-submit it. Falls back to the
+    # old in-process pool whenever Redis is not configured or not reachable, so a box that
+    # has never heard of Redis behaves exactly as before. The 2-second pause before the work
+    # (so the badge is readable) lives in erp_redis_queue.run_one now, which both backends
+    # go through.
+    where = enqueue(job_id, is_excel_entry=is_excel_entry, desired_workers=workers)
+    logger.info("job %s queued for the ERP via %s (%d worker(s))", job.reference, where, workers)
 
 
 def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:

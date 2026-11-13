@@ -200,11 +200,45 @@ def create_app() -> FastAPI:
         # Off the startup path: launching Chromium must never delay the app accepting traffic.
         threading.Thread(target=_go, name="park-resume", daemon=True).start()
 
+    @app.on_event("startup")
+    def _start_erp_queue_workers() -> None:
+        """Pick up ERP submissions left queued by the process that went away, and start the
+        workers that drain them (app/core/erp_redis_queue.py).
+
+        No-op without a configured, reachable Redis - the in-process pool then handles
+        everything exactly as it did before, backlog and all.
+
+        Gated like the email poller and the parked sessions: with several uvicorn workers
+        only the lock-holding process runs these, so the number of ERP runs actually in
+        flight stays the configured worker count rather than that many PER process.
+        """
+        from app.core.worker_lock import am_i_the_singleton_worker
+
+        if not am_i_the_singleton_worker():
+            return
+        import threading
+
+        def _go() -> None:
+            from app.core.erp_redis_queue import start
+            from app.core.system_settings import get_erp_script_workers
+            from app.db.session import SessionLocal
+
+            db = SessionLocal()
+            try:
+                start(get_erp_script_workers(db))
+            finally:
+                db.close()
+
+        # Off the startup path: a Redis that is slow to answer must not hold up the app.
+        threading.Thread(target=_go, name="erp-queue-start", daemon=True).start()
+
     @app.on_event("shutdown")
     def _stop_parked_sessions() -> None:
         """Close parked browsers on the way down, so a restart cannot leak a Chromium."""
+        from app.core.erp_redis_queue import stop as stop_erp_queue
         from app.core.parked import MANAGER
 
+        stop_erp_queue()
         MANAGER.unpark_all()
 
     @app.get("/health")

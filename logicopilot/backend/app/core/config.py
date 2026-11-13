@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # roughly 300 MB for as long as it is parked, so this must never be raised blindly:
     # check free memory on the host first. 0 disables parking altogether.
     max_parked_sessions: int = 1
+    # Where the durable ERP submission queue lives (app/core/erp_redis_queue.py). EMPTY by
+    # default and on any box that has not been set up for it, which keeps the old in-process
+    # behaviour exactly: queue in memory, lose the backlog on a restart. Point it at a
+    # logical DB of its OWN - .28 already runs another app on db0 - e.g.
+    #   REDIS_URL=redis://127.0.0.1:6379/3
+    redis_url: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:
