@@ -7717,7 +7717,9 @@ function ExtractionReview({
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
                         headerExtra={
-                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name)
+                          // Air Import only - Sea Import has a "shipper" field too, and the radio
+                          // was showing there by name alone.
+                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name) && job.mode === "Air Import"
                             ? <DummyShipperSellerRadio />
                             : fv.label_name === BRANCH_ADDRESS_LABEL &&
                                 branchAddressMatches.length > 1
