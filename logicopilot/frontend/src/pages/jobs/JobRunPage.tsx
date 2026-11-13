@@ -7626,7 +7626,9 @@ function ExtractionReview({
                     >
                       <ExtractedField
                         fv={fv}
-                        readOnly={readOnly}
+                        // ERP Branch Address is read-only: it is always the address of the branch picked
+                        // above it, never typed. To change it, pick a different branch.
+                        readOnly={readOnly || fv.label_name === BRANCH_ADDRESS_LABEL}
                         reload={reload}
                         tone={isMark ? "document" : "computed"}
                         onFocusField={isMark ? setFocusedFv : undefined}
