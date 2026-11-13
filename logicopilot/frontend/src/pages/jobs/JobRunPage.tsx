@@ -1437,10 +1437,20 @@ export function JobRunPage() {
             "It is running on the server and will finish on its own; this page updates as it goes. " +
             "Pressing the button again would start it over.",
         );
+        // Re-read QUIETLY. Not load(): its own catch sets "Failed to load the job.", and a
+        // read that fails here says no more about the outcome than the cut connection did -
+        // the server may simply be mid-rebuild. Printing that in red directly above a note
+        // saying the work is fine is the worst of both, and it happened on the first run.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            setJob(await jobsApi.getJob(jobId));
+            break;
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+        }
         try {
-          // load() re-reads the job AND the unclassified pile (see its own comment), which is
-          // exactly what a run still in flight will keep changing underneath us.
-          await load();
+          await refreshUnclassifiedPages();
         } catch {
           /* the note above already says where to look */
         }
