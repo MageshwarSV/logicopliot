@@ -128,3 +128,56 @@ def test_looks_like_invoice_number_rules():
     assert not doc_sets.looks_like_invoice_number("23-SEP-2026"), "that is a date"
     assert not doc_sets.looks_like_invoice_number("23/09/2026")
     assert not doc_sets.looks_like_invoice_number("A1"), "too short to be distinctive"
+
+
+# --------------------------------------------------------------------------------------
+# A packing list is often numbered by its DELIVERY, never by an invoice. Two of them in one
+# PDF are still two documents and must be split apart - live on JOB-1130B4, where
+# "[20261023] Packing List 271.PDF" held delivery 8667395 and delivery 8667396 and landed as
+# one 2-page document because neither page prints the words "Invoice No" anywhere.
+# --------------------------------------------------------------------------------------
+
+def _delivery_tokens(number: str) -> list[dict]:
+    """"Delivery Number" with its value directly underneath, as the real page prints it."""
+    return [
+        {"text": "Delivery", "x0": 0.770, "y0": 0.120, "x1": 0.840, "y1": 0.131},
+        {"text": "Number", "x0": 0.845, "y0": 0.120, "x1": 0.910, "y1": 0.131},
+        {"text": number, "x0": 0.770, "y0": 0.140, "x1": 0.830, "y1": 0.151},
+        {"text": "PACKING", "x0": 0.60, "y0": 0.05, "x1": 0.70, "y1": 0.07},
+        {"text": "LIST", "x0": 0.71, "y0": 0.05, "x1": 0.76, "y1": 0.07},
+    ]
+
+
+def test_a_packing_list_is_numbered_by_its_delivery_number():
+    assert doc_sets.invoice_number_from_tokens(
+        "PackingList", _delivery_tokens("8667395")) == "8667395"
+
+
+def test_an_invoice_is_never_numbered_by_a_delivery_number():
+    """Only a packing list falls back to the delivery number. An Invoice slot keeps meaning
+    the invoice number and nothing else."""
+    assert doc_sets.invoice_number_from_tokens(
+        "Invoice", _delivery_tokens("8667395")) is None
+
+
+def test_the_invoice_number_still_wins_when_a_packing_list_prints_both():
+    tokens = _delivery_tokens("9999999") + [
+        {"text": "Invoice", "x0": 0.10, "y0": 0.30, "x1": 0.16, "y1": 0.31},
+        {"text": "No", "x0": 0.17, "y0": 0.30, "x1": 0.20, "y1": 0.31},
+        {"text": "8667395", "x0": 0.10, "y0": 0.33, "x1": 0.18, "y1": 0.34},
+    ]
+    assert doc_sets.invoice_number_from_tokens("PackingList", tokens) == "8667395"
+
+
+def test_two_packing_lists_in_one_file_split_apart():
+    page_texts = {1: "PACKING LIST Delivery Number 8667395 Waybill No. TBA",
+                  2: "PACKING LIST Delivery Number 8667396 Waybill No. TBA"}
+    groups = doc_sets.split_claim_pages_by_invoice_number("PackingList", page_texts)
+    assert groups == [[1], [2]], "two deliveries are two packing lists"
+
+
+def test_the_delivery_fallback_reads_off_flat_text_too():
+    assert doc_sets.extract_invoice_number_from_text(
+        "PackingList", "PACKING LIST Delivery Number: 8667396 Date Shipped") == "8667396"
+    assert doc_sets.extract_invoice_number_from_text(
+        "Invoice", "PACKING LIST Delivery Number: 8667396") is None

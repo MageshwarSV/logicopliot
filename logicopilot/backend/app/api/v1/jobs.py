@@ -7581,6 +7581,19 @@ def reclassify_documents(
     for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
         shutil.rmtree(_job_doc_dir(jd.id), ignore_errors=True)
         db.delete(jd)
+    # The staged Unclassified pages go with them. This run stages every page again from
+    # scratch (see _classify_and_place_files) and prunes whatever a claim covers, so leaving
+    # the previous run's rows behind simply piles them up: JOB-1130B4 reached 14 of them
+    # after a handful of re-runs, listing pages that were sitting in real documents all
+    # along. A page that still belongs nowhere after this run will be staged again by it.
+    stale = db.query(UnmatchedUploadPage).filter(UnmatchedUploadPage.job_id == job.id).all()
+    for row in stale:
+        if row.image_path:
+            Path(row.image_path).unlink(missing_ok=True)
+        db.delete(row)
+    if stale:
+        logger.info("reclassify %s: cleared %d stale Unclassified page(s)",
+                    job.reference, len(stale))
     db.flush()
     for tdoc in group.documents:
         db.add(JobDocument(tenant_id=job.tenant_id, job_id=job.id, template_document_id=tdoc.id))

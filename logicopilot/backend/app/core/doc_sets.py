@@ -74,7 +74,28 @@ def pairing_key(values: dict[str, str | None]) -> str | None:
 # and is used for cosmetic file-naming rather than grouping/splitting documents.
 _INVOICE_NUMBER_PATTERNS = {
     "Invoice": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})"],
-    "PackingList": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})"],
+    # A packing list is tried on its invoice number FIRST, and only then on its delivery
+    # number - a second packing list for the same shipment is a different document and has
+    # to be split from the first, but plenty of them never print an invoice number at all.
+    # Live on JOB-1130B4: "[20261023] Packing List 271.PDF" holds two packing lists, one per
+    # delivery, each headed "Delivery Number 8667395 / 8667396" and nothing else - so no
+    # number was read, and the two landed as one 2-page document.
+    #
+    # Only ever used to decide whether two packing lists are the SAME document. Which set a
+    # document belongs to is decided elsewhere, from the job's own extracted field values
+    # (see pairing_key and its call sites), so this cannot move anything between sets.
+    "PackingList": [
+        r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})",
+        r"\bDelivery\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})",
+    ],
+}
+
+# The label a value is printed under, per doc_type, in the order they are tried - the
+# geometry equivalent of the patterns above (see invoice_number_from_tokens).
+_NUMBER_LABELS: dict[str, list[tuple[str, frozenset]]] = {
+    "Invoice": [("invoice", frozenset({"no", "number", "nr"}))],
+    "PackingList": [("invoice", frozenset({"no", "number", "nr"})),
+                    ("delivery", frozenset({"no", "number", "nr"}))],
 }
 
 # The doc_types Smart Upload will group/split by invoice number at all - every other type (BL,
@@ -130,14 +151,29 @@ def invoice_number_from_tokens(doc_type: str, tokens: list[dict] | None) -> str 
         return None
     try:
         words = [t for t in tokens if (t.get("text") or "").strip()]
+        labels = _NUMBER_LABELS.get(doc_type) or _NUMBER_LABELS["Invoice"]
+        for head, tails in labels:
+            got = _value_under_label(words, head, tails)
+            if got:
+                return got
+    except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency: a token
+        # dict missing a coordinate must cost the layout read, not the classification.
+        pass
+    return None
+
+
+def _value_under_label(words: list[dict], head: str, tails: frozenset) -> str | None:
+    """The value printed directly under (or just right of) a two-word label like
+    "Invoice No" / "Delivery Number"."""
+    try:
         for i, tok in enumerate(words):
-            if (tok.get("text") or "").strip().lower().rstrip(":.") != "invoice":
+            if (tok.get("text") or "").strip().lower().rstrip(":.") != head:
                 continue
             nxt = words[i + 1] if i + 1 < len(words) else None
             if nxt is None:
                 continue
             after = (nxt.get("text") or "").strip().lower().rstrip(":.")
-            if after not in ("no", "number", "nr"):
+            if after not in tails:
                 continue
             # The label's own box - both words of it.
             lx0 = min(tok["x0"], nxt["x0"])
