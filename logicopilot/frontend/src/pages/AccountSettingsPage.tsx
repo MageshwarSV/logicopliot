@@ -5,16 +5,15 @@ import { Button } from "../components/ui/Button";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
 import { useAuth } from "../auth/useAuth";
 
-/** Shared across Tenant Admin, Gate Keeper 1 (operator), Gate Keeper 2, and SaaS Finance -
- * the one thing every one of these roles can do for their own account today is change their
- * own password. Super Admin's own Settings page (SettingsPage.tsx) is unrelated system-wide
- * config, not an account page, and manager has no page here yet - add one if asked. */
+/** Every web role's own account page ("Profile" in the sidebar's user menu): name, email, and
+ * a password change. Super Admin's Settings page (SettingsPage.tsx) is unrelated system-wide
+ * config, not this. */
 export function AccountSettingsPage() {
   const { user } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   return (
-    <AppShell title="Settings" subtitle="Your own account">
+    <AppShell title="Profile" subtitle="Your own account">
       <div className="max-w-xl space-y-4">
         <Card className="p-5">
           <h2 className="font-semibold text-slate-900 dark:text-slate-50">Account</h2>
