@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { formatDateTime as formatAppDateTime } from "../../utils/dateTime";
 import axios from "axios";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
@@ -60,9 +61,7 @@ function StatusChip({ status }: { status: string }) {
 }
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+  return formatAppDateTime(iso, { year: true });
 }
 
 /** The reference design's "Job Details" card - per-job Original/Rerun/Total Pages breakdown,

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -2274,12 +2275,7 @@ export function JobRunPage() {
     const d = new Date(hit.at);
     return Number.isNaN(d.getTime())
       ? null
-      : d.toLocaleString(undefined, {
-          day: "2-digit",
-          month: "short",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+      : formatDateTime(d);
   })();
 
   const stageIndex = STEPS.findIndex((s) => s.key === activeTab);
