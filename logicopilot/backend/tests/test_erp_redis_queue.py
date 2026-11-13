@@ -233,3 +233,39 @@ def test_a_dropped_connection_does_not_kill_the_worker():
     assert t.is_alive(), "the worker gave up on a connection error"
     q._stop.set()
     t.join(timeout=10)
+
+
+def test_the_socket_outlasts_the_blocking_pop():
+    """A worker parks the connection on BRPOPLPUSH for _POP_TIMEOUT seconds doing nothing.
+    A socket_timeout of the same length calls that a dead connection, so every idle cycle
+    threw "Timeout reading from socket" and the worker backed off for five seconds - found on
+    dev the first time the workers ran for real. The margin is the fix; this is the guard."""
+    assert q._SOCKET_TIMEOUT > q._POP_TIMEOUT + 5, (
+        f"socket timeout {q._SOCKET_TIMEOUT}s leaves no room over a {q._POP_TIMEOUT}s "
+        "blocking pop - idle workers will time out against their own wait"
+    )
+
+
+def test_the_client_is_built_with_that_margin():
+    """Not just the constant: the client actually has to be created with it."""
+    captured = {}
+
+    class _FakeRedisModule:
+        @staticmethod
+        def from_url(url, **kwargs):
+            captured.update(kwargs)
+
+            class C:
+                @staticmethod
+                def ping():
+                    return True
+            return C()
+
+    q._client, q._client_checked = None, False
+    with patch.dict("sys.modules", {"redis": _FakeRedisModule}), \
+         patch("app.core.config.get_settings") as settings:
+        settings.return_value.redis_url = "redis://127.0.0.1:6379/3"
+        q._redis()
+
+    assert captured.get("socket_timeout", 0) > q._POP_TIMEOUT, captured
+    assert captured.get("socket_connect_timeout"), "a dead host must not hang the enqueue"

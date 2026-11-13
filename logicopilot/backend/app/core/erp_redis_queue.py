@@ -38,6 +38,13 @@ PROCESSING_KEY = "erp:processing"
 # How long a worker blocks on the queue before looping. Not a timeout on the work - it only
 # decides how quickly a worker notices it has been told to stop.
 _POP_TIMEOUT = 5
+# The socket must outlast the longest BLOCKING command by a clear margin, or the read times
+# out against our own wait: BRPOPLPUSH parks the connection for _POP_TIMEOUT seconds doing
+# exactly nothing, and a socket_timeout of the same length calls that a dead connection.
+# Found on dev the moment the workers first ran - every idle cycle threw
+# "TimeoutError: Timeout reading from socket" and the worker backed off for five seconds.
+# Still bounded, so a genuinely dead connection is noticed rather than hanging forever.
+_SOCKET_TIMEOUT = _POP_TIMEOUT + 10
 
 _client = None
 _client_checked = False
@@ -68,7 +75,9 @@ def _redis():
             import redis  # imported here so the package is optional
 
             client = redis.from_url(url, decode_responses=True,
-                                    socket_connect_timeout=3, socket_timeout=5)
+                                    socket_connect_timeout=3,
+                                    socket_timeout=_SOCKET_TIMEOUT,
+                                    health_check_interval=30)
             client.ping()
             _client = client
             logger.info("ERP queue backed by Redis at %s", url.rsplit("@", 1)[-1])
