@@ -15,6 +15,9 @@ export interface User {
   email: string;
   full_name: string;
   role: Role;
+  phone?: string | null;
+  // "/api/v1/auth/avatar/<id>?v=..." when a photo is set; see avatarSrc() in components/ui/Avatar.tsx.
+  avatar_url?: string | null;
   tenant_id: string | null;
   is_active: boolean;
   last_login_at: string | null;

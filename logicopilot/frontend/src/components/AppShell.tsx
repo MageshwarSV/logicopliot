@@ -6,6 +6,7 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import { NotificationBell } from "./NotificationBell";
 import { ChangePasswordModal } from "./ChangePasswordModal";
+import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
@@ -493,9 +494,7 @@ function UserMenu({
         aria-expanded={open}
         className="-m-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
       >
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">
-          {initials}
-        </div>
+        <Avatar name={user?.full_name ?? initials} url={user?.avatar_url} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user?.full_name}</p>
           <p className="truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</p>
