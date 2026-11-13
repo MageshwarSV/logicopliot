@@ -177,6 +177,15 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # completed_at - this, so a job that failed and was retried weeks later is timed on its
     # last attempt, not on the whole gap since the first one. See migration f3erpsub01.
     erp_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WHO pressed the button that last sent this job to the ERP: GK1's Final Submit for
+    # Approval when GK2 is off for the shipment type, GK2's Final Approve & Proceed (or GK1's
+    # retry of a failed one), or Submit Entry. The notification bell tells ONLY this person
+    # how the run ended (see app/api/v1/notifications.py). A Super Admin's manual "mark
+    # submitted" or Entry Browser rerun does not change it - the job is still theirs.
+    # See migration g4erpsby01.
+    erp_submitted_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # A human confirming the AI/ERP automation actually went through - closes a loop that
     # otherwise never closes: ai_submitted_at being set never moves on to anything else by

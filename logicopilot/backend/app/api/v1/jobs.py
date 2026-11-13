@@ -2742,6 +2742,7 @@ def submit_for_gk2_approval(
         return _build_detail(db, job)
 
     job.gk2_skipped = True
+    job.erp_submitted_by_id = user.id    # GK1's own press goes straight to the ERP here
     _finalize_job_approval(db, job)
     db.refresh(job)
     return _build_detail(db, job)
@@ -2878,6 +2879,8 @@ def gk2_approve(
             status_code=status.HTTP_409_CONFLICT,
             detail="Approve Cross Docs Verification (GK2's own review) before the final approval.",
         )
+    # Whoever pressed it - GK2, or GK1 retrying a failed run - is told how it ends.
+    job.erp_submitted_by_id = user.id
     _finalize_job_approval(db, job)
     return _build_detail(db, job)
 
@@ -5347,6 +5350,7 @@ def complete_job(
         erp = {"erp_status": "no_script", "erp_log": ["No ready ERP script is configured for this template."]}
         # Nothing was entered anywhere, but the operator's work on the job IS finished.
         job.erp_submitted_at = datetime.now(timezone.utc)
+        job.erp_submitted_by_id = user.id
         job.status = "completed"
         # Same rule as persist_run_outcome's own completion - waits on an explicit Verify
         # press before counting as ERP Verified, not just this screen's own completion.
@@ -5366,6 +5370,7 @@ def complete_job(
         # ERP entry is in flight (visible to a concurrent viewer / after this returns).
         job.status = "processing"
         job.erp_submitted_at = datetime.now(timezone.utc)
+        job.erp_submitted_by_id = user.id
         db.commit()
         # Always run in the background (headless) — no OS browser window pops up. The
         # Super Admin Entry Browser streams the same run into the app panel to watch/edit.
