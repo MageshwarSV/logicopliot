@@ -138,6 +138,25 @@ export async function setErpScriptWorkers(count: number): Promise<{ erp_script_w
   return data;
 }
 
+/** What the ERP submission queue is doing right now.
+ *
+ *  `backend` is "redis" once REDIS_URL points at a reachable server, "memory" otherwise -
+ *  and "memory" is not a fault, it is the original behaviour, just with a backlog that does
+ *  not survive a restart. `waiting`/`running` are null there, because an in-process pool has
+ *  no way to report them. */
+export interface ErpQueueStatus {
+  backend: "redis" | "memory";
+  waiting: number | null;
+  running: number | null;
+  workers: number;
+  max_workers: number;
+}
+
+export async function getErpQueueStatus(): Promise<ErpQueueStatus> {
+  const { data } = await apiClient.get<ErpQueueStatus>("/system-settings/erp-queue");
+  return data;
+}
+
 export interface OpenAIPoolKey {
   id: string;
   label: string;

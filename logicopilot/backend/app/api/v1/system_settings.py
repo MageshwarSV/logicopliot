@@ -633,6 +633,26 @@ def set_erp_workers(
     return {"erp_script_workers": get_system_settings(db).erp_script_workers}
 
 
+@router.get("/erp-queue")
+def get_erp_queue_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """What the ERP submission queue is doing right now.
+
+    `backend` says which one is actually in use: "redis" once REDIS_URL points at a reachable
+    server, "memory" otherwise - and "memory" is not a fault, it is the original behaviour,
+    just without a backlog that survives a restart. `waiting`/`running` are null there,
+    because an in-process pool has no way to report them.
+    """
+    from app.core.erp_redis_queue import queue_depth
+
+    depth = queue_depth()
+    depth["workers"] = get_system_settings(db).erp_script_workers
+    depth["max_workers"] = max_erp_script_workers()
+    return depth
+
+
 @router.post("/extraction-engine")
 def set_extraction_engine_endpoint(
     payload: ExtractionEngineIn,

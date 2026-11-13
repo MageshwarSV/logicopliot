@@ -47,6 +47,10 @@ export function SettingsPage() {
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerSaved, setWorkerSaved] = useState(false);
   const [erpWorkerInput, setErpWorkerInput] = useState("1");
+  // What the ERP queue is doing. Polled rather than fetched once: this is the one place a
+  // Super Admin can see a backlog building up, and a number that only moves on a page
+  // refresh is no use for that.
+  const [erpQueue, setErpQueue] = useState<systemSettingsApi.ErpQueueStatus | null>(null);
   const [busyErpWorkers, setBusyErpWorkers] = useState(false);
   const [erpWorkerError, setErpWorkerError] = useState<string | null>(null);
   const [erpWorkerSaved, setErpWorkerSaved] = useState(false);
@@ -442,6 +446,26 @@ export function SettingsPage() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const got = await systemSettingsApi.getErpQueueStatus();
+        if (!cancelled) setErpQueue(got);
+      } catch {
+        // A failed read here means nothing is shown, which is better than a red error on a
+        // settings page over a status line.
+      }
+      if (!cancelled) timer = setTimeout(tick, 5000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   async function saveErpWorkerCount() {
     const count = Number(erpWorkerInput);
     if (!Number.isInteger(count) || count < 1) {
@@ -621,6 +645,44 @@ export function SettingsPage() {
               <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
                 {erpWorkerError}
               </p>
+            )}
+
+            {/* The queue those workers drain. Shown here rather than on a screen of its own:
+                the number above only means something next to what is actually waiting. */}
+            {erpQueue && (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 dark:border-slate-700 dark:bg-slate-800/50">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-400">Queue</div>
+                    <div className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                      {erpQueue.backend === "redis" ? (
+                        <>
+                          {erpQueue.waiting ?? "—"} waiting · {erpQueue.running ?? "—"} running
+                        </>
+                      ) : (
+                        "in this process"
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-400">Survives a restart</div>
+                    <div
+                      className={
+                        erpQueue.backend === "redis"
+                          ? "text-sm font-medium text-emerald-700 dark:text-emerald-400"
+                          : "text-sm font-medium text-amber-700 dark:text-amber-400"
+                      }
+                    >
+                      {erpQueue.backend === "redis" ? "Yes — Redis" : "No — in memory"}
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {erpQueue.backend === "redis"
+                    ? "Jobs waiting to be entered are kept outside this process, so a deploy or a restart picks them back up instead of losing them. A job interrupted mid-entry is re-queued at startup."
+                    : "Jobs waiting to be entered are held in this process only, so a deploy or a restart loses whatever has not started yet. Set REDIS_URL to keep them."}
+                </p>
+              </div>
             )}
           </div>
         )}

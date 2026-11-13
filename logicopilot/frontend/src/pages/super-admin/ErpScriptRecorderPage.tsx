@@ -89,6 +89,35 @@ function groupEvents(
   return order.filter((g) => buckets.has(g)).map((g) => [g, buckets.get(g)!]);
 }
 
+/** Plain-words version of the shared login's state, for the Super Admin.
+ *
+ *  This is the login the script's jobs SHARE. One job logs in, saves the session, and every
+ *  job that follows starts at the entry screen instead of logging in again - which is what
+ *  lets several run at once, because it is two LOGINS at the same time that makes the ERP
+ *  offer to kill the other session, not two jobs. */
+const SESSION_LABEL: Record<string, string> = {
+  off: "Each job logs in for itself",
+  none: "No shared login yet — the next job makes one",
+  logging_in: "A job is logging in now; the others are waiting",
+  live: "Shared login in use",
+  expired: "Shared login too old — the next job logs in again",
+};
+const SESSION_TONE: Record<string, string> = {
+  off: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+  none: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+  logging_in: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
+  live: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300",
+  expired: "bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300",
+};
+
+/** "4m" / "1h 12m" - how long a shared login has been alive, or has left. */
+function shortDuration(seconds: number | null): string {
+  if (seconds === null || seconds < 0) return "";
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 /** Plain-words version of the parked browser's phase, for the Super Admin. */
 const PARK_LABEL: Record<string, string> = {
   starting: "Opening the browser…",
@@ -214,6 +243,11 @@ export function ErpScriptRecorderPage() {
   const [stayOpen, setStayOpen] = useState(false);
   // What the parked browser is doing, polled while this script is set to stay open.
   const [parked, setParked] = useState<erpApi.ParkedStatus | null>(null);
+  // The one login this script's jobs share. Polled whatever the settings are, because "each
+  // job logs in for itself" is itself worth saying out loud on a script that runs several
+  // jobs at once.
+  const [session, setSession] = useState<erpApi.SharedSessionStatus | null>(null);
+  const [sessionBusy, setSessionBusy] = useState(false);
   /** Alerts the ERP raised in the live browser. Playwright answers them so the page keeps
    *  moving; showing them is the only way the Super Admin learns the flow has a prompt. */
   const [liveDialogs, setLiveDialogs] = useState<erpApi.LiveDialog[]>([]);
@@ -295,6 +329,45 @@ export function ErpScriptRecorderPage() {
   const sidRef = useRef<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   // Latest interaction state, read inside the polling loop without re-creating it.
+  // Poll the shared login. Cheap (it reads one small file) and never disturbs a run: the
+  // status read takes the login lock only to test whether anyone holds it, and hands it
+  // straight back.
+  useEffect(() => {
+    if (!scriptId) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => {
+      erpApi.getSharedSession(scriptId)
+        .then((got) => { if (live) setSession(got); })
+        .catch(() => { if (live) setSession(null); })
+        .finally(() => { if (live) timer = setTimeout(tick, 10000); });
+    };
+    tick();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [scriptId, stayOpen, checkpointStep]);
+
+  /** Throw the shared login away so the next job logs in fresh - for when the ERP has gone
+   *  strange and a stale cookie is the suspect. A job already running keeps the browser it
+   *  is holding, so this never cuts an entry off half way. */
+  async function forgetSharedLogin() {
+    if (!window.confirm(
+      "Throw away the shared login so the next job logs in fresh?\n\n"
+      + "A job already running keeps the browser it is holding, so nothing in flight is "
+      + "interrupted. The next job will take a little longer because it has to log in.",
+    )) return;
+    setSessionBusy(true);
+    try {
+      setSession(await erpApi.refreshSharedSession(scriptId));
+    } catch {
+      /* the badge simply keeps showing whatever it last read */
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
   // Poll the parked-session status. Only while this script is actually set to stay open, so
   // a normal script makes no extra requests at all.
   useEffect(() => {
@@ -2517,6 +2590,35 @@ export function ErpScriptRecorderPage() {
                 ? ` · ${parked.jobs} job${parked.jobs === 1 ? "" : "s"} done`
                 : ""}
             </span>
+          )}
+          {session && (
+            <span
+              className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${SESSION_TONE[session.state] ?? SESSION_TONE.off}`}
+              title={
+                session.state === "off"
+                  ? "Mark a checkpoint and tick \"Stay open\" to let this script's jobs share one login. Until then each job logs in for itself, and its runs are deliberately taken one at a time - two logins at once is what makes the ERP offer to kill the other session."
+                  : session.url
+                    ? `Saved on ${session.url}`
+                    : ""
+              }
+            >
+              <span className={session.state === "live" ? "text-emerald-500" : ""}>●</span>
+              {SESSION_LABEL[session.state] ?? session.state}
+              {session.state === "live" && session.expires_in_seconds !== null
+                ? ` · ${shortDuration(session.expires_in_seconds)} left`
+                : ""}
+            </span>
+          )}
+          {session && (session.state === "live" || session.state === "expired") && (
+            <button
+              type="button"
+              onClick={forgetSharedLogin}
+              disabled={sessionBusy}
+              className="rounded-full border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              title="Throw the shared login away so the next job logs in fresh. Nothing already running is interrupted."
+            >
+              {sessionBusy ? "Forgetting…" : "Forget login"}
+            </button>
           )}
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${script.status === "ready" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300"}`}>{script.status}</span>
         </div>

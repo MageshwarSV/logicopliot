@@ -179,6 +179,67 @@ def parked_restart(
                     "detail": "nothing to park (no checkpoint, or stay open is off)"}
 
 
+@router.get("/{script_id}/session")
+def get_shared_session(
+    script_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """The state of the one login this script's jobs share (app/core/erp_session.py).
+
+    A script shares a login only when it has a CHECKPOINT and "stay open" is on - that pair
+    is what lets a job skip the login steps and start at the entry screen. Without it every
+    job logs in for itself, and its runs are deliberately serialised, because two logins into
+    one ERP account at the same time is what makes SOFTLINK offer to kill the other session.
+    """
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.core.erp_session import session_status
+
+    script = db.get(ErpScript, script_id)
+    if script is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ERP script not found")
+    shared = script.checkpoint_index is not None and bool(script.stay_open)
+    out = session_status(
+        Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json",
+        shared_login=shared,
+    )
+    out["checkpoint_index"] = script.checkpoint_index
+    out["stay_open"] = bool(script.stay_open)
+    return out
+
+
+@router.post("/{script_id}/session/refresh")
+def refresh_shared_session(
+    script_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Throw the shared login away so the NEXT job logs in fresh.
+
+    For when the ERP has gone strange and a stale cookie is the suspect. Only the saved file
+    goes: a job already running keeps the browser it is holding, so this never cuts an entry
+    off half way - it decides what the next job starts from, nothing more.
+    """
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.core.erp_session import discard_session, session_status
+
+    script = db.get(ErpScript, script_id)
+    if script is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ERP script not found")
+    path = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+    discarded = discard_session(path)
+    shared = script.checkpoint_index is not None and bool(script.stay_open)
+    out = session_status(path, shared_login=shared)
+    out["discarded"] = discarded
+    out["checkpoint_index"] = script.checkpoint_index
+    out["stay_open"] = bool(script.stay_open)
+    return out
+
+
 @router.post("/{script_id}/duplicate", response_model=ErpScriptOut, status_code=status.HTTP_201_CREATED)
 def duplicate_erp_script(
     script_id: str,
