@@ -9552,14 +9552,22 @@ def carry_across_rows(
     if cf is None or cf.tenant_id != job.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field not found")
 
+    # Only the lines of the invoice the operator is working on. With two invoices on a job,
+    # "every product line" meant BOTH invoices' lines, so ticking Dump on Invoice 1, or typing
+    # its CTH, rewrote Invoice 2's CTHs too - a different supplier's goods, often a different
+    # commodity. Blank set = 1, as everywhere else a line's set is compared.
+    only_set = (payload.set_index or 1) if payload.set_index is not None else None
     rows: dict[tuple, dict[str, JobFieldValue]] = {}
     for fv in (
         db.query(JobFieldValue)
         .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None))
         .all()
     ):
-        if fv.custom_field_id:
-            rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
+        if not fv.custom_field_id:
+            continue
+        if only_set is not None and (fv.set_index or 1) != only_set:
+            continue
+        rows.setdefault((fv.set_index, fv.row_index), {})[fv.custom_field_id] = fv
 
     sync_ids = _synced_partner_ids(db, cf)
     previous = (payload.previous or "").strip()

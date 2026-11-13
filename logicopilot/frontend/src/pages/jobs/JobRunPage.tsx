@@ -7168,8 +7168,13 @@ function ExtractionReview({
   // explicit pick itself (see DualSourcePicker's own choose()), not an ongoing sync -
   // correcting one line afterwards (typing a new value directly, or picking the other side
   // back just for that line) never touches the rest again.
+  // ...every other line of THIS INVOICE, not the job: with two invoices on one job, Invoice
+  // 2's lines are a different supplier's goods, and a choice made on Invoice 1 must not
+  // reach them. Same (set, row) scoping as the product cards (lookedUpByRow).
   const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
-    await jobsApi.carryAcrossRows(jobId, { custom_field_id: customFieldId, mode: "pick", which });
+    await jobsApi.carryAcrossRows(jobId, {
+      custom_field_id: customFieldId, mode: "pick", which, set_index: active?.set_index ?? 1,
+    });
     await reload();
   };
 
@@ -7227,8 +7232,10 @@ function ExtractionReview({
   const applyCthValueToAllRows = async (
     customFieldId: string, value: string, previous: string,
   ) => {
+    // Within this invoice only - see applyPairChoiceToAllRows.
     await jobsApi.carryAcrossRows(jobId, {
       custom_field_id: customFieldId, mode: "value", value, previous,
+      set_index: active?.set_index ?? 1,
     });
     await reload();
   };

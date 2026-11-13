@@ -601,6 +601,9 @@ export async function carryAcrossRows(
     which?: "primary" | "other";
     value?: string;
     previous?: string;
+    /** The invoice whose lines to carry across (blank set = 1). Omitted = every line on the
+     *  job, which on a job with several invoices reaches into the others too. */
+    set_index?: number;
   },
 ): Promise<{ rows_written: number }> {
   const { data } = await apiClient.post<{ rows_written: number }>(

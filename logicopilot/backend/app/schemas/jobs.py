@@ -444,6 +444,11 @@ class CarryAcrossRows(BaseModel):
     # deliberately set to something different - the latter keeps its own.
     value: str | None = None
     previous: str | None = None
+    # Which invoice's lines to carry across - the set of the invoice open on screen (blank set
+    # = 1, the same normalization the per-row writes use). A job with two invoices has two
+    # line 1s; without this, a CTH picked or typed on Invoice 1 rewrote Invoice 2 as well.
+    # None = every line on the job, for any caller that does not send it.
+    set_index: int | None = None
 
 
 class AvailableGroup(BaseModel):
