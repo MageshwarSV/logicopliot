@@ -1151,6 +1151,53 @@ def _discard_pre_created_job(db: Session, job: Job | None) -> None:
     db.commit()
 
 
+def _file_prealert_awb(db: Session, group_id: str, job: Job, slots: dict, shipment_for,
+                       filled: list[str], named: list[str]) -> bool:
+    """File a generated "Air Waybill (Pre-Alert)" in this job's waybill slot when no waybill
+    arrived with the mail. Returns True when one was filed.
+
+    `shipment_for` is a callable giving the pre-alert's shipment record (or None) - called only
+    once the slot is known to be empty, so a mail that DID bring a waybill never costs a model
+    call.
+
+    The waybill document is looked up with a QUERY on group_id, never through
+    TemplateGroup.documents: the group the puller holds was loaded once per mailbox on another
+    session and is shared by every worker, so a lazy load off it raises DetachedInstanceError.
+    That is exactly how the first real mail (JOB-703FCC) was split correctly and then got no
+    waybill.
+    """
+    from app.api.v1.jobs import _job_doc_dir, _render_pages
+    from app.core import prealert_shipments as _ps
+
+    awb_tdoc = (
+        db.query(TemplateDocument)
+        .filter(TemplateDocument.group_id == group_id, TemplateDocument.doc_type == "BL")
+        .order_by(TemplateDocument.order_index)
+        .first()
+    )
+    awb_slot = slots.get(awb_tdoc.id) if awb_tdoc is not None else None
+    if awb_slot is None or awb_slot.file_path:
+        return False
+    shipment = shipment_for()
+    if not shipment:
+        return False
+    fname = _ps.awb_filename(shipment)
+    ddir = _job_doc_dir(awb_slot.id)
+    ddir.mkdir(parents=True, exist_ok=True)
+    dorig = ddir / fname
+    dorig.write_bytes(_ps.build_awb_pdf(shipment))
+    awb_slot.page_count = _render_pages(dorig, ddir / "pages")
+    awb_slot.file_path = str(dorig)
+    awb_slot.original_name = fname
+    if awb_tdoc.name not in filled:
+        filled.append(awb_tdoc.name)
+    named.append(f"(generated from the pre-alert) -> {fname}")
+    db.commit()
+    logger.info("job %s: Air Waybill generated from the pre-alert (HAWB %s)",
+                job.id, shipment.get("hawb"))
+    return True
+
+
 def _process_one_message(
     db: Session, uid: bytes, raw: bytes, ctx: dict,
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
@@ -1961,26 +2008,9 @@ def _process_one_message(
     # After classification on purpose: only now is it known whether a real waybill arrived.
     # Filed straight into the template's waybill slot (doc_type "BL"), so the extraction just
     # below reads it like any other document.
-    if prealert_on and getattr(group, "prealert_shipments", False):
+    if prealert_on:
         try:
-            awb_tdoc = next((d for d in group.documents if d.doc_type == "BL"), None)
-            awb_slot = slots.get(awb_tdoc.id) if awb_tdoc is not None else None
-            shipment = _prealert_shipment() if awb_slot is not None and not awb_slot.file_path else None
-            if shipment:
-                fname = _ps.awb_filename(shipment)
-                ddir = _job_doc_dir(awb_slot.id)
-                ddir.mkdir(parents=True, exist_ok=True)
-                dorig = ddir / fname
-                dorig.write_bytes(_ps.build_awb_pdf(shipment))
-                awb_slot.page_count = _render_pages(dorig, ddir / "pages")
-                awb_slot.file_path = str(dorig)
-                awb_slot.original_name = fname
-                if awb_tdoc.name not in filled:
-                    filled.append(awb_tdoc.name)
-                named.append(f"(generated from the pre-alert) -> {fname}")
-                db.commit()
-                logger.info("job %s: Air Waybill generated from the pre-alert (HAWB %s)",
-                            job.id, shipment.get("hawb"))
+            _file_prealert_awb(db, group.id, job, slots, _prealert_shipment, filled, named)
         except Exception:  # noqa: BLE001 - the job simply has no waybill, as before
             logger.exception("could not generate the Air Waybill for email job %s", job.id)
             db.rollback()

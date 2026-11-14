@@ -144,3 +144,78 @@ def test_several_numbers_in_the_subject_but_one_readable_shipment_is_not_split(m
     """A subject that merely LOOKS like three shipments must never become three empty jobs."""
     monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(SHIPMENTS[0])])
     assert ps.plan_split(_mail(), SUBJECT, "body", list(FILES)) is None
+
+
+# ------------------------------------------------------------------ filing it on the job
+
+def _job_with_slots(db_session):
+    from app.models.job import Job, JobDocument
+    from app.models.template_document import TemplateDocument
+    from app.models.template_group import TemplateGroup
+    from tests.conftest import make_tenant
+
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Air import", status="approved", prealert_shipments=True)
+    db_session.add(group)
+    db_session.flush()
+    awb = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Air Waybill", doc_type="BL", order_index=1)
+    inv = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice", doc_type="Invoice", order_index=2)
+    db_session.add_all([awb, inv])
+    db_session.flush()
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-PREALERT", status="draft")
+    db_session.add(job)
+    db_session.flush()
+    slots = {}
+    for tdoc in (awb, inv):
+        jd = JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=tdoc.id, page_count=0)
+        db_session.add(jd)
+        slots[tdoc.id] = jd
+    db_session.commit()
+    return group, awb, job, slots
+
+
+def test_the_generated_waybill_is_filed_even_though_the_puller_s_template_is_detached(
+        db_session, tmp_path, monkeypatch):
+    """The first real mail (JOB-703FCC) was split correctly and then got NO waybill: the puller
+    holds its template on another session, and reading template.documents off it raised
+    DetachedInstanceError. The slot is found by a query on the group id instead."""
+    import app.api.v1.jobs as jobs_mod
+    from app.core.email_puller import _file_prealert_awb
+
+    group, awb, job, slots = _job_with_slots(db_session)
+    monkeypatch.setattr(jobs_mod, "_job_doc_dir", lambda jd_id: tmp_path / jd_id)
+    group_id = group.id
+    db_session.expunge(group)                       # exactly the puller's situation
+    filled, named = [], []
+
+    assert _file_prealert_awb(db_session, group_id, job, slots, lambda: dict(SHIPMENTS[0]), filled, named) is True
+
+    slot = slots[awb.id]
+    assert slot.original_name == "AWB_45T0523243.pdf" and slot.page_count == 1
+    assert (tmp_path / slot.id / "AWB_45T0523243.pdf").is_file()
+    assert filled == ["Air Waybill"]
+
+
+def test_a_mail_that_brought_its_own_waybill_is_left_alone_and_costs_no_model_call(
+        db_session, tmp_path, monkeypatch):
+    import app.api.v1.jobs as jobs_mod
+    from app.core.email_puller import _file_prealert_awb
+
+    group, awb, job, slots = _job_with_slots(db_session)
+    monkeypatch.setattr(jobs_mod, "_job_doc_dir", lambda jd_id: tmp_path / jd_id)
+    slots[awb.id].file_path = "x/real_awb.pdf"
+    asked = []
+
+    assert _file_prealert_awb(db_session, group.id, job, slots,
+                              lambda: asked.append(1) or dict(SHIPMENTS[0]), [], []) is False
+    assert asked == [] and slots[awb.id].file_path == "x/real_awb.pdf"
+
+
+def test_no_shipment_data_means_no_waybill(db_session, tmp_path, monkeypatch):
+    import app.api.v1.jobs as jobs_mod
+    from app.core.email_puller import _file_prealert_awb
+
+    group, awb, job, slots = _job_with_slots(db_session)
+    monkeypatch.setattr(jobs_mod, "_job_doc_dir", lambda jd_id: tmp_path / jd_id)
+    assert _file_prealert_awb(db_session, group.id, job, slots, lambda: None, [], []) is False
+    assert slots[awb.id].file_path is None
