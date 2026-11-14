@@ -279,6 +279,8 @@ class TemplateGroupOut(BaseModel):
     # workbook for a bulk import.
     entry_mode: str = "fields"
     excel_config: dict | None = None
+    # See TemplateGroup.prealert_shipments.
+    prealert_shipments: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):

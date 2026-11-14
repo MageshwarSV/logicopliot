@@ -996,6 +996,7 @@ def _pull_inbox(
                     continue
                 if entry is not None:
                     all_processed.append(entry)
+                    all_processed.extend(entry.get("split_into") or [])
 
     out: dict = {
         "ok": True, "processed": all_processed,
@@ -1191,6 +1192,57 @@ def _process_one_message(
     if not claimed:
         return {"from": sender, "subject": subject, "matched": None,
                 "reason": why_not, "skipped_by_log": True}
+
+    # ---- one pre-alert covering several shipments? (app/core/prealert_shipments.py)
+    #
+    # Only on a mailbox tied to ONE template that has the handling switched on
+    # (TemplateGroup.prealert_shipments). BEFORE the duplicate-BL check and before anything is
+    # downloaded or OCR'd: each shipment then goes through this very function as a mail of its
+    # own - its own claim, its own duplicate check, its own job - exactly as if the sender had
+    # written three mails instead of one. Nothing is sent anywhere.
+    prealert_on = single_group is not None and bool(getattr(single_group, "prealert_shipments", False))
+    if prealert_on:
+        from app.core import prealert_shipments as _ps
+
+        sub_messages = None
+        try:
+            split_body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+            sub_messages = _ps.plan_split(msg, subject, split_body, _extract_attachments(msg),
+                                          tenant_id=single_group.tenant_id)
+        except Exception:  # noqa: BLE001 - then it is processed as one job, as it always was
+            logger.exception("could not check %s for several shipments", mid[:60])
+        if sub_messages:
+            _start_claim_heartbeat(mid)
+            children: list[dict] = []
+            for sub_raw in sub_messages:
+                try:
+                    child = _process_one_message(
+                        db, uid, sub_raw, ctx, mail_email, mail_app_password, mail_host,
+                        extraction_engine, vision_engine_model, custom_filter_texts, reexamine,
+                    )
+                except Exception:  # noqa: BLE001 - one shipment must not lose the others
+                    logger.exception("a shipment split from %s could not be processed", mid[:60])
+                    db.rollback()
+                    child = {"from": sender, "subject": subject, "matched": None,
+                             "reason": "could not be processed", "deferred": True}
+                if child is not None:
+                    children.append(child)
+            if any(c.get("deferred") for c in children):
+                # Tried again on a later poll. The shipments that DID become jobs are skipped
+                # then by their own claims, so nothing is created twice.
+                _unclaim(db, mid)
+                return {"from": sender, "subject": subject, "matched": None,
+                        "reason": "a shipment in this pre-alert could not be processed yet - "
+                                  "retrying automatically on a later poll",
+                        "deferred": True, "split_into": children}
+            made = [c["job_id"] for c in children if c.get("job_id")]
+            _record(db, mid, sender, subject, "split",
+                    f"pre-alert covering {len(sub_messages)} shipments - {len(made)} job(s) created",
+                    group_id=single_group.id)
+            return {"from": sender, "subject": subject, "matched": single_group.name,
+                    "reason": f"split into {len(sub_messages)} shipments, {len(made)} job(s) created",
+                    "split_into": children}
+
     # ---- the same BL, from the same sender, already seen this month?
     #
     # HERE, before a single attachment is downloaded and before any page is OCR'd. That is
@@ -1281,6 +1333,37 @@ def _process_one_message(
                     "email classify: %s - could not convert this Office attachment: %s",
                     name, exc,
                 )
+
+    # The shipment this pre-alert describes, for building its Air Waybill when none is attached
+    # (see prealert_shipments.build_awb_pdf). A split mail carries its own record; an ordinary
+    # single-shipment mail is read by the model only if and when a waybill turns out to be
+    # needed, so the common case costs nothing.
+    _prealert_cache: dict = {}
+
+    def _prealert_shipment() -> dict | None:
+        if not prealert_on:
+            return None
+        if "rec" not in _prealert_cache:
+            rec = _ps.shipment_from_message(msg)
+            if rec is None:
+                try:
+                    named_hawbs = _ps.hawbs_from_subject(subject)
+                    if len(named_hawbs) <= 1:
+                        body_text = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+                        found = _ps.read_shipments(subject, body_text, named_hawbs,
+                                                   tenant_id=single_group.tenant_id)
+                        rec = found[0] if len(found) == 1 else None
+                except Exception:  # noqa: BLE001
+                    logger.exception("could not read the shipment off pre-alert %s", mid[:60])
+                    rec = None
+            _prealert_cache["rec"] = rec if rec and rec.get("hawb") else None
+        return _prealert_cache["rec"]
+
+    if not files and _prealert_shipment():
+        # Nothing attached, but the mail itself says what the shipment is: its generated Air
+        # Waybill becomes the job's document instead of the mail being thrown back.
+        files.append((_ps.awb_filename(_prealert_shipment()), _ps.build_awb_pdf(_prealert_shipment())))
+        logger.info("pre-alert %s has no attachments - Air Waybill generated from its data", mid[:60])
 
     if not files:
         _record(db, mid, sender, subject, "no_documents",
@@ -1873,6 +1956,35 @@ def _process_one_message(
     if group is None or job is None:
         return None
 
+    # ---- no Air Waybill among the attachments? Build one from the pre-alert's own data.
+    #
+    # After classification on purpose: only now is it known whether a real waybill arrived.
+    # Filed straight into the template's waybill slot (doc_type "BL"), so the extraction just
+    # below reads it like any other document.
+    if prealert_on and getattr(group, "prealert_shipments", False):
+        try:
+            awb_tdoc = next((d for d in group.documents if d.doc_type == "BL"), None)
+            awb_slot = slots.get(awb_tdoc.id) if awb_tdoc is not None else None
+            shipment = _prealert_shipment() if awb_slot is not None and not awb_slot.file_path else None
+            if shipment:
+                fname = _ps.awb_filename(shipment)
+                ddir = _job_doc_dir(awb_slot.id)
+                ddir.mkdir(parents=True, exist_ok=True)
+                dorig = ddir / fname
+                dorig.write_bytes(_ps.build_awb_pdf(shipment))
+                awb_slot.page_count = _render_pages(dorig, ddir / "pages")
+                awb_slot.file_path = str(dorig)
+                awb_slot.original_name = fname
+                if awb_tdoc.name not in filled:
+                    filled.append(awb_tdoc.name)
+                named.append(f"(generated from the pre-alert) -> {fname}")
+                db.commit()
+                logger.info("job %s: Air Waybill generated from the pre-alert (HAWB %s)",
+                            job.id, shipment.get("hawb"))
+        except Exception:  # noqa: BLE001 - the job simply has no waybill, as before
+            logger.exception("could not generate the Air Waybill for email job %s", job.id)
+            db.rollback()
+
     if not filled:
         unclassified_count = (
             db.query(UnmatchedUploadPage)
@@ -2029,6 +2141,7 @@ def _pull_one_mailbox(
             )
             if entry is not None:
                 processed.append(entry)
+                processed.extend(entry.get("split_into") or [])
         out = {"ok": True, "processed": processed}
         if ctx["unidentifiable"]:
             out["note"] = ("These customers have nothing on their documents that identifies "

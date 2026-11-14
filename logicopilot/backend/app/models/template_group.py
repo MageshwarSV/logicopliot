@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -33,6 +33,14 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #   fields — the recorded script types each value into its own box, one at a time
     #   excel  — the ERP takes a bulk import, so the job is written to a workbook and the
     #            script attaches that one file instead of filling dozens of boxes
+    # Air pre-alerts: one mail may cover several shipments ("//HAWB1 //HAWB2 //HAWB3" in the
+    # subject, a row per shipment in the body). With this on, the email puller splits such a
+    # mail into one job per shipment, and builds an "Air Waybill (Pre-Alert)" PDF from the
+    # pre-alert's own data for any shipment that arrives without a waybill - see
+    # app/core/prealert_shipments.py. Off for every existing template.
+    prealert_shipments: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:
     #   {"source": "blank" | "template",        # a sheet we create, or the customer's own
