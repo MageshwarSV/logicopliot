@@ -660,9 +660,15 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
     `message_id` is UNIQUE, so the insert itself is the lock, and it holds across processes and
     restarts - not just between two threads of one server.
     """
+    # The BL this subject announces, stored on the row itself - it is what makes the
+    # duplicate check one indexed lookup instead of opening the attachments to find out what
+    # the mail is about. None for most mail, which simply never takes part in the check.
+    from app.core.email_bl import extract_bl_number
+
+    bl_number = extract_bl_number(subject)
     row = EmailSeen(message_id=message_id, sender=sender[:320] or None,
                     subject=(subject or "")[:500] or None, verdict="working",
-                    note="being read now")
+                    note="being read now", bl_number=bl_number)
     try:
         db.add(row)
         db.commit()
@@ -697,6 +703,7 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
     # hold these very values, so SQLAlchemy sees no change, issues no UPDATE, and `onupdate`
     # never fires - leaving the row as old as it was. The next run would then find it stale too
     # and take it over as well, which is the duplicate all over again.
+    existing.bl_number = bl_number or existing.bl_number
     existing.verdict = "working"
     existing.note = "being read now"
     existing.updated_at = datetime.now(timezone.utc)
@@ -915,6 +922,8 @@ def _pull_inbox(
     mailbox_errors: list[str] = []
     combined_note: str | None = None
     tasks: list[dict] = []
+    # {message id: {...}} for every pre-alert split into per-shipment tasks this cycle.
+    split_parents: dict[str, dict] = {}
 
     harvest_workers = max(1, min(get_email_poll_workers(db), len(sources)))
     with ThreadPoolExecutor(max_workers=harvest_workers, thread_name_prefix="email-harvest") as pool:
@@ -945,12 +954,19 @@ def _pull_inbox(
                                  "identifies them, so mail can never be routed to them: "
                                  + ", ".join(ctx["unidentifiable"]))
             for message in harvest["messages"]:
-                tasks.append({
+                base = {
                     "src": src, "ctx": ctx, "uid": message["uid"], "raw": message["raw"],
                     "extraction_engine": result["extraction_engine"],
                     "vision_engine_model": result["vision_engine_model"],
                     "custom_filter_texts": result["custom_filter_texts"],
-                })
+                }
+                # One pre-alert covering several shipments becomes one TASK per shipment, right
+                # here, so the pool below runs them side by side exactly as it would three
+                # separate mails - see _split_into_shipment_tasks.
+                shipment_tasks, parent = _split_into_shipment_tasks(db, base, reexamine)
+                if parent is not None:
+                    split_parents[parent["mid"]] = parent
+                tasks.extend(shipment_tasks)
 
     # ---- phase 2: process every harvested message through ONE shared pool, sized by how
     # much work there actually is across every mailbox combined - not by how many mailboxes
@@ -968,6 +984,9 @@ def _pull_inbox(
                     task["src"]["email"], task["src"]["password"], task["src"]["host"],
                     task["extraction_engine"], task["vision_engine_model"],
                     task["custom_filter_texts"], reexamine,
+                    # Passed only for a mail the task list actually looked at - every other
+                    # call keeps the exact argument list it always had.
+                    **({"split_checked": True} if task.get("split_checked") is True else {}),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("processing a harvested email crashed")
@@ -979,16 +998,25 @@ def _pull_inbox(
 
         process_workers = max(1, min(get_email_poll_workers(db), len(tasks)))
         with ThreadPoolExecutor(max_workers=process_workers, thread_name_prefix="email-pull") as pool:
-            futures = [pool.submit(_process_with_own_session, task) for task in tasks]
+            futures = {pool.submit(_process_with_own_session, task): task for task in tasks}
             for future in as_completed(futures):
+                task = futures[future]
                 try:
                     entry = future.result()
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("a message-processing task itself crashed")
                     mailbox_errors.append(f"message processing: {exc}")
-                    continue
+                    entry = {"from": None, "subject": None, "matched": None, "error": True,
+                             "reason": f"message processing: {exc}"} if task.get("parent_mid") else None
+                    if entry is None:
+                        continue
+                if task.get("parent_mid") in split_parents:
+                    split_parents[task["parent_mid"]]["outcomes"].append((task.get("mid"), entry))
                 if entry is not None:
                     all_processed.append(entry)
+                    all_processed.extend(entry.get("split_into") or [])
+        for parent in split_parents.values():
+            all_processed.append(_settle_split_parent(db, parent))
 
     out: dict = {
         "ok": True, "processed": all_processed,
@@ -1000,6 +1028,91 @@ def _pull_inbox(
     if mailbox_errors:
         out["mailbox_errors"] = mailbox_errors
     return out
+
+
+def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tuple[list[dict], dict | None]:
+    """The task(s) for one harvested mail: ([tasks], parent-or-None).
+
+    Normally just the mail itself. A pre-alert covering several shipments (on a mailbox whose
+    template has prealert_shipments on) becomes one task PER SHIPMENT instead, so the shared
+    pool runs them at the same time - each on its own worker and session, each claimed,
+    duplicate-checked and turned into a job exactly like a mail that arrived on its own. Done
+    in the worker instead (as it first was) the shipments queued behind one another: three
+    jobs took fifteen minutes and the second did not even appear until the first was finished.
+
+    The mail itself is CLAIMED here, so the next poll does not split it a second time while its
+    shipments are still being read; _settle_split_parent writes its outcome once they are done.
+    Any doubt - not claimable, not splittable, anything raising - hands back the ordinary single
+    task, marked split_checked so the worker does not ask the model the same question again.
+    """
+    single_group = base["ctx"].get("single_group") if isinstance(base.get("ctx"), dict) else None
+    # `is not True`, not falsiness: only a template with the switch really ON is ever looked at.
+    if single_group is None or getattr(single_group, "prealert_shipments", False) is not True:
+        return [base], None
+    try:
+        from app.core import prealert_shipments as _ps
+
+        msg = email.message_from_bytes(base["raw"])
+        subject = _decode(msg.get("Subject")) or "(no subject)"
+        if msg.get(_ps.SHIPMENT_HEADER) or len(_ps.hawbs_from_subject(subject)) < 2:
+            return [{**base, "split_checked": True}], None
+        sender = parseaddr(msg.get("From"))[1].lower()
+        mid = _message_id(msg)
+        claimed, _why = _claim(db, mid, sender, subject, steal=reexamine)
+        if not claimed:
+            return [base], None                      # the worker reports why, as for any mail
+        body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+        subs = _ps.plan_split(msg, subject, body, _extract_attachments(msg),
+                              tenant_id=single_group.tenant_id)
+        if not subs:
+            _unclaim(db, mid)
+            return [{**base, "split_checked": True}], None
+        _start_claim_heartbeat(mid)
+        tasks = [{**base, "raw": sub, "split_checked": True, "parent_mid": mid,
+                  "mid": _message_id(email.message_from_bytes(sub))} for sub in subs]
+        return tasks, {"mid": mid, "sender": sender, "subject": subject,
+                       "group_id": single_group.id, "group_name": single_group.name,
+                       "shipments": len(subs), "outcomes": []}
+    except Exception:  # noqa: BLE001 - then it is one job, as it always was
+        logger.exception("could not split a pre-alert into shipment tasks")
+        db.rollback()
+        return [base], None
+
+
+def _settle_split_parent(db: Session, parent: dict) -> dict:
+    """Write down what became of a pre-alert that was split into shipment tasks.
+
+    Every shipment finished (a job, or a deliberate outcome such as "duplicate - held for
+    review"): the mail is recorded as split and never looked at again. Any shipment NOT
+    finished - deferred because the AI service was down, crashed, or still held by another
+    run - and the mail's own claim is released instead, so the next poll splits it again; the
+    shipments that did finish are skipped then by their own records, and a crashed one has its
+    claim released here so it is not left "being read" for ever.
+    """
+    pending: list = []
+    made: list[str] = []
+    for child_mid, entry in parent["outcomes"]:
+        entry = entry or {}
+        if entry.get("job_id"):
+            made.append(entry["job_id"])
+        unfinished = (entry.get("deferred") or entry.get("error")
+                      or (entry.get("skipped_by_log")
+                          and "already examined" not in str(entry.get("reason") or "")))
+        if unfinished:
+            pending.append(child_mid)
+            if entry.get("error") and child_mid:
+                _unclaim(db, child_mid)
+    if pending or len(parent["outcomes"]) < parent["shipments"]:
+        _unclaim(db, parent["mid"])
+        return {"from": parent["sender"], "subject": parent["subject"], "matched": None,
+                "reason": "a shipment in this pre-alert could not be processed yet - "
+                          "retrying automatically on a later poll",
+                "deferred": True}
+    _record(db, parent["mid"], parent["sender"], parent["subject"], "split",
+            f"pre-alert covering {parent['shipments']} shipments - {len(made)} job(s) created",
+            group_id=parent["group_id"])
+    return {"from": parent["sender"], "subject": parent["subject"], "matched": parent["group_name"],
+            "reason": f"split into {parent['shipments']} shipments, {len(made)} job(s) created"}
 
 
 def _mailbox_setup(
@@ -1143,11 +1256,58 @@ def _discard_pre_created_job(db: Session, job: Job | None) -> None:
     db.commit()
 
 
+def _file_prealert_awb(db: Session, group_id: str, job: Job, slots: dict, shipment_for,
+                       filled: list[str], named: list[str]) -> bool:
+    """File a generated "Air Waybill (Pre-Alert)" in this job's waybill slot when no waybill
+    arrived with the mail. Returns True when one was filed.
+
+    `shipment_for` is a callable giving the pre-alert's shipment record (or None) - called only
+    once the slot is known to be empty, so a mail that DID bring a waybill never costs a model
+    call.
+
+    The waybill document is looked up with a QUERY on group_id, never through
+    TemplateGroup.documents: the group the puller holds was loaded once per mailbox on another
+    session and is shared by every worker, so a lazy load off it raises DetachedInstanceError.
+    That is exactly how the first real mail (JOB-703FCC) was split correctly and then got no
+    waybill.
+    """
+    from app.api.v1.jobs import _job_doc_dir, _render_pages
+    from app.core import prealert_shipments as _ps
+
+    awb_tdoc = (
+        db.query(TemplateDocument)
+        .filter(TemplateDocument.group_id == group_id, TemplateDocument.doc_type == "BL")
+        .order_by(TemplateDocument.order_index)
+        .first()
+    )
+    awb_slot = slots.get(awb_tdoc.id) if awb_tdoc is not None else None
+    if awb_slot is None or awb_slot.file_path:
+        return False
+    shipment = shipment_for()
+    if not shipment:
+        return False
+    fname = _ps.awb_filename(shipment)
+    ddir = _job_doc_dir(awb_slot.id)
+    ddir.mkdir(parents=True, exist_ok=True)
+    dorig = ddir / fname
+    dorig.write_bytes(_ps.build_awb_pdf(shipment))
+    awb_slot.page_count = _render_pages(dorig, ddir / "pages")
+    awb_slot.file_path = str(dorig)
+    awb_slot.original_name = fname
+    if awb_tdoc.name not in filled:
+        filled.append(awb_tdoc.name)
+    named.append(f"(generated from the pre-alert) -> {fname}")
+    db.commit()
+    logger.info("job %s: Air Waybill generated from the pre-alert (HAWB %s)",
+                job.id, shipment.get("hawb"))
+    return True
+
+
 def _process_one_message(
     db: Session, uid: bytes, raw: bytes, ctx: dict,
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
     extraction_engine: str, vision_engine_model: str, custom_filter_texts: list,
-    reexamine: bool,
+    reexamine: bool, split_checked: bool = False,
 ) -> dict | None:
     """Everything _pull_one_mailbox's own loop used to do for ONE message, given its
     already-harvested raw bytes (see _harvest_mailbox) instead of a live, mailbox-owned IMAP
@@ -1184,6 +1344,88 @@ def _process_one_message(
     if not claimed:
         return {"from": sender, "subject": subject, "matched": None,
                 "reason": why_not, "skipped_by_log": True}
+
+    # ---- one pre-alert covering several shipments? (app/core/prealert_shipments.py)
+    #
+    # Only on a mailbox tied to ONE template that has the handling switched on
+    # (TemplateGroup.prealert_shipments). BEFORE the duplicate-BL check and before anything is
+    # downloaded or OCR'd: each shipment then goes through this very function as a mail of its
+    # own - its own claim, its own duplicate check, its own job - exactly as if the sender had
+    # written three mails instead of one. Nothing is sent anywhere.
+    prealert_on = single_group is not None and bool(getattr(single_group, "prealert_shipments", False))
+    if prealert_on:
+        from app.core import prealert_shipments as _ps
+
+        sub_messages = None
+        # split_checked: the task list already looked at this mail (_split_into_shipment_tasks)
+        # and either split it - this IS one of its shipments - or found nothing to split. The
+        # in-worker split below is only for the one caller that hands mails over one at a time
+        # (_pull_one_mailbox), where the shipments then run one after another.
+        try:
+            if split_checked:
+                raise LookupError
+            split_body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+            sub_messages = _ps.plan_split(msg, subject, split_body, _extract_attachments(msg),
+                                          tenant_id=single_group.tenant_id)
+        except LookupError:
+            pass
+        except Exception:  # noqa: BLE001 - then it is processed as one job, as it always was
+            logger.exception("could not check %s for several shipments", mid[:60])
+        if sub_messages:
+            _start_claim_heartbeat(mid)
+            children: list[dict] = []
+            for sub_raw in sub_messages:
+                try:
+                    child = _process_one_message(
+                        db, uid, sub_raw, ctx, mail_email, mail_app_password, mail_host,
+                        extraction_engine, vision_engine_model, custom_filter_texts, reexamine,
+                    )
+                except Exception:  # noqa: BLE001 - one shipment must not lose the others
+                    logger.exception("a shipment split from %s could not be processed", mid[:60])
+                    db.rollback()
+                    child = {"from": sender, "subject": subject, "matched": None,
+                             "reason": "could not be processed", "deferred": True}
+                if child is not None:
+                    children.append(child)
+            if any(c.get("deferred") for c in children):
+                # Tried again on a later poll. The shipments that DID become jobs are skipped
+                # then by their own claims, so nothing is created twice.
+                _unclaim(db, mid)
+                return {"from": sender, "subject": subject, "matched": None,
+                        "reason": "a shipment in this pre-alert could not be processed yet - "
+                                  "retrying automatically on a later poll",
+                        "deferred": True, "split_into": children}
+            made = [c["job_id"] for c in children if c.get("job_id")]
+            _record(db, mid, sender, subject, "split",
+                    f"pre-alert covering {len(sub_messages)} shipments - {len(made)} job(s) created",
+                    group_id=single_group.id)
+            return {"from": sender, "subject": subject, "matched": single_group.name,
+                    "reason": f"split into {len(sub_messages)} shipments, {len(made)} job(s) created",
+                    "split_into": children}
+
+    # ---- the same BL, from the same sender, already seen this month?
+    #
+    # HERE, before a single attachment is downloaded and before any page is OCR'd. That is
+    # the whole value of reading the BL off the SUBJECT: recognising a re-sent pre-alert
+    # costs one indexed lookup, where letting it through costs an OCR pass over every page,
+    # an AI classification and an extraction run - and leaves the operator two identical
+    # jobs to tell apart. The message is kept whole, so a person who decides it really is a
+    # separate shipment can still process it (app/core/duplicate_bl.py).
+    from app.core.duplicate_bl import already_queued, find_original, record_duplicate
+    from app.core.email_bl import extract_bl_number
+
+    bl_number = extract_bl_number(subject)
+    if bl_number and not reexamine:
+        original = find_original(db, bl_number=bl_number, sender=sender)
+        if original is not None:
+            if not already_queued(db, mid):
+                record_duplicate(db, message_id=mid, sender=sender, subject=subject,
+                                 bl_number=bl_number, original=original, raw=raw)
+            _record(db, mid, sender, subject, "duplicate_bl",
+                    f"BL {bl_number} already came in from this sender - held for review")
+            return {"from": sender, "subject": subject, "matched": None,
+                    "reason": f"duplicate BL {bl_number}", "duplicate": True}
+
     # Keep this claim from looking stale to every OTHER worker/poll while this one is
     # genuinely still working it - see _start_claim_heartbeat's own docstring.
     _start_claim_heartbeat(mid)
@@ -1251,6 +1493,37 @@ def _process_one_message(
                     "email classify: %s - could not convert this Office attachment: %s",
                     name, exc,
                 )
+
+    # The shipment this pre-alert describes, for building its Air Waybill when none is attached
+    # (see prealert_shipments.build_awb_pdf). A split mail carries its own record; an ordinary
+    # single-shipment mail is read by the model only if and when a waybill turns out to be
+    # needed, so the common case costs nothing.
+    _prealert_cache: dict = {}
+
+    def _prealert_shipment() -> dict | None:
+        if not prealert_on:
+            return None
+        if "rec" not in _prealert_cache:
+            rec = _ps.shipment_from_message(msg)
+            if rec is None:
+                try:
+                    named_hawbs = _ps.hawbs_from_subject(subject)
+                    if len(named_hawbs) <= 1:
+                        body_text = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+                        found = _ps.read_shipments(subject, body_text, named_hawbs,
+                                                   tenant_id=single_group.tenant_id)
+                        rec = found[0] if len(found) == 1 else None
+                except Exception:  # noqa: BLE001
+                    logger.exception("could not read the shipment off pre-alert %s", mid[:60])
+                    rec = None
+            _prealert_cache["rec"] = rec if rec and rec.get("hawb") else None
+        return _prealert_cache["rec"]
+
+    if not files and _prealert_shipment():
+        # Nothing attached, but the mail itself says what the shipment is: its generated Air
+        # Waybill becomes the job's document instead of the mail being thrown back.
+        files.append((_ps.awb_filename(_prealert_shipment()), _ps.build_awb_pdf(_prealert_shipment())))
+        logger.info("pre-alert %s has no attachments - Air Waybill generated from its data", mid[:60])
 
     if not files:
         _record(db, mid, sender, subject, "no_documents",
@@ -1843,6 +2116,18 @@ def _process_one_message(
     if group is None or job is None:
         return None
 
+    # ---- no Air Waybill among the attachments? Build one from the pre-alert's own data.
+    #
+    # After classification on purpose: only now is it known whether a real waybill arrived.
+    # Filed straight into the template's waybill slot (doc_type "BL"), so the extraction just
+    # below reads it like any other document.
+    if prealert_on:
+        try:
+            _file_prealert_awb(db, group.id, job, slots, _prealert_shipment, filled, named)
+        except Exception:  # noqa: BLE001 - the job simply has no waybill, as before
+            logger.exception("could not generate the Air Waybill for email job %s", job.id)
+            db.rollback()
+
     if not filled:
         unclassified_count = (
             db.query(UnmatchedUploadPage)
@@ -1999,6 +2284,7 @@ def _pull_one_mailbox(
             )
             if entry is not None:
                 processed.append(entry)
+                processed.extend(entry.get("split_into") or [])
         out = {"ok": True, "processed": processed}
         if ctx["unidentifiable"]:
             out["note"] = ("These customers have nothing on their documents that identifies "

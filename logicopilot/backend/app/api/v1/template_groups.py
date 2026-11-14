@@ -400,6 +400,31 @@ class ModePayload(BaseModel):
     mode: str
 
 
+class PrealertShipmentsPayload(BaseModel):
+    prealert_shipments: bool
+
+
+@router.patch("/{group_id}/prealert-shipments", response_model=TemplateGroupOut)
+def set_group_prealert_shipments(
+    group_id: str,
+    payload: PrealertShipmentsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> TemplateGroupOut:
+    """Switch the air pre-alert handling on or off for this template: split a mail covering
+    several shipments into one job each, and build an Air Waybill from the pre-alert when none
+    is attached (see TemplateGroup.prealert_shipments)."""
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    group.prealert_shipments = payload.prealert_shipments
+    db.commit()
+    db.refresh(group)
+    return TemplateGroupOut.model_validate(group)
+
+
 @router.patch("/{group_id}/mode", response_model=TemplateGroupOut)
 def set_group_mode(
     group_id: str,

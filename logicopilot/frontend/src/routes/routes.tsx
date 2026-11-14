@@ -23,6 +23,7 @@ import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
 import { ManagerDashboard } from "../pages/manager/DashboardShell";
 import { JobsPage } from "../pages/jobs/JobsPage";
+import { DuplicateEmailsPage } from "../pages/jobs/DuplicateEmailsPage";
 import { JobRunPage } from "../pages/jobs/JobRunPage";
 import { EDocketPage } from "../pages/jobs/EDocketPage";
 import { IrnPendingListPage } from "../pages/irn/IrnPendingListPage";
@@ -305,6 +306,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
             <JobsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/duplicate-emails"
+        element={
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
+            <DuplicateEmailsPage />
           </ProtectedRoute>
         }
       />

@@ -33,6 +33,8 @@ class DocumentOut(BaseModel):
     is_uploaded: bool
     # False = Document Capture can complete without this one ever being uploaded.
     is_required: bool = True
+    # See TemplateDocument.manual_entry_when_missing.
+    manual_entry_when_missing: bool = False
     # NOTE: file_path is intentionally NOT exposed.
 
 
@@ -277,6 +279,8 @@ class TemplateGroupOut(BaseModel):
     # workbook for a bulk import.
     entry_mode: str = "fields"
     excel_config: dict | None = None
+    # See TemplateGroup.prealert_shipments.
+    prealert_shipments: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):

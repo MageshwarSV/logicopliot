@@ -160,6 +160,10 @@ class JobDocumentOut(BaseModel):
     # GK2's OWN independent approval of this document — see JobDocument.gk2_approved.
     gk2_approved: bool = False
     # False = this document is optional — Document Capture can complete without it.
+    # True when this is a document with NO file that the template lets be entered by hand
+    # (TemplateDocument.manual_entry_when_missing) - the screen shows its tab with no page
+    # image and its fields empty, typeable and never mandatory.
+    manual_entry: bool = False
     is_required: bool = True
     # This file's content changed since it was last read (a page cut out, a page added, a
     # reupload) and nothing has re-read it since - every one of those paths clears

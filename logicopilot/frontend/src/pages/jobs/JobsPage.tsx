@@ -806,7 +806,13 @@ export function JobsPage() {
     return oldest !== "" && oldest < quickRange.from;
   }, [jobs, quickRange.from, category]);
 
+  // Display order only: earliest ETA first; jobs with no ETA at the bottom, newest created first.
+  // Same ETA: newest created first. eta_date is always "YYYY-MM-DD", so string order is date
+  // order. Sorts a copy of the filtered list - `jobs` keeps the server's created_at-desc order
+  // that the background paging and pastDateWindow above rely on. Saving an ETA refreshes
+  // `jobs`, which re-sorts the row into its new place.
   const visibleJobs = useMemo(() => {
+    const createdMs = (j: Job) => (j.created_at ? Date.parse(j.created_at) || 0 : 0);
     return jobs.filter((j) => {
       if (showModeTabs && activeModeTab !== "All" && j.mode !== activeModeTab) return false;
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
@@ -817,6 +823,13 @@ export function JobsPage() {
       if (quickRange.from && d && d < quickRange.from) return false;
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
+    }).sort((a, b) => {
+      const ea = a.eta_date || "";
+      const eb = b.eta_date || "";
+      if (ea && !eb) return -1;
+      if (!ea && eb) return 1;
+      if (ea !== eb) return ea < eb ? -1 : 1;
+      return createdMs(b) - createdMs(a);
     });
   }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
 
