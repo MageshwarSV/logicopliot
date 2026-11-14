@@ -18,6 +18,7 @@ import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
+import { ErpMasterDataPage } from "../pages/tenant-admin/ErpMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
 import { ManagerDashboard } from "../pages/manager/DashboardShell";
@@ -240,6 +241,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <MastersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/importer"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ErpMasterDataPage key="importer" category="importer" />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/quotation"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ErpMasterDataPage key="quotation" category="quotation" />
           </ProtectedRoute>
         }
       />
