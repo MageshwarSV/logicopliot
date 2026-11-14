@@ -219,3 +219,113 @@ def test_no_shipment_data_means_no_waybill(db_session, tmp_path, monkeypatch):
     monkeypatch.setattr(jobs_mod, "_job_doc_dir", lambda jd_id: tmp_path / jd_id)
     assert _file_prealert_awb(db_session, group.id, job, slots, lambda: None, [], []) is False
     assert slots[awb.id].file_path is None
+
+
+def test_the_generated_waybill_carries_no_date_at_all():
+    """The ETA is the pre-alert's only date; printed, it was read as the MAWB Date."""
+    with fitz.open(stream=ps.build_awb_pdf(SHIPMENTS[0]), filetype="pdf") as doc:
+        text = doc[0].get_text()
+    assert "ETA" not in text and "14-11-2026" not in text
+
+
+# ------------------------------------------------------------------ one task per shipment
+
+def _base_task(db_session, prealert=True):
+    from types import SimpleNamespace
+
+    from tests.conftest import make_tenant
+
+    tenant = make_tenant(db_session)
+    group = SimpleNamespace(id="g1", name="Air import", tenant_id=tenant.id, prealert_shipments=prealert)
+    return {"src": {"email": "a@b", "password": "x", "host": "h"}, "ctx": {"single_group": group},
+            "uid": b"1", "raw": _mail().as_bytes(), "extraction_engine": "e",
+            "vision_engine_model": "m", "custom_filter_texts": []}
+
+
+def test_a_multi_shipment_mail_becomes_one_task_per_shipment(db_session, monkeypatch):
+    from app.core import email_puller as ep
+    from app.models.email_seen import EmailSeen
+
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(s) for s in SHIPMENTS])
+    monkeypatch.setattr(ep, "_start_claim_heartbeat", lambda mid: None)
+    tasks, parent = ep._split_into_shipment_tasks(db_session, _base_task(db_session), False)
+
+    assert len(tasks) == 3 and parent["shipments"] == 3
+    assert all(t["split_checked"] and t["parent_mid"] == parent["mid"] for t in tasks)
+    assert len({t["mid"] for t in tasks}) == 3
+    subjects = [email.message_from_bytes(t["raw"])["Subject"] for t in tasks]
+    assert [ps.hawbs_from_subject(x) for x in subjects] == [["45T0523243"], ["4720797358"], ["4720797552"]]
+    # the mail itself is claimed, so the next poll does not split it again meanwhile
+    assert db_session.query(EmailSeen).filter(EmailSeen.message_id == parent["mid"]).one().verdict == "working"
+
+
+def test_a_single_shipment_mail_is_one_ordinary_task_and_costs_no_model_call(db_session, monkeypatch):
+    from app.core import email_puller as ep
+
+    called = []
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: called.append(1) or [])
+    base = _base_task(db_session)
+    base["raw"] = _mail("FW: Pre-Alert: Juniper //45T0523243").as_bytes()
+    tasks, parent = ep._split_into_shipment_tasks(db_session, base, False)
+    assert parent is None and len(tasks) == 1 and tasks[0]["split_checked"] is True
+    assert tasks[0]["raw"] == base["raw"] and called == []
+
+
+def test_a_template_without_the_setting_is_never_split(db_session, monkeypatch):
+    from app.core import email_puller as ep
+
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(s) for s in SHIPMENTS])
+    base = _base_task(db_session, prealert=False)
+    tasks, parent = ep._split_into_shipment_tasks(db_session, base, False)
+    assert parent is None and tasks == [base]
+
+
+def test_a_mail_that_cannot_be_split_releases_its_claim(db_session, monkeypatch):
+    from app.core import email_puller as ep
+    from app.models.email_seen import EmailSeen
+
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [])       # body not readable
+    tasks, parent = ep._split_into_shipment_tasks(db_session, _base_task(db_session), False)
+    assert parent is None and len(tasks) == 1 and tasks[0]["split_checked"] is True
+    assert db_session.query(EmailSeen).count() == 0                     # the worker claims it afresh
+
+
+def _claimed_parent(db_session, monkeypatch):
+    from app.core import email_puller as ep
+
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(s) for s in SHIPMENTS])
+    monkeypatch.setattr(ep, "_start_claim_heartbeat", lambda mid: None)
+    tasks, parent = ep._split_into_shipment_tasks(db_session, _base_task(db_session), False)
+    return ep, tasks, parent
+
+
+def test_all_shipments_done_records_the_mail_as_split(db_session, monkeypatch):
+    from app.models.email_seen import EmailSeen
+
+    ep, tasks, parent = _claimed_parent(db_session, monkeypatch)
+    parent["outcomes"] = [(t["mid"], {"job_id": f"job{i}"}) for i, t in enumerate(tasks)]
+    out = ep._settle_split_parent(db_session, parent)
+    assert "3 job(s) created" in out["reason"] and not out.get("deferred")
+    assert db_session.query(EmailSeen).filter(EmailSeen.message_id == parent["mid"]).one().verdict == "split"
+
+
+def test_one_shipment_deferred_releases_the_mail_for_the_next_poll(db_session, monkeypatch):
+    from app.models.email_seen import EmailSeen
+
+    ep, tasks, parent = _claimed_parent(db_session, monkeypatch)
+    parent["outcomes"] = [(tasks[0]["mid"], {"job_id": "j1"}), (tasks[1]["mid"], {"deferred": True}),
+                          (tasks[2]["mid"], {"job_id": "j3"})]
+    out = ep._settle_split_parent(db_session, parent)
+    assert out["deferred"] is True
+    assert db_session.query(EmailSeen).filter(EmailSeen.message_id == parent["mid"]).count() == 0
+
+
+def test_a_shipment_already_made_on_an_earlier_poll_counts_as_done(db_session, monkeypatch):
+    from app.models.email_seen import EmailSeen
+
+    ep, tasks, parent = _claimed_parent(db_session, monkeypatch)
+    parent["outcomes"] = [(tasks[0]["mid"], {"skipped_by_log": True, "reason": "already examined (matched)"}),
+                          (tasks[1]["mid"], {"job_id": "j2"}), (tasks[2]["mid"], {"job_id": "j3"})]
+    out = ep._settle_split_parent(db_session, parent)
+    assert not out.get("deferred")
+    assert db_session.query(EmailSeen).filter(EmailSeen.message_id == parent["mid"]).one().verdict == "split"

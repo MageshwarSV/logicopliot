@@ -256,7 +256,9 @@ _AWB_LINES = (
     ("Chargeable Weight", "chargeable_weight"),
     ("Shipper (Supplier) Name", "shipper"),
     ("Consignee Name", "consignee"),
-    ("ETA", "eta"),
+    # The ETA is deliberately NOT printed. It is the only date the pre-alert has, and on the
+    # first real mail (JOB-646C52) the waybill's MAWB Date field took it as the master
+    # waybill's date. The job already gets its ETA from the mail itself (_eta_for_new_job).
 )
 
 

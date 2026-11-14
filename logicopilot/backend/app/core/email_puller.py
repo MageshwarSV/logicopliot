@@ -922,6 +922,8 @@ def _pull_inbox(
     mailbox_errors: list[str] = []
     combined_note: str | None = None
     tasks: list[dict] = []
+    # {message id: {...}} for every pre-alert split into per-shipment tasks this cycle.
+    split_parents: dict[str, dict] = {}
 
     harvest_workers = max(1, min(get_email_poll_workers(db), len(sources)))
     with ThreadPoolExecutor(max_workers=harvest_workers, thread_name_prefix="email-harvest") as pool:
@@ -952,12 +954,19 @@ def _pull_inbox(
                                  "identifies them, so mail can never be routed to them: "
                                  + ", ".join(ctx["unidentifiable"]))
             for message in harvest["messages"]:
-                tasks.append({
+                base = {
                     "src": src, "ctx": ctx, "uid": message["uid"], "raw": message["raw"],
                     "extraction_engine": result["extraction_engine"],
                     "vision_engine_model": result["vision_engine_model"],
                     "custom_filter_texts": result["custom_filter_texts"],
-                })
+                }
+                # One pre-alert covering several shipments becomes one TASK per shipment, right
+                # here, so the pool below runs them side by side exactly as it would three
+                # separate mails - see _split_into_shipment_tasks.
+                shipment_tasks, parent = _split_into_shipment_tasks(db, base, reexamine)
+                if parent is not None:
+                    split_parents[parent["mid"]] = parent
+                tasks.extend(shipment_tasks)
 
     # ---- phase 2: process every harvested message through ONE shared pool, sized by how
     # much work there actually is across every mailbox combined - not by how many mailboxes
@@ -975,6 +984,9 @@ def _pull_inbox(
                     task["src"]["email"], task["src"]["password"], task["src"]["host"],
                     task["extraction_engine"], task["vision_engine_model"],
                     task["custom_filter_texts"], reexamine,
+                    # Passed only for a mail the task list actually looked at - every other
+                    # call keeps the exact argument list it always had.
+                    **({"split_checked": True} if task.get("split_checked") is True else {}),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("processing a harvested email crashed")
@@ -986,17 +998,25 @@ def _pull_inbox(
 
         process_workers = max(1, min(get_email_poll_workers(db), len(tasks)))
         with ThreadPoolExecutor(max_workers=process_workers, thread_name_prefix="email-pull") as pool:
-            futures = [pool.submit(_process_with_own_session, task) for task in tasks]
+            futures = {pool.submit(_process_with_own_session, task): task for task in tasks}
             for future in as_completed(futures):
+                task = futures[future]
                 try:
                     entry = future.result()
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("a message-processing task itself crashed")
                     mailbox_errors.append(f"message processing: {exc}")
-                    continue
+                    entry = {"from": None, "subject": None, "matched": None, "error": True,
+                             "reason": f"message processing: {exc}"} if task.get("parent_mid") else None
+                    if entry is None:
+                        continue
+                if task.get("parent_mid") in split_parents:
+                    split_parents[task["parent_mid"]]["outcomes"].append((task.get("mid"), entry))
                 if entry is not None:
                     all_processed.append(entry)
                     all_processed.extend(entry.get("split_into") or [])
+        for parent in split_parents.values():
+            all_processed.append(_settle_split_parent(db, parent))
 
     out: dict = {
         "ok": True, "processed": all_processed,
@@ -1008,6 +1028,91 @@ def _pull_inbox(
     if mailbox_errors:
         out["mailbox_errors"] = mailbox_errors
     return out
+
+
+def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tuple[list[dict], dict | None]:
+    """The task(s) for one harvested mail: ([tasks], parent-or-None).
+
+    Normally just the mail itself. A pre-alert covering several shipments (on a mailbox whose
+    template has prealert_shipments on) becomes one task PER SHIPMENT instead, so the shared
+    pool runs them at the same time - each on its own worker and session, each claimed,
+    duplicate-checked and turned into a job exactly like a mail that arrived on its own. Done
+    in the worker instead (as it first was) the shipments queued behind one another: three
+    jobs took fifteen minutes and the second did not even appear until the first was finished.
+
+    The mail itself is CLAIMED here, so the next poll does not split it a second time while its
+    shipments are still being read; _settle_split_parent writes its outcome once they are done.
+    Any doubt - not claimable, not splittable, anything raising - hands back the ordinary single
+    task, marked split_checked so the worker does not ask the model the same question again.
+    """
+    single_group = base["ctx"].get("single_group") if isinstance(base.get("ctx"), dict) else None
+    # `is not True`, not falsiness: only a template with the switch really ON is ever looked at.
+    if single_group is None or getattr(single_group, "prealert_shipments", False) is not True:
+        return [base], None
+    try:
+        from app.core import prealert_shipments as _ps
+
+        msg = email.message_from_bytes(base["raw"])
+        subject = _decode(msg.get("Subject")) or "(no subject)"
+        if msg.get(_ps.SHIPMENT_HEADER) or len(_ps.hawbs_from_subject(subject)) < 2:
+            return [{**base, "split_checked": True}], None
+        sender = parseaddr(msg.get("From"))[1].lower()
+        mid = _message_id(msg)
+        claimed, _why = _claim(db, mid, sender, subject, steal=reexamine)
+        if not claimed:
+            return [base], None                      # the worker reports why, as for any mail
+        body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+        subs = _ps.plan_split(msg, subject, body, _extract_attachments(msg),
+                              tenant_id=single_group.tenant_id)
+        if not subs:
+            _unclaim(db, mid)
+            return [{**base, "split_checked": True}], None
+        _start_claim_heartbeat(mid)
+        tasks = [{**base, "raw": sub, "split_checked": True, "parent_mid": mid,
+                  "mid": _message_id(email.message_from_bytes(sub))} for sub in subs]
+        return tasks, {"mid": mid, "sender": sender, "subject": subject,
+                       "group_id": single_group.id, "group_name": single_group.name,
+                       "shipments": len(subs), "outcomes": []}
+    except Exception:  # noqa: BLE001 - then it is one job, as it always was
+        logger.exception("could not split a pre-alert into shipment tasks")
+        db.rollback()
+        return [base], None
+
+
+def _settle_split_parent(db: Session, parent: dict) -> dict:
+    """Write down what became of a pre-alert that was split into shipment tasks.
+
+    Every shipment finished (a job, or a deliberate outcome such as "duplicate - held for
+    review"): the mail is recorded as split and never looked at again. Any shipment NOT
+    finished - deferred because the AI service was down, crashed, or still held by another
+    run - and the mail's own claim is released instead, so the next poll splits it again; the
+    shipments that did finish are skipped then by their own records, and a crashed one has its
+    claim released here so it is not left "being read" for ever.
+    """
+    pending: list = []
+    made: list[str] = []
+    for child_mid, entry in parent["outcomes"]:
+        entry = entry or {}
+        if entry.get("job_id"):
+            made.append(entry["job_id"])
+        unfinished = (entry.get("deferred") or entry.get("error")
+                      or (entry.get("skipped_by_log")
+                          and "already examined" not in str(entry.get("reason") or "")))
+        if unfinished:
+            pending.append(child_mid)
+            if entry.get("error") and child_mid:
+                _unclaim(db, child_mid)
+    if pending or len(parent["outcomes"]) < parent["shipments"]:
+        _unclaim(db, parent["mid"])
+        return {"from": parent["sender"], "subject": parent["subject"], "matched": None,
+                "reason": "a shipment in this pre-alert could not be processed yet - "
+                          "retrying automatically on a later poll",
+                "deferred": True}
+    _record(db, parent["mid"], parent["sender"], parent["subject"], "split",
+            f"pre-alert covering {parent['shipments']} shipments - {len(made)} job(s) created",
+            group_id=parent["group_id"])
+    return {"from": parent["sender"], "subject": parent["subject"], "matched": parent["group_name"],
+            "reason": f"split into {parent['shipments']} shipments, {len(made)} job(s) created"}
 
 
 def _mailbox_setup(
@@ -1202,7 +1307,7 @@ def _process_one_message(
     db: Session, uid: bytes, raw: bytes, ctx: dict,
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
     extraction_engine: str, vision_engine_model: str, custom_filter_texts: list,
-    reexamine: bool,
+    reexamine: bool, split_checked: bool = False,
 ) -> dict | None:
     """Everything _pull_one_mailbox's own loop used to do for ONE message, given its
     already-harvested raw bytes (see _harvest_mailbox) instead of a live, mailbox-owned IMAP
@@ -1252,10 +1357,18 @@ def _process_one_message(
         from app.core import prealert_shipments as _ps
 
         sub_messages = None
+        # split_checked: the task list already looked at this mail (_split_into_shipment_tasks)
+        # and either split it - this IS one of its shipments - or found nothing to split. The
+        # in-worker split below is only for the one caller that hands mails over one at a time
+        # (_pull_one_mailbox), where the shipments then run one after another.
         try:
+            if split_checked:
+                raise LookupError
             split_body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
             sub_messages = _ps.plan_split(msg, subject, split_body, _extract_attachments(msg),
                                           tenant_id=single_group.tenant_id)
+        except LookupError:
+            pass
         except Exception:  # noqa: BLE001 - then it is processed as one job, as it always was
             logger.exception("could not check %s for several shipments", mid[:60])
         if sub_messages:
