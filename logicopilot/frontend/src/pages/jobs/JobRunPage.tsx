@@ -463,7 +463,7 @@ const MULTILINE_FIELD_LABELS = new Set([
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
-// "Use this value" - which party is the SUPPLIER on the ERP entry (Excel INVOICES
+// "Use this value as Supplier" - which party is the SUPPLIER on the ERP entry (Excel INVOICES
 // Supplier_Name / Supplier_Address). A checkbox beside each candidate NAME field, only one ticked
 // at a time; the choice is saved in the hidden "Supplier Source" field as the ticked field's own
 // label, and the Excel columns read whichever field it names (see excel_entry._picked_field /
@@ -494,7 +494,7 @@ function SupplierSourceCheckbox({
           }
         }}
       />
-      Use this value
+      Use this value as Supplier
     </label>
   );
 }
