@@ -439,6 +439,50 @@ def _body_text(msg: email.message.Message) -> str:
     return ""
 
 
+def _body_html_as_text(msg: email.message.Message) -> str:
+    """The HTML half of the message as plain words.
+
+    Only used to look for an ETA. Some senders' pre-alert detail survives only in the HTML
+    part - the text/plain alternative their mail client generated is the forwarding wrapper
+    and nothing else - and _body_text above deliberately returns the FIRST text/plain part,
+    which is that wrapper.
+    """
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        if "attachment" in (part.get("Content-Disposition") or "").lower():
+            continue
+        try:
+            html = (part.get_payload(decode=True) or b"").decode(
+                part.get_content_charset() or "utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            continue
+        html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+        html = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", html)
+        html = re.sub(r"<[^>]+>", " ", html)
+        for a, b in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">")):
+            html = html.replace(a, b)
+        return "\n".join(" ".join(line.split()) for line in html.splitlines())
+    return ""
+
+
+def _eta_for_new_job(msg: email.message.Message, subject: str,
+                     tenant_id: str | None) -> str | None:
+    """The ETA this pre-alert carries, or None. Never raises: a job must be created whatever
+    this does, and a missing ETA is an empty box an operator fills in, not a failure."""
+    try:
+        from app.core.email_eta import extract_eta
+
+        found = extract_eta(subject, _body_text(msg), html=_body_html_as_text(msg),
+                            tenant_id=tenant_id)
+        if found:
+            logger.info("ETA %s read off the pre-alert %r", found, (subject or "")[:60])
+        return found
+    except Exception:  # noqa: BLE001
+        logger.exception("could not read an ETA off the pre-alert")
+        return None
+
+
 def _candidate_groups(db: Session, tenant_id: str | None) -> list[TemplateGroup]:
     """Every customer this pull is allowed to route to.
 
@@ -1241,6 +1285,9 @@ def _process_one_message(
                 tenant_id=group.tenant_id, group_id=group.id, reference=generate_job_no(),
                 status="draft", created_by_id=None,
                 assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+                # Straight off the mail that created it - see _eta_for_new_job. Operations
+                # typed this in by hand on every job, from an email that already said it.
+                eta_date=_eta_for_new_job(msg, subject, group.tenant_id),
             )
             db.add(job)
             db.flush()
@@ -1466,6 +1513,8 @@ def _process_one_message(
                 status="draft",
                 created_by_id=None,
                 assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+                # Straight off the mail that created it - see _eta_for_new_job.
+                eta_date=_eta_for_new_job(msg, subject, group.tenant_id),
             )
             db.add(job)
             db.flush()

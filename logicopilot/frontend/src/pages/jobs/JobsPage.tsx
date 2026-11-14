@@ -16,6 +16,7 @@ import * as jobsApi from "../../api/jobs";
 import * as emailApi from "../../api/email";
 import * as tenantsApi from "../../api/tenants";
 import { displayStatusLabel } from "../../utils/statusDisplay";
+import { formatDate, formatDateTime, formatTime } from "../../utils/dateTime";
 import * as usersApi from "../../api/users";
 import type { Job, JobEvent } from "../../types/jobs";
 import type { Tenant } from "../../types/tenant";
@@ -617,10 +618,7 @@ export function JobsPage() {
     if (!iso) return "—";
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleString(undefined, {
-      day: "2-digit", month: "short",
-      ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}),
-    });
+    return withTime ? formatDateTime(d) : formatDate(d);
   }
 
   function fmtDuration(minutes?: number | null) {
@@ -641,7 +639,7 @@ export function JobsPage() {
     if (!iso) return "";
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return formatTime(d);
   }
 
   const customers = useMemo(() => {

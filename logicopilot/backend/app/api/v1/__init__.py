@@ -21,6 +21,7 @@ from app.api.v1.public_irn import router as public_irn_router
 from app.api.v1.saas_finance import router as saas_finance_router
 from app.api.v1.classifier_test import router as classifier_test_router
 from app.api.v1.manager_app import router as manager_app_router
+from app.api.v1.master_data import router as master_data_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -45,4 +46,5 @@ api_router.include_router(saas_finance_router)
 # The native Manager app's own read-only API. Registered last because it is the newest,
 # and kept as its own router so every route the app can reach is listed in one file.
 api_router.include_router(manager_app_router)
+api_router.include_router(master_data_router)
 api_router.include_router(classifier_test_router)

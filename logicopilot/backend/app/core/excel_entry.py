@@ -237,6 +237,29 @@ def _literals(col: dict) -> list | None:
     return None
 
 
+def _picked_field(col: dict, values: dict) -> str:
+    """The field label a column reads - normally its own "field", but a column may instead let
+    ANOTHER field choose it:
+
+        "pick_by": {"field": "Supplier Source",
+                    "options": {"shipper": "shipper", "Sold By / Buyer Name": "Sold By / Buyer Name"},
+                    "default": "shipper"}
+
+    The job's value of pick_by.field is looked up in options to get the label to read; a value
+    with no option (or no value at all) uses the default's option. Built for November 5's
+    Supplier_Name / Supplier_Address, where the operator ticks which party - the invoice's
+    shipper or its Sold By / Exporter - is the supplier on this entry. A column without
+    pick_by is unchanged.
+    """
+    pick = col.get("pick_by")
+    if not isinstance(pick, dict):
+        return col.get("field") or ""
+    options = pick.get("options") or {}
+    chosen = str(values.get(pick.get("field") or "", "") or "").strip()
+    return (options.get(chosen) or options.get(pick.get("default") or "")
+            or col.get("field") or "")
+
+
 def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
     """The data rows for ONE sheet, in its own column order.
 
@@ -250,7 +273,7 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
                   invoice's own number, date and value.
     """
     cols = plan["columns"]
-    labels = [c.get("field") or "" for c in cols]
+    labels = [_picked_field(c, values) for c in cols]
     lits = [_literals(c) for c in cols]
     # Several ICEGATE columns are shorter than the text that feeds them - General_Description
     # takes the first 60 characters of the product description. Writing the full string means

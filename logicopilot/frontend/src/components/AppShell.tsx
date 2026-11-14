@@ -120,7 +120,7 @@ export function AppShell({
   const { user, logout } = useAuth();
   const location = useLocation();
   const [masterDataOpen, setMasterDataOpen] = useState(
-    location.pathname.startsWith("/tenant-admin/masters"),
+    location.pathname.startsWith("/tenant-admin/masters") || location.pathname.startsWith("/tenant-admin/master-data"),
   );
   // The page you are actually on is what should be lit up — a nav rail that always shows
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
@@ -302,6 +302,8 @@ export function AppShell({
                   {masterDataOpen && (
                     <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
                       {[
+                        { label: "ERP Master Data – Importer", to: "/tenant-admin/master-data/importer" },
+                        { label: "ERP Master Data – Quotation", to: "/tenant-admin/master-data/quotation" },
                         { label: "Shipments", to: "/tenant-admin/customers" },
                         { label: "Shipment Type", to: "/tenant-admin/masters" },
                         { label: "Ports", to: "/tenant-admin/masters" },
@@ -311,9 +313,13 @@ export function AppShell({
                         <Link
                           key={item.label}
                           to={item.to}
-                          className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                            location.pathname === item.to && item.to.startsWith("/tenant-admin/master-data")
+                              ? "bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          }`}
                         >
-                          <span className="h-1 w-1 rounded-full bg-slate-400" />
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" />
                           {item.label}
                         </Link>
                       ))}
