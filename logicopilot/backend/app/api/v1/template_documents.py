@@ -114,6 +114,30 @@ def set_document_required(
     return DocumentDetailOut.model_validate(document)
 
 
+class ManualEntryPayload(BaseModel):
+    manual_entry_when_missing: bool
+
+
+@router.patch("/{document_id}/manual-entry", response_model=DocumentDetailOut)
+def set_document_manual_entry(
+    document_id: str,
+    payload: ManualEntryPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> DocumentDetailOut:
+    """Whether a job with no file for this document still gets its tab, to be typed in by hand
+    (see TemplateDocument.manual_entry_when_missing)."""
+    document = db.get(TemplateDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if user.role == TENANT_ADMIN and document.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    document.manual_entry_when_missing = payload.manual_entry_when_missing
+    db.commit()
+    db.refresh(document)
+    return DocumentDetailOut.model_validate(document)
+
+
 class NamePayload(BaseModel):
     name: str
 

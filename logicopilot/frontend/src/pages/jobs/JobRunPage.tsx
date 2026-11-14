@@ -1784,7 +1784,8 @@ export function JobRunPage() {
   // component) so the sidebar and the content pane share ONE "which file is open" state
   // instead of the sidebar being unable to drive what the content pane shows.
   const reviewFiles = useMemo(
-    () => (job?.documents ?? []).filter((d) => d.is_uploaded),
+    // ...plus a document with no file that the template lets be entered by hand.
+    () => (job?.documents ?? []).filter((d) => d.is_uploaded || d.manual_entry),
     [job?.documents],
   );
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -2505,6 +2506,7 @@ export function JobRunPage() {
                           <span className="min-w-0 flex-1 truncate">
                             {f.name}
                             {f.original_name ? <span className="opacity-60"> · {f.original_name}</span> : null}
+                            {f.manual_entry ? <span className="opacity-60"> · enter by hand</span> : null}
                             {f.set_index ? <span className="opacity-60"> · set {f.set_index}</span> : null}
                           </span>
                         </button>
@@ -6403,9 +6405,28 @@ function ExtractionReview({
       // The order the API sends, which is the template's own — Bill of lading, Invoice,
       // Packing List, Freight Certificate. Sorting by name put "Fright Certificate" second,
       // alphabetically, which is not how anyone works through a shipment.
-      (job.documents ?? []).filter((d) => d.is_uploaded),
+      // A document with no file that the template lets be entered by hand (manual_entry) gets a
+      // tab too - no page image, its fields empty and typeable.
+      (job.documents ?? []).filter((d) => d.is_uploaded || d.manual_entry),
     [job.documents],
   );
+  // A hand-entry tab needs its empty boxes. Extraction creates them; a job that got here some
+  // other way (extracted before the setting was turned on, or its file deleted afterwards) has
+  // none yet, so ask for them once per document and reload.
+  const askedManualFieldsFor = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (readOnly) return;
+    const missing = (job.documents ?? []).filter(
+      (d) =>
+        d.manual_entry &&
+        !askedManualFieldsFor.current.has(d.id) &&
+        !job.field_values.some((fv) => fv.job_document_id === d.id),
+    );
+    if (!missing.length) return;
+    missing.forEach((d) => askedManualFieldsFor.current.add(d.id));
+    void jobsApi.ensureManualEntryFields(jobId).then(reload).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.documents, job.field_values, jobId, readOnly]);
   const insurancePercentageFv = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
   );
@@ -6419,7 +6440,10 @@ function ExtractionReview({
   const isApproved = (d: JobDocument) => (isGk2 ? d.gk2_approved : d.approved);
   const active = files.find((f) => f.id === activeFileId) ?? files[0];
   const [approvingId, setApprovingId] = useState<string | null>(null);
-  const approvedCount = files.filter(isApproved).length;
+  // Only a document that was actually uploaded has to be approved - a hand-entry tab never
+  // blocks moving on (see blockedBecause("extraction"), which counts uploaded documents only).
+  const mustApprove = files.filter((f) => f.is_uploaded);
+  const approvedCount = mustApprove.filter(isApproved).length;
 
   // Delete/Reupload for the file on screen. Reupload is delete-then-upload into the SAME
   // slot rather than a raw upload over the existing file: the upload endpoint adds a new
@@ -7411,7 +7435,7 @@ function ExtractionReview({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/50">
         <span className="text-slate-500">
-          {approvedCount} of {files.length} document{files.length === 1 ? "" : "s"} approved —
+          {approvedCount} of {mustApprove.length} document{mustApprove.length === 1 ? "" : "s"} approved —
           every one needs "Approved and Proceed" before this can move to Cross Docs Verification.
         </span>
       </div>
@@ -7429,7 +7453,7 @@ function ExtractionReview({
             <h2 className="font-semibold text-indigo-600 dark:text-indigo-400">
               Document Preview
             </h2>
-            {!readOnly && active && (
+            {!readOnly && active && active.is_uploaded && (
               <div className="flex items-center gap-2">
                 <input
                   ref={reuploadInputRef}
@@ -7465,8 +7489,22 @@ function ExtractionReview({
           {docActionError && (
             <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">{docActionError}</p>
           )}
-          {active && (
+          {active && active.is_uploaded && (
             <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} updatedAt={active.updated_at} highlight={highlight} />
+          )}
+          {/* No file for this document, and the template lets it be entered by hand: nothing to
+              show here, so say so plainly instead of an empty or broken page image. */}
+          {active && !active.is_uploaded && (
+            <div className="flex min-h-[320px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 text-center dark:border-slate-700 dark:bg-slate-800/40">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                No {active.name} was uploaded
+              </p>
+              <p className="max-w-sm text-xs text-slate-500 dark:text-slate-400">
+                Enter its details by hand in the fields on the right. Nothing here is mandatory —
+                fill what you have. To read them from a document instead, upload the {active.name} on
+                Document Capture.
+              </p>
+            </div>
           )}
         </Card>
 

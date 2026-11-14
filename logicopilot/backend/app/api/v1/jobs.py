@@ -2689,6 +2689,28 @@ class DocumentApprove(BaseModel):
     approved: bool = True
 
 
+@router.post("/jobs/{job_id}/manual-entry-fields", response_model=JobDetailOut)
+def ensure_manual_entry_fields(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> JobDetailOut:
+    """Make sure a document that may be entered by hand has its empty boxes on this job.
+
+    Extraction does this itself; this is for a job that reached the state some other way - one
+    extracted before the template turned the setting on, or whose Air Waybill was deleted
+    afterwards. The review screen calls it when it finds a hand-entry tab with no fields.
+    Adds only what is missing - never changes or removes a value.
+    """
+    job = _load_job(db, job_id, scope, user)
+    group = db.get(TemplateGroup, job.group_id)
+    if job.status not in ("draft", "extracting") and _ensure_manual_entry_fields(db, job, group):
+        db.commit()
+        db.refresh(job)
+    return _build_detail(db, job)
+
+
 @router.post("/jobs/{job_id}/documents/{job_document_id}/approve", response_model=JobDetailOut)
 def approve_document(
     job_id: str,
@@ -3446,11 +3468,61 @@ def _one_per_field(fvs: list) -> list:
     return order
 
 
+def _manual_entry_slots(db: Session, job: Job, group: TemplateGroup) -> dict[str, "TemplateDocument"]:
+    """{JobDocument.id: its TemplateDocument} for every document on this job that has NO file and
+    whose template lets it be entered by hand (TemplateDocument.manual_entry_when_missing).
+
+    Only when NONE of that document's slots holds a file: the moment an Air Waybill is uploaded
+    there is a real document to read, and no empty hand-entry tab beside it.
+    """
+    out: dict[str, TemplateDocument] = {}
+    jds = db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
+    for tdoc in group.documents:
+        if not getattr(tdoc, "manual_entry_when_missing", False):
+            continue
+        mine = sorted((d for d in jds if d.template_document_id == tdoc.id), key=lambda d: d.file_index)
+        if mine and not any(d.file_path for d in mine):
+            out[mine[0].id] = tdoc
+    return out
+
+
+def _ensure_manual_entry_fields(db: Session, job: Job, group: TemplateGroup) -> int:
+    """Give a hand-entered document (see _manual_entry_slots) an empty box for every one of its
+    job-level marks. Returns how many were created; never touches a box that already exists, so
+    whatever the operator has typed stays. Does not commit.
+
+    Without this a November 5 job with no Air Waybill had no HAWB Number, Airline or Flight
+    box anywhere - marks only ever became fields by being READ off a file. A table column
+    (is_multi_value) is skipped: its rows come from a document, and there is none.
+    """
+    created = 0
+    for jd_id, tdoc in _manual_entry_slots(db, job, group).items():
+        have = {
+            mid for (mid,) in db.query(JobFieldValue.mark_id)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd_id,
+                    JobFieldValue.mark_id.isnot(None)).all()
+        }
+        for mark in tdoc.marks:
+            if mark.id in have or getattr(mark, "is_multi_value", False):
+                continue
+            db.add(JobFieldValue(
+                tenant_id=job.tenant_id, job_id=job.id, mark_id=mark.id,
+                template_document_id=tdoc.id, job_document_id=jd_id,
+                label_name=mark.label_name, extracted_value="",
+            ))
+            created += 1
+    if created:
+        db.flush()
+        logger.info("job %s: created %d empty hand-entry field(s)", job.id, created)
+    return created
+
+
 def _build_detail(db: Session, job: Job) -> JobDetailOut:
     group = db.get(TemplateGroup, job.group_id)
     tdoc_by_id = {d.id: d for d in group.documents}
     job_docs = db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
     _tdoc_order = {d.id: i for i, d in enumerate(group.documents)}
+    manual_slots = _manual_entry_slots(db, job, group)
 
     documents = [
         JobDocumentOut(
@@ -3459,6 +3531,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             name=tdoc_by_id[jd.template_document_id].name if jd.template_document_id in tdoc_by_id else "?",
             doc_type=tdoc_by_id[jd.template_document_id].doc_type if jd.template_document_id in tdoc_by_id else "",
             is_uploaded=jd.file_path is not None,
+            manual_entry=jd.id in manual_slots,
             page_count=jd.page_count,
             file_index=jd.file_index,
             set_index=jd.set_index,
@@ -3782,7 +3855,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 is_custom=bool(fv.custom_field_id),
                 ask_operator=(fv.mark_id in ask_ids) or (fv.custom_field_id in ask_ids),
                 ask_operator_required=(fv.mark_id in required_ids) or (fv.custom_field_id in required_ids),
-                mandatory=(fv.mark_id in raw_required_ids) or (fv.custom_field_id in raw_required_ids),
+                # Nothing on a hand-entered document (no file - see _manual_entry_slots) is
+                # mandatory: the operator fills what they have.
+                mandatory=((fv.mark_id in raw_required_ids) or (fv.custom_field_id in raw_required_ids))
+                and fv.job_document_id not in manual_slots,
                 ask_operator_hint=hints.get(fv.mark_id) or hints.get(fv.custom_field_id),
                 self_filled=fv.custom_field_id in self_fill_ids,
                 job_document_id=fv.job_document_id,
@@ -9253,6 +9329,9 @@ def run_extraction(
     # "Fill only when <another field> has a value" (CustomField.requires_value_of) - now
     # that every field has its final reading, a MAWB Date with no MAWB Number is emptied.
     _enforce_requires_value_of(db, job)
+    # A document with no file that may be entered by hand gets its empty boxes - before the
+    # corrections are restored below, so values typed earlier come back into them.
+    _ensure_manual_entry_fields(db, job, group)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).

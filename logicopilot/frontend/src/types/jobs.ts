@@ -78,6 +78,9 @@ export interface JobDocument {
   name: string;
   doc_type: string;
   is_uploaded: boolean;
+  /** No file, but the template lets this document be entered by hand: its tab shows with no
+   *  page image and its fields empty, typeable and never mandatory. */
+  manual_entry?: boolean;
   page_count: number;
   /** A slot can hold several files — three invoices for one shipment. Position within it. */
   file_index: number;

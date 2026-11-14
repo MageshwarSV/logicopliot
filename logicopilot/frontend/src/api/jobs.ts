@@ -615,6 +615,12 @@ export async function carryAcrossRows(
   return data;
 }
 
+/** Make sure a document that may be entered by hand (no file uploaded) has its empty boxes on
+ *  this job. Adds only what is missing - see ensure_manual_entry_fields in jobs.py. */
+export async function ensureManualEntryFields(jobId: string): Promise<void> {
+  await apiClient.post(`/jobs/${jobId}/manual-entry-fields`);
+}
+
 export async function correctFieldValue(valueId: string, correctedValue: string): Promise<JobFieldValue> {
   const { data } = await apiClient.patch<JobFieldValue>(`/job-field-values/${valueId}`, {
     corrected_value: correctedValue,
