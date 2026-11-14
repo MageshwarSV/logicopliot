@@ -4,6 +4,7 @@ import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/registry";
 import * as jobsApi from "../api/jobs";
+import * as duplicateEmailsApi from "../api/duplicateEmails";
 import { NotificationBell } from "./NotificationBell";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 import { Avatar } from "./ui/Avatar";
@@ -65,6 +66,17 @@ function MissingDocumentsIcon() {
       <path strokeLinecap="round" strokeLinejoin="round" d="M14 3v5h5" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 11v3" />
       <circle cx="12" cy="16.5" r="0.75" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// Two stacked envelopes: the same mail, arriving twice.
+function DuplicateEmailsIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <rect x="2" y="7" width="14" height="10" rx="1.5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 8l6.5 4.5L15.5 8" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M18 9h3a1 1 0 011 1v7a1 1 0 01-1 1h-9" />
     </svg>
   );
 }
@@ -164,6 +176,10 @@ export function AppShell({
   const showsJobCategories =
     user != null && ["operator", "admin", "gk2", "manager", "tenant_admin"].includes(user.role);
   const [categoryCounts, setCategoryCounts] = useState<jobsApi.JobCategoryCounts | null>(null);
+  // Pre-alerts held because their BL already came in. Its own fetch rather than another
+  // field on the job counts: these are NOT jobs - they were deliberately never created -
+  // and the counts endpoint only knows about rows in the jobs table.
+  const [duplicateCount, setDuplicateCount] = useState<number | null>(null);
   const ccfDateFrom = categoryCountFilters?.dateFrom;
   const ccfDateTo = categoryCountFilters?.dateTo;
   const ccfAssignedTo = categoryCountFilters?.assignedTo;
@@ -184,12 +200,29 @@ export function AppShell({
     return () => { alive = false; window.clearInterval(t); };
   }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
 
+  // Held pre-alerts. Deliberately unfiltered by the Jobs list's own filters, unlike the
+  // counts above: these are not jobs, so a date or customer filter meant for the jobs table
+  // has nothing to say about them, and a badge that went to zero because of a filter
+  // elsewhere would read as "nothing to decide" when there is.
+  useEffect(() => {
+    if (!showsJobCategories) return;
+    let alive = true;
+    const load = () => {
+      duplicateEmailsApi.listDuplicateEmails()
+        .then((rows) => { if (alive) setDuplicateCount(rows.length); })
+        .catch(() => {});
+    };
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [showsJobCategories]);
+
   const totalJobsCount = categoryCounts
     ? Object.values(categoryCounts).reduce((a, b) => a + b, 0)
     : null;
 
   function jobCategoryLinks() {
-    return JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
+    const links = JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
       <Link
         key={key}
         to={`/jobs?category=${key}`}
@@ -200,6 +233,25 @@ export function AppShell({
         {categoryCounts && <CountBadge count={categoryCounts[key]} cls={badgeCls} />}
       </Link>
     ));
+    // Sits straight after Missing Documents: both are "something arrived that is not a job
+    // yet and needs a person", which is a different thing from the job screens around them.
+    links.splice(2, 0, (
+      <Link
+        key="duplicates"
+        to="/duplicate-emails"
+        className={location.pathname === "/duplicate-emails" ? NAV_ACTIVE : NAV_INACTIVE}
+      >
+        <DuplicateEmailsIcon />
+        <span className="min-w-0 flex-1 truncate">Duplicate Emails</span>
+        {duplicateCount !== null && (
+          <CountBadge
+            count={duplicateCount}
+            cls="bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300"
+          />
+        )}
+      </Link>
+    ));
+    return links;
   }
   const dashboardPath =
     user?.role === "super_admin"

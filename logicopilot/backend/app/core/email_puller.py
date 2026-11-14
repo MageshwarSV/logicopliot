@@ -660,9 +660,15 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
     `message_id` is UNIQUE, so the insert itself is the lock, and it holds across processes and
     restarts - not just between two threads of one server.
     """
+    # The BL this subject announces, stored on the row itself - it is what makes the
+    # duplicate check one indexed lookup instead of opening the attachments to find out what
+    # the mail is about. None for most mail, which simply never takes part in the check.
+    from app.core.email_bl import extract_bl_number
+
+    bl_number = extract_bl_number(subject)
     row = EmailSeen(message_id=message_id, sender=sender[:320] or None,
                     subject=(subject or "")[:500] or None, verdict="working",
-                    note="being read now")
+                    note="being read now", bl_number=bl_number)
     try:
         db.add(row)
         db.commit()
@@ -697,6 +703,7 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
     # hold these very values, so SQLAlchemy sees no change, issues no UPDATE, and `onupdate`
     # never fires - leaving the row as old as it was. The next run would then find it stale too
     # and take it over as well, which is the duplicate all over again.
+    existing.bl_number = bl_number or existing.bl_number
     existing.verdict = "working"
     existing.note = "being read now"
     existing.updated_at = datetime.now(timezone.utc)
@@ -1184,6 +1191,29 @@ def _process_one_message(
     if not claimed:
         return {"from": sender, "subject": subject, "matched": None,
                 "reason": why_not, "skipped_by_log": True}
+    # ---- the same BL, from the same sender, already seen this month?
+    #
+    # HERE, before a single attachment is downloaded and before any page is OCR'd. That is
+    # the whole value of reading the BL off the SUBJECT: recognising a re-sent pre-alert
+    # costs one indexed lookup, where letting it through costs an OCR pass over every page,
+    # an AI classification and an extraction run - and leaves the operator two identical
+    # jobs to tell apart. The message is kept whole, so a person who decides it really is a
+    # separate shipment can still process it (app/core/duplicate_bl.py).
+    from app.core.duplicate_bl import already_queued, find_original, record_duplicate
+    from app.core.email_bl import extract_bl_number
+
+    bl_number = extract_bl_number(subject)
+    if bl_number and not reexamine:
+        original = find_original(db, bl_number=bl_number, sender=sender)
+        if original is not None:
+            if not already_queued(db, mid):
+                record_duplicate(db, message_id=mid, sender=sender, subject=subject,
+                                 bl_number=bl_number, original=original, raw=raw)
+            _record(db, mid, sender, subject, "duplicate_bl",
+                    f"BL {bl_number} already came in from this sender - held for review")
+            return {"from": sender, "subject": subject, "matched": None,
+                    "reason": f"duplicate BL {bl_number}", "duplicate": True}
+
     # Keep this claim from looking stale to every OTHER worker/poll while this one is
     # genuinely still working it - see _start_claim_heartbeat's own docstring.
     _start_claim_heartbeat(mid)

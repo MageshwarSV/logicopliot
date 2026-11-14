@@ -22,6 +22,7 @@ from app.models.document_sample import DocumentSample  # noqa: F401
 from app.models.supporting_document import SupportingDocument  # noqa: F401
 from app.models.job_irn_signature import JobIrnSignature  # noqa: F401
 from app.models.job_failure import JobFailureReport  # noqa: F401
+from app.models.duplicate_email import DuplicateEmail  # noqa: F401
 from app.models.email_seen import EmailSeen  # noqa: F401
 from app.models.job_event import JobEvent  # noqa: F401
 from app.models.pending_email import PendingEmail  # noqa: F401
