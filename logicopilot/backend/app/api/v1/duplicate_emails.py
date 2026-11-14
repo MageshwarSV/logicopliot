@@ -31,6 +31,10 @@ class DuplicateEmailOut(BaseModel):
     message_id: str
     sender: str | None = None
     customer: str | None = None
+    # The shipment type of the customer this BL already belongs to - what the All / Sea
+    # Import tabs filter on. Taken from the original job's template, since this mail was
+    # deliberately never classified and has no template of its own.
+    mode: str | None = None
     subject: str | None = None
     received_at: datetime | None = None
     bl_number: str
@@ -41,9 +45,11 @@ class DuplicateEmailOut(BaseModel):
     can_process: bool
 
 
-def _out(row: DuplicateEmail, customer: str | None) -> DuplicateEmailOut:
+def _out(row: DuplicateEmail, customer: str | None,
+         mode: str | None = None) -> DuplicateEmailOut:
     return DuplicateEmailOut(
         id=row.id, message_id=row.message_id, sender=row.sender, customer=customer,
+        mode=mode,
         subject=row.subject, received_at=row.received_at, bl_number=row.bl_number,
         original_job_id=row.original_job_id, original_reference=row.original_reference,
         original_received_at=row.original_received_at, status=row.status,
@@ -71,8 +77,12 @@ def list_duplicate_emails(
         q = q.filter(DuplicateEmail.bl_number.like(f"%{normalise_bl(bl)}%"))
     rows = q.order_by(DuplicateEmail.received_at.desc()).all()
 
-    names = {g.id: g.name for g in db.query(TemplateGroup).all()}
-    return [_out(r, names.get(r.group_id)) for r in rows]
+    groups = {g.id: g for g in db.query(TemplateGroup).all()}
+    return [
+        _out(r, (groups.get(r.group_id).name if groups.get(r.group_id) else None),
+             (groups.get(r.group_id).mode if groups.get(r.group_id) else None))
+        for r in rows
+    ]
 
 
 @router.delete("/{duplicate_id}", response_model=DuplicateEmailOut)
@@ -96,8 +106,8 @@ def delete_duplicate_email(
     row.handled_at = datetime.now(timezone.utc)
     db.commit()
     logger.info("duplicate %s (BL %s) deleted by %s", row.id, row.bl_number, user.email)
-    names = {g.id: g.name for g in db.query(TemplateGroup).all()}
-    return _out(row, names.get(row.group_id))
+    g = db.get(TemplateGroup, row.group_id) if row.group_id else None
+    return _out(row, g.name if g else None, g.mode if g else None)
 
 
 @router.post("/{duplicate_id}/process", response_model=DuplicateEmailOut)
@@ -167,5 +177,5 @@ def process_duplicate_email(
     db.commit()
     logger.info("duplicate %s (BL %s) processed into job %s by %s",
                 row.id, row.bl_number, job_id, user.email)
-    names = {g.id: g.name for g in db.query(TemplateGroup).all()}
-    return _out(row, names.get(row.group_id))
+    g = db.get(TemplateGroup, row.group_id) if row.group_id else None
+    return _out(row, g.name if g else None, g.mode if g else None)

@@ -9,6 +9,8 @@ export interface DuplicateEmail {
   sender: string | null;
   /** The customer, taken from the ORIGINAL job - this mail was never classified. */
   customer: string | null;
+  /** That customer's shipment type ("Sea Import", ...), for the tabs. Same source. */
+  mode: string | null;
   subject: string | null;
   received_at: string | null;
   bl_number: string;

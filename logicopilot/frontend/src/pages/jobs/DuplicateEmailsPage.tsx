@@ -5,11 +5,11 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { Button } from "../../components/ui/Button";
-import { Input } from "../../components/ui/Input";
 import { DataTable, type Column } from "../../components/ui/DataTable";
+import { Pagination } from "../../components/ui/Pagination";
 import * as dupApi from "../../api/duplicateEmails";
 
-/** "14 Nov, 10:35" - the same shape the Jobs list prints its dates in. */
+/** "14 Nov, 10:35" - the shape the Jobs list already prints its dates in. */
 function when(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -18,22 +18,66 @@ function when(iso: string | null): string {
     .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 }
 
+type QuickKey = "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month" | "all" | "custom";
+
+/** The same named ranges the Jobs list offers, filling From/To rather than blanking them -
+ *  so the window being applied is visible and either end can then be nudged by hand. */
+function rangeFor(key: QuickKey): { from: string; to: string } {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const back = (days: number) => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - days);
+    return d;
+  };
+  switch (key) {
+    case "today": return { from: iso(today), to: iso(today) };
+    case "yesterday": return { from: iso(back(1)), to: iso(back(1)) };
+    case "7": return { from: iso(back(6)), to: iso(today) };
+    case "30": return { from: iso(back(29)), to: iso(today) };
+    case "this_month":
+      return { from: iso(new Date(today.getFullYear(), today.getMonth(), 1)), to: iso(today) };
+    case "prev_month": {
+      const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const last = new Date(today.getFullYear(), today.getMonth(), 0);
+      return { from: iso(first), to: iso(last) };
+    }
+    default: return { from: "", to: "" };
+  }
+}
+
+const FIELD =
+  "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200";
+
+const ALL = "__all__";
+
 /** Pre-alerts whose BL this customer had already sent in.
  *
  *  These never became jobs and never will unless someone says so here: no attachment was
  *  downloaded, no page was OCR'd, no model was called. That is the point - a re-sent
- *  pre-alert costs a full OCR and AI run if it is allowed through, and leaves the operator
- *  two identical jobs to tell apart.
+ *  pre-alert costs a full OCR and AI run if it is let through, and leaves the operator two
+ *  identical jobs to tell apart.
  *
  *  Two ways out, and only two. Delete, when it really was a re-send. Process as new job,
- *  when it really is a separate shipment - which runs the kept message through the ordinary
+ *  when it really is a separate shipment - which replays the kept mail through the ordinary
  *  pipeline from the beginning. */
 export function DuplicateEmailsPage() {
   const [rows, setRows] = useState<dupApi.DuplicateEmail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // Filters, mirroring the Jobs list so the two screens read the same way.
+  const [quick, setQuick] = useState<QuickKey>("30");
+  const initial = rangeFor("30");
+  const [dateFrom, setDateFrom] = useState(initial.from);
+  const [dateTo, setDateTo] = useState(initial.to);
+  const [customer, setCustomer] = useState<string>(ALL);
   const [blFilter, setBlFilter] = useState("");
+  const [modeTab, setModeTab] = useState<string>(ALL);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const load = useCallback(async () => {
     try {
@@ -50,12 +94,57 @@ export function DuplicateEmailsPage() {
     void load();
   }, [load]);
 
-  const shown = useMemo(() => {
+  const customers = useMemo(
+    () => [...new Set((rows ?? []).map((r) => r.customer).filter(Boolean) as string[])].sort(),
+    [rows],
+  );
+  const modes = useMemo(
+    () => [...new Set((rows ?? []).map((r) => r.mode).filter(Boolean) as string[])].sort(),
+    [rows],
+  );
+
+  /** Everything except the mode tab - so each tab can show its own count against the same
+   *  filters, the way the Jobs list's tabs do. */
+  const filtered = useMemo(() => {
     const needle = blFilter.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    if (!rows) return [];
-    if (!needle) return rows;
-    return rows.filter((r) => r.bl_number.includes(needle));
-  }, [rows, blFilter]);
+    return (rows ?? []).filter((r) => {
+      if (needle && !r.bl_number.includes(needle)) return false;
+      if (customer !== ALL && r.customer !== customer) return false;
+      if (dateFrom || dateTo) {
+        const day = (r.received_at ?? "").slice(0, 10);
+        if (!day) return false;
+        if (dateFrom && day < dateFrom) return false;
+        if (dateTo && day > dateTo) return false;
+      }
+      return true;
+    });
+  }, [rows, blFilter, customer, dateFrom, dateTo]);
+
+  const shown = useMemo(
+    () => (modeTab === ALL ? filtered : filtered.filter((r) => (r.mode ?? "") === modeTab)),
+    [filtered, modeTab],
+  );
+
+  // Any filter change puts you back on page 1 - staying on page 3 of a list that now has
+  // one page reads as "nothing here".
+  useEffect(() => {
+    setPage(1);
+  }, [blFilter, customer, dateFrom, dateTo, modeTab, pageSize]);
+
+  const pageRows = useMemo(
+    () => shown.slice((page - 1) * pageSize, page * pageSize),
+    [shown, page, pageSize],
+  );
+
+  function reset() {
+    const r = rangeFor("30");
+    setQuick("30");
+    setDateFrom(r.from);
+    setDateTo(r.to);
+    setCustomer(ALL);
+    setBlFilter("");
+    setModeTab(ALL);
+  }
 
   async function remove(row: dupApi.DuplicateEmail) {
     if (!window.confirm(
@@ -119,7 +208,18 @@ export function DuplicateEmailsPage() {
       render: (r) => <span className="text-slate-400">{rowNumber.get(r.id)}</span>,
     },
     {
-      header: "Received",
+      header: "",
+      className: "w-8",
+      render: () => (
+        <svg className="h-4 w-4 text-indigo-400" fill="none" viewBox="0 0 24 24"
+             stroke="currentColor" strokeWidth={2} aria-label="email">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.5 6.5L12 13l8.5-6.5" />
+        </svg>
+      ),
+    },
+    {
+      header: "Received Date",
       render: (r) => <span className="whitespace-nowrap text-slate-700 dark:text-slate-200">{when(r.received_at)}</span>,
     },
     {
@@ -138,7 +238,7 @@ export function DuplicateEmailsPage() {
     {
       header: "Email Subject",
       render: (r) => (
-        <span className="block max-w-sm truncate text-slate-600 dark:text-slate-300" title={r.subject ?? ""}>
+        <span className="block max-w-xs truncate text-slate-600 dark:text-slate-300" title={r.subject ?? ""}>
           {r.subject ?? "—"}
         </span>
       ),
@@ -162,7 +262,7 @@ export function DuplicateEmailsPage() {
         ),
     },
     {
-      header: "Original Received",
+      header: "Original Received Date",
       render: (r) => <span className="whitespace-nowrap text-slate-500 dark:text-slate-400">{when(r.original_received_at)}</span>,
     },
     {
@@ -195,12 +295,19 @@ export function DuplicateEmailsPage() {
     },
   ];
 
+  const tabCls = (on: boolean) =>
+    `flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium ${
+      on
+        ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+        : "text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+    }`;
+
   return (
     <AppShell title="Duplicate Emails">
       <div className="mb-5">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">Duplicate Emails</h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Pre-alerts whose BL number already came in from the same sender in the last 30 days.
+          Emails with the same BL number from the same customer within the last 30 days.
           Nothing has been read out of these — no job, no extraction, no AI — until you decide.
         </p>
       </div>
@@ -212,25 +319,123 @@ export function DuplicateEmailsPage() {
         </p>
       )}
 
-      <Card className="p-4">
-        <div className="mb-4 w-64">
-          <Input
-            label="BL No"
-            placeholder="Search BL number"
-            value={blFilter}
-            onChange={(e) => setBlFilter(e.target.value)}
-          />
+      <Card className="mb-4 p-5">
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">Quick filter</label>
+            <select
+              className={FIELD}
+              value={quick}
+              onChange={(e) => {
+                const next = e.target.value as QuickKey;
+                const { from, to } = rangeFor(next);
+                setQuick(next);
+                setDateFrom(from);
+                setDateTo(to);
+              }}
+            >
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="this_month">This month</option>
+              <option value="prev_month">Previous month</option>
+              <option value="all">All time</option>
+              {quick === "custom" && <option value="custom">Custom range</option>}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">From</label>
+            {/* Typing a date of your own stops the dropdown claiming a named range it no
+                longer describes - the list filters off these two boxes either way. */}
+            <input type="date" className={FIELD} value={dateFrom}
+                   onChange={(e) => { setDateFrom(e.target.value); setQuick("custom"); }} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">To</label>
+            <input type="date" className={FIELD} value={dateTo}
+                   onChange={(e) => { setDateTo(e.target.value); setQuick("custom"); }} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">Customer</label>
+            <select className={FIELD} value={customer} onChange={(e) => setCustomer(e.target.value)}>
+              <option value={ALL}>All customers</option>
+              {customers.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="min-w-[14rem] flex-1">
+            <label className="mb-1 block text-xs font-medium text-slate-500">BL No</label>
+            <input
+              type="text"
+              className={`${FIELD} w-full`}
+              placeholder="Search BL number"
+              value={blFilter}
+              onChange={(e) => setBlFilter(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={reset}
+            className="pb-2 text-sm text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+          >
+            Reset
+          </button>
         </div>
+      </Card>
+
+      {modes.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button type="button" className={tabCls(modeTab === ALL)} onClick={() => setModeTab(ALL)}>
+            All
+            <span className="rounded-full bg-indigo-100 px-1.5 text-[11px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+              {filtered.length}
+            </span>
+          </button>
+          {modes.map((m) => (
+            <button key={m} type="button" className={tabCls(modeTab === m)} onClick={() => setModeTab(m)}>
+              {m}
+              <span className="rounded-full bg-slate-100 px-1.5 text-[11px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                {filtered.filter((r) => r.mode === m).length}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <Card className="p-4">
         <DataTable
           columns={columns}
-          rows={shown}
+          rows={pageRows}
           keyFor={(r) => r.id}
           emptyMessage={
             rows === null
               ? "Loading…"
-              : "No duplicate emails. Every pre-alert that arrived had a BL number nobody had sent before."
+              : (rows.length === 0
+                  ? "No duplicate emails. Every pre-alert that arrived had a BL number nobody had sent before."
+                  : "Nothing matches these filters.")
           }
         />
+        <div className="mt-4">
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={shown.length}
+            onPageChange={setPage}
+            noun="duplicate emails"
+            extra={
+              <label className="mr-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                Rows per page
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 outline-none focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+            }
+          />
+        </div>
       </Card>
     </AppShell>
   );
