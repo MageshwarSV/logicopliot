@@ -9332,6 +9332,8 @@ def run_extraction(
     # A document with no file that may be entered by hand gets its empty boxes - before the
     # corrections are restored below, so values typed earlier come back into them.
     _ensure_manual_entry_fields(db, job, group)
+    # A waybill generated from a pre-alert has no dates on it - see the helper.
+    _blank_dates_on_generated_waybills(db, job)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -9606,6 +9608,52 @@ def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str |
     if blanked:
         logger.info("job %s: %s left empty - the field(s) they require are empty", job.id, blanked)
     return blanked
+
+
+def _blank_dates_on_generated_waybills(db: Session, job: Job) -> list[str]:
+    """A waybill the app generated from a pre-alert has NO date on it - so a date field that reads
+    only that waybill is left empty, whatever the model answered. Returns the labels it emptied.
+
+    The model is asked for "the date printed next to the MAWB number", there is none, and it
+    does not always say so: on the first real mail it gave the ETA (while the ETA was still
+    printed), and once that was gone it built '22-HAN-2023' out of the file number 22H0523041
+    and the origin HAN (JOB-60D883). The page is ours and we know what is on it, so this is
+    decided here rather than left to the model's restraint.
+
+    Which fields: job-level AI fields shown as a date (date_picker) whose ONLY source document
+    is the generated waybill - MAWB Date and HBL Date on November 5. A date field that also
+    reads another document keeps its reading. Runs before corrections are restored, so a date
+    an operator typed comes back. Does not commit.
+    """
+    from app.core.prealert_shipments import is_generated_awb
+    from app.models.custom_field import CustomField
+
+    generated = {
+        jd.template_document_id
+        for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id,
+                                               JobDocument.file_path.isnot(None)).all()
+        if is_generated_awb(jd.file_path)
+    }
+    if not generated:
+        return []
+    emptied: list[str] = []
+    db.flush()
+    for cf in (db.query(CustomField)
+               .filter(CustomField.group_id == job.group_id, CustomField.kind == "ai",
+                       CustomField.per_row.is_(False), CustomField.date_picker.is_(True)).all()):
+        sources = [s for s in (cf.source_document_ids or []) if s]
+        if not sources or not set(sources) <= generated:
+            continue
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if (fv.extracted_value or "").strip():
+                fv.extracted_value = ""
+                emptied.append(cf.label_name)
+    if emptied:
+        logger.info("job %s: %s left empty - its only source is a waybill generated from the "
+                    "pre-alert, which carries no dates", job.id, emptied)
+    return emptied
 
 
 def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
@@ -10283,6 +10331,7 @@ def recompute_custom_field(
     existing.extracted_value = value
     existing.target_value_raw = raw_value if getattr(cf, "is_target_value", False) else None
     _enforce_requires_value_of(db, job)
+    _blank_dates_on_generated_waybills(db, job)
     db.commit()
     db.refresh(existing)
     return [JobFieldValueOut(

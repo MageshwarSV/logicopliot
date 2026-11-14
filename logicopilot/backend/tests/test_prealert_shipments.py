@@ -329,3 +329,74 @@ def test_a_shipment_already_made_on_an_earlier_poll_counts_as_done(db_session, m
     out = ep._settle_split_parent(db_session, parent)
     assert not out.get("deferred")
     assert db_session.query(EmailSeen).filter(EmailSeen.message_id == parent["mid"]).one().verdict == "split"
+
+
+# ------------------------------------------------------------------ no dates on a generated waybill
+
+def _dated_job(db_session, tmp_path, generated: bool):
+    from app.models.custom_field import CustomField
+    from app.models.job import JobFieldValue
+
+    group, awb, job, slots = _job_with_slots(db_session)
+    inv_id = next(k for k in slots if k != awb.id)
+    path = tmp_path / ("AWB_45T0523243.pdf" if generated else "carrier_awb.pdf")
+    path.write_bytes(ps.build_awb_pdf(SHIPMENTS[0]) if generated else _pdf("AIR WAYBILL 176-23418102 Executed on 11-Nov-2026"))
+    slots[awb.id].file_path = str(path)
+    fields = {}
+    for label, sources, value in (("MAWB Date", [awb.id], "22-HAN-2023"), ("HBL Date", [awb.id], "11-Nov-2026"),
+                                  ("Invoice Due Date", [inv_id], "09-Nov-2026"),
+                                  ("Any Date", [awb.id, inv_id], "09-Nov-2026")):
+        cf = CustomField(tenant_id=job.tenant_id, group_id=group.id, label_name=label, kind="ai",
+                         date_picker=True, source_document_ids=sources)
+        db_session.add(cf)
+        db_session.flush()
+        fields[label] = JobFieldValue(tenant_id=job.tenant_id, job_id=job.id, custom_field_id=cf.id,
+                                      label_name=label, extracted_value=value)
+    plain = CustomField(tenant_id=job.tenant_id, group_id=group.id, label_name="MAWB Number", kind="ai",
+                        source_document_ids=[awb.id])
+    db_session.add(plain)
+    db_session.flush()
+    fields["MAWB Number"] = JobFieldValue(tenant_id=job.tenant_id, job_id=job.id, custom_field_id=plain.id,
+                                          label_name="MAWB Number", extracted_value="176-23418102")
+    db_session.add_all(fields.values())
+    db_session.commit()
+    return job, fields
+
+
+def test_a_generated_waybill_is_recognised_and_a_carrier_s_is_not(tmp_path):
+    gen, real = tmp_path / "AWB_X.pdf", tmp_path / "real.pdf"
+    gen.write_bytes(ps.build_awb_pdf(SHIPMENTS[0]))
+    real.write_bytes(_pdf("AIR WAYBILL 176-23418102"))
+    assert ps.is_generated_awb(gen) is True
+    assert ps.is_generated_awb(real) is False
+    assert ps.is_generated_awb(tmp_path / "missing.pdf") is False
+
+
+def test_a_date_the_model_made_up_off_a_generated_waybill_is_emptied(db_session, tmp_path):
+    """JOB-60D883: MAWB Date came back '22-HAN-2023', built from the file number and the origin."""
+    from app.api.v1.jobs import _blank_dates_on_generated_waybills
+
+    job, f = _dated_job(db_session, tmp_path, generated=True)
+    assert sorted(_blank_dates_on_generated_waybills(db_session, job)) == ["HBL Date", "MAWB Date"]
+    assert f["MAWB Date"].extracted_value == "" and f["HBL Date"].extracted_value == ""
+    assert f["Invoice Due Date"].extracted_value == "09-Nov-2026"     # reads the invoice
+    assert f["Any Date"].extracted_value == "09-Nov-2026"             # reads the invoice too
+    assert f["MAWB Number"].extracted_value == "176-23418102"         # not a date field
+
+
+def test_a_real_waybill_keeps_its_dates(db_session, tmp_path):
+    from app.api.v1.jobs import _blank_dates_on_generated_waybills
+
+    job, f = _dated_job(db_session, tmp_path, generated=False)
+    assert _blank_dates_on_generated_waybills(db_session, job) == []
+    assert f["MAWB Date"].extracted_value == "22-HAN-2023" and f["HBL Date"].extracted_value == "11-Nov-2026"
+
+
+def test_a_date_the_operator_typed_is_not_touched(db_session, tmp_path):
+    from app.api.v1.jobs import _blank_dates_on_generated_waybills
+
+    job, f = _dated_job(db_session, tmp_path, generated=True)
+    f["MAWB Date"].corrected_value = "12-Nov-2026"
+    db_session.commit()
+    _blank_dates_on_generated_waybills(db_session, job)
+    assert f["MAWB Date"].corrected_value == "12-Nov-2026"

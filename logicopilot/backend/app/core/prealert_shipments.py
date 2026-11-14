@@ -54,6 +54,10 @@ SHIPMENT_HEADER = "X-Cargora-Prealert-Shipment"
 # "4720797358", "176-23418102". Short tokens ("//FW", "//2") are not shipment numbers.
 _SUBJECT_HAWB = re.compile(r"//\s*([A-Za-z0-9][A-Za-z0-9-]{5,})")
 
+# Printed under the title of every waybill build_awb_pdf makes - and how one is recognised
+# afterwards (is_generated_awb).
+GENERATED_NOTE = "Generated from the pre-alert email"
+
 FIELDS = ("hawb", "file_no", "mawb", "origin", "destination", "pieces", "gross_weight",
           "chargeable_weight", "shipper", "consignee", "eta")
 
@@ -274,7 +278,7 @@ def build_awb_pdf(shipment: dict) -> bytes:
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)          # A4
     page.insert_text((50, 70), "AIR WAYBILL (PRE-ALERT)", fontsize=18, fontname="hebo")
-    page.insert_text((50, 92), "Generated from the pre-alert email - not the carrier's own waybill.",
+    page.insert_text((50, 92), f"{GENERATED_NOTE} - not the carrier's own waybill.",
                      fontsize=9, fontname="helv", color=(0.35, 0.35, 0.35))
     page.draw_line((50, 102), (545, 102), color=(0.6, 0.6, 0.6), width=0.7)
     y = 130
@@ -290,6 +294,21 @@ def build_awb_pdf(shipment: dict) -> bytes:
     out = doc.tobytes()
     doc.close()
     return out
+
+
+def is_generated_awb(path) -> bool:
+    """Is this file a waybill THIS module generated (build_awb_pdf), rather than one a carrier
+    issued? Read off the page's own text - the note under the title - so it holds for as long as
+    the file exists, through every re-extraction, with nothing extra to store."""
+    try:
+        if not str(path).lower().endswith(".pdf"):
+            return False
+        import fitz
+
+        with fitz.open(str(path)) as doc:
+            return doc.page_count > 0 and GENERATED_NOTE in doc[0].get_text()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def awb_filename(shipment: dict) -> str:
