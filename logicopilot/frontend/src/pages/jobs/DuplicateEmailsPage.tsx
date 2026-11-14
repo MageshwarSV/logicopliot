@@ -22,10 +22,22 @@ type QuickKey = "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month"
 
 /** The same named ranges the Jobs list offers, filling From/To rather than blanking them -
  *  so the window being applied is visible and either end can then be nudged by hand. */
+/** "YYYY-MM-DD" in the viewer's own timezone. toISOString() is UTC, which in India puts local
+ *  midnight on the previous day - "Last 30 days" ended yesterday and hid today's duplicates. */
+function localDayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function rowDayKey(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : localDayKey(d);
+}
+
 function rangeFor(key: QuickKey): { from: string; to: string } {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const iso = localDayKey;
   const back = (days: number) => {
     const d = new Date(today);
     d.setDate(d.getDate() - days);
@@ -111,7 +123,7 @@ export function DuplicateEmailsPage() {
       if (needle && !r.bl_number.includes(needle)) return false;
       if (customer !== ALL && r.customer !== customer) return false;
       if (dateFrom || dateTo) {
-        const day = (r.received_at ?? "").slice(0, 10);
+        const day = rowDayKey(r.received_at);
         if (!day) return false;
         if (dateFrom && day < dateFrom) return false;
         if (dateTo && day > dateTo) return false;

@@ -233,9 +233,9 @@ export function AppShell({
         {categoryCounts && <CountBadge count={categoryCounts[key]} cls={badgeCls} />}
       </Link>
     ));
-    // Sits straight after Missing Documents: both are "something arrived that is not a job
-    // yet and needs a person", which is a different thing from the job screens around them.
-    links.splice(2, 0, (
+    // Last in the list, after ERP Submitted Jobs (by request): emails held back as duplicates,
+    // not jobs yet.
+    links.push((
       <Link
         key="duplicates"
         to="/duplicate-emails"
