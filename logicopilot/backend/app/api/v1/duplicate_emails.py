@@ -58,21 +58,84 @@ def _out(row: DuplicateEmail, customer: str | None,
     )
 
 
+def _visible_duplicates(db: Session, scope, user: User):
+    """The held pre-alerts THIS user is allowed to see.
+
+    The same gate `_jobs_visible_query` puts on the Jobs list, applied through the one thing
+    a held mail has in common with a job: `group_id`, the customer - taken from the original
+    job, since this mail was deliberately never classified.
+
+    Without it the screen showed every mode to everyone. An Air Import operator, whose Jobs
+    list correctly hides every Sea Import job, still saw Sea Import duplicates here, and the
+    sidebar badge counted them - because this table had only ever been filtered by tenant.
+    Reported live 2026-11-14 (an Air Import operator looking at a Sea Import pre-alert).
+
+    Reads `user.assigned_modes` and UserTemplateAssignment, the same two sources jobs reads,
+    rather than inventing a second rule here that could drift away from them.
+    """
+    from sqlalchemy import false
+
+    from app.models.job import Job
+    from app.models.user_template import UserTemplateAssignment
+
+    q = db.query(DuplicateEmail)
+    tenant_id = getattr(scope, "tenant_id", None)
+    if tenant_id:
+        q = q.filter(DuplicateEmail.tenant_id == tenant_id)
+
+    if user.role == OPERATOR:
+        if user.assigned_modes:
+            # Mode replaces ownership entirely for a mode-assigned operator, exactly as it
+            # does for jobs. A row whose group is gone (SET NULL) drops out with it: there is
+            # then no way to say which mode it belonged to, and guessing would be the bug.
+            q = q.join(TemplateGroup, DuplicateEmail.group_id == TemplateGroup.id).filter(
+                TemplateGroup.mode.in_(user.assigned_modes)
+            )
+        else:
+            assigned = [
+                a.group_id
+                for a in db.query(UserTemplateAssignment)
+                .filter(UserTemplateAssignment.user_id == user.id).all()
+            ]
+            if assigned:
+                q = q.filter(DuplicateEmail.group_id.in_(assigned))
+            # Neither modes nor template access: the whole tenant, which is what that same
+            # operator already gets for UNOWNED jobs. A held mail belongs to no operator, so
+            # there is no ownership rule to put in mode's place.
+    elif user.role == GK2:
+        # assigned_modes is GK2's real access gate, and none set means NOTHING rather than
+        # "unrestricted" - the opposite of the operator branch above, and the same opposite
+        # the Jobs list already draws.
+        if not user.assigned_modes:
+            return q.filter(false())
+        q = q.join(TemplateGroup, DuplicateEmail.group_id == TemplateGroup.id).filter(
+            TemplateGroup.mode.in_(user.assigned_modes)
+        )
+        if user.assigned_operator_ids:
+            # Second, independent gate: which GK1's work this account may see at all. A held
+            # mail has no operator of its own, so it is read off the job the BL already
+            # belongs to - and a duplicate whose original job is gone is withheld from a
+            # restricted account rather than shown to one that may not be allowed it.
+            q = q.join(Job, Job.id == DuplicateEmail.original_job_id).filter(
+                Job.assigned_operator_id.in_(user.assigned_operator_ids)
+            )
+    # ADMIN / TENANT_ADMIN / SUPER_ADMIN / MANAGER: the whole tenant, as on the Jobs list.
+    return q
+
+
 @router.get("", response_model=list[DuplicateEmailOut])
 def list_duplicate_emails(
     bl: str | None = Query(None, description="filter by BL number, any spelling"),
     db: Session = Depends(get_db),
     scope=Depends(get_tenant_scope),
-    _: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2,
+                                      MANAGER)),
 ) -> list[DuplicateEmailOut]:
     """Everything still waiting on a decision. Handled rows stay in the table (so the same
     message arriving again is recognised rather than queued twice) but never show here."""
     from app.core.email_bl import normalise_bl
 
-    q = db.query(DuplicateEmail).filter(DuplicateEmail.status == "pending")
-    tenant_id = getattr(scope, "tenant_id", None)
-    if tenant_id:
-        q = q.filter(DuplicateEmail.tenant_id == tenant_id)
+    q = _visible_duplicates(db, scope, user).filter(DuplicateEmail.status == "pending")
     if bl and bl.strip():
         q = q.filter(DuplicateEmail.bl_number.like(f"%{normalise_bl(bl)}%"))
     rows = q.order_by(DuplicateEmail.received_at.desc()).all()
@@ -89,6 +152,7 @@ def list_duplicate_emails(
 def delete_duplicate_email(
     duplicate_id: str,
     db: Session = Depends(get_db),
+    scope=Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN)),
 ) -> DuplicateEmailOut:
     """It really was a re-send. The row stays (so the same message arriving again is still
@@ -96,7 +160,10 @@ def delete_duplicate_email(
     attachment, and nothing refers to it once this decision is made."""
     from app.core.duplicate_bl import discard_raw
 
-    row = db.get(DuplicateEmail, duplicate_id)
+    # Through the gate, not db.get: hiding a row from the LIST never stopped anyone acting on
+    # it by a known id, which is the same gap _load_job closes for jobs.
+    row = _visible_duplicates(db, scope, user).filter(
+        DuplicateEmail.id == duplicate_id).first()
     if row is None or row.status != "pending":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     discard_raw(row)
@@ -114,6 +181,7 @@ def delete_duplicate_email(
 def process_duplicate_email(
     duplicate_id: str,
     db: Session = Depends(get_db),
+    scope=Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN)),
 ) -> DuplicateEmailOut:
     """It really is a separate shipment. Run the kept message through the ORDINARY pipeline -
@@ -131,7 +199,8 @@ def process_duplicate_email(
     from app.core.config import get_settings
     from app.core.system_settings import get_extraction_engine
 
-    row = db.get(DuplicateEmail, duplicate_id)
+    row = _visible_duplicates(db, scope, user).filter(
+        DuplicateEmail.id == duplicate_id).first()
     if row is None or row.status != "pending":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     if not row.raw_path or not Path(row.raw_path).exists():

@@ -1944,38 +1944,106 @@ def _read_text(loc, kind: str | None = None) -> str:
         return ""
 
 
+# Is this suggestion the one the widget currently has HIGHLIGHTED (the one Enter would take)?
+# Every library marks it its own way - react-select "...__option--is-focused", select2
+# "...--highlighted", jQuery UI "ui-state-active" (on the item or the wrapper inside it), MUI
+# "Mui-focused", Ant "...-option-active", typeahead.js "tt-cursor", Angular Material
+# "mat-active", Bootstrap "active" - or with a data- attribute. Deliberately NOT aria-selected:
+# several libraries use that for the option that is the field's current VALUE, not the highlight.
+_HIGHLIGHTED_JS = r"""
+(el) => {
+  const re = /(--is-focused|--highlighted|--active|ui-state-active|ui-state-focus|Mui-focused|Mui-focusVisible|-option-active|tt-cursor|mat-active|mat-mdc-option-active|p-focus|is-highlighted|(^|\s)(active|highlighted|focused|hover)(\s|$))/;
+  const marked = (n) => {
+    if (!n || !n.getAttribute) return false;
+    if (re.test(String(n.getAttribute('class') || ''))) return true;
+    for (const a of ['data-focus', 'data-focused', 'data-highlighted', 'data-active', 'data-active-item']) {
+      const v = n.getAttribute(a);
+      if (v !== null && v !== 'false') return true;
+    }
+    return false;
+  };
+  if (marked(el)) return true;
+  for (const c of el.querySelectorAll('*')) if (marked(c)) return true;
+  return false;
+}
+"""
+
+
+def _highlighted_index(cands) -> int | None:
+    """Which of these suggestions the widget has highlighted right now, or None when none is
+    (or when this widget does not show its highlight in any way we can read)."""
+    for i, (_text, el) in enumerate(cands):
+        try:
+            if el.evaluate(_HIGHLIGHTED_JS):
+                return i
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _same_option(a: str | None, b: str | None) -> bool:
+    def norm(x):
+        return re.sub(r"\s+", " ", str(x or "").strip().lower())
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
 def _commit_typeahead(page, scope, loc, value: str, strict: bool = False) -> bool:
-    """Select the best-matching suggestion. KEYBOARD first (ArrowDown to the fuzzy-best item
-    then Enter — fires the widget's real select handler; 'only-selected' fields ignore a plain
+    """Select the best-matching suggestion. KEYBOARD first (arrow to the fuzzy-best item then
+    Enter — fires the widget's real select handler; 'only-selected' fields ignore a plain
     click), then click that item. With strict=True, if NO real widget list is visible it does
-    nothing (never blindly presses Enter on a plain field — that could submit the form)."""
+    nothing (never blindly presses Enter on a plain field — that could submit the form).
+
+    The option taken must be the one that was matched - not its neighbour. This used to press
+    ArrowDown (position + 1) times, right for a list that highlights nothing until a key is
+    pressed (jQuery UI) and one too many for a list that already highlights its first option
+    when it opens (react-select, select2). On the ERP's branch box the list read "Chennai",
+    "Chennai FTWZ", the job said Chennai, and the run logged in as Chennai FTWZ. So:
+      1. arrows are counted from where the highlight actually IS;
+      2. Enter is pressed only once the highlight is seen on the matched option - when it is
+         seen on another one, the matched option is clicked instead;
+      3. whatever the widget then shows is checked: if it shows a DIFFERENT option from the
+         list, the list is opened again and the matched option clicked.
+    """
     cands = _typeahead_candidates(page, scope, strict=strict)
     if cands:
         texts = [t for t, _ in cands]
         match = _fuzzy_pick(value, texts)
         idx = texts.index(match) if match in texts else 0
+        wanted = texts[idx]
+        others = [t for t in texts if not _same_option(t, wanted)]
         # What the control shows now, so we can tell whether the keyboard actually committed
         # anything. Pressing keys at a widget that ignores them raises nothing at all, so
         # "no exception" is not evidence the option was chosen — and reporting success with
         # the field still empty is worse than failing.
         before = _control_state(loc)
+        committed = False
         try:
-            for _ in range(idx + 1):
-                loc.press("ArrowDown")
+            start = _highlighted_index(cands)
+            moves = idx + 1 if start is None else idx - start
+            for _ in range(abs(moves)):
+                loc.press("ArrowDown" if moves > 0 else "ArrowUp")
                 page.wait_for_timeout(80)
-            loc.press("Enter")
-            page.wait_for_timeout(250)
-            if _control_state(loc) != before:
-                return True
+            landed = _highlighted_index(cands)
+            if landed is None or landed == idx:
+                loc.press("Enter")
+                page.wait_for_timeout(250)
+                committed = _control_state(loc) != before
         except Exception:  # noqa: BLE001
             pass
-        try:
-            # The keyboard did nothing — a click-only suggestion list (a plain <div> menu, or
-            # a react-select rendered outside the input). Click the matched item instead.
-            cands[idx][1].click(timeout=3000)
+        if not committed:
+            try:
+                # The keyboard did nothing, or was on the wrong option — click the matched one.
+                cands[idx][1].click(timeout=3000)
+                page.wait_for_timeout(250)
+                committed = True
+            except Exception:  # noqa: BLE001
+                pass
+        if committed:
+            # 3 - the neighbour was taken after all (a highlight we could not read).
+            shown = _control_state(loc)
+            if any(_same_option(shown, t) for t in others):
+                _repick_option(page, scope, loc, value, wanted, strict)
             return True
-        except Exception:  # noqa: BLE001
-            pass
     if strict:
         return False   # plain field, no widget list → don't risk an Enter/submit
     try:
@@ -1984,6 +2052,38 @@ def _commit_typeahead(page, scope, loc, value: str, strict: bool = False) -> boo
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _repick_option(page, scope, loc, value: str, wanted: str, strict: bool) -> bool:
+    """The widget ended up showing a different option from the one matched: open its list
+    again and CLICK the matched one. Best effort - never raises."""
+    try:
+        loc.click(timeout=4000)
+        typer = loc
+        try:
+            if not loc.first.evaluate(
+                "e => ['INPUT','TEXTAREA'].includes(e.tagName) || e.isContentEditable"
+            ):
+                inner = loc.locator(
+                    "input:not([type=hidden]):not([type=checkbox]):not([type=radio])")
+                if inner.count() > 0:
+                    typer = inner.first
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            typer.fill("")
+        except Exception:  # noqa: BLE001
+            pass
+        typer.type(value, delay=25, timeout=8000)
+        page.wait_for_timeout(600)
+        for text, el in _typeahead_candidates(page, scope, strict=strict):
+            if _same_option(text, wanted):
+                el.click(timeout=3000)
+                page.wait_for_timeout(250)
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 # Wait until a document stops changing. Resolves once `ms` passes with no mutation, or at the
