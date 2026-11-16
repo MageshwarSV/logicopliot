@@ -232,7 +232,7 @@ function fieldLabelOverride(
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
 const FIELD_HINTS: Record<string, string> = {
-  TOI: "EXW, EX-WORK and FCA are all taken as FOB for this declaration.",
+  TOI: "E and F terms (EXW, FCA, FAS, FOB) are declared as FOB; CFR and CPT as C&F; CIF, CIP and all D terms (DAP, DPU, DDP) as CIF.",
 };
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
@@ -592,14 +592,21 @@ function customsHouseCodeFormatError(raw: string): string | null {
     ? null
     : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
 }
-// Terms of Invoice: exactly 3 letters ("FOB", "CIF") - by request. Lowercase is accepted and
-// upper-cased on save (transformBeforeSave below), same as Shipment Country Code/Customs House
-// Code; only the LENGTH and letters-only shape are enforced here, not which 3 letters.
+// Terms of Invoice: a 3-letter code ("FOB", "CIF") or one of the two written with an ampersand
+// ("C&F", "C&I"). Lowercase is accepted and upper-cased on save (transformBeforeSave below),
+// same as Shipment Country Code/Customs House Code; only the SHAPE is enforced here, not which
+// code - that is the field's own list of choices (FieldMark.fixed_options) where it has one.
+//
+// It was "exactly 3 letters", which refused C&F and C&I outright: the customs filing's Nature
+// of Contract is one of FOB / CIF / C&F / C&I, so two of the four valid answers could not be
+// saved, and an operator correcting a CPT invoice to C&F got an alert instead.
 const TOI_FORMAT_FIELD_LABELS = new Set(["TOI"]);
 function toiFormatError(raw: string): string | null {
   const v = raw.trim();
   if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
-  return /^[A-Za-z]{3}$/.test(v) ? null : "Terms of Invoice must be exactly 3 letters (e.g. FOB, CIF).";
+  return /^(?:[A-Za-z]{3}|[A-Za-z]&[A-Za-z])$/.test(v)
+    ? null
+    : "Terms of Invoice must be one of FOB, CIF, C&F or C&I.";
 }
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
