@@ -190,6 +190,10 @@ class JobBillingRowOut(BaseModel):
     final_unclassified_pages: int
     deleted_pages: int  # original_pages minus whatever is still classified/unclassified live
     total_billed: int  # original_pages + rerun_pages
+    # A deleted job only, and only for a Super Admin: who deleted it and when. Null for
+    # everyone else, for a live job, and for a job deleted before deletions were recorded.
+    deleted_by: str | None = None
+    deleted_at: str | None = None  # ISO 8601
 
 
 class JobBillingPageOut(BaseModel):

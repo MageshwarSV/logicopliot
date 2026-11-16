@@ -552,6 +552,7 @@ def list_billing_jobs(
 
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
+    see_deleter = user.role == SUPER_ADMIN
     rows, total = list_job_billing(
         db, tenant_id, period_start, search=search, shipment_type=shipment_type,
         date_from=from_date, date_to=to_date, highlight=highlight, page=page, page_size=page_size,
@@ -566,6 +567,10 @@ def list_billing_jobs(
                 final_unclassified_pages=r.final_unclassified_pages,
                 deleted_pages=r.deleted_pages,
                 total_billed=r.original_pages + r.rerun_pages,
+                # Names a member of the customer's own staff - a Super Admin only, never the
+                # customer's Tenant Admin, who reads this same page.
+                deleted_by=r.deleted_by if see_deleter else None,
+                deleted_at=(r.deleted_at.isoformat() if see_deleter and r.deleted_at else None),
             )
             for r in rows
         ],

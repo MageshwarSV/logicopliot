@@ -195,6 +195,11 @@ class JobBillingRow(NamedTuple):
     # classified or unclassified anywhere. Never negative: a rerun's own extra pages land in
     # rerun_pages, not here, so they can't make this go below zero.
     deleted_pages: int
+    # For a deleted job only: who deleted it and when (JobDeletion), as recorded at the time.
+    # None for a live job, and for a job deleted before deletions were recorded. The API hands
+    # these to a Super Admin only.
+    deleted_by: str | None = None
+    deleted_at: datetime | None = None
 
 
 def _job_billing_query(
@@ -303,6 +308,26 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
         ):
             unclassified_by_job[jid] = cnt
 
+    # Who deleted each job that no longer exists - one query for the whole page of rows.
+    from app.models.job_deletion import JobDeletion
+
+    gone_ids = [r.job_id for r in agg_rows if r.job_id not in jobs_by_id]
+    deletions: dict[str, JobDeletion] = {}
+    for i in range(0, len(gone_ids), 500):
+        for d in (db.query(JobDeletion).filter(JobDeletion.job_id.in_(gone_ids[i:i + 500]))
+                  .order_by(JobDeletion.created_at).all()):
+            deletions[d.job_id] = d
+
+    def _who(d: JobDeletion | None) -> str | None:
+        if d is None:
+            return None
+        if d.deleted_by_id is None and not d.deleted_by_name:
+            return d.how or "The system"
+        person = d.deleted_by_name or d.deleted_by_email or "A user"
+        if d.deleted_by_email and d.deleted_by_email != person:
+            person = f"{person} ({d.deleted_by_email})"
+        return person
+
     rows = []
     for r in agg_rows:
         live = jobs_by_id.get(r.job_id)
@@ -317,6 +342,8 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
             final_classified_pages=classified,
             final_unclassified_pages=unclassified,
             deleted_pages=max(0, orig - classified - unclassified),
+            deleted_by=None if live else _who(deletions.get(r.job_id)),
+            deleted_at=None if live or r.job_id not in deletions else deletions[r.job_id].created_at,
         ))
     return rows
 

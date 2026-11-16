@@ -1693,7 +1693,8 @@ def create_job(
     return _job_out(db, job)
 
 
-def _delete_job_cascade(db: Session, job: Job) -> list[Path]:
+def _delete_job_cascade(db: Session, job: Job, deleted_by: User | None = None,
+                        how: str = "") -> list[Path]:
     """Delete a job and everything that hangs off it - field values, documents. Also,
     unlike a single document's own removal (see _remove_document_file, which does this per
     file), the actual files on disk for every one of them: without this, every job delete -
@@ -1717,6 +1718,20 @@ def _delete_job_cascade(db: Session, job: Job) -> list[Path]:
              for sd in db.query(SupportingDocument).filter(SupportingDocument.job_id == job.id).all()]
     dirs.append(job_email_dir(job.id))
 
+    # WHO deleted it, written in the same transaction as the delete itself: once the job row
+    # is gone its billing rows are all that is left, and the Billing page's "Deleted Jobs" had
+    # no way to say who removed any of them. See JobDeletion. `deleted_by` None = the system.
+    from app.models.job_deletion import JobDeletion
+
+    db.add(JobDeletion(
+        tenant_id=job.tenant_id, job_id=job.id, job_reference=job.reference or job.id,
+        deleted_by_id=deleted_by.id if deleted_by is not None else None,
+        deleted_by_name=(deleted_by.full_name if deleted_by is not None else None),
+        deleted_by_email=(deleted_by.email if deleted_by is not None else None),
+        deleted_by_role=(deleted_by.role if deleted_by is not None else None),
+        how=(how or ("Deleted from the Jobs list" if deleted_by is not None else "Removed by the system"))[:255],
+    ))
+
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
     db.query(JobDocument).filter(JobDocument.job_id == job.id).delete()
     db.delete(job)
@@ -1733,7 +1748,7 @@ def delete_job(
     """Delete a job and its documents/values. Operators may delete their own or the
     mail-routed jobs assigned to them; admins any job in scope."""
     job = _load_job(db, job_id, scope, user)
-    dirs = _delete_job_cascade(db, job)
+    dirs = _delete_job_cascade(db, job, deleted_by=user)
     db.commit()
     for d in dirs:
         shutil.rmtree(d, ignore_errors=True)
