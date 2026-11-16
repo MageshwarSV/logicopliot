@@ -77,6 +77,10 @@ class MarkOut(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    # A closed list of choices, drawn as a dropdown on the job screen - see
+    # FieldMark.fixed_options / dropdown_style (the same pair a custom field has).
+    fixed_options: list[str] | None = None
+    dropdown_style: str | None = None
 
 
 class CrossDocLinkOut(BaseModel):
@@ -349,6 +353,9 @@ class MarkEdit(BaseModel):
     date_picker: bool | None = None
     date_format: str | None = None
     field_order: int | None = None
+    # See FieldMark.fixed_options / dropdown_style. An empty list clears the choices.
+    fixed_options: list[str] | None = None
+    dropdown_style: str | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the
     # text it found around the box, and the value inside it. On a two-column layout the words
     # beside a value are not its caption, so both can come out wrong: a Gross Weight box that

@@ -249,6 +249,31 @@ function parseFixedOption(raw: string): FieldSelectOption {
   const i = raw.indexOf(":");
   return i === -1 ? { value: raw, label: raw } : { value: raw.slice(0, i).trim(), label: raw.slice(i + 1).trim() };
 }
+// The dropdown a field's OWN list of choices asks for - a custom field's (CustomField.
+// fixed_options) or a document field's (FieldMark.fixed_options), the server sends both the
+// same way. One place, because a job screen draws these in three spots (a document tab's
+// header fields, its product lines, Additional Details) and the product lines had none: a
+// quantity unit on line 3 stayed a free text box while the same unit in the header was a list.
+//
+// A value that is NOT one of the choices is kept as an extra option, marked. A native <select>
+// shows its first option when the value matches none - so a line still holding "EA" from before
+// the list existed would read "not found" while "EA" was what the Excel went on receiving.
+function fixedChoiceProps(fv: {
+  value?: string | null;
+  fixed_options?: string[] | null;
+  dropdown_style?: string | null;
+}): { options?: FieldSelectOption[]; comboOptions?: string[]; comboPickOnly?: boolean } {
+  if (!fv.fixed_options?.length) return {};
+  if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
+    return { comboOptions: fv.fixed_options, comboPickOnly: fv.dropdown_style === "search" };
+  }
+  const options = fv.fixed_options.map(parseFixedOption);
+  const value = (fv.value ?? "").trim();
+  if (value && !options.some((o) => o.value === value)) {
+    options.push({ value, label: `${value} (not in the list)` });
+  }
+  return { options };
+}
 const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
     { value: "S", label: "S" },
@@ -7616,11 +7641,12 @@ function ExtractionReview({
                   let fixedChoiceComboOptions: string[] | undefined;
                   let fixedChoiceComboPickOnly = false;
                   if (fv.fixed_options && fv.fixed_options.length) {
-                    if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
-                      fixedChoiceComboOptions = fv.fixed_options;
-                      fixedChoiceComboPickOnly = fv.dropdown_style === "search";
+                    const choice = fixedChoiceProps(fv);
+                    if (choice.comboOptions) {
+                      fixedChoiceComboOptions = choice.comboOptions;
+                      fixedChoiceComboPickOnly = !!choice.comboPickOnly;
                     } else {
-                      options = fv.fixed_options.map(parseFixedOption);
+                      options = choice.options;
                     }
                   }
                   if (dynamicRows !== undefined) {
@@ -8042,6 +8068,9 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                                // A product-line field with its own list of choices (a
+                                // quantity unit) is picked, not typed - see fixedChoiceProps.
+                                {...fixedChoiceProps(fv)}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)

@@ -95,6 +95,15 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Shown when validation_pattern fails. None = a generic auto-worded message naming the
     # field.
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A closed list of choices for this field - the operator PICKS one on the job screen instead
+    # of typing. Mirrors CustomField.fixed_options / dropdown_style exactly (same "CODE:Label"
+    # form, same None/"plain" | "search" | "search_free" styles), which until now only a custom
+    # field could have: a quantity unit read off an invoice is one of a known set of codes, and
+    # was a free text box all the same. None (every existing mark) = a text box, as before.
+    # This only shapes the box - what the reader answers is still governed by the field's own
+    # prompt, so a list here should be matched by a prompt that names the same choices.
+    fixed_options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    dropdown_style: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # This mark is extracted normally, then its OWN raw value is looked up in a reference
     # table keyed on itself (see CustomFieldReferenceValue.mark_id) - a match replaces the

@@ -3690,6 +3690,13 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
     cf_dropdown_style = {c.id: c.dropdown_style for c in cf_rows}
+    # ...and a document field's own (FieldMark.fixed_options) - same two values, same meaning.
+    mark_fixed_options = {
+        m.id: list(m.fixed_options) for tdoc in group.documents for m in tdoc.marks if m.fixed_options
+    }
+    mark_dropdown_style = {
+        m.id: m.dropdown_style for tdoc in group.documents for m in tdoc.marks if m.fixed_options
+    }
     cf_validation_pattern = {c.id: c.validation_pattern for c in cf_rows}
     cf_validation_uppercase = {c.id: c.validation_uppercase for c in cf_rows}
     cf_validation_message = {c.id: c.validation_message for c in cf_rows}
@@ -3906,8 +3913,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     mark_validation_message.get(fv.mark_id) or cf_validation_message.get(fv.custom_field_id)
                 ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
-                fixed_options=cf_fixed_options.get(fv.custom_field_id),
-                dropdown_style=cf_dropdown_style.get(fv.custom_field_id),
+                fixed_options=(cf_fixed_options.get(fv.custom_field_id)
+                               or mark_fixed_options.get(fv.mark_id)),
+                dropdown_style=(cf_dropdown_style.get(fv.custom_field_id)
+                                or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
                 full_width=(
