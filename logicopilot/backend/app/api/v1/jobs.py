@@ -6546,6 +6546,278 @@ def _wipe_derived_field_values(db: Session, job: Job, jd: JobDocument) -> None:
         job.needs_reextraction = True
 
 
+def _page_texts(jd: JobDocument) -> dict[int, str]:
+    """{page number: its words, normalised and space-padded} for one document, from the OCR
+    ALREADY cached on disk (ocr/page_N.json). Never OCRs anything - a page with no cache is
+    simply absent, and the caller treats that as "cannot tell what was on it"."""
+    from app.core.docai import _normalize_for_match
+
+    out: dict[int, str] = {}
+    ocr_dir = _job_doc_dir(jd.id) / "ocr"
+    for page in range(1, (jd.page_count or 0) + 1):
+        cache = ocr_dir / f"page_{page}.json"
+        if not cache.exists():
+            continue
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        tokens = cached.get("tokens") or []
+        words = (" ".join(str(t.get("text", "")) for t in tokens) if tokens
+                 else str(cached.get("text") or ""))
+        norm = _normalize_for_match(words)
+        if norm:
+            out[page] = f" {norm} "
+    return out
+
+
+def _pages_holding(page_texts: dict[int, str], value: str | None) -> set[int]:
+    """Which pages print this value. Whole words only, so "5" is not found inside "2025". A long
+    value (a description, an address) wraps across lines and rarely survives OCR word for word,
+    so it is looked for by its opening words instead."""
+    from app.core.docai import _normalize_for_match
+
+    norm = _normalize_for_match(str(value or ""))
+    if not norm:
+        return set()
+    hit = {p for p, text in page_texts.items() if f" {norm} " in text}
+    words = norm.split(" ")
+    if not hit and len(words) > 6:
+        opening = " " + " ".join(words[:6]) + " "
+        hit = {p for p, text in page_texts.items() if opening in text}
+    return hit
+
+
+def _line_owner(db: Session, job: Job, jd: JobDocument) -> bool:
+    """Does this document carry the job's PRODUCT lines - the ones every per-row custom field
+    (CTH, Combined Description, duty notifications) hangs off? Only an Invoice-type document
+    does. A packing list or a bill of lading has rows of its own, numbered 1, 2, 3 the same
+    way, and removing one of THOSE must never take product 2's CTH with it (JOB-8BA341)."""
+    tdoc = db.get(TemplateDocument, jd.template_document_id)
+    return tdoc is not None and (tdoc.doc_type or "").strip().lower() == "invoice"
+
+
+def _fields_reading_only(db: Session, job: Job, jd: JobDocument) -> list:
+    """The job-level AI fields that have NO file to read from other than this one.
+
+    A field reads the documents it names (source_document_ids), or every document when it
+    names none. One that can still read another file - "invoice no" set to the invoice, the
+    packing list and the bill of lading, with the packing list being the one removed - is not
+    in this list, and so is never touched by a removal."""
+    from app.models.custom_field import CustomField
+
+    other_slots = {
+        tid for (tid,) in db.query(JobDocument.template_document_id)
+        .filter(JobDocument.job_id == job.id, JobDocument.id != jd.id,
+                JobDocument.file_path.isnot(None)).all()
+    }
+    out = []
+    for cf in (db.query(CustomField)
+               .filter(CustomField.group_id == job.group_id, CustomField.kind == "ai",
+                       CustomField.per_row.is_(False)).all()):
+        named = {x for x in (cf.source_document_ids or []) if x}
+        if named and jd.template_document_id not in named:
+            continue                       # does not read this document at all
+        if not (other_slots & named if named else other_slots):
+            out.append(cf)
+    return out
+
+
+def _drop_page_values(db: Session, job: Job, jd: JobDocument, page_number: int) -> bool:
+    """Remove what was read from ONE page of a document - and nothing else. Call BEFORE the page
+    is cut out of the file (it needs the pages as they are still numbered).
+
+    Cutting a page used to delete every value read from the WHOLE document plus every
+    calculated field on the WHOLE job (see _wipe_derived_field_values), and then read nothing
+    again - an extracted job stays extracted. So removing one stray page from a five-page
+    invoice left the job without its invoice, without its CTHs and lookups, and the Excel built
+    from it went out with those cells empty. And a field set to read the invoice, the packing
+    list AND the bill of lading lost its value because a packing-list page was removed.
+
+    Now, going by where each value is actually printed (the OCR already cached per page):
+      - a single value printed ONLY on the removed page is emptied; one that is also printed on
+        a page that stays (an invoice number repeated on every page) is kept;
+      - a table row whose values sit on the removed page is deleted, and the rows after it are
+        renumbered - with the product's own per-row fields when this document is the one that
+        carries the product lines (_line_owner);
+      - a calculated field is touched only when this document is the ONE document it reads and
+        its value was on the removed page. A field that reads other documents too is kept.
+    Anything that cannot be placed on a page is KEPT: losing a value that is still on the
+    document is the worse mistake. Something an operator typed (corrected_value) always stays.
+
+    Returns False when the removed page was never OCR'd (nothing cached - the read-from-images
+    path), which means there is no telling what was on it: nothing is removed at all, and the
+    caller marks the document as needing a re-read instead. Does not commit.
+    """
+    from app.models.custom_field import CustomField
+
+    texts = _page_texts(jd)
+    if page_number not in texts:
+        return False
+    group = db.get(TemplateGroup, job.group_id)
+    standalone = _standalone_mark_labels(group) if group else set()
+    own = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                        JobFieldValue.job_document_id == jd.id).all()
+
+    def _forget_position(fv: JobFieldValue) -> None:
+        fv.found_page = fv.found_x = fv.found_y = fv.found_width = fv.found_height = None
+
+    emptied: list[str] = []
+    # -- single values
+    for fv in own:
+        if fv.row_index is not None:
+            continue
+        pages = _pages_holding(texts, fv.target_value_raw or fv.extracted_value)
+        if not pages and fv.found_page:
+            pages = {fv.found_page}
+        if pages == {page_number}:
+            if (fv.extracted_value or "").strip():
+                emptied.append(fv.label_name)
+            fv.extracted_value = ""
+            fv.target_value_raw = None
+            _forget_position(fv)
+        elif fv.found_page == page_number:
+            _forget_position(fv)          # still on the document, just not highlighted here
+        elif fv.found_page and fv.found_page > page_number:
+            fv.found_page -= 1
+
+    # -- table rows: a row belongs to the page most of its values are printed on. A tie (or
+    #    nothing found) keeps the row.
+    by_row: dict[tuple[bool, int], list[JobFieldValue]] = {}
+    for fv in own:
+        if fv.row_index is not None:
+            by_row.setdefault((fv.label_name in standalone, fv.row_index), []).append(fv)
+    doomed: dict[bool, set[int]] = {True: set(), False: set()}
+    for (is_standalone, row_index), fvs in by_row.items():
+        score: dict[int, int] = {}
+        for fv in fvs:
+            for pg in _pages_holding(texts, fv.extracted_value):
+                score[pg] = score.get(pg, 0) + 1
+        here = score.get(page_number, 0)
+        elsewhere = max((n for pg, n in score.items() if pg != page_number), default=0)
+        if here and here > elsewhere:
+            doomed[is_standalone].add(row_index)
+
+    removed_rows = 0
+    for is_standalone, indexes in doomed.items():
+        if not indexes:
+            continue
+        rows = [fv for (st, _), fvs in by_row.items() if st == is_standalone for fv in fvs]
+        if not is_standalone and _line_owner(db, job, jd):
+            # the product's own per-row fields: keyed on (set, row), no document of their own
+            standalone_keyed = {
+                cid for cid, key in db.query(CustomField.id, CustomField.lookup_key_label)
+                .filter(CustomField.group_id == job.group_id).all() if key in standalone
+            }
+            rows += [
+                fv for fv in db.query(JobFieldValue).filter(
+                    JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                    JobFieldValue.custom_field_id.isnot(None),
+                    func.coalesce(JobFieldValue.set_index, 1) == (jd.set_index or 1)).all()
+                if fv.custom_field_id not in standalone_keyed
+            ]
+        keep = sorted({fv.row_index for fv in rows} - indexes)
+        renumber = {old: new for new, old in enumerate(keep, start=1)}
+        for fv in rows:
+            if fv.row_index in indexes:
+                db.delete(fv)
+            elif renumber[fv.row_index] != fv.row_index:
+                fv.row_index = renumber[fv.row_index]
+        removed_rows += len(indexes)
+
+    # -- a calculated field with no OTHER file to read from: this document is all it has
+    for cf in _fields_reading_only(db, job, jd):
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id,
+                           JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if _pages_holding(texts, fv.extracted_value) == {page_number}:
+                emptied.append(cf.label_name)
+                fv.extracted_value = ""
+    logger.info("job %s: page %s cut from %s - emptied %s, removed %s row(s); everything else kept",
+                job.reference, page_number, jd.id, emptied, removed_rows)
+    return True
+
+
+def _renumber_page_caches(jd: JobDocument, page_number: int, placed: bool) -> None:
+    """After a page is cut: keep the per-page OCR cache and the stored OCR record in step with
+    the pages that are left. The cache is keyed by page NUMBER, so left alone it would hand the
+    removed page's text to page N and lose the last page on the next read.
+
+    `placed` False (the page's values could not be placed - see _drop_page_values) clears the
+    stored record instead, which is what marks the document "needs re-extraction" on screen."""
+    ocr_dir = _job_doc_dir(jd.id) / "ocr"
+    try:
+        (ocr_dir / f"page_{page_number}.json").unlink(missing_ok=True)
+        later = sorted(
+            (int(f.stem.split("_")[1]), f) for f in ocr_dir.glob("page_*.json")
+            if f.stem.split("_")[1].isdigit() and int(f.stem.split("_")[1]) > page_number
+        )
+        for number, f in later:
+            f.replace(ocr_dir / f"page_{number - 1}.json")
+    except Exception:  # noqa: BLE001 - a stale cache must not be left behind half-renumbered
+        logger.exception("could not renumber the OCR cache of %s - clearing it", jd.id)
+        shutil.rmtree(ocr_dir, ignore_errors=True)
+    record = jd.extracted_json if placed else None
+    pages = (record or {}).get("pages")
+    if not isinstance(pages, list) or not (1 <= page_number <= len(pages)):
+        jd.extracted_json = None
+        return
+    pages = pages[:page_number - 1] + pages[page_number:]
+    excluded = [n - 1 if n > page_number else n
+                for n in (record.get("excluded_pages") or []) if n != page_number]
+    jd.extracted_json = {
+        **record, "pages": pages, "page_count": len(pages), "excluded_pages": excluded,
+        "text": "\n".join(t for i, t in enumerate(pages, start=1) if i not in excluded),
+    }
+
+
+def _drop_document_values(db: Session, job: Job, jd: JobDocument) -> None:
+    """A whole file is leaving its slot: remove what was read from IT, and nothing else.
+
+    This used to go through _wipe_derived_field_values, which also deleted every calculated
+    field on the job - so removing a packing list emptied a field that reads the invoice, the
+    packing list and the bill of lading, though the invoice and the bill of lading were still
+    there saying the same thing.
+
+    Removed with the file:
+      - every value read from it (they carry its job_document_id);
+      - the per-row fields of its product lines, when it is the document that carries them
+        (_line_owner) - the lines themselves are gone. Hand-typed (hardcoded) ones are kept,
+        as they always were;
+      - a calculated field that reads ONLY this document, when no other file is left in its
+        slot: emptied, with anything an operator typed over it kept.
+    Every other calculated field is left exactly as it is. Does not commit.
+    """
+    from app.models.custom_field import CustomField
+
+    had_lines = (db.query(JobFieldValue.id)
+                 .filter(JobFieldValue.job_document_id == jd.id,
+                         JobFieldValue.row_index.isnot(None)).first() is not None)
+    db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
+    if job.status == "draft":
+        return
+    fields = db.query(CustomField).filter(CustomField.group_id == job.group_id).all()
+    if had_lines and _line_owner(db, job, jd):
+        per_row = [cf.id for cf in fields if cf.kind != "hardcoded"]
+        if per_row:
+            db.query(JobFieldValue).filter(
+                JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.custom_field_id.in_(per_row),
+                func.coalesce(JobFieldValue.set_index, 1) == (jd.set_index or 1),
+            ).delete(synchronize_session=False)
+    only_this = [cf.id for cf in _fields_reading_only(db, job, jd)]
+    if only_this:
+        db.query(JobFieldValue).filter(
+            JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None),
+            JobFieldValue.custom_field_id.in_(only_this),
+        ).update({"extracted_value": ""}, synchronize_session=False)
+    # Kept as it always was for a whole file leaving: the banner that offers "Extract now",
+    # which is also what picks up the replacement when this is the first half of a reupload.
+    # Nothing depends on it being pressed any more - the values above are already in step.
+    job.needs_reextraction = True
+
+
 def _park_pages_as_unclassified(
     db: Session, job: Job, jd: JobDocument, page_numbers: list[int],
 ) -> None:
@@ -6611,7 +6883,7 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
         .order_by(JobDocument.file_index)
         .all()
     )
-    _wipe_derived_field_values(db, job, jd)
+    _drop_document_values(db, job, jd)
     doc_dir = _job_doc_dir(jd.id)
 
     if len(siblings) == 1:
@@ -6731,6 +7003,10 @@ def delete_job_document_page(
 
     import fitz  # PyMuPDF
 
+    # What was read from THIS page goes; everything else on the document and on the job stays.
+    # Done first - it goes by the pages as they are still numbered. See _drop_page_values.
+    placed = job.status != "draft" and _drop_page_values(db, job, jd, page_number)
+
     doc = fitz.open(src_path)
     try:
         doc.delete_page(page_number - 1)
@@ -6745,14 +7021,17 @@ def delete_job_document_page(
     pages_dir = _job_doc_dir(jd.id) / "pages"
     shutil.rmtree(pages_dir, ignore_errors=True)
     jd.page_count = _render_pages(src_path, pages_dir)
-    jd.extracted_json = None
-    jd.extraction_attempted = False
+    # The OCR cache and the stored OCR record follow the new page numbers. When the page's
+    # values could not be placed (never OCR'd), the record is cleared instead - that is what
+    # shows "needs re-extraction" on this document - and nothing was removed.
+    _renumber_page_caches(jd, page_number, placed)
+    if not placed and job.status != "draft":
+        job.needs_reextraction = True
     # The approved content just changed under this slot - same reasoning _remove_document_file
     # already applies to a whole-file swap: a stale approval must not silently attach itself to
     # content nobody has actually reviewed yet.
     jd.approved = False
     jd.gk2_approved = False
-    _wipe_derived_field_values(db, job, jd)
 
     db.commit()
     _maybe_auto_extract(db, job)
