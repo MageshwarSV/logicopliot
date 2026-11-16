@@ -360,3 +360,30 @@ def test_mails_can_be_put_on_the_held_list_without_touching_ones_already_dealt_w
     again = client.post("/api/v1/email/failed/hold", json={"items": [{"message_id": "<stuck-1@example.com>"}]})
     assert again.json() == {"held": 1, "left_alone": 0}
     assert client.get("/api/v1/email/failed").json()["total"] == 2
+
+
+def test_the_period_is_compared_as_real_instants_whatever_zone_it_is_given_in(client, db_session):
+    """Given as 18:00-22:30 IST, the period must mean 12:30-17:00 UTC - not 18:00-22:30 in
+    whatever zone the database server runs in. That mistake matched five real jobs and missed
+    the 1,745 failed attempts on the first production preview."""
+    from datetime import datetime, timezone
+
+    from tests.conftest import login
+
+    tenant = make_tenant(db_session)
+    make_user(db_session, role="super_admin", email="sa-zone@example.com")
+    for job_id, pages, when_utc in (("in-1", 7, datetime(2026, 11, 16, 13, 0)),      # 18:30 IST - inside
+                                    ("in-2", 6, datetime(2026, 11, 16, 16, 45)),     # 22:15 IST - inside
+                                    ("out-1", 4, datetime(2026, 11, 16, 7, 0)),      # 12:30 IST - before
+                                    ("out-2", 3, datetime(2026, 11, 16, 18, 30))):   # 00:00 IST next day
+        db_session.add(BillablePageEvent(tenant_id=tenant.id, job_id=job_id, job_reference=job_id,
+                                         shipment_type="Sea Import", page_count=pages,
+                                         created_at=when_utc))
+    db_session.commit()
+    login(client, "sa-zone@example.com")
+
+    body = {"start": "2026-11-16T18:00:00+05:30", "end": "2026-11-16T22:30:00+05:30", "apply": True}
+    assert client.post("/api/v1/email/failed/uncount-pages", json=body).json() == {
+        "jobs": 2, "pages": 13, "records": 2, "applied": True}
+    db_session.expire_all()
+    assert sorted(e.job_id for e in db_session.query(BillablePageEvent).all()) == ["out-1", "out-2"]

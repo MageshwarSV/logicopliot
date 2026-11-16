@@ -153,18 +153,21 @@ def uncount_failed_attempt_pages(
     from app.models.billable_page_event import BillablePageEvent
     from app.models.job import Job
 
-    def _utc_naive(value: datetime) -> datetime:
-        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+    def _aware(value: datetime) -> datetime:
+        # A stored time with no zone is UTC (see TimestampMixin); a given one with no zone is
+        # taken as UTC too. Compared as real instants, never as wall-clock text.
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
-    start, end = _utc_naive(payload.start), _utc_naive(payload.end)
-    query = (
-        db.query(BillablePageEvent)
-        .filter(BillablePageEvent.created_at >= start, BillablePageEvent.created_at <= end,
-                ~BillablePageEvent.job_id.in_(db.query(Job.id)))
-    )
+    start, end = _aware(payload.start), _aware(payload.end)
+    query = db.query(BillablePageEvent).filter(~BillablePageEvent.job_id.in_(db.query(Job.id)))
     if payload.tenant_id:
         query = query.filter(BillablePageEvent.tenant_id == payload.tenant_id)
-    rows = query.all()
+    # The period is applied HERE, in Python, on purpose. Handing the database a time without
+    # its zone let it read the period in the server's own zone: the first preview on production
+    # looked at 12:30-17:00 for a period given as 18:00-22:30 IST, and would have taken five
+    # real jobs' pages off the bill while leaving the 1,745 failed attempts on it. An orphaned
+    # billing row is rare, so reading them all and comparing instants costs nothing.
+    rows = [r for r in query.all() if r.created_at is not None and start <= _aware(r.created_at) <= end]
     summary = {
         "jobs": len({r.job_id for r in rows}),
         "pages": sum(r.page_count or 0 for r in rows),
