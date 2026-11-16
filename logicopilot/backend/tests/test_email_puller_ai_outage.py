@@ -306,3 +306,57 @@ def test_pages_of_attempts_that_never_became_a_job_can_be_taken_off_the_bill(cli
 
     outside = {"start": (now - timedelta(days=3)).isoformat(), "end": (now - timedelta(days=2)).isoformat(), "apply": True}
     assert client.post("/api/v1/email/failed/uncount-pages", json=outside).json()["records"] == 0
+
+
+def test_a_held_mail_from_an_earlier_day_is_fetched_by_its_own_id(db_session):
+    """The routine search is "unread, arrived today". A mail that failed yesterday evening is
+    not found by it after midnight - it has to be looked up by its Message-ID, or it would sit
+    on the held list for ever and Rerun all would do nothing for it."""
+    from app.core.email_puller import _harvest_mailbox
+
+    conn = MagicMock()
+
+    def search(_charset, *criteria):
+        if criteria[0] == "HEADER":
+            return ("OK", [b"7"]) if criteria[2] == '"<yesterday@example.com>"' else ("OK", [b""])
+        return ("OK", [b"3"])                       # today's unread mail
+
+    conn.search.side_effect = search
+    conn.fetch.side_effect = lambda uid, _what: ("OK", [(b"x", b"raw-" + uid)])
+    with patch("app.core.email_puller._connect", return_value=conn):
+        got = _harvest_mailbox("box@example.com", "x", "imap.example.com", 30, False,
+                               held_message_ids=["<yesterday@example.com>", "<other-box@example.com>"])
+
+    assert got["ok"] is True
+    assert [m["uid"] for m in got["messages"]] == [b"3", b"7"]
+    # and with nothing held, exactly the search it always made
+    conn.search.reset_mock()
+    with patch("app.core.email_puller._connect", return_value=conn):
+        _harvest_mailbox("box@example.com", "x", "imap.example.com", 30, False)
+    assert conn.search.call_count == 1
+
+
+def test_mails_can_be_put_on_the_held_list_without_touching_ones_already_dealt_with(client, db_session):
+    from tests.conftest import login
+
+    make_user(db_session, role="super_admin", email="sa-hold@example.com")
+    db_session.add(EmailSeen(message_id="<has-a-job@example.com>", verdict="matched", note="job made"))
+    db_session.commit()
+    login(client, "sa-hold@example.com")
+
+    r = client.post("/api/v1/email/failed/hold", json={"items": [
+        {"message_id": "<stuck-1@example.com>", "sender": "malar@customer.com", "subject": "OCEAN PRE ALERT 1"},
+        {"message_id": "<stuck-2@example.com>", "sender": "malar@customer.com", "subject": "OCEAN PRE ALERT 2"},
+        {"message_id": "<has-a-job@example.com>", "sender": "x@y.z", "subject": "already a job"},
+    ]})
+    assert r.status_code == 200 and r.json() == {"held": 2, "left_alone": 1}
+    db_session.expire_all()
+    verdicts = {e.message_id: e.verdict for e in db_session.query(EmailSeen).all()}
+    assert verdicts == {"<stuck-1@example.com>": "failed", "<stuck-2@example.com>": "failed",
+                        "<has-a-job@example.com>": "matched"}
+    listed = client.get("/api/v1/email/failed").json()
+    assert listed["total"] == 2 and listed["items"][0]["subject"] == "OCEAN PRE ALERT 1"
+    # doing it twice changes nothing
+    again = client.post("/api/v1/email/failed/hold", json={"items": [{"message_id": "<stuck-1@example.com>"}]})
+    assert again.json() == {"held": 1, "left_alone": 0}
+    assert client.get("/api/v1/email/failed").json()["total"] == 2

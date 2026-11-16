@@ -669,6 +669,8 @@ _pull_lock = threading.Lock()
 #     adding credits, say;
 #   - the pages of an attempt that never became a job come off the bill with the job.
 AI_DOWN_WAIT_MINUTES = 15
+# How many held mails one poll looks up by id, per mailbox - one IMAP search each.
+HELD_LOOKUP_LIMIT = 300
 FAILED_VERDICT = "failed"
 _ai_down = {"until": None, "reason": ""}
 _ai_down_lock = threading.Lock()
@@ -719,6 +721,25 @@ def _record_failed(db: Session, message_id: str, sender: str, subject: str, note
     except Exception:  # noqa: BLE001
         logger.exception("could not record the failed pull for %s", message_id[:60])
         db.rollback()
+
+
+def hold_emails(db: Session, items: list[dict], note: str) -> dict:
+    """Put mails on the held list by Message-ID - for mails that failed BEFORE the held list
+    existed (the puller then deleted its own record of them), taken from a listing of the
+    mailbox. A mail that already has a real outcome is left exactly as it is; only one never
+    recorded, or already held, is written. Returns {"held": n, "left_alone": n}."""
+    held = left = 0
+    for item in items:
+        message_id = str(item.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        row = db.query(EmailSeen).filter(EmailSeen.message_id == message_id).one_or_none()
+        if row is not None and row.verdict not in (FAILED_VERDICT,):
+            left += 1
+            continue
+        _record_failed(db, message_id, str(item.get("sender") or ""), str(item.get("subject") or ""), note)
+        held += 1
+    return {"held": held, "left_alone": left}
 
 
 def failed_emails(db: Session) -> list[EmailSeen]:
@@ -1013,13 +1034,26 @@ def _pull_inbox(
             ctx, early = _mailbox_setup(worker_db, src["tenant_id"], src["group_id"])
             if early is not None:
                 return {"early": early}
+            # Mails held up by the AI service are fetched by their own id as well (see
+            # _harvest_mailbox) - not while still waiting, when nothing would be opened anyway.
+            held: list[str] = []
+            if not ai_wait_status()["waiting"]:
+                try:
+                    held = [r.message_id for r in failed_emails(worker_db)]
+                except Exception:  # noqa: BLE001 - the routine poll must still run
+                    logger.exception("could not read the held mails; polling without them")
+                    worker_db.rollback()
             return {
                 "ctx": ctx,
                 "extraction_engine": get_extraction_engine(worker_db),
                 "vision_engine_model": get_settings().vision_engine_model,
                 "custom_filter_texts": get_active_custom_filter_texts(worker_db),
-                "harvest": _harvest_mailbox(src["email"], src["password"], src["host"],
-                                           max_messages, reexamine),
+                # The held mails are passed only when there are any, so a poll with nothing
+                # held makes exactly the call it always made.
+                "harvest": _harvest_mailbox(
+                    src["email"], src["password"], src["host"], max_messages, reexamine,
+                    **({"held_message_ids": held} if held else {}),
+                ),
             }
         finally:
             worker_db.close()
@@ -1278,7 +1312,7 @@ def _mailbox_setup(
 
 def _harvest_mailbox(
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
-    max_messages: int, reexamine: bool,
+    max_messages: int, reexamine: bool, held_message_ids: list[str] | None = None,
 ) -> dict:
     """Connect to ONE mailbox just long enough to list and fetch its candidate messages, then
     disconnect. Returns the raw material, not a verdict - deciding whose documents these are
@@ -1326,6 +1360,21 @@ def _harvest_mailbox(
             )
         uids = data[0].split() if data and data[0] else []
         uids = uids[-max_messages:]
+        # ...and every mail held up by the AI service (see AI_DOWN_WAIT_MINUTES), looked up by
+        # its OWN Message-ID. The search above is "unread, arrived today": a mail that failed
+        # yesterday evening is neither found by it after midnight nor, if someone opened it in
+        # the meantime, unread - so without this a held mail would sit on the Super Admin's
+        # list for ever and "Rerun all" would do nothing for it. A mailbox simply has no match
+        # for an id that belongs to another mailbox.
+        for held_id in (held_message_ids or [])[:HELD_LOOKUP_LIMIT]:
+            try:
+                typ2, found = conn.search(None, "HEADER", "Message-ID", '"%s"' % held_id.replace('"', ""))
+            except Exception:  # noqa: BLE001 - one odd id must not cost the whole mailbox
+                logger.warning("could not look up held message %s", held_id[:60])
+                continue
+            for uid in (found[0].split() if typ2 == "OK" and found and found[0] else []):
+                if uid not in uids:
+                    uids.append(uid)
         messages: list[dict] = []
         for uid in uids:
             # PEEK, so looking does not mark it read. Only a message that becomes a job does.

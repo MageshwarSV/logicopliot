@@ -100,6 +100,31 @@ def rerun_failed(
     return {"queued": rerun_failed_emails(db)}
 
 
+class HoldEmailIn(BaseModel):
+    message_id: str
+    sender: str | None = None
+    subject: str | None = None
+
+
+class HoldEmailsIn(BaseModel):
+    items: list[HoldEmailIn]
+    note: str = "Not read yet - the AI service was unavailable when it arrived."
+
+
+@router.post("/failed/hold")
+def hold_failed_emails(
+    payload: HoldEmailsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+):
+    """Put mails on the held list by their Message-ID, so "Rerun all" fetches exactly those
+    mails whatever day they arrived. For mails that failed before the held list existed. A
+    mail that already has an outcome (a job, a duplicate, set aside) is left alone."""
+    from app.core.email_puller import hold_emails
+
+    return hold_emails(db, [i.model_dump() for i in payload.items], payload.note)
+
+
 class UncountAttemptsIn(BaseModel):
     """Which billed pages to take off: those written between `start` and `end` (ISO date-times,
     with their time zone) against a job that no longer exists. `apply` false only counts."""
