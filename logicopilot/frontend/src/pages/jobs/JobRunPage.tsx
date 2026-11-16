@@ -249,6 +249,31 @@ function parseFixedOption(raw: string): FieldSelectOption {
   const i = raw.indexOf(":");
   return i === -1 ? { value: raw, label: raw } : { value: raw.slice(0, i).trim(), label: raw.slice(i + 1).trim() };
 }
+// The dropdown a field's OWN list of choices asks for - a custom field's (CustomField.
+// fixed_options) or a document field's (FieldMark.fixed_options), the server sends both the
+// same way. One place, because a job screen draws these in three spots (a document tab's
+// header fields, its product lines, Additional Details) and the product lines had none: a
+// quantity unit on line 3 stayed a free text box while the same unit in the header was a list.
+//
+// A value that is NOT one of the choices is kept as an extra option, marked. A native <select>
+// shows its first option when the value matches none - so a line still holding "EA" from before
+// the list existed would read "not found" while "EA" was what the Excel went on receiving.
+function fixedChoiceProps(fv: {
+  value?: string | null;
+  fixed_options?: string[] | null;
+  dropdown_style?: string | null;
+}): { options?: FieldSelectOption[]; comboOptions?: string[]; comboPickOnly?: boolean } {
+  if (!fv.fixed_options?.length) return {};
+  if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
+    return { comboOptions: fv.fixed_options, comboPickOnly: fv.dropdown_style === "search" };
+  }
+  const options = fv.fixed_options.map(parseFixedOption);
+  const value = (fv.value ?? "").trim();
+  if (value && !options.some((o) => o.value === value)) {
+    options.push({ value, label: `${value} (not in the list)` });
+  }
+  return { options };
+}
 const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
     { value: "S", label: "S" },
@@ -5592,8 +5617,36 @@ function ExtractedField({
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               placeholder="not found"
-              className={boxClassName}
+              // A box that opens a list keeps its text clear of the arrow drawn over it below.
+              // Not while it is already padded for its own buttons (dirty / corrected) - two
+              // right-padding classes on one element is whichever the stylesheet lists last.
+              className={
+                comboOptions && !(!readOnly && (dirty || corrected))
+                  ? `${boxClassName} pr-9`
+                  : boxClassName
+              }
             />
+            {/* The down arrow that says "this opens a list". A searchable dropdown is an <input>,
+                and an <input> draws no arrow of its own - so beside a plain text box the two were
+                indistinguishable until clicked, and an operator had no way to tell a field to
+                PICK from a field to TYPE. Same glyph, size and place as a native <select>'s and
+                as the search picker's above. Never clickable itself: the click falls through to
+                the box, which is what opens the list. Steps aside for the Save button, which
+                takes the same corner while a typed value is waiting to be saved. */}
+            {comboOptions && !(dirty || saving) && (
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            )}
             {/* Every known value, shown in full on open regardless of what's in the field above
                 - a native <datalist> narrows itself to whatever matches the TYPED text as you
                 type, which hid the very options an operator opens the list to compare against.
@@ -6880,9 +6933,21 @@ function ExtractionReview({
     if (!active) return [];
     const labels = RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
     const wanted = labels && labels.length ? new Set(labels) : null;
+    // Custom fields ONLY, and never a hidden one.
+    //
+    // This matched on the label alone, so the day "Product Value" (Total Invoice Value) became
+    // a field read off each invoice FILE - one value per invoice instead of one per job - every
+    // invoice tab pulled in all of them: a five-invoice job showed its own total, then all five
+    // again, then the old job-wide total that had been hidden. A field marked on a document
+    // already shows on its own document through `fields` above, which is scoped to the file
+    // being looked at; relocating it as well can only ever duplicate it or bring in another
+    // file's reading. And hidden_from_capture means "renders nowhere on this screen" everywhere
+    // else it is checked - this was the one place that forgot.
     return job.field_values.filter(
       (fv) =>
         fv.row_index == null &&
+        !fv.mark_id &&
+        !fv.hidden_from_capture &&
         ((wanted && wanted.has(fv.label_name)) ||
           fv.display_document_id === active.template_document_id),
     );
@@ -7616,11 +7681,12 @@ function ExtractionReview({
                   let fixedChoiceComboOptions: string[] | undefined;
                   let fixedChoiceComboPickOnly = false;
                   if (fv.fixed_options && fv.fixed_options.length) {
-                    if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
-                      fixedChoiceComboOptions = fv.fixed_options;
-                      fixedChoiceComboPickOnly = fv.dropdown_style === "search";
+                    const choice = fixedChoiceProps(fv);
+                    if (choice.comboOptions) {
+                      fixedChoiceComboOptions = choice.comboOptions;
+                      fixedChoiceComboPickOnly = !!choice.comboPickOnly;
                     } else {
-                      options = fv.fixed_options.map(parseFixedOption);
+                      options = choice.options;
                     }
                   }
                   if (dynamicRows !== undefined) {
@@ -8042,6 +8108,9 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                                // A product-line field with its own list of choices (a
+                                // quantity unit) is picked, not typed - see fixedChoiceProps.
+                                {...fixedChoiceProps(fv)}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)

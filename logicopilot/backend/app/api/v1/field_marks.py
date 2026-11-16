@@ -274,6 +274,25 @@ def edit_mark(
         updates["anchor_variations"] = cleaned
     if updates.get("date_picker") is None and "date_picker" in updates:
         updates["date_picker"] = False
+    if "fixed_options" in updates:
+        # blanks and repeats out, order kept; nothing left = no list (a text box again)
+        seen_options: set[str] = set()
+        choices: list[str] = []
+        for option in updates["fixed_options"] or []:
+            option = str(option or "").strip()
+            if option and option.lower() not in seen_options:
+                seen_options.add(option.lower())
+                choices.append(option)
+        updates["fixed_options"] = choices or None
+    if updates.get("dropdown_style") is not None:
+        from app.models.custom_field import DROPDOWN_STYLES
+
+        if updates["dropdown_style"] not in DROPDOWN_STYLES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(f"{updates['dropdown_style']!r} is not a dropdown style. Use one of: "
+                        + ", ".join(DROPDOWN_STYLES)),
+            )
     for field, value in updates.items():
         setattr(mark, field, value)
     new_label = updates.get("label_name")
