@@ -702,6 +702,25 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   Misc_Charge_Currency: "Misc Charge Currency",
   Ins_Currency: "Insurance Currency",
 };
+// The NAME an Additional Details field goes by on screen. Its field box, the "still need an
+// answer" banner and the "You haven't changed anything" confirmation all use this, so the
+// same field is never called one thing where it is typed and its backend name
+// ("AdvancePriorNormal") where it is confirmed. An admin's own per-template display name
+// (CustomField.display_label - "PriorNormal" on Air import (November 5), where Advance is not
+// offered) wins; the name the Excel and the ERP script use is never changed by this.
+function askFieldLabel(fv: { label_name: string; display_label?: string | null }): string {
+  return fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name] || fv.label_name;
+}
+// ...and the VALUE as the operator picked it: a dropdown saves a short code ("P") and shows a
+// word ("Prior"). The confirmation listed the code, which nobody can check at a glance. The
+// saved value - what the Excel and the ERP receive - stays the code.
+function askFieldValueText(fv: { label_name: string; value?: string | null; fixed_options?: string[] | null }): string {
+  const value = fv.value ?? "";
+  const options = fv.fixed_options?.length
+    ? fv.fixed_options.map(parseFixedOption)
+    : FIELD_SELECT_OPTIONS[fv.label_name];
+  return options?.find((o) => o.value === value)?.label ?? value;
+}
 // These dropdowns' own options already cover every real possibility - no blank "not found"
 // choice to accidentally leave selected.
 const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePriorNormal", "BETypeCode"]);
@@ -3536,7 +3555,7 @@ export function JobRunPage() {
                 ✎ {askPending.length} field{askPending.length === 1 ? "" : "s"} still need an answer before this entry can be submitted
               </p>
               <p className="mt-1 text-xs text-sky-700 dark:text-sky-400">
-                {askPending.map((f) => f.label_name).join(", ")}
+                {askPending.map((f) => askFieldLabel(f)).join(", ")}
               </p>
               <button
                 type="button"
@@ -3992,7 +4011,7 @@ export function JobRunPage() {
                               readOnly={!canEditValues}
                               reload={load}
                               tone={fv.origin === "computed" ? "computed" : undefined}
-                              labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                              labelOverride={fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={
                                 fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
                                   ? fv.fixed_options.map(parseFixedOption)
@@ -4265,13 +4284,13 @@ export function JobRunPage() {
               {askPending.slice(0, 40).map((fv) => (
                 <tr key={fv.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800">
                   <td className="px-3 py-1.5 text-slate-500">
-                    {fv.label_name}
+                    {askFieldLabel(fv)}
                     {fv.row_index != null && (
                       <span className="ml-1 text-slate-400">· line {fv.row_index}</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5 font-medium text-slate-800 dark:text-slate-200">
-                    {fv.value}
+                    {askFieldValueText(fv)}
                   </td>
                 </tr>
               ))}
