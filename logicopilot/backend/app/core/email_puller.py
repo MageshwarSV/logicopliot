@@ -647,6 +647,129 @@ def _start_claim_heartbeat(message_id: str) -> None:
 _pull_lock = threading.Lock()
 
 
+# ---- when the AI service is down -------------------------------------------------------
+#
+# A mail whose reading fails because the AI service refused the call (no credits, rate limit,
+# an outage) used to have its claim deleted so "the next poll tries again from scratch". With a
+# one-minute poll and an account out of credits, that was the same 39 mails every minute for
+# hours: each round created a job, OCR'd every page, WROTE THE PAGES TO THE BILL, failed at the
+# first model call and deleted the job. Production, 16 Nov 2026: about 1,600 jobs made and
+# removed in four hours and some 10,900 pages on the customer's bill for jobs that never
+# existed - shown on the Billing page as "Deleted Jobs / Deleted Pages", because a billed job
+# that no longer exists is all that page can see.
+#
+# Now:
+#   - the first such failure starts a WAIT (AI_DOWN_WAIT_MINUTES). Until it ends no mail is
+#     opened at all - nothing is OCR'd, no job is made, nothing is billed;
+#   - every mail that failed, or arrived while waiting, is RECORDED (EmailSeen verdict
+#     "failed") so a Super Admin can see exactly which mails are held up and why;
+#   - when the wait ends the held mails are tried again by the ordinary poll. If the service is
+#     still down the first few fail, the wait starts again, and the rest are not touched;
+#   - a Super Admin can end the wait and re-run them at once (rerun_failed_emails) - after
+#     adding credits, say;
+#   - the pages of an attempt that never became a job come off the bill with the job.
+AI_DOWN_WAIT_MINUTES = 15
+# How many held mails one poll looks up by id, per mailbox - one IMAP search each.
+HELD_LOOKUP_LIMIT = 300
+FAILED_VERDICT = "failed"
+_ai_down = {"until": None, "reason": ""}
+_ai_down_lock = threading.Lock()
+
+
+def ai_wait_status() -> dict:
+    """{"waiting": bool, "until": iso | None, "reason": str} - is the puller holding off
+    because the AI service refused its last call."""
+    with _ai_down_lock:
+        until, reason = _ai_down["until"], _ai_down["reason"]
+    waiting = until is not None and datetime.now(timezone.utc) < until
+    return {"waiting": waiting, "until": until.isoformat() if waiting else None,
+            "reason": reason if waiting else ""}
+
+
+def _note_ai_down(reason: str) -> None:
+    with _ai_down_lock:
+        _ai_down["until"] = datetime.now(timezone.utc) + timedelta(minutes=AI_DOWN_WAIT_MINUTES)
+        _ai_down["reason"] = (reason or "")[:500]
+
+
+def clear_ai_wait() -> None:
+    with _ai_down_lock:
+        _ai_down["until"] = None
+        _ai_down["reason"] = ""
+
+
+def _record_failed(db: Session, message_id: str, sender: str, subject: str, note: str,
+                   group_id: str | None = None) -> None:
+    """Write down that this mail is held up by the AI service - WITHOUT disturbing a mail that
+    already has a real outcome. Only a mail never seen before, or one already marked failed,
+    is written; a matched / unrouted / duplicate mail keeps its own record."""
+    try:
+        row = db.query(EmailSeen).filter(EmailSeen.message_id == message_id).one_or_none()
+        if row is not None and row.verdict not in (FAILED_VERDICT, "working"):
+            return
+        if row is None:
+            row = EmailSeen(message_id=message_id)
+            db.add(row)
+        row.sender = (sender or "")[:320] or None
+        row.subject = (subject or "")[:500] or None
+        row.verdict = FAILED_VERDICT
+        row.note = (note or "")[:2000] or None
+        row.group_id = group_id or row.group_id
+        row.job_id = None
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not record the failed pull for %s", message_id[:60])
+        db.rollback()
+
+
+def hold_emails(db: Session, items: list[dict], note: str) -> dict:
+    """Put mails on the held list by Message-ID - for mails that failed BEFORE the held list
+    existed (the puller then deleted its own record of them), taken from a listing of the
+    mailbox. A mail that already has a real outcome is left exactly as it is; only one never
+    recorded, or already held, is written. Returns {"held": n, "left_alone": n}."""
+    held = left = 0
+    for item in items:
+        message_id = str(item.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        row = db.query(EmailSeen).filter(EmailSeen.message_id == message_id).one_or_none()
+        if row is not None and row.verdict not in (FAILED_VERDICT,):
+            left += 1
+            continue
+        _record_failed(db, message_id, str(item.get("sender") or ""), str(item.get("subject") or ""), note)
+        held += 1
+    return {"held": held, "left_alone": left}
+
+
+def failed_emails(db: Session) -> list[EmailSeen]:
+    """Every mail currently held up because the AI service failed, oldest first."""
+    return (db.query(EmailSeen).filter(EmailSeen.verdict == FAILED_VERDICT)
+            .order_by(EmailSeen.created_at).all())
+
+
+def rerun_failed_emails(db: Session) -> int:
+    """End the wait and pull again now, on a thread of its own (a pull takes minutes; the
+    button must not). Returns how many mails were waiting. Nothing is re-read here - the held
+    mails are simply claimable again, and the pull that starts does what every poll does."""
+    from app.db.session import SessionLocal
+
+    clear_ai_wait()
+    waiting = db.query(EmailSeen).filter(EmailSeen.verdict == FAILED_VERDICT).count()
+
+    def _run() -> None:
+        own = SessionLocal()
+        try:
+            pull_inbox(own, skip_if_busy=True)
+        except Exception:  # noqa: BLE001
+            logger.exception("re-run of the failed emails crashed")
+        finally:
+            own.close()
+
+    threading.Thread(target=_run, daemon=True, name="email-rerun-failed").start()
+    return waiting
+
+
 def _claim(db: Session, message_id: str, sender: str, subject: str,
            steal: bool = False) -> tuple[bool, str]:
     """Take ownership of a message BEFORE doing the work. (claimed, why-not).
@@ -678,7 +801,10 @@ def _claim(db: Session, message_id: str, sender: str, subject: str,
     existing = db.query(EmailSeen).filter(EmailSeen.message_id == message_id).one_or_none()
     if existing is None:      # deleted between the insert and the read - let the next poll have it
         return False, "claimed by another run"
-    if existing.verdict != "working" and not steal:
+    # A mail held up by the AI service (verdict "failed") was never actually examined - it is
+    # always claimable again, by an ordinary poll once the wait is over or by a Super Admin's
+    # re-run. Every other finished verdict stays closed unless `steal` (reexamine) asks.
+    if existing.verdict not in ("working", FAILED_VERDICT) and not steal:
         return False, f"already examined ({existing.verdict})"
     if existing.verdict == "working":
         # `steal` only ever means "let reexamine reopen a FINISHED verdict" (the check
@@ -908,13 +1034,26 @@ def _pull_inbox(
             ctx, early = _mailbox_setup(worker_db, src["tenant_id"], src["group_id"])
             if early is not None:
                 return {"early": early}
+            # Mails held up by the AI service are fetched by their own id as well (see
+            # _harvest_mailbox) - not while still waiting, when nothing would be opened anyway.
+            held: list[str] = []
+            if not ai_wait_status()["waiting"]:
+                try:
+                    held = [r.message_id for r in failed_emails(worker_db)]
+                except Exception:  # noqa: BLE001 - the routine poll must still run
+                    logger.exception("could not read the held mails; polling without them")
+                    worker_db.rollback()
             return {
                 "ctx": ctx,
                 "extraction_engine": get_extraction_engine(worker_db),
                 "vision_engine_model": get_settings().vision_engine_model,
                 "custom_filter_texts": get_active_custom_filter_texts(worker_db),
-                "harvest": _harvest_mailbox(src["email"], src["password"], src["host"],
-                                           max_messages, reexamine),
+                # The held mails are passed only when there are any, so a poll with nothing
+                # held makes exactly the call it always made.
+                "harvest": _harvest_mailbox(
+                    src["email"], src["password"], src["host"], max_messages, reexamine,
+                    **({"held_message_ids": held} if held else {}),
+                ),
             }
         finally:
             worker_db.close()
@@ -1049,6 +1188,8 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
     # `is not True`, not falsiness: only a template with the switch really ON is ever looked at.
     if single_group is None or getattr(single_group, "prealert_shipments", False) is not True:
         return [base], None
+    if ai_wait_status()["waiting"]:
+        return [base], None                          # the worker holds it; no model call here
     try:
         from app.core import prealert_shipments as _ps
 
@@ -1171,7 +1312,7 @@ def _mailbox_setup(
 
 def _harvest_mailbox(
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
-    max_messages: int, reexamine: bool,
+    max_messages: int, reexamine: bool, held_message_ids: list[str] | None = None,
 ) -> dict:
     """Connect to ONE mailbox just long enough to list and fetch its candidate messages, then
     disconnect. Returns the raw material, not a verdict - deciding whose documents these are
@@ -1219,6 +1360,21 @@ def _harvest_mailbox(
             )
         uids = data[0].split() if data and data[0] else []
         uids = uids[-max_messages:]
+        # ...and every mail held up by the AI service (see AI_DOWN_WAIT_MINUTES), looked up by
+        # its OWN Message-ID. The search above is "unread, arrived today": a mail that failed
+        # yesterday evening is neither found by it after midnight nor, if someone opened it in
+        # the meantime, unread - so without this a held mail would sit on the Super Admin's
+        # list for ever and "Rerun all" would do nothing for it. A mailbox simply has no match
+        # for an id that belongs to another mailbox.
+        for held_id in (held_message_ids or [])[:HELD_LOOKUP_LIMIT]:
+            try:
+                typ2, found = conn.search(None, "HEADER", "Message-ID", '"%s"' % held_id.replace('"', ""))
+            except Exception:  # noqa: BLE001 - one odd id must not cost the whole mailbox
+                logger.warning("could not look up held message %s", held_id[:60])
+                continue
+            for uid in (found[0].split() if typ2 == "OK" and found and found[0] else []):
+                if uid not in uids:
+                    uids.append(uid)
         messages: list[dict] = []
         for uid in uids:
             # PEEK, so looking does not mark it read. Only a message that becomes a job does.
@@ -1237,7 +1393,7 @@ def _harvest_mailbox(
             pass
 
 
-def _discard_pre_created_job(db: Session, job: Job | None) -> None:
+def _discard_pre_created_job(db: Session, job: Job | None, unbill: bool = False) -> None:
     """Undoes the early job + empty-slots creation a single-template mailbox gets (see
     _process_one_message's own docstring) when the message turns out not to produce a real
     job after all - OCR found nothing readable, the tenant's licensed modes no longer allow
@@ -1250,6 +1406,15 @@ def _discard_pre_created_job(db: Session, job: Job | None) -> None:
     if job is None:
         return
     email_progress.clear(job.id)
+    if unbill:
+        # The pages were written to the bill the moment they were OCR'd, before the model was
+        # ever asked anything. The job they were billed against is about to stop existing and
+        # the mail will be read again from the start - leaving them would bill every retry of
+        # the same mail, against a job nobody was ever given.
+        from app.models.billable_page_event import BillablePageEvent
+
+        db.query(BillablePageEvent).filter(BillablePageEvent.job_id == job.id).delete(
+            synchronize_session=False)
     for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all():
         db.delete(jd)
     db.delete(job)
@@ -1338,6 +1503,18 @@ def _process_one_message(
     sender = parseaddr(msg.get("From"))[1].lower()
     subject = _decode(msg.get("Subject")) or "(no subject)"
     mid = _message_id(msg)
+
+    # The AI service refused a call a moment ago: do not open this mail at all. Nothing is
+    # downloaded, OCR'd, billed or turned into a job - it is written down as held up, and the
+    # ordinary poll comes back to it when the wait ends. See AI_DOWN_WAIT_MINUTES.
+    waiting = ai_wait_status()
+    if waiting["waiting"]:
+        _record_failed(db, mid, sender, subject,
+                       "Waiting - the AI service is unavailable: " + waiting["reason"],
+                       group_id=single_group.id if single_group is not None else None)
+        return {"from": sender, "subject": subject, "matched": None,
+                "reason": "held - the AI service is unavailable; it is retried automatically",
+                "deferred": True}
 
     # Claim it BEFORE reading it, not after. See _claim().
     claimed, why_not = _claim(db, mid, sender, subject, steal=reexamine)
@@ -2097,11 +2274,15 @@ def _process_one_message(
         # ran. A plain rollback no longer undoes that on its own the way it used to
         # before this feature existed; explicitly discard it, or the retry this handler
         # is about to enable creates a genuine SECOND job once the AI service recovers.
-        _discard_pre_created_job(db, job)
+        _discard_pre_created_job(db, job, unbill=True)
         logger.warning(
-            "email pull for %s deferred - AI service unavailable (%s); this message "
-            "will be retried automatically on a later cycle", mid[:60], exc)
-        _unclaim(db, mid)
+            "email pull for %s deferred - AI service unavailable (%s); no mail is opened for "
+            "the next %s minutes, then this one is retried", mid[:60], exc, AI_DOWN_WAIT_MINUTES)
+        # Not _unclaim: that made the very next poll, a minute later, do all of this again.
+        # Recorded as held up (and so visible to a Super Admin), and the wait started.
+        _note_ai_down(str(exc))
+        _record_failed(db, mid, sender, subject, "The AI service is unavailable: " + str(exc),
+                       group_id=single_group.id if single_group is not None else None)
         return {
             "from": sender, "subject": subject, "matched": None,
             "reason": "the AI service is temporarily unavailable - retrying "

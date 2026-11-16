@@ -13,6 +13,7 @@ import * as jobsApi from "../../api/jobs";
 import * as tenantsApi from "../../api/tenants";
 import type { MailProvider } from "../../types/auth";
 import type { Tenant } from "../../types/tenant";
+import { HeldEmailsCard } from "./HeldEmailsCard";
 
 const PROVIDER_LABEL: Record<string, string> = { gmail: "Google", zoho: "Zoho" };
 
@@ -244,6 +245,8 @@ export function EmailPullerPage() {
           </p>
         )}
       </Card>
+
+      <HeldEmailsCard />
 
       <Modal open={connectOpen} onClose={() => setConnectOpen(false)} title="Connect mailbox">
         <form className="flex flex-col gap-4" onSubmit={handleConnect}>
