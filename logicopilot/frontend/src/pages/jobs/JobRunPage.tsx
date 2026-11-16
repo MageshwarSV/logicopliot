@@ -6933,9 +6933,21 @@ function ExtractionReview({
     if (!active) return [];
     const labels = RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
     const wanted = labels && labels.length ? new Set(labels) : null;
+    // Custom fields ONLY, and never a hidden one.
+    //
+    // This matched on the label alone, so the day "Product Value" (Total Invoice Value) became
+    // a field read off each invoice FILE - one value per invoice instead of one per job - every
+    // invoice tab pulled in all of them: a five-invoice job showed its own total, then all five
+    // again, then the old job-wide total that had been hidden. A field marked on a document
+    // already shows on its own document through `fields` above, which is scoped to the file
+    // being looked at; relocating it as well can only ever duplicate it or bring in another
+    // file's reading. And hidden_from_capture means "renders nowhere on this screen" everywhere
+    // else it is checked - this was the one place that forgot.
     return job.field_values.filter(
       (fv) =>
         fv.row_index == null &&
+        !fv.mark_id &&
+        !fv.hidden_from_capture &&
         ((wanted && wanted.has(fv.label_name)) ||
           fv.display_document_id === active.template_document_id),
     );
