@@ -5617,8 +5617,36 @@ function ExtractedField({
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               placeholder="not found"
-              className={boxClassName}
+              // A box that opens a list keeps its text clear of the arrow drawn over it below.
+              // Not while it is already padded for its own buttons (dirty / corrected) - two
+              // right-padding classes on one element is whichever the stylesheet lists last.
+              className={
+                comboOptions && !(!readOnly && (dirty || corrected))
+                  ? `${boxClassName} pr-9`
+                  : boxClassName
+              }
             />
+            {/* The down arrow that says "this opens a list". A searchable dropdown is an <input>,
+                and an <input> draws no arrow of its own - so beside a plain text box the two were
+                indistinguishable until clicked, and an operator had no way to tell a field to
+                PICK from a field to TYPE. Same glyph, size and place as a native <select>'s and
+                as the search picker's above. Never clickable itself: the click falls through to
+                the box, which is what opens the list. Steps aside for the Save button, which
+                takes the same corner while a typed value is waiting to be saved. */}
+            {comboOptions && !(dirty || saving) && (
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            )}
             {/* Every known value, shown in full on open regardless of what's in the field above
                 - a native <datalist> narrows itself to whatever matches the TYPED text as you
                 type, which hid the very options an operator opens the list to compare against.
