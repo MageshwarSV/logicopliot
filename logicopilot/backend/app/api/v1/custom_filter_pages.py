@@ -150,7 +150,8 @@ def _sweep_old_jobs_for_reference(db: Session, reference_text: str) -> None:
                 # with (nothing to sweep, and not this sweep's business to delete it).
                 logger.info("filter-page sweep: deleting job %s - nothing real left after "
                             "the sweep above", job.reference)
-                dirs_to_delete += _delete_job_cascade(db, job)
+                dirs_to_delete += _delete_job_cascade(
+                    db, job, how="Removed automatically - a page filter left it with no documents")
                 jobs_deleted += 1
             # Commit PER JOB, not once at the end: a later job's failure below must roll
             # back only ITS OWN partial changes, never undo every job already processed.

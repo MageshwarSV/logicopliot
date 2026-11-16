@@ -7,6 +7,7 @@ import { DataTable, type Column } from "../ui/DataTable";
 import { Pagination } from "../ui/Pagination";
 import { SearchIcon, DownloadIcon } from "../ui/icons";
 import * as tenantsApi from "../../api/tenants";
+import { useAuth } from "../../auth/useAuth";
 import type { JobBillingHighlight, JobBillingRow, ShipmentTypeUsage } from "../../api/tenants";
 
 const PAGE_SIZE = 10;
@@ -86,6 +87,8 @@ export function JobBillingTable({
   /** Clears the parent's highlight state - wired to the chip's own × and to Page 1 resets. */
   onClearHighlight?: () => void;
 }) {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
   const defaultBounds = useMemo(() => monthBounds(month), [month]);
 
   const [search, setSearch] = useState("");
@@ -183,6 +186,32 @@ export function JobBillingTable({
       header: "Total Pages",
       render: (r) => <span className="font-semibold text-slate-900 dark:text-slate-100">{r.total_billed.toLocaleString()}</span>,
     },
+    // Super Admin only - the server sends these to nobody else (it names a member of the
+    // customer's own staff, and the customer's Tenant Admin reads this same table). Shown on
+    // every view, not just "Deleted Jobs": a deleted job in the full list raises the same
+    // question. A live job has nobody to name, so its cells stay empty.
+    ...(isSuperAdmin
+      ? ([
+          {
+            header: "Deleted By",
+            render: (r) =>
+              r.status !== "deleted" ? (
+                ""
+              ) : r.deleted_by ? (
+                r.deleted_by
+              ) : (
+                <span className="text-slate-400" title="This job was deleted before deletions were recorded.">
+                  Not recorded
+                </span>
+              ),
+          },
+          {
+            header: "Deleted At",
+            render: (r) => (r.status === "deleted" && r.deleted_at ? formatDateTime(r.deleted_at) : ""),
+            className: "whitespace-nowrap",
+          },
+        ] as Column<JobBillingRow>[])
+      : []),
   ];
 
   return (

@@ -268,6 +268,11 @@ export interface JobBillingRow {
    *  unclassified anywhere. Never negative. */
   deleted_pages: number;
   total_billed: number;
+  /** A deleted job only, and sent to a Super Admin only: who deleted it (name and email, or
+   *  what removed it when it was not a person) and when. Null otherwise - including for a job
+   *  deleted before deletions were recorded. */
+  deleted_by?: string | null;
+  deleted_at?: string | null;
 }
 
 export interface JobBillingPage {
