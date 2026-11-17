@@ -10089,6 +10089,18 @@ def _job_level_value(db: Session, job_id: str, label: str) -> str:
     return ""
 
 
+# "NO MAWB": the MAWB Number field says, in words, that the page has no master waybill. It is
+# shown and sent to the ERP as it is, but for "fill only when <field> has a value" it counts as
+# EMPTY - otherwise the house waybill's date lands in MAWB Date. Only fields with
+# requires_value_of set are affected (today: MAWB Date on Air import (November 5)).
+_SAYS_NONE = re.compile(r"^\s*NO\s+M?AWB\s*$", re.I)
+
+
+def _has_required_value(db: Session, job_id: str, label: str) -> bool:
+    v = _job_level_value(db, job_id, label)
+    return bool(v) and not _SAYS_NONE.match(v)
+
+
 def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str | None = None) -> list[str]:
     """Blank every job-level custom field whose requires_value_of field is empty on this job.
 
@@ -10111,7 +10123,7 @@ def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str |
     db.flush()
     for cf in q.all():
         required = (cf.requires_value_of or "").strip()
-        if not required or _job_level_value(db, job.id, required):
+        if not required or _has_required_value(db, job.id, required):
             continue
         for fv in (db.query(JobFieldValue)
                    .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
@@ -10440,7 +10452,7 @@ def correct_field_value(
 
         own_cf = db.get(_CFr, fv.custom_field_id)
         required = ((own_cf.requires_value_of if own_cf else None) or "").strip()
-        if required and not _job_level_value(db, fv.job_id, required):
+        if required and not _has_required_value(db, fv.job_id, required):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{fv.label_name} can only be filled when {required} has a value - "
