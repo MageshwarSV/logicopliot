@@ -408,6 +408,24 @@ def _slot_reference(document_id: str, max_chars: int = 1400) -> str:
         return ""
 
 
+def _scratch_dir_name(mid: str) -> str:
+    """The folder one message's attachments and page images are worked on in, unique per
+    Message-ID.
+
+    It used to be the first 60 letters/digits of the Message-ID alone. A pre-alert split into
+    shipments gives each one the parent's id with its HAWB at the END, and a long Exchange id
+    cut at 60 characters lost that ending - so two shipments processed at the same time shared
+    one folder, overwrote each other's PDF and page images, and one crashed ("cannot save with
+    zero pages"; JOB-070575 / JOB-70EF19 on production, 17 Nov 2026). A short fingerprint of
+    the WHOLE id now makes every message's folder its own; the readable start is kept so a
+    folder can still be traced back to its mail.
+    """
+    import hashlib
+
+    readable = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:40] or "msg"
+    return f"{readable}-{hashlib.sha1(mid.encode('utf-8', 'replace')).hexdigest()[:12]}"
+
+
 def _message_id(msg: email.message.Message) -> str:
     """A stable identity for this message, so it is examined exactly once.
 
@@ -1624,8 +1642,7 @@ def _process_one_message(
 
     from app.core import office_convert
 
-    safe_mid = "".join(ch for ch in mid if ch.isalnum() or ch in "-_")[:60] or "msg"
-    tmp = Path(get_settings().uploads_dir) / "_email" / safe_mid
+    tmp = Path(get_settings().uploads_dir) / "_email" / _scratch_dir_name(mid)
 
     files: list[tuple[str, bytes]] = []
     # Word/Excel attachments are converted below, same as a manual Smart Upload already does -
