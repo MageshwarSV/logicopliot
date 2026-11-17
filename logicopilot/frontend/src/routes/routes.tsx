@@ -17,6 +17,7 @@ import { WorkforceProductivityDashboardPage } from "../pages/tenant-admin/Workfo
 import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
+import { UserJobSummaryPage } from "../pages/tenant-admin/UserJobSummaryPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
 import { QuotationMasterDataPage } from "../pages/tenant-admin/QuotationMasterDataPage";
 import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
@@ -227,6 +228,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <TenantReportsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/reports/user-jobs"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <UserJobSummaryPage />
           </ProtectedRoute>
         }
       />

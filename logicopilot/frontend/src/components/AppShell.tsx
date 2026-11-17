@@ -137,6 +137,7 @@ export function AppShell({
   const [masterDataOpen, setMasterDataOpen] = useState(
     location.pathname.startsWith("/tenant-admin/masters") || location.pathname.startsWith("/tenant-admin/master-data"),
   );
+  const [reportsOpen, setReportsOpen] = useState(location.pathname.startsWith("/tenant-admin/reports"));
   // The page you are actually on is what should be lit up — a nav rail that always shows
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
   // at all, because it actively tells you the wrong thing.
@@ -393,9 +394,39 @@ export function AppShell({
                       <CountBadge count={totalJobsCount} cls="bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" />
                     )}
                   </Link>
-                  <Link to="/tenant-admin/reports" className={navClass("/tenant-admin/reports")}>
-                    <ChartBarIcon /> Reports
-                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => setReportsOpen((v) => !v)}
+                    className={`${location.pathname.startsWith("/tenant-admin/reports") ? NAV_ACTIVE : NAV_INACTIVE} w-full justify-between`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <ChartBarIcon /> Reports
+                    </span>
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${reportsOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                  {reportsOpen && (
+                    <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
+                      {[
+                        { label: "Activity & Billing", to: "/tenant-admin/reports" },
+                        { label: "User Job Summary", to: "/tenant-admin/reports/user-jobs" },
+                      ].map((item) => (
+                        <Link
+                          key={item.to}
+                          to={item.to}
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                            location.pathname === item.to
+                              ? "bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          }`}
+                        >
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+                          {item.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </>

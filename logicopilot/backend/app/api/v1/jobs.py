@@ -7,6 +7,7 @@ import re
 import shutil
 import zipfile
 from datetime import date, datetime, timedelta, timezone
+from app.core.modes import MODES
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -2204,6 +2205,125 @@ def job_activity_chart(
         ))
         cursor += timedelta(days=1)
     return JobActivityChartOut(days=days, pending_jobs=pending_jobs)
+
+
+def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | None,
+                      date_from: str, date_to: str) -> dict:
+    """Reports -> User Job Summary. For the chosen operation and period (IST dates, both ends
+    inclusive): per user, the jobs that ARRIVED in the period (Total), how many of those have
+    reached the ERP (ERP Completed - the same _category_condition("submitted") rule as the
+    ERP Submitted badge and list) and the rest (Pending = Total - Completed). The same
+    "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
+
+    The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
+    else the mail-routed operator); jobs with neither are "Unassigned"."""
+    try:
+        d_from = date.fromisoformat(date_from)
+        d_to = date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be YYYY-MM-DD")
+    if d_to < d_from:
+        raise HTTPException(status_code=422, detail="date_to must not be before date_from")
+    if (d_to - d_from).days > 366:
+        raise HTTPException(status_code=422, detail="Pick a range of 366 days or fewer")
+    # IST day boundaries, passed as UTC so every database compares them the same way.
+    start = datetime(d_from.year, d_from.month, d_from.day, tzinfo=IST).astimezone(timezone.utc)
+    end = (datetime(d_to.year, d_to.month, d_to.day, tzinfo=IST) + timedelta(days=1)).astimezone(timezone.utc)
+
+    base = _jobs_visible_query(db, scope, user)
+    group_modes = {g.id: g.mode for g in scoped_query(db, TemplateGroup, scope).all()}
+    modes = sorted({m for m in group_modes.values() if m}, key=lambda m: (MODES.index(m) if m in MODES else 99, m))
+
+    arrived = base.filter(Job.created_at >= start, Job.created_at < end)
+    jobs = arrived.all()
+    submitted_ids = {
+        row[0] for row in arrived.filter(_category_condition("submitted")).with_entities(Job.id).all()
+    }
+    if mode:
+        jobs = [j for j in jobs if (group_modes.get(j.group_id) or _shipment_mode(db, j)) == mode]
+
+    users_by_id: dict[str, User] = {}
+    rows: dict[str, dict] = {}
+    for j in jobs:
+        uid = j.created_by_id or j.assigned_operator_id
+        u = None
+        if uid:
+            if uid not in users_by_id:
+                users_by_id[uid] = db.get(User, uid)
+            u = users_by_id[uid]
+        key = u.id if u else ""
+        r = rows.setdefault(key, {
+            "user_id": u.id if u else None,
+            "name": (u.full_name if u else None) or "Unassigned",
+            "avatar_url": getattr(u, "avatar_url", None) if u else None,
+            "total": 0, "completed": 0, "pending": 0,
+        })
+        r["total"] += 1
+        if j.id in submitted_ids:
+            r["completed"] += 1
+        else:
+            r["pending"] += 1
+    ordered = sorted(rows.values(), key=lambda r: (r["user_id"] is None, -r["total"], r["name"].lower()))
+    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "pending")}
+    return {"modes": modes, "mode": mode, "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
+            "users": ordered, "totals": totals}
+
+
+@router.get("/jobs/user-summary")
+def user_job_summary(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> dict:
+    return _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+
+
+@router.get("/jobs/user-summary/export")
+def user_job_summary_export(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+):
+    """The same table as an Excel file, with its Total row."""
+    import io
+
+    import openpyxl
+    from fastapi.responses import Response
+    from openpyxl.styles import Font
+
+    data = _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "User Job Summary"
+    ws.append([f"User Job Summary - {data['mode'] or 'All operations'} - {data['date_from']} to {data['date_to']}"])
+    ws["A1"].font = Font(bold=True)
+    ws.append([])
+    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"])
+    for c in ws[3]:
+        c.font = Font(bold=True)
+    for i, r in enumerate(data["users"], start=1):
+        ws.append([i, r["name"], r["total"], r["completed"], r["pending"]])
+    t = data["totals"]
+    ws.append(["", "Total", t["total"], t["completed"], t["pending"]])
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+    ws.column_dimensions["B"].width = 32
+    for col in "CDE":
+        ws.column_dimensions[col].width = 20
+    buf = io.BytesIO()
+    wb.save(buf)
+    stem = f"User_Job_Summary_{(data['mode'] or 'All').replace(' ', '_')}_{data['date_from']}_to_{data['date_to']}"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.xlsx"'},
+    )
 
 
 @router.get("/jobs", response_model=list[JobOut])

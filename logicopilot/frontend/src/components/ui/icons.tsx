@@ -377,3 +377,30 @@ export function SortIcon({ direction, ...props }: SVGProps<SVGSVGElement> & { di
     </Icon>
   );
 }
+
+export function ShipIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M3 17l1.5 3h15L21 17" />
+      <path d="M5 17l1-6h12l1 6" />
+      <path d="M12 3v8M9 6h3" />
+    </Icon>
+  );
+}
+
+export function PlaneIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M21 4.5c.6.6.4 1.6-.3 2.2L16 10.5l2 9-1.6 1.6-3.9-7.3-3.6 3V20l-1.4 1.4-1.5-3.5L2.5 16.4 3.9 15h3l3-3.6-7.3-3.9L4.2 6l9 2 3.8-4.7c.6-.7 1.6-.9 2.2-.3l1.8 1.5Z" />
+    </Icon>
+  );
+}
+
+export function CheckBadgeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12.5l2.5 2.5L16 9.5" />
+    </Icon>
+  );
+}
