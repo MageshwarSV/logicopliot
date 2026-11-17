@@ -18,7 +18,7 @@ import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
-import { ErpMasterDataPage } from "../pages/tenant-admin/ErpMasterDataPage";
+import { QuotationMasterDataPage } from "../pages/tenant-admin/QuotationMasterDataPage";
 import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
@@ -258,7 +258,7 @@ export function AppRoutes() {
         path="/tenant-admin/master-data/quotation"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
-            <ErpMasterDataPage key="quotation" category="quotation" />
+            <QuotationMasterDataPage />
           </ProtectedRoute>
         }
       />

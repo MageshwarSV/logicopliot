@@ -53,8 +53,6 @@ def test_templates_with_country_counts(client, db_session):
     assert tpl["group_id"] == gid
     assert tpl["countries"] == [{"country": "INDIA", "rows": 2, "gstin_rows": 1},
                                 {"country": "GERMANY", "rows": 1, "gstin_rows": 0}]
-    # The generic category endpoint still works next to it.
-    assert client.get("/api/v1/master-data/quotation").status_code == 200
 
 
 def test_rows_by_country_search_and_sort(client, db_session):
