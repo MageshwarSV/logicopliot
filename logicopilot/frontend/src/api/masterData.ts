@@ -93,3 +93,93 @@ export async function downloadWorkbook(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// --- ERP Master Data - Importer: one row per importer branch, by country (master_data_importer.py).
+const IMP = "/master-data/importer-directory";
+
+export interface ImporterTemplate {
+  group_id: string;
+  name: string;
+  countries: { country: string; rows: number }[];
+}
+
+export interface ImporterRow {
+  id: number;
+  name: string;
+  branch: string;
+  country: string;
+  gstin: string | null;
+  address: string;
+  updated_at: string | null;
+}
+
+export interface ImporterUploadConflict {
+  id: number;
+  field: "address" | "gstin";
+  name: string;
+  branch: string;
+  country: string;
+  existing_value: string;
+  uploaded_value: string;
+}
+
+export interface ImporterUploadResult {
+  rows_added: number;
+  gstin_filled: number;
+  rows_unchanged: number;
+  rows_skipped: number;
+  conflicts: ImporterUploadConflict[];
+  conflict_count: number;
+}
+
+export async function listImporterTemplates(): Promise<ImporterTemplate[]> {
+  const { data } = await apiClient.get<{ templates: ImporterTemplate[] }>(IMP);
+  return data.templates;
+}
+
+export async function listImporterRows(
+  groupId: string,
+  params: { country: string; q?: string; sort: "name" | "branch"; direction: "asc" | "desc"; page: number; page_size: number },
+): Promise<{ total: number; rows: ImporterRow[] }> {
+  const { data } = await apiClient.get<{ total: number; rows: ImporterRow[] }>(`${IMP}/${groupId}/rows`, { params });
+  return data;
+}
+
+export async function addImporterRow(
+  groupId: string, row: { country: string; name: string; branch: string; gstin: string; address: string },
+): Promise<ImporterRow> {
+  const { data } = await apiClient.post<ImporterRow>(`${IMP}/${groupId}/rows`, row);
+  return data;
+}
+
+export async function updateImporterRow(
+  groupId: string, rowId: number, patch: { address?: string; gstin?: string },
+): Promise<ImporterRow> {
+  const { data } = await apiClient.patch<ImporterRow>(`${IMP}/${groupId}/rows/${rowId}`, patch);
+  return data;
+}
+
+export async function deleteImporterRow(groupId: string, rowId: number): Promise<void> {
+  await apiClient.delete(`${IMP}/${groupId}/rows/${rowId}`);
+}
+
+export async function uploadImporterRows(groupId: string, file: File): Promise<ImporterUploadResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<ImporterUploadResult>(`${IMP}/${groupId}/upload`, form);
+  return data;
+}
+
+export async function downloadImporterWorkbook(groupId: string, kind: "template" | "export", country?: string): Promise<void> {
+  const { data, headers } = await apiClient.get<Blob>(`${IMP}/${groupId}/${kind}`, {
+    responseType: "blob",
+    params: kind === "export" ? { country } : undefined,
+  });
+  const match = /filename="?([^"]+)"?/.exec(String(headers["content-disposition"] ?? ""));
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = match?.[1] ?? `importers_${kind}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

@@ -223,7 +223,7 @@ export function ErpMasterDataPage({ category }: { category: MasterDataCategory }
   const noTemplates = overview && overview.templates.length === 0;
 
   return (
-    <AppShell title={text.title} subtitle={text.subtitle}>
+    <AppShell title={text.title} subtitle={text.subtitle} icon={<DatabaseIcon className="h-6 w-6" />}>
       <div className="space-y-6">
         {error && <Alert>{error}</Alert>}
         {notice && (

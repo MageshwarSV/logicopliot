@@ -54,3 +54,7 @@ class CustomFieldReferenceValue(Base, TimestampMixin):
     match_value_4: Mapped[str] = mapped_column(String(255), nullable=False, default="")
 
     resolved_value: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # The importer's GSTIN, on an ERP Branch Address row only (Tenant Admin -> ERP Master Data
+    # - Importer). Display/data only: never part of the lookup key above. Null everywhere else.
+    gstin: Mapped[str | None] = mapped_column(String(20), nullable=True)

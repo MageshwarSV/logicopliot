@@ -19,6 +19,7 @@ import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPa
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
 import { ErpMasterDataPage } from "../pages/tenant-admin/ErpMasterDataPage";
+import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
 import { ManagerDashboard } from "../pages/manager/DashboardShell";
@@ -249,7 +250,7 @@ export function AppRoutes() {
         path="/tenant-admin/master-data/importer"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
-            <ErpMasterDataPage key="importer" category="importer" />
+            <ImporterMasterDataPage />
           </ProtectedRoute>
         }
       />

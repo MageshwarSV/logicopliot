@@ -107,6 +107,7 @@ function CountBadge({ count, cls }: { count: number; cls: string }) {
 
 export function AppShell({
   title,
+  icon,
   subtitle,
   actions,
   sidebar,
@@ -114,6 +115,8 @@ export function AppShell({
   categoryCountFilters,
 }: {
   title: string;
+  /** Optional tile shown left of the title (e.g. ERP Master Data's database icon). */
+  icon?: ReactNode;
   /** ReactNode, not string: the job header puts an icon beside the words. */
   subtitle?: ReactNode;
   actions?: ReactNode;
@@ -470,9 +473,16 @@ export function AppShell({
             away, so which job you were in and how it was doing had to be remembered rather
             than read. z-20 keeps it over the pinned document preview underneath. */}
         <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/90 px-8 py-4 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
-            {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+          <div className="flex min-w-0 items-center gap-4">
+            {icon && (
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
+                {icon}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
+              {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+            </div>
           </div>
           {/* The bell lives in the SHELL, not on any one page: an ERP submission finishes
               minutes after the operator left that job, so it has to reach them wherever they
