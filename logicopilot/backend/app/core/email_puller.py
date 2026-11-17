@@ -1126,6 +1126,7 @@ def _pull_inbox(
                     # Passed only for a mail the task list actually looked at - every other
                     # call keeps the exact argument list it always had.
                     **({"split_checked": True} if task.get("split_checked") is True else {}),
+                    **({"prealert_rec": task["prealert_rec"]} if task.get("prealert_rec") else {}),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("processing a harvested email crashed")
@@ -1195,19 +1196,24 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
 
         msg = email.message_from_bytes(base["raw"])
         subject = _decode(msg.get("Subject")) or "(no subject)"
-        if msg.get(_ps.SHIPMENT_HEADER) or len(_ps.hawbs_from_subject(subject)) < 2:
+        body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
+        files = _extract_attachments(msg)
+        # Worth checking: several HAWBs found by the rules (subject or body), or - for any other
+        # format - two or more attachments, in which case the model decides (see plan_split).
+        if msg.get(_ps.SHIPMENT_HEADER) or not (_ps.may_cover_several(msg, subject, body) or len(files) >= 2):
             return [{**base, "split_checked": True}], None
         sender = parseaddr(msg.get("From"))[1].lower()
         mid = _message_id(msg)
         claimed, _why = _claim(db, mid, sender, subject, steal=reexamine)
         if not claimed:
             return [base], None                      # the worker reports why, as for any mail
-        body = max(_body_text(msg) or "", _body_html_as_text(msg) or "", key=len)
-        subs = _ps.plan_split(msg, subject, body, _extract_attachments(msg),
-                              tenant_id=single_group.tenant_id)
+        found: dict = {}
+        subs = _ps.plan_split(msg, subject, body, files, tenant_id=single_group.tenant_id, found=found)
         if not subs:
             _unclaim(db, mid)
-            return [{**base, "split_checked": True}], None
+            # The single shipment the model already read, so the worker does not ask again.
+            single = {"prealert_rec": found["single"]} if found.get("single") else {}
+            return [{**base, "split_checked": True, **single}], None
         _start_claim_heartbeat(mid)
         tasks = [{**base, "raw": sub, "split_checked": True, "parent_mid": mid,
                   "mid": _message_id(email.message_from_bytes(sub))} for sub in subs]
@@ -1472,7 +1478,7 @@ def _process_one_message(
     db: Session, uid: bytes, raw: bytes, ctx: dict,
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
     extraction_engine: str, vision_engine_model: str, custom_filter_texts: list,
-    reexamine: bool, split_checked: bool = False,
+    reexamine: bool, split_checked: bool = False, prealert_rec: dict | None = None,
 ) -> dict | None:
     """Everything _pull_one_mailbox's own loop used to do for ONE message, given its
     already-harvested raw bytes (see _harvest_mailbox) instead of a live, mailbox-owned IMAP
@@ -1678,7 +1684,8 @@ def _process_one_message(
     # (see prealert_shipments.build_awb_pdf). A split mail carries its own record; an ordinary
     # single-shipment mail is read by the model only if and when a waybill turns out to be
     # needed, so the common case costs nothing.
-    _prealert_cache: dict = {}
+    # Already read by the task list's split check (plan_split's `found`), when it was asked.
+    _prealert_cache: dict = {"rec": prealert_rec} if prealert_rec and prealert_rec.get("hawb") else {}
 
     def _prealert_shipment() -> dict | None:
         if not prealert_on:

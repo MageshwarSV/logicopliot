@@ -10,8 +10,10 @@ Pulled as it stands that is ONE job holding three shipments' papers. This module
 that runs in the email puller before any job exists (only on a template with
 TemplateGroup.prealert_shipments switched on):
 
-  1. hawbs_from_subject   - the HAWB numbers named after "//" in the subject. One = an ordinary
-                            single-shipment mail; more than one = split.
+  1. named_hawbs          - the HAWB numbers the mail names: in the subject (after "//", or
+                            listed after the word HAWB: "HAWB - 45T0524120, 45T0523984") and in
+                            the body (a HOUSEBILL_NO / HAWB table column, "HAWB:" lines). One =
+                            an ordinary single-shipment mail; more than one = try to split.
   2. read_shipments       - the MODEL reads the body and returns one record per shipment. A
                             model, not a parser: the table's columns, order and wording change
                             from sender to sender and mail to mail.
@@ -54,6 +56,32 @@ SHIPMENT_HEADER = "X-Cargora-Prealert-Shipment"
 # "4720797358", "176-23418102". Short tokens ("//FW", "//2") are not shipment numbers.
 _SUBJECT_HAWB = re.compile(r"//\s*([A-Za-z0-9][A-Za-z0-9-]{5,})")
 
+# The other way forwarders write it - "Pre-Alert | HAWB - 45T0524120, 45T0523984 | Juniper ..."
+# (Expeditors, found live on JOB-90C47F: two shipments pulled as one job because the subject had
+# no "//"). The word HAWB (also "HAWBs", "HAWB No.", "HAWB#"), then a list of numbers separated
+# by commas, "/", "&" or "and". Never MAWB - \b before the H rules that out.
+_SUBJECT_HAWB_LIST = re.compile(
+    r"\bHAWBS?\b(?:\s*(?:NOS?|NUMBERS?)\b\.?)?\s*[:#.\-\u2013\u2014]*\s*(?P<list>[^|]*)", re.IGNORECASE)
+_LIST_SEPARATOR = re.compile(r"\s*(?:,|;|&|/|\band\b)\s*|\s+", re.IGNORECASE)
+_HAWB_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{5,}$")
+
+
+def _listed_after_hawb(subject: str) -> list[tuple[str, tuple[int, int]]]:
+    """(number, (start, end) of the whole "HAWB ... list" phrase) for each number listed after
+    the word HAWB. The list ends at "|" or at the first word that is not a number (a name), so
+    "HAWB 45T0524120 Juniper Networks 2026" reads one HAWB, not "2026"."""
+    out: list[tuple[str, tuple[int, int]]] = []
+    for m in _SUBJECT_HAWB_LIST.finditer(subject or ""):
+        start, end = m.start(), m.start("list")
+        for token in (t for t in _LIST_SEPARATOR.split(m.group("list")) if t):
+            token = token.strip(".-")
+            if not (_HAWB_TOKEN.match(token) and any(ch.isdigit() for ch in token)):
+                break
+            idx = subject.find(token, end)
+            end = idx + len(token) if idx >= 0 else end
+            out.append((token, (start, end)))
+    return out
+
 # Printed under the title of every waybill build_awb_pdf makes - and how one is recognised
 # afterwards (is_generated_awb).
 GENERATED_NOTE = "Generated from the pre-alert email"
@@ -68,10 +96,12 @@ def norm(value: str | None) -> str:
 
 
 def hawbs_from_subject(subject: str | None) -> list[str]:
-    """Every distinct HAWB number the subject names after "//", in order."""
+    """Every distinct HAWB number the subject names - after "//" first, then any listed after
+    the word HAWB - in order."""
     seen: set[str] = set()
     out: list[str] = []
-    for raw in _SUBJECT_HAWB.findall(subject or ""):
+    named = _SUBJECT_HAWB.findall(subject or "") + [n for n, _ in _listed_after_hawb(subject or "")]
+    for raw in named:
         key = norm(raw)
         if key and key not in seen:
             seen.add(key)
@@ -79,8 +109,106 @@ def hawbs_from_subject(subject: str | None) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------- HAWBs in the BODY
+#
+# Some pre-alerts name their shipments only in the body - a table with a HOUSEBILL_NO column, or
+# "HAWB: ..." lines - and say nothing (or only one number) in the subject. Read without the model:
+# a table column whose heading is a house-bill heading, and "HAWB:" style lines. MASTERBILL / MAWB
+# headings never count.
+_HAWB_HEADING = re.compile(
+    r"^\s*(?:H\.?\s*A\.?\s*W\.?\s*B\.?|HOUSE[\s_]*(?:AIR[\s_]*WAY[\s_]*)?BILL|HOUSE[\s_]*AWB|HBL)"
+    r"(?:[\s_]*(?:NO|NOS|NUMBER|NUMBERS|#)\.?)?\s*$", re.IGNORECASE)
+_BODY_HAWB_LINE = re.compile(
+    r"\b(?:HAWB|HOUSE[\s_]*(?:AIR[\s_]*WAY[\s_]*)?BILL|HOUSEBILL|HOUSE[\s_]*AWB)"
+    r"(?:[\s_]*(?:NO|NUMBER|#)\.?)?\s*[:#\-]\s*([A-Za-z0-9][A-Za-z0-9-]{5,})", re.IGNORECASE)
+
+
+def _is_hawb_value(value: str) -> bool:
+    v = " ".join(str(value or "").split()).strip(".-")
+    return bool(_HAWB_TOKEN.match(v)) and any(ch.isdigit() for ch in v)
+
+
+def _html_tables(html: str) -> list[list[list[str]]]:
+    """Every <table> in the mail's HTML as rows of cell text."""
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.tables, self.row, self.cell, self.depth = [], None, None, 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "table":
+                self.depth += 1
+                self.tables.append([])
+            elif tag == "tr" and self.depth:
+                self.row = []
+            elif tag in ("td", "th") and self.row is not None:
+                self.cell = []
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.cell is not None and self.row is not None:
+                self.row.append(" ".join("".join(self.cell).split()))
+                self.cell = None
+            elif tag == "tr" and self.row is not None and self.tables:
+                if any(self.row):
+                    self.tables[-1].append(self.row)
+                self.row = None
+            elif tag == "table" and self.depth:
+                self.depth -= 1
+
+        def handle_data(self, data):
+            if self.cell is not None:
+                self.cell.append(data)
+
+    p = _P()
+    try:
+        p.feed(html or "")
+    except Exception:  # noqa: BLE001 - a broken table just reads as nothing
+        return []
+    return [t for t in p.tables if t]
+
+
+def _html_of(msg: email.message.Message | None) -> str:
+    if msg is None:
+        return ""
+    for part in msg.walk():
+        if part.get_content_type() == "text/html" and not part.get_filename():
+            try:
+                payload = part.get_payload(decode=True) or b""
+                return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                return ""
+    return ""
+
+
+def hawbs_from_body(body: str, html: str = "") -> list[str]:
+    """HAWB numbers the body names: the values under a house-bill column in an HTML table, then
+    "HAWB: <number>" style lines in the text. Distinct, in order."""
+    found: list[str] = []
+    for table in _html_tables(html):
+        for r, row in enumerate(table):
+            cols = [i for i, cell in enumerate(row) if _HAWB_HEADING.match(cell or "")]
+            if not cols:
+                continue
+            for later in table[r + 1:]:
+                for i in cols:
+                    if i < len(later) and _is_hawb_value(later[i]):
+                        found.append(" ".join(later[i].split()).strip(".-"))
+            break
+    found += [m.strip(".-") for m in _BODY_HAWB_LINE.findall(body or "")]
+    seen: set[str] = set()
+    out: list[str] = []
+    for h in found:
+        if norm(h) not in seen:
+            seen.add(norm(h))
+            out.append(h)
+    return out
+
+
 def read_shipments(subject: str, body: str, hawbs: list[str], *,
-                   tenant_id: str | None = None) -> list[dict]:
+                   tenant_id: str | None = None, discover: bool = False,
+                   file_names: list[str] | None = None) -> list[dict]:
     """One record per shipment in this pre-alert, read by the model. [] if it cannot be read.
 
     `hawbs` (from the subject) tells the model which shipments to look for; a record whose
@@ -92,9 +220,20 @@ def read_shipments(subject: str, body: str, hawbs: list[str], *,
 
     settings = get_settings()
     text = (body or "").strip()
-    if not settings.openai_api_key or not text:
+    if not settings.openai_api_key or not (text or (discover and subject)):
         return []
-    wanted = ", ".join(hawbs) if hawbs else "(none named in the subject - report the shipment the email describes)"
+    if hawbs:
+        wanted = ", ".join(hawbs)
+    elif discover:
+        # The model decides how many shipments there are - any subject or body format.
+        wanted = ("(none given - report EVERY separate shipment this email covers. A shipment is one "
+                  "House Air Waybill (HAWB) number; it may appear in the subject in any format (after "
+                  "'//', after 'HAWB', comma or slash separated, in a sentence) or in the body (a table, "
+                  "a list, a sentence). One HAWB with several invoices or packing lists is still ONE "
+                  "shipment. If the email covers one shipment, return one record.)")
+    else:
+        wanted = "(none named in the subject - report the shipment the email describes)"
+    names = ", ".join(file_names or [])
     try:
         resp = create_chat_completion_with_retry(
             timeout=60,
@@ -124,13 +263,14 @@ def read_shipments(subject: str, body: str, hawbs: list[str], *,
                         "  shipper            shipper / supplier name\n"
                         "  consignee          consignee name\n"
                         "  eta                ETA exactly as written\n\n"
-                        "Copy numbers character for character. Only report shipments whose "
-                        "HAWB is in the list you are given.\n"
+                        "Copy numbers character for character. When you are given a list of "
+                        "HAWB numbers, only report shipments whose HAWB is in that list.\n"
                         'Reply with JSON: {"shipments": [ {...}, ... ]}.'
                     ),
                 },
                 {"role": "user",
-                 "content": f"HAWB numbers named in the subject: {wanted}\n\nSubject: {subject}\n\n{text[:12000]}"},
+                 "content": f"HAWB numbers named in the subject: {wanted}\n\nSubject: {subject}\n\n"
+                            + (f"Attachments: {names}\n\n" if names else "") + text[:12000]},
             ],
         )
         rows = json.loads(resp.choices[0].message.content or "{}").get("shipments") or []
@@ -344,11 +484,26 @@ def _body_for(shipment: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _subject_without_hawbs(subject: str | None) -> str:
+    """The subject with every HAWB it names taken out - the "//..." tail and any "HAWB - a, b"
+    list - so each split mail can name just its own HAWB the usual way ("<rest> //<hawb>")."""
+    text = (subject or "").split("//", 1)[0]
+    # One span per "HAWB ..." phrase - each listed number repeats the phrase start with a growing
+    # end, so keep the furthest end, then cut from the back so earlier offsets stay valid.
+    phrase_end: dict[int, int] = {}
+    for _, (start, end) in _listed_after_hawb(text):
+        phrase_end[start] = max(end, phrase_end.get(start, end))
+    for start, end in sorted(phrase_end.items(), reverse=True):
+        text = text[:start] + text[end:]
+    text = re.sub(r"(\s*\|\s*)+", " | ", text)          # "a |  | b" -> "a | b"
+    return " ".join(text.split()).strip(" |-:").strip()
+
+
 def split_message(msg: email.message.Message, subject: str, shipments: list[dict],
                   files: list[tuple[str, bytes]], placed: dict[str, list[int]]) -> list[bytes]:
     """One raw mail per shipment: the original's sender and recipients, a subject naming just
     this HAWB, this shipment's own row as the body, and only its own attachments."""
-    prefix = (subject or "").split("//", 1)[0].strip() or "Pre-Alert"
+    prefix = _subject_without_hawbs(subject) or "Pre-Alert"
     parent_id = (msg.get("Message-ID") or "").strip().strip("<>") or "prealert"
     out: list[bytes] = []
     for shipment in shipments:
@@ -370,28 +525,84 @@ def split_message(msg: email.message.Message, subject: str, shipments: list[dict
     return out
 
 
+def named_hawbs(msg: email.message.Message | None, subject: str, body: str) -> tuple[list[str], list[str]]:
+    """(every HAWB the mail names - subject first, then body; the ones named ONLY in the body)."""
+    from_subject = hawbs_from_subject(subject)
+    seen = {norm(h) for h in from_subject}
+    body_only = [h for h in hawbs_from_body(body, _html_of(msg)) if norm(h) not in seen]
+    return from_subject + body_only, body_only
+
+
+def may_cover_several(msg: email.message.Message, subject: str, body: str) -> bool:
+    """Cheap check (no model) - is this mail worth asking whether it covers several shipments?"""
+    if msg.get(SHIPMENT_HEADER):
+        return False
+    return len(named_hawbs(msg, subject, body)[0]) >= 2
+
+
 def plan_split(msg: email.message.Message, subject: str, body: str,
-               files: list[tuple[str, bytes]], *, tenant_id: str | None = None) -> list[bytes] | None:
+               files: list[tuple[str, bytes]], *, tenant_id: str | None = None,
+               found: dict | None = None) -> list[bytes] | None:
     """The per-shipment mails for a pre-alert covering several shipments, or None to process the
     mail as it stands (one shipment, already split, or not readable as several).
 
-    Only splits when the model found a record for at least two of the HAWBs the subject names -
-    a subject that merely looks like several numbers must never turn one shipment into three
-    empty jobs.
+    The shipments are the HAWBs the subject names plus any the body names (a HOUSEBILL_NO column,
+    "HAWB:" lines). Only splits when the model found a record for at least two of them - a mail
+    that merely looks like several numbers must never turn one shipment into three empty jobs.
+    A shipment named ONLY in the body must also have an attachment of its own: a forwarded mail
+    can quote an older pre-alert's table, and those shipments are not this mail's to create.
+
+    When the rules find fewer than two, THE MODEL decides - so a subject or body in any format
+    (now or in future) is understood, not only the ones written as rules here. Its answer is
+    only trusted when every HAWB it reports is printed in the mail itself (subject, body or an
+    attachment's name) and, as above, has an attachment of its own. A mail with fewer than two
+    attachments can never pass that, so the model is not asked about it at all. `found`, when
+    given, receives the single shipment the model read ("single") so the caller need not ask
+    the same question again to build the Air Waybill.
     """
     if msg.get(SHIPMENT_HEADER):
         return None
-    hawbs = hawbs_from_subject(subject)
-    if len(hawbs) < 2:
+    hawbs, body_only = named_hawbs(msg, subject, body)
+    if len(hawbs) >= 2:
+        shipments = read_shipments(subject, body, hawbs, tenant_id=tenant_id)
+    elif len(files) >= 2:
+        names = [n for n, _ in files]
+        recs = read_shipments(subject, body, [], tenant_id=tenant_id, discover=True, file_names=names)
+        printed = norm(" ".join([subject or "", body or "", _html_of(msg), *names]))
+        shipments = [r for r in recs if norm(r["hawb"]) and norm(r["hawb"]) in printed]
+        invented = [r["hawb"] for r in recs if r not in shipments]
+        if invented:
+            logger.info("pre-alert %r: model reported HAWB(s) %s not printed in the mail - ignored",
+                        (subject or "")[:80], invented)
+        if found is not None and len(shipments) == 1:
+            found["single"] = shipments[0]
+        named = {norm(h) for h in hawbs}
+        body_only = body_only + [r["hawb"] for r in shipments if norm(r["hawb"]) not in named]
+        if len(shipments) < 2:
+            return None
+        logger.info("pre-alert %r: model found %d shipments %s", (subject or "")[:80],
+                    len(shipments), [r["hawb"] for r in shipments])
+    else:
         return None
-    shipments = read_shipments(subject, body, hawbs, tenant_id=tenant_id)
     if len(shipments) < 2:
         logger.info("pre-alert %r names %d HAWBs but %d could be read from the body - not split",
                     (subject or "")[:80], len(hawbs), len(shipments))
         return None
     placed, loose = assign_attachments(shipments, files, tenant_id=tenant_id)
+    if body_only:
+        only = {norm(h) for h in body_only}
+        dropped = [s["hawb"] for s in shipments if norm(s["hawb"]) in only and not placed.get(s["hawb"])]
+        if dropped:
+            shipments = [s for s in shipments if s["hawb"] not in dropped]
+            logger.info("pre-alert %r: %s named only in the body with no attachment of its own - left out",
+                        (subject or "")[:80], dropped)
+        if len(shipments) < 2:
+            logger.info("pre-alert %r: fewer than two shipments with their own attachments - not split",
+                        (subject or "")[:80])
+            return None
+        loose = [i for i in range(len(files)) if not any(i in placed.get(s["hawb"], []) for s in shipments)]
     logger.info("pre-alert %r split into %d shipments: %s; attachments left out: %s",
                 (subject or "")[:80], len(shipments),
-                {h: [files[i][0] for i in idx] for h, idx in placed.items()},
+                {s["hawb"]: [files[i][0] for i in placed.get(s["hawb"], [])] for s in shipments},
                 [files[i][0] for i in loose])
     return split_message(msg, subject, shipments, files, placed)
