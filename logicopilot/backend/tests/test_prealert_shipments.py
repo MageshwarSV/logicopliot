@@ -68,6 +68,112 @@ def test_a_subject_with_no_slashes_has_none():
     assert ps.hawbs_from_subject("Pre-Alert: Juniper Networks 45T0523243") == []
 
 
+# The other way it is written - the Expeditors mail pulled as ONE job (JOB-90C47F, 17 Nov 2026).
+EXPEDITORS_SUBJECT = "Fwd:\xa0Pre-Alert | HAWB - 45T0524120, 45T0523984 | Juniper Networks Solution India Pvt"
+
+
+def test_hawbs_listed_after_the_word_hawb_are_read():
+    assert ps.hawbs_from_subject(EXPEDITORS_SUBJECT) == ["45T0524120", "45T0523984"]
+    assert ps.hawbs_from_subject("Pre-Alert HAWB: 45T0524120 / 45T0523984 & 4720797358") == [
+        "45T0524120", "45T0523984", "4720797358"]
+    assert ps.hawbs_from_subject("Pre-Alert HAWBs 45T0524120 and 45T0523984") == ["45T0524120", "45T0523984"]
+    assert ps.hawbs_from_subject("Pre-Alert HAWB No. 45T0524120") == ["45T0524120"]
+
+
+def test_the_hawb_list_stops_at_a_name_and_never_reads_mawb():
+    # "2026" after a name is not a HAWB; numbers after MAWB are not HAWBs.
+    assert ps.hawbs_from_subject("Pre-Alert HAWB 45T0524120 Juniper Networks 2026") == ["45T0524120"]
+    assert ps.hawbs_from_subject("Pre-Alert | MAWB - 312-93440325, 198-00112210 | HAWB 45T0524120") == ["45T0524120"]
+    assert ps.hawbs_from_subject("Pre-Alert | MAWB - 312-93440325, 198-00112210") == []
+
+
+def test_both_ways_together_count_each_hawb_once():
+    found = ps.hawbs_from_subject("Pre-Alert HAWB - 45T0524120, 45T0523984 //45t0524120")
+    assert [h.upper() for h in found] == ["45T0524120", "45T0523984"]
+
+
+def test_the_expeditors_mail_splits_into_one_mail_per_shipment(monkeypatch):
+    shipments = [{**SHIPMENTS[0], "hawb": "45T0524120", "file_no": "22H0523553"},
+                 {**SHIPMENTS[1], "hawb": "45T0523984", "file_no": "22H0523560"}]
+    files = [("22H0523553.pdf", _pdf("Commercial Invoice")), ("22H0523560.pdf", _pdf("Commercial Invoice"))]
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(x) for x in shipments])
+    subs = ps.plan_split(_mail(EXPEDITORS_SUBJECT, files), EXPEDITORS_SUBJECT, "body", list(files))
+    assert len(subs) == 2
+    for raw, shipment, fname in zip(subs, shipments, ["22H0523553.pdf", "22H0523560.pdf"]):
+        sub = email.message_from_bytes(raw)
+        # The list is taken out; each mail names only its own HAWB, the usual way.
+        assert sub["Subject"] == f"Fwd: Pre-Alert | Juniper Networks Solution India Pvt //{shipment['hawb']}"
+        assert ps.hawbs_from_subject(sub["Subject"]) == [shipment["hawb"]]
+        assert [p.get_filename() for p in sub.walk() if p.get_filename()] == [fname]
+
+
+# ------------------------------------------------------------------ HAWBs in the BODY
+# The Expeditors table, as the mail's HTML has it - with a subject that names no HAWB at all.
+BODY_HTML = """<p>Dear Team,</p><p>Please find the Pre-alert documents for the subject Shipments.</p>
+<table><tr><th>FILE_NO</th><th>ETA</th><th>SHIPPER_CLIENT_NAME</th><th>CONSIGNEE_CLIENT_NAME</th>
+<th>ORIGIN</th><th>DESTINATION</th><th>MASTERBILL_NO</th><th>HOUSEBILL_NO</th><th>PCS</th></tr>
+<tr><td>22H0523553</td><td>19-Nov-26</td><td>Juniper Networks International B.V.</td><td>Juniper Networks Solution India Pvt</td>
+<td>HAN</td><td>BLR</td><td>312-93440325</td><td>45T0524120</td><td>2</td></tr>
+<tr><td>22H0523560</td><td>20-Nov-26</td><td>VIETNAM ACCTON TECHNOLOGY CO LTD</td><td>Juniper Networks Solution India Pvt</td>
+<td>HAN</td><td>BLR</td><td>198-00112210</td><td>45T0523984</td><td>6</td></tr></table>"""
+BODY_SHIPMENTS = [{**SHIPMENTS[0], "hawb": "45T0524120", "file_no": "22H0523553", "mawb": "312-93440325"},
+                  {**SHIPMENTS[1], "hawb": "45T0523984", "file_no": "22H0523560", "mawb": "198-00112210"}]
+BODY_FILES = [("22H0523553.pdf", _pdf("Commercial Invoice")), ("22H0523560.pdf", _pdf("Commercial Invoice"))]
+
+
+def _html_mail(subject, html, files):
+    m = EmailMessage()
+    m["From"] = "Forwarder <ops@forwarder.example>"
+    m["To"] = "airimport@cargora.example"
+    m["Subject"] = subject
+    m["Message-ID"] = "<body123@forwarder.example>"
+    m.set_content("see table")
+    m.add_alternative(html, subtype="html")
+    for name, blob in files:
+        m.add_attachment(blob, maintype="application", subtype="pdf", filename=name)
+    return m
+
+
+def test_hawbs_are_read_from_a_housebill_column_never_the_masterbill_one():
+    assert ps.hawbs_from_body("", BODY_HTML) == ["45T0524120", "45T0523984"]
+
+
+def test_hawbs_are_read_from_hawb_lines_in_the_text():
+    body = "Shipment 1\nHAWB: 45T0524120\nMAWB: 312-93440325\n\nShipment 2\nHouse AWB No - 45T0523984"
+    assert ps.hawbs_from_body(body) == ["45T0524120", "45T0523984"]
+    assert ps.hawbs_from_body("MAWB: 312-93440325 and nothing else") == []
+
+
+def test_a_mail_naming_several_hawbs_only_in_its_body_is_worth_checking():
+    msg = _html_mail("Pre-Alert | Juniper Networks Solution India Pvt", BODY_HTML, BODY_FILES)
+    assert ps.may_cover_several(msg, msg["Subject"], "see table") is True
+    one = BODY_HTML.split("<tr><td>22H0523560")[0] + "</table>"
+    assert ps.may_cover_several(_html_mail("Pre-Alert", one, []), "Pre-Alert", "") is False
+
+
+def test_a_mail_naming_its_shipments_only_in_the_body_is_split(monkeypatch):
+    monkeypatch.setattr(ps, "read_shipments", lambda subject, body, hawbs, **k: [
+        dict(x) for x in BODY_SHIPMENTS if x["hawb"] in hawbs])
+    subject = "Pre-Alert | Juniper Networks Solution India Pvt"
+    msg = _html_mail(subject, BODY_HTML, BODY_FILES)
+    subs = ps.plan_split(msg, subject, "see table", list(BODY_FILES))
+    assert len(subs) == 2
+    for raw, shipment, fname in zip(subs, BODY_SHIPMENTS, ["22H0523553.pdf", "22H0523560.pdf"]):
+        sub = email.message_from_bytes(raw)
+        assert sub["Subject"] == f"{subject} //{shipment['hawb']}"
+        assert [p.get_filename() for p in sub.walk() if p.get_filename()] == [fname]
+
+
+def test_a_shipment_named_only_in_a_quoted_older_table_gets_no_job(monkeypatch):
+    # Subject names one HAWB; the body also quotes an older mail's table with another. That
+    # other shipment has no attachment here, so it is not this mail's - no split at all.
+    monkeypatch.setattr(ps, "read_shipments", lambda subject, body, hawbs, **k: [
+        dict(x) for x in BODY_SHIPMENTS if x["hawb"] in hawbs])
+    subject = "Pre-Alert | HAWB - 45T0524120 | Juniper"
+    files = [BODY_FILES[0]]
+    assert ps.plan_split(_html_mail(subject, BODY_HTML, files), subject, "x", list(files)) is None
+
+
 # ------------------------------------------------------------------ attachments
 
 def test_attachments_are_matched_by_the_file_number_in_their_name():
@@ -132,12 +238,42 @@ def test_a_split_mail_is_never_split_again(monkeypatch):
     assert ps.plan_split(child, child["Subject"], "body", []) is None
 
 
-def test_a_single_shipment_mail_is_left_alone(monkeypatch):
+def test_a_single_shipment_mail_with_one_attachment_costs_no_model_call(monkeypatch):
     called = []
     monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: called.append(1) or [])
     subject = "FW: Pre-Alert: Juniper //45T0523243"
-    assert ps.plan_split(_mail(subject), subject, "body", list(FILES)) is None
-    assert called == []                                            # the model was not even asked
+    one = [FILES[0]]
+    assert ps.plan_split(_mail(subject, one), subject, "body", list(one)) is None
+    assert called == []          # one attachment can never be two shipments - the model is not asked
+
+
+def test_with_several_attachments_the_model_decides_and_one_shipment_is_left_alone(monkeypatch):
+    calls = []
+
+    def fake(subject, body, hawbs, **k):
+        calls.append(k.get("discover"))
+        return [dict(SHIPMENTS[0])]
+    monkeypatch.setattr(ps, "read_shipments", fake)
+    subject = "FW: Pre-Alert: Juniper //45T0523243"
+    found = {}
+    assert ps.plan_split(_mail(subject), subject, "body", list(FILES), found=found) is None
+    assert calls == [True] and found["single"]["hawb"] == "45T0523243"   # handed on, not asked again
+
+
+def test_the_model_splits_a_subject_format_no_rule_knows(monkeypatch):
+    # "Shipments 45T0523243 & 4720797358 ..." - no "//", no "HAWB" word, no table.
+    subject = "Pre-alert docs for shipments 45T0523243 & 4720797358 (Juniper)"
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(SHIPMENTS[0]), dict(SHIPMENTS[1])])
+    files = FILES[:2]
+    subs = ps.plan_split(_mail(subject, files), subject, "please find attached", list(files))
+    assert [email.message_from_bytes(r)["Subject"].rsplit("//", 1)[1] for r in subs] == ["45T0523243", "4720797358"]
+
+
+def test_a_hawb_the_model_invents_is_ignored(monkeypatch):
+    subject = "Pre-alert docs for shipment 45T0523243"
+    invented = {**SHIPMENTS[1], "hawb": "9999999999"}           # printed nowhere in the mail
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(SHIPMENTS[0]), invented])
+    assert ps.plan_split(_mail(subject, FILES[:2]), subject, "body", list(FILES[:2])) is None
 
 
 def test_several_numbers_in_the_subject_but_one_readable_shipment_is_not_split(monkeypatch):
@@ -265,10 +401,21 @@ def test_a_single_shipment_mail_is_one_ordinary_task_and_costs_no_model_call(db_
     called = []
     monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: called.append(1) or [])
     base = _base_task(db_session)
-    base["raw"] = _mail("FW: Pre-Alert: Juniper //45T0523243").as_bytes()
+    base["raw"] = _mail("FW: Pre-Alert: Juniper //45T0523243", [FILES[0]]).as_bytes()
     tasks, parent = ep._split_into_shipment_tasks(db_session, base, False)
     assert parent is None and len(tasks) == 1 and tasks[0]["split_checked"] is True
     assert tasks[0]["raw"] == base["raw"] and called == []
+
+
+def test_the_shipment_the_model_read_is_handed_to_the_worker(db_session, monkeypatch):
+    from app.core import email_puller as ep
+
+    monkeypatch.setattr(ps, "read_shipments", lambda *a, **k: [dict(SHIPMENTS[0])])
+    base = _base_task(db_session)
+    base["raw"] = _mail("FW: Pre-Alert: Juniper //45T0523243").as_bytes()
+    tasks, parent = ep._split_into_shipment_tasks(db_session, base, False)
+    assert parent is None and len(tasks) == 1
+    assert tasks[0]["prealert_rec"]["hawb"] == "45T0523243"
 
 
 def test_a_template_without_the_setting_is_never_split(db_session, monkeypatch):

@@ -9348,6 +9348,24 @@ def run_extraction(
     # off the documents first. Never on upload order — see app/core/doc_sets.py.
     from app.core.doc_sets import assign_sets, describe_sets, pairing_key
 
+    # A scoped run read ONE file, so per_file only holds that file's invoice number. Every other
+    # file looked unnumbered to the pairing, which then put the re-read invoice - and every
+    # invoice re-read after it - into set 1: four invoices became "one" and the INVOICES sheet
+    # of the Excel came out with a single row pairing one invoice's number with another's
+    # value (found on SIT, MAA/SI/03725/26-27). The untouched files' readings are still in the
+    # table (the delete above kept them), so they are read back exactly as recompute-doc-sets
+    # does, and the pairing sees the whole job again.
+    if only_job_document_id:
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id,
+                           JobFieldValue.job_document_id.isnot(None),
+                           JobFieldValue.job_document_id != only_job_document_id)
+                   .all()):
+            val = (fv.corrected_value or fv.extracted_value or "").strip()
+            if val:
+                per_file.setdefault(fv.job_document_id, {}).setdefault(fv.label_name, val)
+            written.append(fv)   # re-stamped with the same pairing as the file just read
+
     paired_files = [
         {
             "id": d.id,
