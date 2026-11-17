@@ -151,3 +151,63 @@ export async function downloadQuotationExport(groupId: string): Promise<void> {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// --- CTH Master: the customer's CTH dump workbook, per template (master_data_cth.py).
+const CTH = "/master-data/cth-directory";
+
+export interface CthDumpStatus {
+  attached: boolean;
+  file_name: string | null;
+  uploaded_at: string | null;
+  checking_upload: boolean;
+  upload_error: string | null;
+}
+
+export interface CthTemplate extends CthDumpStatus {
+  group_id: string;
+  name: string;
+  rows: number | null;
+}
+
+export interface CthRow {
+  part_code: string;
+  description: string;
+  cth: string;
+  cth_as_written: string;
+}
+
+export interface CthRowsPage extends CthDumpStatus {
+  ready: boolean;
+  total: number;
+  rows: CthRow[];
+}
+
+export async function listCthTemplates(): Promise<CthTemplate[]> {
+  const { data } = await apiClient.get<{ templates: CthTemplate[] }>(CTH);
+  return data.templates;
+}
+
+export async function listCthRows(
+  groupId: string,
+  params: { q?: string; sort: "part" | "description" | "cth"; direction: "asc" | "desc"; page: number; page_size: number },
+): Promise<CthRowsPage> {
+  const { data } = await apiClient.get<CthRowsPage>(`${CTH}/${groupId}/rows`, { params });
+  return data;
+}
+
+export async function uploadCthDump(groupId: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  await apiClient.post(`${CTH}/${groupId}/upload`, form);
+}
+
+export async function downloadCthFile(groupId: string, kind: "download" | "template"): Promise<void> {
+  const { data, headers } = await apiClient.get<Blob>(`${CTH}/${groupId}/${kind}`, { responseType: "blob" });
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(String(headers["content-disposition"] ?? ""));
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = match?.[1] ? decodeURIComponent(match[1]) : kind === "template" ? "CTH_dump_template.xlsx" : "CTH_dump.xlsx";
+  a.click();
+  URL.revokeObjectURL(url);
+}

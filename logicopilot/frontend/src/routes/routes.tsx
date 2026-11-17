@@ -20,6 +20,7 @@ import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
 import { UserJobSummaryPage } from "../pages/tenant-admin/UserJobSummaryPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
 import { QuotationMasterDataPage } from "../pages/tenant-admin/QuotationMasterDataPage";
+import { CthMasterDataPage } from "../pages/tenant-admin/CthMasterDataPage";
 import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
@@ -268,6 +269,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <QuotationMasterDataPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/cth"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <CthMasterDataPage />
           </ProtectedRoute>
         }
       />
