@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -58,3 +58,7 @@ class CustomFieldReferenceValue(Base, TimestampMixin):
     # The importer's GSTIN, on an ERP Branch Address row only (Tenant Admin -> ERP Master Data
     # - Importer). Display/data only: never part of the lookup key above. Null everywhere else.
     gstin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # False = switched off by a Tenant Admin (ERP Master Data): kept, but never offered or
+    # matched on a job. Every READ path filters on it; writes still see the row, so the same
+    # key can't be added twice.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())

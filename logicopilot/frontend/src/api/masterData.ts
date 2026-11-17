@@ -100,7 +100,7 @@ const IMP = "/master-data/importer-directory";
 export interface ImporterTemplate {
   group_id: string;
   name: string;
-  countries: { country: string; rows: number }[];
+  countries: { country: string; rows: number; gstin_rows: number }[];
 }
 
 export interface ImporterRow {
@@ -110,6 +110,7 @@ export interface ImporterRow {
   country: string;
   gstin: string | null;
   address: string;
+  is_active: boolean;
   updated_at: string | null;
 }
 
@@ -139,7 +140,7 @@ export async function listImporterTemplates(): Promise<ImporterTemplate[]> {
 
 export async function listImporterRows(
   groupId: string,
-  params: { country: string; q?: string; sort: "name" | "branch"; direction: "asc" | "desc"; page: number; page_size: number },
+  params: { country: string; q?: string; gstin_only: boolean; sort: "name" | "branch"; direction: "asc" | "desc"; page: number; page_size: number },
 ): Promise<{ total: number; rows: ImporterRow[] }> {
   const { data } = await apiClient.get<{ total: number; rows: ImporterRow[] }>(`${IMP}/${groupId}/rows`, { params });
   return data;
@@ -159,8 +160,10 @@ export async function updateImporterRow(
   return data;
 }
 
-export async function deleteImporterRow(groupId: string, rowId: number): Promise<void> {
-  await apiClient.delete(`${IMP}/${groupId}/rows/${rowId}`);
+/** Records are never deleted: a branch is made Inactive (hidden from jobs) or Active again. */
+export async function setImporterRowActive(groupId: string, rowId: number, isActive: boolean): Promise<ImporterRow> {
+  const { data } = await apiClient.put<ImporterRow>(`${IMP}/${groupId}/rows/${rowId}/active`, { is_active: isActive });
+  return data;
 }
 
 export async function uploadImporterRows(groupId: string, file: File): Promise<ImporterUploadResult> {
@@ -170,10 +173,12 @@ export async function uploadImporterRows(groupId: string, file: File): Promise<I
   return data;
 }
 
-export async function downloadImporterWorkbook(groupId: string, kind: "template" | "export", country?: string): Promise<void> {
+export async function downloadImporterWorkbook(
+  groupId: string, kind: "template" | "export", country?: string, gstinOnly = false,
+): Promise<void> {
   const { data, headers } = await apiClient.get<Blob>(`${IMP}/${groupId}/${kind}`, {
     responseType: "blob",
-    params: kind === "export" ? { country } : undefined,
+    params: kind === "export" ? { country, gstin_only: gstinOnly } : undefined,
   });
   const match = /filename="?([^"]+)"?/.exec(String(headers["content-disposition"] ?? ""));
   const url = URL.createObjectURL(data);

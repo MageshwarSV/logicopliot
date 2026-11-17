@@ -118,6 +118,7 @@ def reference_map_for(db: Session, custom_field_id: str) -> dict[tuple, str]:
         for r in db.query(CustomFieldReferenceValue).filter(
             CustomFieldReferenceValue.custom_field_id == custom_field_id,
             CustomFieldReferenceValue.mark_id.is_(None),
+            CustomFieldReferenceValue.is_active.is_(True),
         ).all()
         if r.resolved_value
     }
@@ -164,6 +165,7 @@ def lookup_reference(
             db.query(CustomFieldReferenceValue)
             .filter(
                 *_owner_filter(custom_field_id, mark_id),
+                CustomFieldReferenceValue.is_active.is_(True),
                 CustomFieldReferenceValue.match_value_1 == slots[0],
                 CustomFieldReferenceValue.match_value_2 == slots[1],
                 CustomFieldReferenceValue.match_value_3 == slots[2],
@@ -173,7 +175,9 @@ def lookup_reference(
         )
         return row.resolved_value if row is not None else None
     candidates = (
-        db.query(CustomFieldReferenceValue).filter(*_owner_filter(custom_field_id, mark_id)).all()
+        db.query(CustomFieldReferenceValue).filter(
+            *_owner_filter(custom_field_id, mark_id), CustomFieldReferenceValue.is_active.is_(True),
+        ).all()
     )
     # An EXACT match always wins over a fuzzy one, even here - fuzzy is a fallback for when
     # nothing matches exactly, never a reason to prefer a near-miss over a row that already
@@ -246,6 +250,7 @@ def lookup_reference_ai_assisted(
     def _prefiltered(exact: bool) -> list[CustomFieldReferenceValue]:
         query = db.query(CustomFieldReferenceValue).filter(
             CustomFieldReferenceValue.custom_field_id == custom_field_id,
+            CustomFieldReferenceValue.is_active.is_(True),
         )
         for i in range(real_keys - 1):
             col = exact_columns[i]

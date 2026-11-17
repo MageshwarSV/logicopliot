@@ -4138,6 +4138,7 @@ def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | 
 
     query = db.query(CustomFieldReferenceValue).filter(
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
+        CustomFieldReferenceValue.is_active.is_(True),
     )
     if key and key.strip():
         query = query.filter(CustomFieldReferenceValue.match_value_1 == normalize_key(key))
@@ -4289,6 +4290,7 @@ def search_custom_field_reference_values(
     filters = [
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
         CustomFieldReferenceValue.resolved_value != "",
+        CustomFieldReferenceValue.is_active.is_(True),
     ]
     if country_scoped:
         filters.append(CustomFieldReferenceValue.match_value_1.ilike(needle))
@@ -4371,6 +4373,7 @@ def list_custom_field_reference_countries(
         .filter(
             CustomFieldReferenceValue.custom_field_id == custom_field_id,
             CustomFieldReferenceValue.match_value_2 != "",
+            CustomFieldReferenceValue.is_active.is_(True),
         )
         .distinct()
         .order_by(CustomFieldReferenceValue.match_value_2)

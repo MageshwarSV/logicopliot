@@ -8,8 +8,8 @@ The job screen resolves the importer through three tables per template, in a cas
   ERP Consignee Name                  (document name, country) -> ERP importer name
   ERP Importer Address / Branch Code  (ERP importer name)      -> branch(es)
   ERP Branch Address                  (name, branch, country)  -> address
-Adding a branch here writes all three, so it becomes pickable on a job. Deleting one removes
-its address row, and also the branch / name rows when no other address row still needs them.
+Adding a branch here writes all three, so it becomes pickable on a job. Nothing is deleted from
+here: a branch is made Inactive (see set_active), which hides it from jobs without losing it.
 Editing changes only the address and GSTIN; the key (name, branch, country) is fixed - delete
 and add again to change it.
 """
@@ -18,7 +18,7 @@ import io
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, require_role
@@ -78,7 +78,7 @@ def _clean_gstin(value: str | None) -> str | None:
 def _row_out(r: Ref) -> dict:
     return {
         "id": r.id, "name": r.match_value_1, "branch": r.match_value_2, "country": r.match_value_3,
-        "gstin": r.gstin, "address": r.resolved_value,
+        "gstin": r.gstin, "address": r.resolved_value, "is_active": r.is_active,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
 
@@ -98,8 +98,9 @@ def list_templates(db: Session = Depends(get_db), user: User = Depends(require_r
         if group_id in seen:
             continue
         seen.add(group_id)
+        has_gstin = func.sum(case((func.coalesce(Ref.gstin, "") != "", 1), else_=0))
         countries = (
-            db.query(Ref.match_value_3, func.count(Ref.id))
+            db.query(Ref.match_value_3, func.count(Ref.id), has_gstin)
             .filter(Ref.custom_field_id == field_id)
             .group_by(Ref.match_value_3)
             .order_by(func.count(Ref.id).desc())
@@ -107,7 +108,7 @@ def list_templates(db: Session = Depends(get_db), user: User = Depends(require_r
         )
         templates.append({
             "group_id": group_id, "name": group_name,
-            "countries": [{"country": c, "rows": n} for c, n in countries if c],
+            "countries": [{"country": c, "rows": n, "gstin_rows": int(g or 0)} for c, n, g in countries if c],
         })
     templates.sort(key=lambda t: t["name"].lower())
     return {"templates": templates}
@@ -118,6 +119,7 @@ def list_rows(
     group_id: str,
     country: str = Query(..., min_length=1, max_length=255),
     q: str = Query("", max_length=200),
+    gstin_only: bool = Query(False, description="Only branches that have a GSTIN"),
     sort: str = Query("name", pattern="^(name|branch)$"),
     direction: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
@@ -128,6 +130,8 @@ def list_rows(
     fields = _fields(db, user, group_id)
     query = db.query(Ref).filter(Ref.custom_field_id == fields["address"].id,
                                  Ref.match_value_3 == normalize_key(country))
+    if gstin_only:
+        query = query.filter(func.coalesce(Ref.gstin, "") != "")
     term = q.strip()
     if term:
         escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -170,8 +174,11 @@ def add_row(group_id: str, payload: NewImporterRow, db: Session = Depends(get_db
     gstin = _clean_gstin(payload.gstin)
     staged = stage_upload_row(db, fields["address"].id, values, payload.address)
     if staged["status"] != "added":
+        inactive = not staged["row"].is_active
         db.rollback()
-        raise HTTPException(status_code=409, detail="This importer branch already exists for this country. Edit that record instead.")
+        raise HTTPException(status_code=409, detail=(
+            "This importer branch already exists for this country but is Inactive. Make that record Active instead."
+            if inactive else "This importer branch already exists for this country. Edit that record instead."))
     staged["row"].gstin = gstin
     _stage_name_and_branch(db, fields, payload.name, payload.branch, payload.country)
     db.commit()
@@ -200,24 +207,41 @@ def update_row(group_id: str, row_id: int, payload: ImporterRowUpdate, db: Sessi
     return _row_out(row)
 
 
-@router.delete("/{group_id}/rows/{row_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_row(group_id: str, row_id: int, db: Session = Depends(get_db),
-               user: User = Depends(require_role(TENANT_ADMIN))) -> None:
+class ActivePayload(BaseModel):
+    is_active: bool
+
+
+@router.put("/{group_id}/rows/{row_id}/active")
+def set_active(group_id: str, row_id: int, payload: ActivePayload, db: Session = Depends(get_db),
+               user: User = Depends(require_role(TENANT_ADMIN))) -> dict:
+    """Make an importer branch Active or Inactive - records are never deleted from here.
+
+    Inactive: the address row is no longer offered on jobs; its branch row goes inactive too
+    once no other ACTIVE address row needs it (same name + branch), and its name row once no
+    active address row is left for that name in that country. Active: all three come back."""
     fields = _fields(db, user, group_id)
     addr_id = fields["address"].id
     row = _address_row(db, addr_id, row_id)
     name, branch, country = row.match_value_1, row.match_value_2, row.match_value_3
-    db.delete(row)
+    row.is_active = payload.is_active
     db.flush()
-    remaining = db.query(Ref.id).filter(Ref.custom_field_id == addr_id, Ref.match_value_1 == name)
-    if "branch" in fields and remaining.filter(Ref.match_value_2 == branch).first() is None:
-        db.query(Ref).filter(Ref.custom_field_id == fields["branch"].id, Ref.match_value_1 == name,
-                             Ref.match_value_2 == branch).delete(synchronize_session=False)
-    if "name" in fields and remaining.filter(Ref.match_value_3 == country).first() is None:
-        for r in db.query(Ref).filter(Ref.custom_field_id == fields["name"].id, Ref.match_value_2 == country).all():
-            if r.match_value_1 == name or normalize_key(r.resolved_value) == name:
-                db.delete(r)
+
+    active_addr = db.query(Ref.id).filter(Ref.custom_field_id == addr_id, Ref.match_value_1 == name,
+                                          Ref.is_active.is_(True))
+    if "branch" in fields:
+        branch_rows = db.query(Ref).filter(Ref.custom_field_id == fields["branch"].id, Ref.match_value_1 == name,
+                                           Ref.match_value_2 == branch)
+        if payload.is_active or active_addr.filter(Ref.match_value_2 == branch).first() is None:
+            for r in branch_rows.all():
+                r.is_active = payload.is_active
+    if "name" in fields:
+        if payload.is_active or active_addr.filter(Ref.match_value_3 == country).first() is None:
+            for r in db.query(Ref).filter(Ref.custom_field_id == fields["name"].id, Ref.match_value_2 == country).all():
+                if r.match_value_1 == name or normalize_key(r.resolved_value) == name:
+                    r.is_active = payload.is_active
     db.commit()
+    db.refresh(row)
+    return _row_out(row)
 
 
 def _column_map(header) -> dict[str, int]:
@@ -336,13 +360,17 @@ def template(group_id: str, db: Session = Depends(get_db), user: User = Depends(
 
 
 @router.get("/{group_id}/export")
-def export(group_id: str, country: str = Query("", max_length=255), db: Session = Depends(get_db),
+def export(group_id: str, country: str = Query("", max_length=255), gstin_only: bool = Query(False),
+           db: Session = Depends(get_db),
            user: User = Depends(require_role(TENANT_ADMIN))):
-    """The selected country's importer branches (every country when none is given)."""
+    """The selected country's importer branches (every country when none is given), optionally
+    only those with a GSTIN - the same rows the screen is listing."""
     fields = _fields(db, user, group_id)
     group = db.get(TemplateGroup, group_id)
     query = db.query(Ref).filter(Ref.custom_field_id == fields["address"].id)
     if country.strip():
         query = query.filter(Ref.match_value_3 == normalize_key(country))
+    if gstin_only:
+        query = query.filter(func.coalesce(Ref.gstin, "") != "")
     rows = query.order_by(Ref.match_value_3, Ref.match_value_1, Ref.match_value_2).yield_per(2000)
     return _workbook(rows, f"{_stem(group.name)}_Importers_{_stem(country) or 'All'}.xlsx")
