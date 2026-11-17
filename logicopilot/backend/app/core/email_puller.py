@@ -1493,7 +1493,10 @@ def _process_one_message(
     from app.core.custom_page_filter import filter_pages_with_custom
     from app.core.docai import ocr_page_image
     from app.core import doc_sets
-    from app.core.page_filter import claim_fingerprint, extract_pdf_pages, kept_page_to_original
+    from app.core.page_filter import (
+        claim_covers_file, claim_fingerprint, extract_pdf_pages,
+        kept_page_to_original,
+    )
 
     single_group = ctx["single_group"]
     candidates = ctx["candidates"]
@@ -1767,7 +1770,7 @@ def _process_one_message(
         # happens to finish. Written to a throwaway scratch file and opened by PATH, the
         # exact same way the real OCR loop below opens each attachment (fitz.open(stream=...)
         # is a different call shape this codebase has never relied on elsewhere) - same
-        # 6-page-per-file cap that loop applies too.
+        # whole of every file, as that loop reads it too - no page limit.
         total_pages = 0
         if job is not None:
             count_dir = tmp / "_count"
@@ -1778,7 +1781,7 @@ def _process_one_message(
                     cpath.parent.mkdir(parents=True, exist_ok=True)
                     cpath.write_bytes(cblob)
                     with fitz.open(cpath) as cdoc:
-                        total_pages += min(len(cdoc), 6)
+                        total_pages += len(cdoc)
                 except Exception:  # noqa: BLE001
                     pass
             shutil.rmtree(count_dir, ignore_errors=True)
@@ -1796,8 +1799,7 @@ def _process_one_message(
             try:
                 with fitz.open(orig) as doc:
                     for i, page in enumerate(doc, start=1):
-                        if i > 6:
-                            break
+                        # Every page, however many - no page limit (see page_filter).
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
                         if i == 1:
@@ -2176,7 +2178,16 @@ def _process_one_message(
                 or "NO SLOT MATCHED")
             # A combined attachment (one PDF carrying both the Invoice and the Packing
             # List) must give each slot only ITS pages, not the whole thing.
-            split = len(strong_claims) > 1 and item["ext"] == ".pdf"
+            #
+            # ...and so must a file with ONE match that does not cover all of it. Filing it whole
+            # put an air waybill and eight packing-list pages into the Invoice slot because only
+            # the invoice on page 1 was recognised (JOB-FAE253). The pages no claim covers stay
+            # Unclassified, where they were staged above, for an operator to place.
+            split = item["ext"] == ".pdf" and (
+                len(strong_claims) > 1
+                or (len(strong_claims) == 1
+                    and not claim_covers_file(strong_claims[0]["pages"], item.get("kept_pages") or []))
+            )
             kept_original = (
                 kept_page_to_original(item["page_count"], item["drop_pages"])
                 if split else []

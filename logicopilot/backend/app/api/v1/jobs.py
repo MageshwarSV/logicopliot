@@ -40,6 +40,7 @@ from app.core.page_filter import (
     kept_page_to_original,
     merge_pdf_pages,
     strip_repeated_page_header,
+    claim_covers_file,
 )
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import get_extraction_engine, is_extraction_paused
@@ -7537,8 +7538,9 @@ def _classify_and_place_files(
                 with fitz.open(orig) as doc:
                     real_page_count = doc.page_count
                     for i, page in enumerate(doc, start=1):
-                        if i > 6:  # cap pages OCR'd for classification
-                            break
+                        # Every page, however many - no page limit (see page_filter). The
+                        # extension further down is kept for safety but no longer has pages
+                        # past a cap to reach.
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
                         if i == 1:
@@ -7701,6 +7703,7 @@ def _classify_and_place_files(
                 result_by_item_id[id(item)]["debug_text"] = item["text"][:6000]
                 result_by_item_id[id(item)]["debug_claims"] = claims
             item_pending_count = 0
+            item_claimed_pages: set[int] = set()
             for claim in strong_claims:
                 doc_type = key_doc_type.get(claim["key"])
                 claim_pages = claim["pages"]
@@ -7765,6 +7768,10 @@ def _classify_and_place_files(
                                 confirmed |= set(mapped)
                         claim_pages = claim_pages + sorted(confirmed - {p for oc in other_claims for p in oc["pages"]})
                         for oc in other_claims:
+                            # Its own document, carved out of the same file - so it counts
+                            # towards "this file holds more than one document" below.
+                            item_pending_count += 1
+                            item_claimed_pages |= set(oc["pages"])
                             other_doc_type = key_doc_type.get(oc["key"])
                             other_number = None
                             if other_doc_type in doc_sets.GROUPABLE_DOC_TYPES:
@@ -7831,11 +7838,19 @@ def _classify_and_place_files(
                         ) or doc_sets.extract_invoice_number_from_text(doc_type, page_text)
                     pending.append({"item": item, "claim": sub_claim, "key": sub_claim["key"], "number": number})
                     item_pending_count += 1
+                    item_claimed_pages |= set(pages)
             # A combined file needs its pages carved apart whenever it ends up contributing
             # more than one real document - whether that's several DIFFERENT types sharing one
             # PDF (the original reason this flag exists) or ONE type that turned out to hold
             # several separate invoices once split above - see merge_pdf_pages below.
-            split_by_item_id[id(item)] = item_pending_count > 1 and item["ext"] == ".pdf"
+            # ...and when its ONE document does not cover the whole file: the pages nobody
+            # claimed must not ride along into that slot (see claim_covers_file). They stay in
+            # Unclassified, where they were staged above.
+            split_by_item_id[id(item)] = item["ext"] == ".pdf" and (
+                item_pending_count > 1
+                or (item_pending_count == 1
+                    and not claim_covers_file(item_claimed_pages, item["kept_pages"]))
+            )
 
         # Before grouping: drop a claim whose pages say exactly what another claim has
         # already said for the SAME slot.
