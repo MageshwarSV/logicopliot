@@ -49,6 +49,21 @@ def test_no_number_after_extraction_means_no_date(client, db_session):
     assert _val(db_session, dt) == ""
 
 
+def test_no_mawb_in_words_also_means_no_date(client, db_session):
+    # the field says "NO MAWB" when the page has no master waybill - the house date must not stay
+    job, num, dt, *_ = _setup(client, db_session, number="NO MAWB")
+    assert _enforce_requires_value_of(db_session, job) == ["MAWB Date"]
+    db_session.commit()
+    assert _val(db_session, dt) == ""
+    assert _val(db_session, num) == "NO MAWB"
+
+
+def test_typing_a_date_next_to_no_mawb_is_refused(client, db_session):
+    job, num, dt, *_ = _setup(client, db_session, number="NO MAWB", date="")
+    r = client.patch(f"/api/v1/job-field-values/{dt.id}", json={"corrected_value": "19-Oct-2026"})
+    assert r.status_code == 400
+
+
 def test_a_number_keeps_its_date(client, db_session):
     job, num, dt, *_ = _setup(client, db_session)
     assert _enforce_requires_value_of(db_session, job) == []
@@ -60,6 +75,9 @@ def test_clearing_the_number_on_screen_clears_the_date(client, db_session):
     r = client.patch(f"/api/v1/job-field-values/{num.id}", json={"corrected_value": ""})
     assert r.status_code == 200, r.text
     assert _val(db_session, dt) == ""
+    # an operator saving MAWB Number empty gets the words, not a blank box
+    assert _val(db_session, num) == "NO MAWB"
+    assert r.json()["corrected_value"] == "NO MAWB"
 
 
 def test_typing_a_date_without_a_number_is_refused_with_a_reason(client, db_session):
