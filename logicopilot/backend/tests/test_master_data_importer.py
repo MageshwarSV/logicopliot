@@ -66,8 +66,11 @@ def test_rows_by_country_search_and_sort(client, db_session):
     assert india["rows"][0]["gstin"] == "33AAACA1234A1Z5"
     desc = client.get(base, params={"country": "India", "sort": "branch", "direction": "desc"}).json()
     assert [r["branch"] for r in desc["rows"]] == ["MUMBAI", "CHENNAI"]
-    assert client.get(base, params={"country": "India", "q": "33AAACA"}).json()["total"] == 1
-    assert client.get(base, params={"country": "India", "q": "marine"}).json()["total"] == 1
+    # Name only: GSTIN, branch and address text don't match.
+    assert client.get(base, params={"country": "India", "q": "acme"}).json()["total"] == 2
+    assert client.get(base, params={"country": "India", "q": "33AAACA"}).json()["total"] == 0
+    assert client.get(base, params={"country": "India", "q": "marine"}).json()["total"] == 0
+    assert client.get(base, params={"country": "India", "q": "mumbai"}).json()["total"] == 0
     assert client.get(base, params={"country": "Germany"}).json()["total"] == 1
     only = client.get(base, params={"country": "India", "gstin_only": "true"}).json()
     assert only["total"] == 1 and only["rows"][0]["branch"] == "CHENNAI"

@@ -238,7 +238,7 @@ export function ImporterMasterDataPage() {
                       type="search"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search importer name, branch, GSTIN or address..."
+                      placeholder="Search by ERP Importer Name..."
                       className={`${FIELD_CLASS} w-80 pl-9`}
                     />
                   </div>

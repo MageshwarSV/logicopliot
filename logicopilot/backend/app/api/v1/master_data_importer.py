@@ -18,7 +18,7 @@ import io
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, or_
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, require_role
@@ -136,10 +136,8 @@ def list_rows(
     if term:
         escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         like = f"%{escaped}%"
-        query = query.filter(or_(
-            Ref.match_value_1.ilike(like, escape="\\"), Ref.match_value_2.ilike(like, escape="\\"),
-            Ref.gstin.ilike(like, escape="\\"), Ref.resolved_value.ilike(like, escape="\\"),
-        ))
+        # By request: the search box matches the ERP Importer Name only.
+        query = query.filter(Ref.match_value_1.ilike(like, escape="\\"))
     total = query.count()
     cols = [Ref.match_value_1, Ref.match_value_2] if sort == "name" else [Ref.match_value_2, Ref.match_value_1]
     order = [c.desc() if direction == "desc" else c.asc() for c in cols] + [Ref.id]
