@@ -4098,6 +4098,7 @@ def list_custom_field_reference_options(
     job_id: str,
     custom_field_id: str,
     key: str | None = None,
+    country: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
@@ -4129,10 +4130,18 @@ def list_custom_field_reference_options(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Custom field not found on this job's template.",
         )
-    return _reference_options_payload(db, custom_field_id, key=key)
+    from app.core.importer_gstin import gstin_rule
+
+    # `country` is the importer country picked on the job. It is only ever read by the GSTIN
+    # rule below (the branch table itself carries no country), so every caller that does not
+    # send it gets exactly what it always got.
+    return _reference_options_payload(
+        db, custom_field_id, key=key, country=country,
+        gstin=gstin_rule(db, db.get(TemplateGroup, job.group_id), cf))
 
 
-def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None) -> dict:
+def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None,
+                               country: str | None = None, gstin: dict | None = None) -> dict:
     from app.core.reference_cache import normalize_key
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
@@ -4143,6 +4152,21 @@ def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | 
     if key and key.strip():
         query = query.filter(CustomFieldReferenceValue.match_value_1 == normalize_key(key))
     rows = query.order_by(CustomFieldReferenceValue.resolved_value).all()
+    # An Indian importer branch is offered only once its GSTIN is in the dump - see
+    # app/core/importer_gstin.py. `gstin` is None unless the template has the rule on AND this
+    # field is part of the importer cascade, so nothing else is ever narrowed here.
+    if gstin is not None:
+        from app.core.importer_gstin import GSTIN_COUNTRY, branches_with_gstin, is_gstin_country
+
+        if gstin["role"] == "address":
+            # the row carries its own country and its own GSTIN
+            rows = [r for r in rows
+                    if r.match_value_3 != GSTIN_COUNTRY or (r.gstin or "").strip()]
+        elif gstin["role"] == "branch" and key and key.strip() and is_gstin_country(country):
+            allowed = branches_with_gstin(db, gstin["address_field_id"], key)
+            rows = [r for r in rows
+                    if (r.match_value_2 or "") in allowed
+                    or normalize_key(r.resolved_value or "") in allowed]
     return {
         "options": [
             {
@@ -4295,6 +4319,19 @@ def search_custom_field_reference_values(
     if country_scoped:
         filters.append(CustomFieldReferenceValue.match_value_1.ilike(needle))
         filters.append(CustomFieldReferenceValue.match_value_2 == country_norm)
+        # An Indian importer is offered only once one of its branches has a GSTIN in the dump
+        # - see app/core/importer_gstin.py. The name table has no GSTIN of its own, so it is
+        # read off the branch-address table: by the name this row is keyed on, or the name it
+        # resolves to (the one that is actually saved on the job when it is picked).
+        from app.core.importer_gstin import gstin_rule, is_gstin_country, names_with_gstin
+
+        rule = gstin_rule(db, db.get(TemplateGroup, job.group_id), cf)
+        if rule is not None and rule["role"] == "name" and is_gstin_country(country_norm):
+            allowed_names = names_with_gstin(db, rule["address_field_id"])
+            filters.append(or_(
+                CustomFieldReferenceValue.match_value_1.in_(allowed_names),
+                func.upper(func.trim(CustomFieldReferenceValue.resolved_value)).in_(allowed_names),
+            ))
     else:
         filters.append(
             CustomFieldReferenceValue.match_value_1.ilike(needle)

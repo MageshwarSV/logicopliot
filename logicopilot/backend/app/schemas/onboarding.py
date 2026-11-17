@@ -285,6 +285,8 @@ class TemplateGroupOut(BaseModel):
     excel_config: dict | None = None
     # See TemplateGroup.prealert_shipments.
     prealert_shipments: bool = False
+    # See TemplateGroup.importer_requires_gstin.
+    importer_requires_gstin: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):
