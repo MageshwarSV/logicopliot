@@ -17,8 +17,10 @@ import { WorkforceProductivityDashboardPage } from "../pages/tenant-admin/Workfo
 import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
+import { UserJobSummaryPage } from "../pages/tenant-admin/UserJobSummaryPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
-import { ErpMasterDataPage } from "../pages/tenant-admin/ErpMasterDataPage";
+import { QuotationMasterDataPage } from "../pages/tenant-admin/QuotationMasterDataPage";
+import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
 import { ManagerDashboard } from "../pages/manager/DashboardShell";
@@ -230,6 +232,14 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/tenant-admin/reports/user-jobs"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <UserJobSummaryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/tenant-admin/customers"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
@@ -249,7 +259,7 @@ export function AppRoutes() {
         path="/tenant-admin/master-data/importer"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
-            <ErpMasterDataPage key="importer" category="importer" />
+            <ImporterMasterDataPage />
           </ProtectedRoute>
         }
       />
@@ -257,7 +267,7 @@ export function AppRoutes() {
         path="/tenant-admin/master-data/quotation"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
-            <ErpMasterDataPage key="quotation" category="quotation" />
+            <QuotationMasterDataPage />
           </ProtectedRoute>
         }
       />

@@ -455,7 +455,8 @@ def _sample_for_label(db: Session, script: ErpScript, label: str) -> tuple[str, 
             row = (
                 db.query(CustomFieldReferenceValue)
                 .filter(CustomFieldReferenceValue.custom_field_id == cf.id,
-                        CustomFieldReferenceValue.resolved_value.isnot(None))
+                        CustomFieldReferenceValue.resolved_value.isnot(None),
+                        CustomFieldReferenceValue.is_active.is_(True))
                 .order_by(CustomFieldReferenceValue.id.desc())
                 .first()
             )

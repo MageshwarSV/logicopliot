@@ -107,6 +107,7 @@ function CountBadge({ count, cls }: { count: number; cls: string }) {
 
 export function AppShell({
   title,
+  icon,
   subtitle,
   actions,
   sidebar,
@@ -114,6 +115,8 @@ export function AppShell({
   categoryCountFilters,
 }: {
   title: string;
+  /** Optional tile shown left of the title (e.g. ERP Master Data's database icon). */
+  icon?: ReactNode;
   /** ReactNode, not string: the job header puts an icon beside the words. */
   subtitle?: ReactNode;
   actions?: ReactNode;
@@ -134,6 +137,7 @@ export function AppShell({
   const [masterDataOpen, setMasterDataOpen] = useState(
     location.pathname.startsWith("/tenant-admin/masters") || location.pathname.startsWith("/tenant-admin/master-data"),
   );
+  const [reportsOpen, setReportsOpen] = useState(location.pathname.startsWith("/tenant-admin/reports"));
   // The page you are actually on is what should be lit up — a nav rail that always shows
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
   // at all, because it actively tells you the wrong thing.
@@ -390,9 +394,39 @@ export function AppShell({
                       <CountBadge count={totalJobsCount} cls="bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" />
                     )}
                   </Link>
-                  <Link to="/tenant-admin/reports" className={navClass("/tenant-admin/reports")}>
-                    <ChartBarIcon /> Reports
-                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => setReportsOpen((v) => !v)}
+                    className={`${location.pathname.startsWith("/tenant-admin/reports") ? NAV_ACTIVE : NAV_INACTIVE} w-full justify-between`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <ChartBarIcon /> Reports
+                    </span>
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${reportsOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                  {reportsOpen && (
+                    <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
+                      {[
+                        { label: "Activity & Billing", to: "/tenant-admin/reports" },
+                        { label: "User Job Summary", to: "/tenant-admin/reports/user-jobs" },
+                      ].map((item) => (
+                        <Link
+                          key={item.to}
+                          to={item.to}
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                            location.pathname === item.to
+                              ? "bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          }`}
+                        >
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+                          {item.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </>
@@ -470,9 +504,16 @@ export function AppShell({
             away, so which job you were in and how it was doing had to be remembered rather
             than read. z-20 keeps it over the pinned document preview underneath. */}
         <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/90 px-8 py-4 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
-            {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+          <div className="flex min-w-0 items-center gap-4">
+            {icon && (
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
+                {icon}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
+              {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+            </div>
           </div>
           {/* The bell lives in the SHELL, not on any one page: an ERP submission finishes
               minutes after the operator left that job, so it has to reach them wherever they

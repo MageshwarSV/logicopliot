@@ -646,11 +646,18 @@ export interface CustomFieldReferenceOption {
  * that consignee's own branches). Omit it for a table small enough to fetch whole and filter
  * client-side, same as before. */
 export async function listCustomFieldReferenceOptions(
-  jobId: string, customFieldId: string, key?: string,
+  jobId: string, customFieldId: string, key?: string, country?: string,
 ): Promise<CustomFieldReferenceOption[]> {
+  // `country` is the importer country picked on the job. The server reads it for one thing
+  // only: on a template that offers an Indian importer branch just once its GSTIN is in the
+  // dump, it is how the branch list knows it is being asked about India (the branch table
+  // itself has no country). Not sent unless given, so every other call is unchanged.
+  const params: Record<string, string> = {};
+  if (key) params.key = key;
+  if (country) params.country = country;
   const { data } = await apiClient.get<{ options: CustomFieldReferenceOption[] }>(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
-    key ? { params: { key } } : undefined,
+    Object.keys(params).length ? { params } : undefined,
   );
   return data.options;
 }

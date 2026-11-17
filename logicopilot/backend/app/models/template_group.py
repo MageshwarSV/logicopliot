@@ -40,6 +40,11 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # app/core/prealert_shipments.py. Off for every existing template.
     prealert_shipments: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
+    # Offer an INDIAN importer (name, branch, address) on a job only once its GSTIN is in the
+    # dump - see app/core/importer_gstin.py. Off for every existing template: with no GSTIN
+    # entered yet, on would empty the Indian importer list on every job.
+    importer_requires_gstin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

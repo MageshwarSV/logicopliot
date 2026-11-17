@@ -7,6 +7,7 @@ import re
 import shutil
 import zipfile
 from datetime import date, datetime, timedelta, timezone
+from app.core.modes import MODES
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -2206,6 +2207,140 @@ def job_activity_chart(
     return JobActivityChartOut(days=days, pending_jobs=pending_jobs)
 
 
+def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | None,
+                      date_from: str, date_to: str) -> dict:
+    """Reports -> User Job Summary. For the chosen operation and period (IST dates, both ends
+    inclusive): per user, the jobs that ARRIVED in the period (Total), how many of those have
+    reached the ERP (ERP Completed - the same _category_condition("submitted") rule as the
+    ERP Submitted badge and list) and the rest (Pending = Total - Completed). The same
+    "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
+
+    The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
+    else the mail-routed operator); jobs with neither are "Unassigned". Every active operator
+    working this operation is listed even with no jobs (0s), busiest first."""
+    try:
+        d_from = date.fromisoformat(date_from)
+        d_to = date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be YYYY-MM-DD")
+    if d_to < d_from:
+        raise HTTPException(status_code=422, detail="date_to must not be before date_from")
+    if (d_to - d_from).days > 366:
+        raise HTTPException(status_code=422, detail="Pick a range of 366 days or fewer")
+    # IST day boundaries, passed as UTC so every database compares them the same way.
+    start = datetime(d_from.year, d_from.month, d_from.day, tzinfo=IST).astimezone(timezone.utc)
+    end = (datetime(d_to.year, d_to.month, d_to.day, tzinfo=IST) + timedelta(days=1)).astimezone(timezone.utc)
+
+    base = _jobs_visible_query(db, scope, user)
+    group_modes = {g.id: g.mode for g in scoped_query(db, TemplateGroup, scope).all()}
+    modes = sorted({m for m in group_modes.values() if m}, key=lambda m: (MODES.index(m) if m in MODES else 99, m))
+
+    arrived = base.filter(Job.created_at >= start, Job.created_at < end)
+    jobs = arrived.all()
+    submitted_ids = {
+        row[0] for row in arrived.filter(_category_condition("submitted")).with_entities(Job.id).all()
+    }
+    if mode:
+        jobs = [j for j in jobs if (group_modes.get(j.group_id) or _shipment_mode(db, j)) == mode]
+
+    users_by_id: dict[str, User] = {}
+    rows: dict[str, dict] = {}
+
+    def _row_for(u: User | None) -> dict:
+        return rows.setdefault(u.id if u else "", {
+            "user_id": u.id if u else None,
+            "name": (u.full_name.strip() if u and u.full_name else None) or "Unassigned",
+            "avatar_url": getattr(u, "avatar_url", None) if u else None,
+            "total": 0, "completed": 0, "pending": 0,
+        })
+
+    # Every active operator (Gate Keeper) of this tenant who works this operation is listed,
+    # with 0s when they had no jobs - by request, so an idle user is visible rather than missing.
+    # Operators own jobs (creator / mail-routed); other roles appear only if they have jobs.
+    if scope.tenant_id is not None:
+        operators = scoped_query(db, User, scope).filter(User.role == OPERATOR, User.is_active.is_(True)).all()
+        for op in operators:
+            if mode and op.assigned_modes and mode not in op.assigned_modes:
+                continue
+            users_by_id[op.id] = op
+            _row_for(op)
+
+    for j in jobs:
+        uid = j.created_by_id or j.assigned_operator_id
+        u = None
+        if uid:
+            if uid not in users_by_id:
+                users_by_id[uid] = db.get(User, uid)
+            u = users_by_id[uid]
+        r = _row_for(u)
+        r["total"] += 1
+        if j.id in submitted_ids:
+            r["completed"] += 1
+        else:
+            r["pending"] += 1
+    ordered = sorted(rows.values(), key=lambda r: (r["user_id"] is None, -r["total"], r["name"].lower()))
+    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "pending")}
+    return {"modes": modes, "mode": mode, "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
+            "users": ordered, "totals": totals}
+
+
+@router.get("/jobs/user-summary")
+def user_job_summary(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> dict:
+    return _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+
+
+@router.get("/jobs/user-summary/export")
+def user_job_summary_export(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+):
+    """The same table as an Excel file, with its Total row."""
+    import io
+
+    import openpyxl
+    from fastapi.responses import Response
+    from openpyxl.styles import Font
+
+    data = _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "User Job Summary"
+    ws.append([f"User Job Summary - {data['mode'] or 'All operations'} - {data['date_from']} to {data['date_to']}"])
+    ws["A1"].font = Font(bold=True)
+    ws.append([])
+    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"])
+    for c in ws[3]:
+        c.font = Font(bold=True)
+    for i, r in enumerate(data["users"], start=1):
+        ws.append([i, r["name"], r["total"], r["completed"], r["pending"]])
+    t = data["totals"]
+    ws.append(["", "Total", t["total"], t["completed"], t["pending"]])
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+    ws.column_dimensions["B"].width = 32
+    for col in "CDE":
+        ws.column_dimensions[col].width = 20
+    buf = io.BytesIO()
+    wb.save(buf)
+    stem = f"User_Job_Summary_{(data['mode'] or 'All').replace(' ', '_')}_{data['date_from']}_to_{data['date_to']}"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.xlsx"'},
+    )
+
+
 @router.get("/jobs", response_model=list[JobOut])
 def list_jobs(
     db: Session = Depends(get_db),
@@ -4090,7 +4225,19 @@ def get_job(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
 ) -> JobDetailOut:
-    return _build_detail(db, _load_job(db, job_id, scope, user))
+    job = _load_job(db, job_id, scope, user)
+    # A saved Indian importer whose GSTIN is not in the dump is shown empty - where the
+    # template asks for it (TemplateGroup.importer_requires_gstin). Done as the job is opened,
+    # so it reaches a job that was already in progress when the rule was switched on. Does
+    # nothing, and costs one lookup, on every other template.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied = clear_importer_without_gstin(db, job)
+    if emptied:
+        db.commit()
+        db.refresh(job)
+        logger.info("job %s: %s emptied - the importer has no GSTIN in the dump", job.reference, emptied)
+    return _build_detail(db, job)
 
 
 @router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-options")
@@ -4098,6 +4245,7 @@ def list_custom_field_reference_options(
     job_id: str,
     custom_field_id: str,
     key: str | None = None,
+    country: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
@@ -4129,19 +4277,43 @@ def list_custom_field_reference_options(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Custom field not found on this job's template.",
         )
-    return _reference_options_payload(db, custom_field_id, key=key)
+    from app.core.importer_gstin import gstin_rule
+
+    # `country` is the importer country picked on the job. It is only ever read by the GSTIN
+    # rule below (the branch table itself carries no country), so every caller that does not
+    # send it gets exactly what it always got.
+    return _reference_options_payload(
+        db, custom_field_id, key=key, country=country,
+        gstin=gstin_rule(db, db.get(TemplateGroup, job.group_id), cf))
 
 
-def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None) -> dict:
+def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None,
+                               country: str | None = None, gstin: dict | None = None) -> dict:
     from app.core.reference_cache import normalize_key
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
     query = db.query(CustomFieldReferenceValue).filter(
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
+        CustomFieldReferenceValue.is_active.is_(True),
     )
     if key and key.strip():
         query = query.filter(CustomFieldReferenceValue.match_value_1 == normalize_key(key))
     rows = query.order_by(CustomFieldReferenceValue.resolved_value).all()
+    # An Indian importer branch is offered only once its GSTIN is in the dump - see
+    # app/core/importer_gstin.py. `gstin` is None unless the template has the rule on AND this
+    # field is part of the importer cascade, so nothing else is ever narrowed here.
+    if gstin is not None:
+        from app.core.importer_gstin import GSTIN_COUNTRY, branches_with_gstin, is_gstin_country
+
+        if gstin["role"] == "address":
+            # the row carries its own country and its own GSTIN
+            rows = [r for r in rows
+                    if r.match_value_3 != GSTIN_COUNTRY or (r.gstin or "").strip()]
+        elif gstin["role"] == "branch" and key and key.strip() and is_gstin_country(country):
+            allowed = branches_with_gstin(db, gstin["address_field_id"], key)
+            rows = [r for r in rows
+                    if (r.match_value_2 or "") in allowed
+                    or normalize_key(r.resolved_value or "") in allowed]
     return {
         "options": [
             {
@@ -4289,10 +4461,24 @@ def search_custom_field_reference_values(
     filters = [
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
         CustomFieldReferenceValue.resolved_value != "",
+        CustomFieldReferenceValue.is_active.is_(True),
     ]
     if country_scoped:
         filters.append(CustomFieldReferenceValue.match_value_1.ilike(needle))
         filters.append(CustomFieldReferenceValue.match_value_2 == country_norm)
+        # An Indian importer is offered only once one of its branches has a GSTIN in the dump
+        # - see app/core/importer_gstin.py. The name table has no GSTIN of its own, so it is
+        # read off the branch-address table: by the name this row is keyed on, or the name it
+        # resolves to (the one that is actually saved on the job when it is picked).
+        from app.core.importer_gstin import gstin_rule, is_gstin_country, names_with_gstin
+
+        rule = gstin_rule(db, db.get(TemplateGroup, job.group_id), cf)
+        if rule is not None and rule["role"] == "name" and is_gstin_country(country_norm):
+            allowed_names = names_with_gstin(db, rule["address_field_id"])
+            filters.append(or_(
+                CustomFieldReferenceValue.match_value_1.in_(allowed_names),
+                func.upper(func.trim(CustomFieldReferenceValue.resolved_value)).in_(allowed_names),
+            ))
     else:
         filters.append(
             CustomFieldReferenceValue.match_value_1.ilike(needle)
@@ -4371,6 +4557,7 @@ def list_custom_field_reference_countries(
         .filter(
             CustomFieldReferenceValue.custom_field_id == custom_field_id,
             CustomFieldReferenceValue.match_value_2 != "",
+            CustomFieldReferenceValue.is_active.is_(True),
         )
         .distinct()
         .order_by(CustomFieldReferenceValue.match_value_2)
@@ -9710,6 +9897,16 @@ def run_extraction(
         logger.info("job %s: flagged as a possible duplicate of %s (matching content checksum)",
                     job.reference, existing_dup.reference)
         return
+
+    # The importer the reader matched by itself is held to the same rule as one picked from
+    # the list: an Indian importer with no GSTIN in the dump is left empty for the operator.
+    # After the corrections were restored above, so a pick made earlier is checked too.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied_importer = clear_importer_without_gstin(db, job)
+    if emptied_importer:
+        logger.info("job %s: %s emptied after extraction - the importer has no GSTIN in the dump",
+                    job.reference, emptied_importer)
 
     job.status = "extracted"
     db.commit()

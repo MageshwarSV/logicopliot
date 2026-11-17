@@ -7041,6 +7041,12 @@ function ExtractionReview({
   const consigneeBranchFieldId = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "ERP Importer Address / Branch Code",
   )?.custom_field_id;
+  const savedConsigneeCountryForBranches = (() => {
+    const fv = job.field_values.find(
+      (f) => f.row_index == null && f.label_name === "ERP Consignee Country",
+    );
+    return (fv?.corrected_value ?? fv?.extracted_value ?? "").trim();
+  })();
   const [consigneeBranchOptions, setConsigneeBranchOptions] =
     useState<jobsApi.CustomFieldReferenceOption[]>([]);
   useEffect(() => {
@@ -7050,7 +7056,12 @@ function ExtractionReview({
     }
     let cancelled = false;
     jobsApi
-      .listCustomFieldReferenceOptions(jobId, consigneeBranchFieldId, savedConsigneeName)
+      // The country goes with it: where the template asks for it, an Indian branch is listed
+      // only once its GSTIN is in the dump, and the branch table alone cannot tell which
+      // country it is being asked about.
+      .listCustomFieldReferenceOptions(
+        jobId, consigneeBranchFieldId, savedConsigneeName, savedConsigneeCountryForBranches,
+      )
       .then((options) => {
         if (!cancelled) setConsigneeBranchOptions(options);
       })
@@ -7060,7 +7071,7 @@ function ExtractionReview({
     return () => {
       cancelled = true;
     };
-  }, [savedConsigneeName, consigneeBranchFieldId, jobId]);
+  }, [savedConsigneeName, savedConsigneeCountryForBranches, consigneeBranchFieldId, jobId]);
 
   // "ERP Branch Address" - narrowed server-side by the picked consignee exactly as the branch
   // list above it is (same `key` param, same reason: ~31,000 rows is far too many to ship to

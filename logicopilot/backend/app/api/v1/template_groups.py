@@ -425,6 +425,31 @@ def set_group_prealert_shipments(
     return TemplateGroupOut.model_validate(group)
 
 
+class ImporterGstinPayload(BaseModel):
+    importer_requires_gstin: bool
+
+
+@router.patch("/{group_id}/importer-gstin", response_model=TemplateGroupOut)
+def set_group_importer_gstin(
+    group_id: str,
+    payload: ImporterGstinPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> TemplateGroupOut:
+    """Switch on or off: an Indian importer is offered on a job only once its GSTIN is in the
+    dump (see TemplateGroup.importer_requires_gstin). Switch it on after the GSTINs have been
+    entered - before that it leaves no Indian importer to pick."""
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    group.importer_requires_gstin = payload.importer_requires_gstin
+    db.commit()
+    db.refresh(group)
+    return TemplateGroupOut.model_validate(group)
+
+
 @router.patch("/{group_id}/mode", response_model=TemplateGroupOut)
 def set_group_mode(
     group_id: str,
