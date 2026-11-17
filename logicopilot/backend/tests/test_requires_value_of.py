@@ -75,6 +75,9 @@ def test_clearing_the_number_on_screen_clears_the_date(client, db_session):
     r = client.patch(f"/api/v1/job-field-values/{num.id}", json={"corrected_value": ""})
     assert r.status_code == 200, r.text
     assert _val(db_session, dt) == ""
+    # an operator saving MAWB Number empty gets the words, not a blank box
+    assert _val(db_session, num) == "NO MAWB"
+    assert r.json()["corrected_value"] == "NO MAWB"
 
 
 def test_typing_a_date_without_a_number_is_refused_with_a_reason(client, db_session):

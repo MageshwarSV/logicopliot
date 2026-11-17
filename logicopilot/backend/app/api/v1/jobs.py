@@ -10465,14 +10465,25 @@ def correct_field_value(
     # to the Excel export and failed the ERP's own upload there, while clearing the cell and
     # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
     # behaving differently purely because of what came along with it.
-    _apply_correction(db, fv, payload.corrected_value or "")
+    saved = payload.corrected_value or ""
+    # MAWB Number saved EMPTY by an operator is stored as "NO MAWB" - the same words extraction
+    # uses for a waybill with no master number. Only where MAWB Date depends on it
+    # (requires_value_of - today only Air import (November 5)); everywhere else empty stays empty.
+    if not saved.strip() and fv.row_index is None and fv.custom_field_id \
+            and (fv.label_name or "").strip().upper() == "MAWB NUMBER":
+        from app.models.custom_field import CustomField as _CFm
+
+        if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
+                                 _CFm.requires_value_of == fv.label_name).first() is not None:
+            saved = "NO MAWB"
+    _apply_correction(db, fv, saved)
     # ... and into every box on this line holding the same answer, in both directions. The
     # frontend already walked the link forwards; nothing walked it back, so typing into the
     # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
-    _carry_to_synced_partners(db, fv, payload.corrected_value or "")
+    _carry_to_synced_partners(db, fv, saved)
     # A required field cleared takes every field that depends on it with it (MAWB Number
     # emptied -> MAWB Date emptied) - see _enforce_requires_value_of.
-    if fv.row_index is None and not (payload.corrected_value or "").strip():
+    if fv.row_index is None and (not saved.strip() or _SAYS_NONE.match(saved)):
         _enforce_requires_value_of(db, job_for_rules, only_required_label=fv.label_name)
     db.commit()
     db.refresh(fv)
