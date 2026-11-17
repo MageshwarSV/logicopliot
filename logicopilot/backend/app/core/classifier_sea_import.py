@@ -1014,6 +1014,44 @@ def _arrival_notice_is_not_a_bl(files: list[dict], candidates: list[dict],
                     f", given to the freight slot: {orphans}" if orphans and freight_key else "")
 
 
+# The carrier's own continuation page of a bill of lading / sea waybill: "ATTACHMENT FOR
+# KUEHNE+NAGEL  Sea Waybill-No. 1077706333" then marks & numbers, weight, packages. On its own it
+# looks like a packing list, so the page reader gave it to Packing List or to nothing, and page
+# 2 of a 2-page waybill ended up in "Not required pages" (SIT, JOB-9E0377).
+_CONTINUATION = re.compile(r"\battachment\s+for\b|\bcontinu(?:ed|ation)\b", re.IGNORECASE)
+_BL_NUMBER_LABEL = re.compile(r"(?:sea\s*)?way\s*bill|\bb\s*/\s*l\b|bill\s+of\s+lading", re.IGNORECASE)
+
+
+def _bl_continuation_stays_with_bl(files: list[dict], candidates: list[dict],
+                                   claims: list[list[dict]]) -> None:
+    """Mutates `claims`: a page that says ATTACHMENT FOR / CONTINUED next to a waybill or B/L
+    number, right after a page of this SAME file that is in the Bill of lading, joins that Bill of
+    lading and leaves every other claim. A page not directly after a Bill of lading page, or
+    without both kinds of words, is never moved."""
+    bl_keys = {c["key"] for c in candidates if _effective_doc_type(c) == "BL"}
+    if not bl_keys:
+        return
+    for i, ms in enumerate(claims):
+        texts = _page_texts_of(files[i])
+        joined: list[int] = []
+        for n in range(2, len(texts) + 1):
+            head = (texts[n - 1] or "")[:400]
+            if not (_CONTINUATION.search(head) and _BL_NUMBER_LABEL.search(head)):
+                continue
+            bl = next((m for m in ms if m["key"] in bl_keys and n - 1 in m["pages"]), None)
+            if bl is None or n in bl["pages"]:
+                continue
+            bl["pages"] = sorted(set(bl["pages"]) | {n})
+            for m in ms:
+                if m is not bl and n in m["pages"]:
+                    m["pages"] = [p for p in m["pages"] if p != n]
+            joined.append(n)
+        if joined:
+            claims[i] = [m for m in ms if m["pages"]]
+            logger.info("classify %s: page(s) %s are the carrier's continuation of the Bill of "
+                        "lading - kept with it", files[i].get("name"), joined)
+
+
 def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
@@ -1079,6 +1117,7 @@ def assign_documents_detailed(
     if not per_page:
         _augment_combined_document_claims(files, candidates, claims)
     _arrival_notice_is_not_a_bl(files, candidates, claims)
+    _bl_continuation_stays_with_bl(files, candidates, claims)
 
     # 1. The SAME key may never claim a page twice - a file can genuinely hold several
     #    invoices, and each is its own document with its own, non-overlapping pages, so only
