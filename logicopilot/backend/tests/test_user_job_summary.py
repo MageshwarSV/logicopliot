@@ -19,6 +19,14 @@ def _setup(client, db_session):
     admin = make_user(db_session, role=TENANT_ADMIN, tenant=tenant, email=f"ta-{uuid.uuid4().hex}@example.com")
     ashraf = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"a-{uuid.uuid4().hex}@example.com", full_name="Ashraf")
     magesh = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"m-{uuid.uuid4().hex}@example.com", full_name="Magesh")
+    # Operators with no jobs: listed with 0s only for the operation they work.
+    idle_sea = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"i-{uuid.uuid4().hex}@example.com", full_name="Idle Sea")
+    idle_sea.assigned_modes = ["Sea Import"]
+    idle_air = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"j-{uuid.uuid4().hex}@example.com", full_name="Idle Air")
+    idle_air.assigned_modes = ["Air Import"]
+    gone = make_user(db_session, role=OPERATOR, tenant=tenant, email=f"g-{uuid.uuid4().hex}@example.com", full_name="Disabled Op")
+    gone.is_active = False
+    db_session.commit()
     sea = TemplateGroup(tenant_id=tenant.id, name="Sea import", status="approved", mode="Sea Import")
     air = TemplateGroup(tenant_id=tenant.id, name="Air import", status="approved", mode="Air Import")
     db_session.add_all([sea, air])
@@ -57,7 +65,9 @@ def test_per_user_counts_for_one_day_and_operation(client, db_session):
     rows = [(r["name"], r["total"], r["completed"], r["pending"]) for r in body["users"]]
     # Magesh: the mail-routed job plus the one created 00:30 IST on 17 Nov (still 16 Nov in UTC);
     # his 23:30 IST 16 Nov job is not today's.
-    assert rows == [("Ashraf", 3, 1, 2), ("Magesh", 2, 1, 1), ("Unassigned", 1, 0, 1)]
+    # Ashraf and Magesh have no modes set, so they work every operation; Idle Sea shows with 0s;
+    # Idle Air (other operation) and the disabled operator do not appear.
+    assert rows == [("Ashraf", 3, 1, 2), ("Magesh", 2, 1, 1), ("Idle Sea", 0, 0, 0), ("Unassigned", 1, 0, 1)]
     assert body["totals"] == {"total": 6, "completed": 2, "pending": 4}
 
 
@@ -72,7 +82,8 @@ def test_ist_day_boundaries_and_ranges(client, db_session):
 def test_air_and_all_operations(client, db_session):
     _setup(client, db_session)
     air = client.get(URL, params={"mode": "Air Import", "date_from": "2026-11-17", "date_to": "2026-11-17"}).json()
-    assert [(r["name"], r["total"], r["completed"]) for r in air["users"]] == [("Ashraf", 1, 1)]
+    assert [(r["name"], r["total"], r["completed"]) for r in air["users"]] == [
+        ("Ashraf", 1, 1), ("Idle Air", 0, 0), ("Magesh", 0, 0)]
     everything = client.get(URL, params={"date_from": "2026-11-17", "date_to": "2026-11-17"}).json()
     assert everything["totals"]["total"] == 7
 

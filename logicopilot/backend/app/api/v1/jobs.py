@@ -2216,7 +2216,8 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
     "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
 
     The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
-    else the mail-routed operator); jobs with neither are "Unassigned"."""
+    else the mail-routed operator); jobs with neither are "Unassigned". Every active operator
+    working this operation is listed even with no jobs (0s), busiest first."""
     try:
         d_from = date.fromisoformat(date_from)
         d_to = date.fromisoformat(date_to)
@@ -2244,6 +2245,26 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
 
     users_by_id: dict[str, User] = {}
     rows: dict[str, dict] = {}
+
+    def _row_for(u: User | None) -> dict:
+        return rows.setdefault(u.id if u else "", {
+            "user_id": u.id if u else None,
+            "name": (u.full_name.strip() if u and u.full_name else None) or "Unassigned",
+            "avatar_url": getattr(u, "avatar_url", None) if u else None,
+            "total": 0, "completed": 0, "pending": 0,
+        })
+
+    # Every active operator (Gate Keeper) of this tenant who works this operation is listed,
+    # with 0s when they had no jobs - by request, so an idle user is visible rather than missing.
+    # Operators own jobs (creator / mail-routed); other roles appear only if they have jobs.
+    if scope.tenant_id is not None:
+        operators = scoped_query(db, User, scope).filter(User.role == OPERATOR, User.is_active.is_(True)).all()
+        for op in operators:
+            if mode and op.assigned_modes and mode not in op.assigned_modes:
+                continue
+            users_by_id[op.id] = op
+            _row_for(op)
+
     for j in jobs:
         uid = j.created_by_id or j.assigned_operator_id
         u = None
@@ -2251,13 +2272,7 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
             if uid not in users_by_id:
                 users_by_id[uid] = db.get(User, uid)
             u = users_by_id[uid]
-        key = u.id if u else ""
-        r = rows.setdefault(key, {
-            "user_id": u.id if u else None,
-            "name": (u.full_name if u else None) or "Unassigned",
-            "avatar_url": getattr(u, "avatar_url", None) if u else None,
-            "total": 0, "completed": 0, "pending": 0,
-        })
+        r = _row_for(u)
         r["total"] += 1
         if j.id in submitted_ids:
             r["completed"] += 1
