@@ -86,3 +86,73 @@ def branches_with_gstin(db: Session, address_field_id: str, name: str) -> set[st
 
 def is_gstin_country(country: str | None) -> bool:
     return normalize_key(country or "") == GSTIN_COUNTRY
+
+
+COUNTRY_LABEL = "erp consignee country"
+
+
+def clear_importer_without_gstin(db: Session, job) -> list[str]:
+    """A job whose saved INDIAN importer has no GSTIN in the dump is shown with the importer
+    empty - so it cannot go on to the ERP with an importer that is not offered any more.
+    Returns the labels it emptied. Does not commit.
+
+    Called when a job is opened and when its documents have just been read, so it reaches both
+    a job already in progress when the rule was switched on and a job whose importer the
+    reader matched by itself (the lists are narrowed in jobs.py; this is the same rule for a
+    value that is already there).
+
+      - the importer has no Indian branch with a GSTIN  -> name, branch and address emptied
+      - the importer has one, but not the branch picked  -> branch and address emptied
+
+    "Emptied" is a correction to blank, written the way an operator's own would be: every
+    screen, the Excel and the ERP entry read it as empty, and what the documents originally
+    read stays in the record underneath. It is not put back when the GSTIN is added later -
+    the importer is then in the list again and is picked like any other.
+
+    A completed job is never touched: it is the record of what was filed.
+    """
+    from app.models.job import JobFieldValue
+    from app.models.template_group import TemplateGroup
+
+    if job is None or job.status == "completed":
+        return []
+    group = db.get(TemplateGroup, job.group_id)
+    if group is None or not getattr(group, "importer_requires_gstin", False):
+        return []
+    wanted = {NAME_LABEL: "name", BRANCH_LABEL: "branch", ADDRESS_LABEL: "address", COUNTRY_LABEL: "country"}
+    field_ids: dict[str, str] = {}
+    for cf in db.query(CustomField).filter(CustomField.group_id == group.id).all():
+        role = wanted.get((cf.label_name or "").strip().lower())
+        if role and role not in field_ids:
+            field_ids[role] = cf.id
+    if not {"name", "address", "country"} <= set(field_ids):
+        return []
+    by_role: dict[str, JobFieldValue] = {}
+    by_id = {v: k for k, v in field_ids.items()}
+    for fv in (db.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None),
+                       JobFieldValue.custom_field_id.in_(list(field_ids.values()))).all()):
+        by_role.setdefault(by_id[fv.custom_field_id], fv)
+
+    def value(role: str) -> str:
+        fv = by_role.get(role)
+        if fv is None:
+            return ""
+        return (fv.corrected_value if fv.corrected_value is not None else fv.extracted_value or "").strip()
+
+    if not is_gstin_country(value("country")) or not value("name"):
+        return []
+    allowed = branches_with_gstin(db, field_ids["address"], value("name"))
+    if not allowed:
+        doomed = ("name", "branch", "address")
+    elif value("branch") and normalize_key(value("branch")) not in allowed:
+        doomed = ("branch", "address")
+    else:
+        return []
+    emptied: list[str] = []
+    for role in doomed:
+        fv = by_role.get(role)
+        if fv is not None and value(role):
+            fv.corrected_value = ""
+            emptied.append(fv.label_name)
+    return emptied

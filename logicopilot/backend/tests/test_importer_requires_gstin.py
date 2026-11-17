@@ -150,3 +150,115 @@ def test_the_switch_is_set_per_template(client, db_session):
     r = client.patch(f"/api/v1/template-groups/{group.id}/importer-gstin", json={"importer_requires_gstin": False})
     assert r.json()["importer_requires_gstin"] is False
     assert len(_names(client, job, f, "INDIA")) == 3
+
+
+# --------------------------------------------------------------------------- #
+# A value ALREADY on a job
+# --------------------------------------------------------------------------- #
+def _job_with_importer(db, group, f, *, country, name, branch, address, status="extracted", ref="JOB-SAVED"):
+    from app.models.job import JobFieldValue
+
+    country_cf = (db.query(CustomField)
+                  .filter(CustomField.group_id == group.id, CustomField.label_name == "ERP Consignee Country").first())
+    if country_cf is None:
+        country_cf = CustomField(tenant_id=group.tenant_id, group_id=group.id,
+                                 label_name="ERP Consignee Country", kind="hardcoded")
+        db.add(country_cf)
+        db.flush()
+    job = Job(tenant_id=group.tenant_id, group_id=group.id, reference=ref, status=status)
+    db.add(job)
+    db.flush()
+    for cf, value in ((country_cf, country), (f["name"], name), (f["branch"], branch), (f["address"], address)):
+        db.add(JobFieldValue(tenant_id=group.tenant_id, job_id=job.id, custom_field_id=cf.id,
+                             label_name=cf.label_name, extracted_value=value))
+    db.commit()
+    return job
+
+
+def _importer(client, job):
+    r = client.get(f"/api/v1/jobs/{job.id}")
+    assert r.status_code == 200, r.text
+    fields = {fv["label_name"]: fv["value"] or "" for fv in r.json()["field_values"] if fv.get("row_index") is None}
+    return (fields.get("ERP Consignee Name"), fields.get("ERP Importer Address / Branch Code"),
+            fields.get("ERP Branch Address"))
+
+
+def test_an_existing_job_whose_importer_has_no_gstin_opens_with_the_importer_empty(client, db_session):
+    from app.models.job import JobFieldValue
+
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Junior Traders",
+                             branch="Main Branch", address="Main Branch address")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("", "", "")
+    # what the documents read is still in the record underneath
+    db_session.expire_all()
+    name_fv = (db_session.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == f["name"].id).one())
+    assert name_fv.extracted_value == "Junior Traders" and name_fv.corrected_value == ""
+
+
+def test_a_branch_without_a_gstin_is_emptied_but_the_importer_stays(client, db_session):
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Juniper Networks India",
+                             branch="Branch 5", address="Branch 5 address")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("Juniper Networks India", "", "")
+
+
+def test_a_job_whose_importer_and_branch_have_a_gstin_is_left_alone(client, db_session):
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Juniper Networks India",
+                             branch="Branch 1", address="Branch 1 address")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("Juniper Networks India", "Branch 1", "Branch 1 address")
+
+
+def test_a_foreign_importer_on_a_job_is_left_alone(client, db_session):
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="United States", name="Juniper Networks Inc.",
+                             branch="Usa", address="Usa address")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("Juniper Networks Inc.", "Usa", "Usa address")
+
+
+def test_a_completed_job_is_never_changed(client, db_session):
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Junior Traders",
+                             branch="Main Branch", address="Main Branch address", status="completed")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("Junior Traders", "Main Branch", "Main Branch address")
+
+
+def test_with_the_rule_off_a_saved_importer_is_left_alone(client, db_session):
+    group, _job, f = _setup(db_session, rule=False)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Junior Traders",
+                             branch="Main Branch", address="Main Branch address")
+    login(client, "sa-gst@example.com")
+
+    assert _importer(client, job) == ("Junior Traders", "Main Branch", "Main Branch address")
+
+
+def test_once_the_gstin_is_added_the_importer_can_be_picked_again(client, db_session):
+    group, _job, f = _setup(db_session)
+    job = _job_with_importer(db_session, group, f, country="INDIA", name="Junior Traders",
+                             branch="Main Branch", address="Main Branch address")
+    login(client, "sa-gst@example.com")
+    assert _importer(client, job) == ("", "", "")
+
+    row = (db_session.query(Ref).filter(Ref.custom_field_id == f["address"].id,
+                                        Ref.match_value_1 == "JUNIOR TRADERS",
+                                        Ref.match_value_2 == "MAIN BRANCH").one())
+    row.gstin = "27AAACJ5555A1Z9"
+    db_session.commit()
+
+    # offered again in the lists...
+    assert "Junior Traders" in _names(client, job, f, "INDIA")
+    assert _options(client, job, f["branch"], key="JUNIOR TRADERS", country="INDIA") == ["Main Branch"]
+    # ...and the job stays empty until someone picks it: it is not put back by itself
+    assert _importer(client, job) == ("", "", "")

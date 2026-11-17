@@ -4090,7 +4090,19 @@ def get_job(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
 ) -> JobDetailOut:
-    return _build_detail(db, _load_job(db, job_id, scope, user))
+    job = _load_job(db, job_id, scope, user)
+    # A saved Indian importer whose GSTIN is not in the dump is shown empty - where the
+    # template asks for it (TemplateGroup.importer_requires_gstin). Done as the job is opened,
+    # so it reaches a job that was already in progress when the rule was switched on. Does
+    # nothing, and costs one lookup, on every other template.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied = clear_importer_without_gstin(db, job)
+    if emptied:
+        db.commit()
+        db.refresh(job)
+        logger.info("job %s: %s emptied - the importer has no GSTIN in the dump", job.reference, emptied)
+    return _build_detail(db, job)
 
 
 @router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-options")
@@ -9750,6 +9762,16 @@ def run_extraction(
         logger.info("job %s: flagged as a possible duplicate of %s (matching content checksum)",
                     job.reference, existing_dup.reference)
         return
+
+    # The importer the reader matched by itself is held to the same rule as one picked from
+    # the list: an Indian importer with no GSTIN in the dump is left empty for the operator.
+    # After the corrections were restored above, so a pick made earlier is checked too.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied_importer = clear_importer_without_gstin(db, job)
+    if emptied_importer:
+        logger.info("job %s: %s emptied after extraction - the importer has no GSTIN in the dump",
+                    job.reference, emptied_importer)
 
     job.status = "extracted"
     db.commit()
