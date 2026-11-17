@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Content hints per doc type, to steer the classifier.
 DOC_TYPE_HINTS = {
-    "BL": "bill of lading, sea/air waybill, B/L no, shipper, consignee, notify party, vessel, port of loading/discharge",
+    "BL": "the carrier's own document titled Bill of Lading or Sea Waybill, B/L no, shipper, consignee, "
+          "notify party, vessel, port of loading/discharge, the carrier's terms of carriage - "
+          "never a forwarder's ARRIVAL NOTICE, even though that repeats the same parties and vessel",
     "PackingList": "packing list, number of packages/cartons, net weight, gross weight, dimensions, marks & numbers",
     "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code",
-    "Freight": "freight certificate/invoice, freight charges, ocean freight, THC, BAF, freight amount",
+    "Freight": "freight certificate/invoice, or a forwarder's ARRIVAL NOTICE, freight charges, "
+               "ocean freight, THC, BAF, freight amount",
 }
 
 # Words a customer uses when NAMING a slot, mapped to the built-in hint for that kind of
@@ -947,6 +950,70 @@ def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]
     return out
 
 
+# A forwarder's ARRIVAL NOTICE prints its own title in these words. Its first page also carries a
+# shipper, a consignee, a notify party, the vessel and both ports - everything the Bill of lading
+# slot is described by - so the page-image reader kept calling it a bill of lading, and the same
+# page then ALSO went to Fright Certificate by its charges (Kuehne+Nagel's "ARRIVAL NOTICE
+# India.pdf": 35 Sea import jobs on production, JOB-9E0377 on SIT). Checked against every page
+# in the Bill of lading slot on SIT and production (276): the words appear on no real bill of
+# lading or sea waybill - only on these arrival notices.
+_ARRIVAL_NOTICE = re.compile(r"\barrival\s+notice\b", re.IGNORECASE)
+
+
+def _page_texts_of(f: dict) -> list[str]:
+    """This file's text per kept page (index n-1 is page n) - the callers' own `kept_pages`,
+    or the "=== PAGE n ===" blocks of its whole text when a caller gave only that."""
+    kept = f.get("kept_pages")
+    if isinstance(kept, list) and kept:
+        return [str(t or "") for t in kept]
+    text = f.get("text") or ""
+    parts = re.split(r"=== PAGE \d+ ===", text)
+    return [p for p in parts[1:]] if len(parts) > 1 else [text]
+
+
+def _arrival_notice_is_not_a_bl(files: list[dict], candidates: list[dict],
+                                claims: list[list[dict]]) -> None:
+    """Mutates `claims`: a page whose own text says ARRIVAL NOTICE is taken out of every Bill of
+    lading claim. If nothing else holds that page, it goes to the freight slot instead - that is
+    where this template's operators file the arrival notice. Only the Bill of lading slot is
+    touched; a page with no such words is never moved."""
+    bl_keys = {c["key"] for c in candidates if _effective_doc_type(c) == "BL"}
+    freight_key = next((c["key"] for c in candidates if _effective_doc_type(c) == "Freight"), None)
+    if not bl_keys:
+        return
+    for i, ms in enumerate(claims):
+        texts = _page_texts_of(files[i])
+        notice_pages = {n for n, t in enumerate(texts, 1) if _ARRIVAL_NOTICE.search(t or "")}
+        if not notice_pages:
+            continue
+        moved: set[int] = set()
+        kept: list[dict] = []
+        for m in ms:
+            if m["key"] in bl_keys and set(m["pages"]) & notice_pages:
+                rest = [p for p in m["pages"] if p not in notice_pages]
+                moved |= set(m["pages"]) & notice_pages
+                if rest:
+                    kept.append({**m, "pages": rest})
+                continue
+            kept.append(m)
+        if not moved:
+            continue
+        held = {p for m in kept for p in m["pages"]}
+        orphans = sorted(p for p in moved if p not in held)
+        if orphans and freight_key:
+            fr = next((m for m in kept if m["key"] == freight_key), None)
+            if fr is not None:
+                fr["pages"] = sorted(set(fr["pages"]) | set(orphans))
+            else:
+                kept.append({"key": freight_key, "pages": orphans, "source": "signature",
+                             "evidence": "the page is titled ARRIVAL NOTICE - a forwarder's "
+                                         "arrival notice, not the bill of lading"})
+        claims[i] = kept
+        logger.info("classify %s: page(s) %s say ARRIVAL NOTICE - taken out of the Bill of "
+                    "lading%s", files[i].get("name"), sorted(moved),
+                    f", given to the freight slot: {orphans}" if orphans and freight_key else "")
+
+
 def assign_documents_detailed(
     files: list[dict], candidates: list[dict],
     engine: str = "ocr_gpt4o_mini", vision_model: str | None = None,
@@ -1011,6 +1078,7 @@ def assign_documents_detailed(
     # it gave every page of a file a second slot because the words were somewhere in it.
     if not per_page:
         _augment_combined_document_claims(files, candidates, claims)
+    _arrival_notice_is_not_a_bl(files, candidates, claims)
 
     # 1. The SAME key may never claim a page twice - a file can genuinely hold several
     #    invoices, and each is its own document with its own, non-overlapping pages, so only
