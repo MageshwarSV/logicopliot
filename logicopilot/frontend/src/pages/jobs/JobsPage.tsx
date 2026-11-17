@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { DataTable, type Column } from "../../components/ui/DataTable";
 import { Pagination } from "../../components/ui/Pagination";
-import { CalendarIcon } from "../../components/ui/icons";
+import { CalendarIcon, SearchIcon } from "../../components/ui/icons";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Input";
 import { Alert } from "../../components/ui/Alert";
@@ -235,6 +235,12 @@ export function JobsPage() {
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
+  // Search by Job No or BL / Air Waybill No (the "BL No" column - the HAWB on an air job).
+  // Compared on letters and digits only, so "45T 0523984" and "45t-0523984" both find
+  // 45T0523984. While it has text, the other filters are paused - a number typed in should
+  // find its job even outside "Last 7 days" or someone else's queue.
+  const [jobSearch, setJobSearch] = useState("");
+  const searchKey = jobSearch.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   useEffect(() => {
     // EVERY client-side refinement (quick date range, customer, status, assignee, shipment
     // type) used to be stored in ONE set shared by all five screens, with no idea which it
@@ -798,13 +804,15 @@ export function JobsPage() {
   // still being skipped are the newest ones, and older pages may yet fall inside the window),
   // so it is deliberately left to page normally.
   const pastDateWindow = useMemo(() => {
+    // A search looks through every job in this menu, so keep loading older pages.
+    if (searchKey) return false;
     if (!quickRange.from || jobs.length === 0) return false;
     // The same date the filter uses, or this shortcut decides the search has gone far enough
     // back by one measure while the filter is still looking by another.
     const last = jobs[jobs.length - 1];
     const oldest = last ? dayKey(rowDate(last)) : "";
     return oldest !== "" && oldest < quickRange.from;
-  }, [jobs, quickRange.from, category]);
+  }, [jobs, quickRange.from, category, searchKey]);
 
   // Display order only: earliest ETA first; jobs with no ETA at the bottom, newest created first.
   // Same ETA: newest created first. eta_date is always "YYYY-MM-DD", so string order is date
@@ -815,6 +823,10 @@ export function JobsPage() {
     const createdMs = (j: Job) => (j.created_at ? Date.parse(j.created_at) || 0 : 0);
     return jobs.filter((j) => {
       if (showModeTabs && activeModeTab !== "All" && j.mode !== activeModeTab) return false;
+      if (searchKey) {
+        const key = (v: string | null | undefined) => (v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        return key(j.reference).includes(searchKey) || key(j.hbl_no).includes(searchKey);
+      }
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
       if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
       if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
@@ -831,7 +843,7 @@ export function JobsPage() {
       if (ea !== eb) return ea < eb ? -1 : 1;
       return createdMs(b) - createdMs(a);
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
+  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category, searchKey]);
 
   // Page-by-page display over the filtered list. Every job is still loaded in the background
   // (see the auto-continue effect) and filtered client-side above, so this only decides which
@@ -842,7 +854,11 @@ export function JobsPage() {
   const [listPageSize, setListPageSize] = useState(20);
   useEffect(() => {
     setListPage(1);
-  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket]);
+  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket, searchKey]);
+  // A search belongs to the menu it was typed on.
+  useEffect(() => {
+    setJobSearch("");
+  }, [category, group]);
   const listLastPage = Math.max(1, Math.ceil(visibleJobs.length / listPageSize));
   const currentListPage = Math.min(listPage, listLastPage);
   const pageJobs = visibleJobs.slice((currentListPage - 1) * listPageSize, currentListPage * listPageSize);
@@ -1118,7 +1134,30 @@ export function JobsPage() {
       )}
 
       <Card className="mb-4 p-5">
-        <div className="flex flex-wrap items-end gap-4">
+        <div className="mb-4">
+          <label htmlFor="job-search" className="mb-1 block text-xs font-medium text-slate-500">
+            Search
+          </label>
+          <div className="relative max-w-xl">
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              id="job-search"
+              type="search"
+              value={jobSearch}
+              onChange={(e) => setJobSearch(e.target.value)}
+              placeholder="Search by Job No, BL No or Air Waybill No..."
+              className={`${quickField} w-full pl-9`}
+              autoComplete="off"
+            />
+          </div>
+          {searchKey && (
+            <p className="mt-1.5 text-xs text-indigo-700 dark:text-indigo-300">
+              Searching every job in this menu - the date, customer, status and assignee filters
+              below are paused while there is text here.
+            </p>
+          )}
+        </div>
+        <div className={`flex flex-wrap items-end gap-4 ${searchKey ? "opacity-50" : ""}`}>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">Quick filter</label>
             <select
