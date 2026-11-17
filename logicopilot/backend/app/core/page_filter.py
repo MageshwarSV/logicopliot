@@ -199,6 +199,23 @@ def filter_pages(
     return [p for i, p in enumerate(pages) if i not in drop], sorted(i + 1 for i in drop)
 
 
+# There is NO page limit on classification: every page of every attachment is read and
+# classified on its own, however long the file. It used to stop at page 6 - everything past
+# it was never looked at (by mail simply lost; by upload given one rough pass over all the
+# remaining pages as a single block), which is how a 45-page "Commercial Invoice + PL" file
+# (JOB-00CC6D) had 36 real pages end up Unclassified.
+
+
+def claim_covers_file(claim_pages, kept_pages: list[str]) -> bool:
+    """Does this claim cover every page of its file that has anything on it? Only then may the
+    file go into the slot as it is. Otherwise the claim's own pages are carved out of it: a
+    file that is one invoice plus an air waybill plus a packing list, of which only the
+    invoice was recognised, must not put the waybill and the packing list into the Invoice
+    slot (JOB-FAE253, 13 pages filed whole as one invoice)."""
+    with_text = {i for i, t in enumerate(kept_pages or [], start=1) if (t or "").strip()}
+    return set(claim_pages or []) >= with_text
+
+
 def kept_page_to_original(page_count: int, dropped_pages: list[int]) -> list[int]:
     """The original 1-based page number for each entry of filter_pages()'s kept list, in
     order. classify_document() reports pages by their position in that kept, renumbered

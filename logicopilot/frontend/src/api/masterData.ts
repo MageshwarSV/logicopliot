@@ -151,3 +151,81 @@ export async function downloadQuotationExport(groupId: string): Promise<void> {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// --- CTH Master: the customer's CTH dump workbook, per template (master_data_cth.py).
+// The workbook is the data: edits and additions are written into it. No full replace from the UI.
+const CTH = "/master-data/cth-directory";
+
+export interface CthDumpStatus {
+  attached: boolean;
+  file_name: string | null;
+  uploaded_at: string | null;
+}
+
+export interface CthTemplate extends CthDumpStatus {
+  group_id: string;
+  name: string;
+  rows: number | null;
+}
+
+export interface CthValues {
+  part_code: string;
+  description: string;
+  cth: string;
+}
+
+export interface CthRow extends CthValues {
+  row: number;
+  cth_as_written: string;
+}
+
+export interface CthRowsPage extends CthDumpStatus {
+  ready: boolean;
+  total: number;
+  rows: CthRow[];
+}
+
+export interface CthAddResult {
+  added: number;
+  skipped: { row: string; part_code: string; reason: string }[];
+}
+
+export async function listCthTemplates(): Promise<CthTemplate[]> {
+  const { data } = await apiClient.get<{ templates: CthTemplate[] }>(CTH);
+  return data.templates;
+}
+
+export async function listCthRows(
+  groupId: string,
+  params: { q?: string; sort: "part" | "description" | "cth"; direction: "asc" | "desc"; page: number; page_size: number },
+): Promise<CthRowsPage> {
+  const { data } = await apiClient.get<CthRowsPage>(`${CTH}/${groupId}/rows`, { params });
+  return data;
+}
+
+export async function editCthRow(groupId: string, row: number, expected: CthValues, values: CthValues): Promise<CthRow> {
+  const { data } = await apiClient.put<CthRow>(`${CTH}/${groupId}/rows/${row}`, { expected, values });
+  return data;
+}
+
+export async function addCthRow(groupId: string, values: CthValues): Promise<void> {
+  await apiClient.post(`${CTH}/${groupId}/rows`, values);
+}
+
+export async function addCthRowsFromFile(groupId: string, file: File): Promise<CthAddResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<CthAddResult>(`${CTH}/${groupId}/rows/upload`, form);
+  return data;
+}
+
+export async function downloadCthFile(groupId: string, kind: "download" | "template"): Promise<void> {
+  const { data, headers } = await apiClient.get<Blob>(`${CTH}/${groupId}/${kind}`, { responseType: "blob" });
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(String(headers["content-disposition"] ?? ""));
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = match?.[1] ? decodeURIComponent(match[1]) : kind === "template" ? "CTH_add_rows_template.xlsx" : "CTH_dump.xlsx";
+  a.click();
+  URL.revokeObjectURL(url);
+}
