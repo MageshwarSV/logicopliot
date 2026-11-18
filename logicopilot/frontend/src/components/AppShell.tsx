@@ -221,6 +221,10 @@ export function AppShell({
     return () => { alive = false; window.clearInterval(t); };
   }, [showsJobCategories]);
 
+  const tenantJobsWorkspace =
+    user?.role === "tenant_admin" &&
+    (location.pathname === "/jobs" || location.pathname === "/duplicate-emails");
+
   const totalJobsCount = categoryCounts
     ? Object.values(categoryCounts).reduce((a, b) => a + b, 0)
     : null;
@@ -319,7 +323,20 @@ export function AppShell({
             </>
           )}
 
-          {user?.role === "tenant_admin" && (
+          {/* A Tenant Admin's "Jobs" opens in its own tab, and there the jobs screens look
+              exactly like an operator's: the Workspace list (New Jobs, Missing Documents, ERP
+              Failed, ERP Submitted, Duplicate Emails) instead of the whole admin menu - so new
+              and submitted jobs are one click apart, as they are for the people doing the work. */}
+          {tenantJobsWorkspace && (
+            <div className="mt-8">
+              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
+              <div className="mt-2 space-y-1">
+                {jobCategoryLinks()}
+              </div>
+            </div>
+          )}
+
+          {user?.role === "tenant_admin" && !tenantJobsWorkspace && (
             <>
               <div className="mt-8">
                 <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Billing &amp; Finance</h3>
@@ -388,13 +405,19 @@ export function AppShell({
               <div className="mt-8">
                 <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Operations</h3>
                 <div className="mt-2 space-y-1">
-                  <Link to="/jobs" className={navClass("/jobs")}>
+                  <a
+                    href="/jobs?category=new"
+                    target="_blank"
+                    rel="noopener"
+                    title="Opens the jobs workspace in a new tab"
+                    className={NAV_INACTIVE}
+                  >
                     <BriefcaseIcon />
                     <span className="min-w-0 flex-1 truncate">Jobs</span>
                     {totalJobsCount != null && (
                       <CountBadge count={totalJobsCount} cls="bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" />
                     )}
-                  </Link>
+                  </a>
                   <button
                     type="button"
                     onClick={() => setReportsOpen((v) => !v)}
