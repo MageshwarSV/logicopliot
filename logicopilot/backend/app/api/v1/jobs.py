@@ -5086,6 +5086,26 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         values.setdefault(label, vals[0] if vals else "")
     values.setdefault("job_reference", job.reference or "")
 
+    # Each document's OWN reading of a job-level label, under "<label>@@<document name>" - for an
+    # Excel column set to "from_document" (see excel_entry._picked_field). The plain label above
+    # lets the last non-empty reading win, so on November 5 an invoice's "0" overwrote the Air
+    # Waybill's 12 packages / 162 kg in SHIPMENT No_of_Pkg / GrWt (BLR/AI/3886/26-27). These
+    # extra keys change nothing for a column that does not ask for them.
+    _doc_names = {
+        td.id: (td.name or "").strip()
+        for td in db.query(TemplateDocument).filter(TemplateDocument.group_id == job.group_id).all()
+    }
+    for fv in sorted(job_fvs, key=_priority):
+        if fv.row_index is not None or not fv.template_document_id:
+            continue
+        doc_name = _doc_names.get(fv.template_document_id)
+        if not doc_name:
+            continue
+        key = f"{fv.label_name}@@{doc_name}"
+        v = fv.value or ""
+        if key not in values or (not values[key].strip() and v.strip()):
+            values[key] = v
+
     # insurance_percentage/insurance_amount are mutually exclusive in the ERP import (see
     # InsuranceModeField in JobRunPage.tsx) - exactly one of the two Excel columns may be
     # non-blank. Enforced HERE, at read time, against whichever the "insurance_mode" hidden

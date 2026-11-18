@@ -251,6 +251,14 @@ def _picked_field(col: dict, values: dict) -> str:
     shipper or its Sold By / Exporter - is the supplier on this entry. A column without
     pick_by is unchanged.
     """
+    # "from_document": "Air Waybill" - read this field ONLY from that document's own reading,
+    # never another document's copy of the same label (November 5's No_of_Pkg / GrWt: the
+    # invoices' and packing lists' "0" overwrote the Air Waybill's real figures). The values
+    # carry each document's own reading under "<label>@@<document name>" (see _job_values in
+    # jobs.py); nothing read there means a blank cell, not another document's figure.
+    doc = str(col.get("from_document") or "").strip()
+    if doc and col.get("field"):
+        return f"{col['field']}@@{doc}"
     pick = col.get("pick_by")
     if not isinstance(pick, dict):
         return col.get("field") or ""
