@@ -1152,6 +1152,15 @@ def _start_extraction_background(
     submit_extraction(_go)
 
 
+def _mark_review_started(job: Job) -> None:
+    """The first time an operator acts on an extracted job (a correction, a page submitted, a
+    Next, a check accepted) - the start of its "Review Time". Stamped once, never moved."""
+    if job.review_started_at is None and job.status not in ("draft", "extracting"):
+        from datetime import timezone as _tz
+
+        job.review_started_at = datetime.now(_tz.utc)
+
+
 def _begin_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -2832,6 +2841,7 @@ def record_stage(
         return None
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage=stage, note=f"Moved on to {stage}"))
+    _mark_review_started(job)
     db.commit()
     return None
 
@@ -2890,6 +2900,8 @@ def approve_document(
         jdoc.gk2_approved = payload.approved
     else:
         jdoc.approved = payload.approved
+    if payload.approved:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -4956,6 +4968,8 @@ def set_verification_decision(
     else:
         accepted.discard(payload.link_id)
     job.accepted_verifications = sorted(accepted)
+    if payload.accept:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -10515,6 +10529,7 @@ def correct_field_value(
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
     _apply_correction(db, fv, saved)
+    _mark_review_started(job_for_rules)
     # ... and into every box on this line holding the same answer, in both directions. The
     # frontend already walked the link forwards; nothing walked it back, so typing into the
     # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
