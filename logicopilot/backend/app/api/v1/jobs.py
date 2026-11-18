@@ -1152,6 +1152,15 @@ def _start_extraction_background(
     submit_extraction(_go)
 
 
+def _mark_review_started(job: Job) -> None:
+    """The first time an operator acts on an extracted job (a correction, a page submitted, a
+    Next, a check accepted) - the start of its "Review Time". Stamped once, never moved."""
+    if job.review_started_at is None and job.status not in ("draft", "extracting"):
+        from datetime import timezone as _tz
+
+        job.review_started_at = datetime.now(_tz.utc)
+
+
 def _begin_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -2832,6 +2841,7 @@ def record_stage(
         return None
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage=stage, note=f"Moved on to {stage}"))
+    _mark_review_started(job)
     db.commit()
     return None
 
@@ -2890,6 +2900,8 @@ def approve_document(
         jdoc.gk2_approved = payload.approved
     else:
         jdoc.approved = payload.approved
+    if payload.approved:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -4956,6 +4968,8 @@ def set_verification_decision(
     else:
         accepted.discard(payload.link_id)
     job.accepted_verifications = sorted(accepted)
+    if payload.accept:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -9815,6 +9829,7 @@ def run_extraction(
 
             value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
                                          field_label=cf.label_name)
+            value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
@@ -10137,6 +10152,60 @@ _SAYS_NONE = re.compile(r"^\s*NO\s+M?AWB\s*$", re.I)
 def _has_required_value(db: Session, job_id: str, label: str) -> bool:
     v = _job_level_value(db, job_id, label)
     return bool(v) and not _SAYS_NONE.match(v)
+
+
+# A master air waybill number: the airline's 3-digit prefix, then 8 digits - written
+# "232-71281011", "232 71281011", "198 HAN 00111646" (departure airport between), or split by the
+# OCR over lines ("176 PER" ... "69375110").
+_MAWB_ONE_LINE = re.compile(
+    r"(?<![\w-])(\d{3})(?:[ \t]*-[ \t]*|[ \t]+(?:[A-Z]{3}[ \t]+)?|)(\d{4})[ \t]?(\d{4})(?![\w-])")
+_MAWB_SPLIT = re.compile(r"(?m)^[ \t]*(\d{3})[ \t]+[A-Z]{3}[ \t]*\n(?:[ \t]*\n)*[ \t]*(\d{8})[ \t]*$")
+_NOT_A_MAWB = re.compile(r"(phone|tel|fax|mob|contact|account)\W", re.I)
+
+
+def _mawb_number_from_page(page_text: str, ai_value: str, hawb: str) -> str:
+    """MAWB Number as 11 digits, read off the air waybill text by its fixed shape.
+
+    The AI alone was unreliable on these pages: it answered NO MAWB for a number the page
+    labels "MAWB Number" (232-19669366), dropped the airline prefix from "176 PER 69375110",
+    and returned the house number (9883236823, 41L0155474 -> 410155474). The shape is fixed,
+    so the page is searched for it; the first one found (the top of the page) wins, never the
+    house number and never one next to a phone/account label. With none on the page, the AI's
+    answer stands only if it is itself 11 digits - otherwise NO MAWB.
+    """
+    text = page_text or ""
+    hawb_digits = re.sub(r"\D", "", hawb or "")
+    found: list[tuple[int, str]] = []
+    for m in _MAWB_ONE_LINE.finditer(text):
+        if _NOT_A_MAWB.search(text[max(0, m.start() - 25):m.start()]):
+            continue
+        found.append((m.start(), "".join(m.groups())))
+    for m in _MAWB_SPLIT.finditer(text):
+        found.append((m.start(), m.group(1) + m.group(2)))
+    for _, num in sorted(found):
+        if num != hawb_digits:
+            return num
+    ai_digits = re.sub(r"\D", "", ai_value or "")
+    if len(ai_digits) == 11 and ai_digits != hawb_digits and not _SAYS_NONE.match(ai_value or ""):
+        return ai_digits
+    return "NO MAWB"
+
+
+def _apply_mawb_shape(db: Session, job: Job, cf, value: str, page_text: str) -> str:
+    """Only for a "MAWB Number" field another field depends on (Air import November 5's MAWB
+    Date requires it) - every other field and template is untouched."""
+    from app.models.custom_field import CustomField as _CFm
+
+    if (cf.label_name or "").strip().upper() != "MAWB NUMBER":
+        return value
+    if db.query(_CFm).filter(_CFm.group_id == job.group_id,
+                             _CFm.requires_value_of == cf.label_name).first() is None:
+        return value
+    new = _mawb_number_from_page(page_text, value or "", _job_level_value(db, job.id, "HBL No"))
+    if new != (value or ""):
+        logger.info("job %s: MAWB Number %r -> %r (read off the air waybill by its shape)",
+                    job.reference, value, new)
+    return new
 
 
 def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str | None = None) -> list[str]:
@@ -10515,6 +10584,7 @@ def correct_field_value(
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
     _apply_correction(db, fv, saved)
+    _mark_review_started(job_for_rules)
     # ... and into every box on this line holding the same answer, in both directions. The
     # frontend already walked the link forwards; nothing walked it back, so typing into the
     # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
@@ -10890,6 +10960,7 @@ def recompute_custom_field(
 
         value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
                                      field_label=cf.label_name)
+        value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
 

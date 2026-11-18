@@ -182,6 +182,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # listener at the end of this class, so every path that fails a job sets it, and a job that
     # fails again after a retry shows its latest failure. See migration s6erpfail01.
     erp_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When an operator FIRST acted on the extracted job - corrected a value, submitted a
+    # document page, pressed Next, accepted a check: the job goes from "Review" to "In Review".
+    # "Review Time" on the dashboards runs from here to the Final Submit press. Stamped once,
+    # by jobs._mark_review_started; see migration t8revstart01 for jobs from before it existed.
+    review_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # WHO pressed the button that last sent this job to the ERP: GK1's Final Submit for
     # Approval when GK2 is off for the shipment type, GK2's Final Approve & Proceed (or GK1's
     # retry of a failed one), or Submit Entry. The notification bell tells ONLY this person
