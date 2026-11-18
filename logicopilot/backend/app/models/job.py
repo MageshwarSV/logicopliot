@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -177,6 +177,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # completed_at - this, so a job that failed and was retried weeks later is timed on its
     # last attempt, not on the whole gap since the first one. See migration f3erpsub01.
     erp_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the ERP entry last FAILED (gk2_status became "failed") - shown under the "Failed"
+    # badge on the Jobs list, the way completed_at is under "ERP Submitted". Stamped by the
+    # listener at the end of this class, so every path that fails a job sets it, and a job that
+    # fails again after a retry shows its latest failure. See migration s6erpfail01.
+    erp_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # WHO pressed the button that last sent this job to the ERP: GK1's Final Submit for
     # Approval when GK2 is off for the shipment type, GK2's Final Approve & Proceed (or GK1's
     # retry of a failed one), or Submit Entry. The notification bell tells ONLY this person
@@ -236,6 +241,16 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     unmatched_pages: Mapped[list["UnmatchedUploadPage"]] = relationship(
         cascade="all, delete-orphan"
     )
+
+
+@event.listens_for(Job.gk2_status, "set")
+def _stamp_erp_failed_at(target: Job, value, oldvalue, initiator) -> None:
+    """A job moving INTO "failed" records when. Moving out (a retry) leaves the last failure's
+    time alone; failing again re-stamps it."""
+    if value == "failed" and oldvalue != "failed":
+        from datetime import timezone as _tz
+
+        target.erp_failed_at = datetime.now(_tz.utc)
 
 
 class JobDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):

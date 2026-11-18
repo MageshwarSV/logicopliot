@@ -32,6 +32,8 @@ export interface Job {
    *  Null until the job completes. See Job.completed_at in the backend for why neither
    *  created_at nor updated_at could answer this. */
   completed_at?: string | null;
+  /** When the ERP entry last failed - shown under the "Failed" badge. */
+  erp_failed_at?: string | null;
   /** Set when status is "possible_duplicate" - the job this one's extracted data matched.
    *  duplicate_of_reference is the Job No to show in the popup; the id alone means nothing
    *  to an operator. */

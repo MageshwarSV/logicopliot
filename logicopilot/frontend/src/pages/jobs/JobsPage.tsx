@@ -556,6 +556,7 @@ export function JobsPage() {
     stage?: string | null,
     missingDocuments?: string[] | null,
     completedAt?: string | null,
+    failedAt?: string | null,
   ) {
     const s = stage ?? "Document Capture";
     // The two words that mean the job is finished - the same pair the emerald styling below
@@ -614,6 +615,15 @@ export function JobsPage() {
             title="When this job was submitted to the ERP"
           >
             {when(completedAt)}
+          </span>
+        )}
+        {/* Likewise WHEN the ERP entry failed, under the badge that says it did. */}
+        {s === "Failed" && failedAt && (
+          <span
+            className="text-[11px] text-rose-700 dark:text-rose-400"
+            title="When the ERP entry failed"
+          >
+            {when(failedAt)}
           </span>
         )}
       </div>
@@ -929,7 +939,7 @@ export function JobsPage() {
     },
     {
       header: "Status",
-      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at),
+      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at, j.erp_failed_at),
     },
     // Who this job is assigned to. Editable for operator/super_admin/admin — the candidate
     // list is narrowed to operators scoped to THIS job's own mode (a Sea Import job only

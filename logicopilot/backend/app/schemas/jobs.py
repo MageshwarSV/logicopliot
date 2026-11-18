@@ -59,6 +59,8 @@ class JobOut(BaseModel):
     # date the Manager app counts a completed job against. See Job.completed_at for why
     # neither created_at nor updated_at could be used for this.
     completed_at: datetime | None = None
+    # When the ERP entry last failed - shown under the "Failed" badge. See Job.erp_failed_at.
+    erp_failed_at: datetime | None = None
     # Set when status is "possible_duplicate" - the job whose extracted data this one's
     # checksum matched. duplicate_of_reference is the human-readable Job No for the popup
     # ("this looks like JOB-1E928B") - the id alone means nothing to an operator.
