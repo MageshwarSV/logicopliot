@@ -846,6 +846,20 @@ export function JobsPage() {
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
     }).sort((a, b) => {
+      // ERP Failed Jobs: the most recent failure first; jobs with no failure time at the bottom.
+      if (category === "failed") {
+        const fa = a.erp_failed_at ? Date.parse(a.erp_failed_at) || 0 : 0;
+        const fb = b.erp_failed_at ? Date.parse(b.erp_failed_at) || 0 : 0;
+        if (fa !== fb) return fb - fa;
+        return createdMs(b) - createdMs(a);
+      }
+      // ERP Submitted Jobs: the most recent submission first (the green time under the badge).
+      if (category === "submitted" || category === "completed") {
+        const sa = a.completed_at ? Date.parse(a.completed_at) || 0 : 0;
+        const sb = b.completed_at ? Date.parse(b.completed_at) || 0 : 0;
+        if (sa !== sb) return sb - sa;
+        return createdMs(b) - createdMs(a);
+      }
       const ea = a.eta_date || "";
       const eb = b.eta_date || "";
       if (ea && !eb) return -1;
