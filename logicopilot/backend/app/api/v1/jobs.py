@@ -1197,6 +1197,10 @@ def _begin_extraction(
     job.stage_override = None
     job.status = "extracting"
     job.extraction_is_rerun = is_rerun
+    # A fresh read means a fresh review: "Review Time" restarts from the operator's first
+    # action AFTER this extraction finishes (by request, 2026-11-19), not from the first
+    # action before it. _mark_review_started stamps it again once they start working the job.
+    job.review_started_at = None
     # The note text itself is what job_history's external_status_label reads back to tell a
     # rerun apart from a job's first pass - is_rerun itself is a Job column, not snapshotted
     # onto the JobEvent, so by the time an OLDER event is viewed this note is the only record

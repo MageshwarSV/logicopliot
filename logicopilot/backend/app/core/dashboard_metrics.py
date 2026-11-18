@@ -325,26 +325,45 @@ class ProcessingTimeMetrics:
     by_job: list[JobTiming] = field(default_factory=list)
 
 
-def _extraction_end(job: Job) -> datetime | None:
-    """The timestamp right after the LAST "extracting" JobEvent - i.e. when this job's final
-    extraction pass actually finished. Shared by _job_stage_durations (Job Processing Time)
-    and compute_workforce_metrics (review-time-per-employee), so the two pages can never
-    disagree about where extraction ends and review begins."""
-    # By request (2026-11-18): extraction is "created -> extracted" - the FIRST time the job
-    # reached "Documents extracted". The old rule needed an "extracting" event, which only the
-    # upload / Extract-button path writes; every job pulled from email goes straight from
-    # Created to Documents extracted, so most jobs showed "—" for both Extracted and Review Time.
-    for ev in sorted(job.events, key=lambda e: e.created_at):
+def _extraction_pass(job: Job) -> tuple[datetime | None, datetime | None]:
+    """(start, end) of the job's CURRENT extraction - the one its review is based on.
+
+    By request (2026-11-18 / 19):
+      - read once: created -> first "Documents extracted". (Email jobs go straight from
+        Created to Documents extracted with no "extracting" entry at all, which is why the
+        old "last extracting event" rule showed "—" for most jobs.)
+      - re-extracted: everything before the LAST Re-extract press is dropped - the pass runs
+        from that press ("extracting" entry) to the "Documents extracted" right after it.
+    """
+    events = sorted(job.events, key=lambda e: e.created_at)
+    start = job.created_at
+    after = 0
+    seen_extracted = False
+    for i, ev in enumerate(events):
         if ev.status == "extracted":
-            return ev.created_at
-    return None
+            seen_extracted = True
+        # Only an "extracting" AFTER the job was already extracted is a Re-extract - a hand
+        # upload writes one for its FIRST read too, and that pass still counts from creation.
+        elif ev.status == "extracting" and seen_extracted:
+            start, after = ev.created_at, i + 1
+    end = next((ev.created_at for ev in events[after:] if ev.status == "extracted"), None)
+    return start, end
+
+
+def _extraction_end(job: Job) -> datetime | None:
+    """When the job's current extraction finished (see _extraction_pass). Shared by Job
+    Processing Time and Workforce Productivity, so the two pages agree where review begins."""
+    return _extraction_pass(job)[1]
 
 
 def _review_start(job: Job, extraction_end: datetime | None) -> datetime | None:
-    """When the operator started reviewing - the first correction / page submitted / Next
-    (Job.review_started_at). A job nobody touched before Final Submit starts at extraction end."""
+    """When the operator started reviewing - their first correction / page submitted / Next
+    (Job.review_started_at), which Re-extract clears so the review starts again after the
+    fresh read. A job nobody touched before Final Submit starts at its extraction's end."""
     start = job.review_started_at
     if start is not None and extraction_end is not None and start < extraction_end:
+        # Stamped before the latest Re-extract (a job from before Re-extract cleared it): its
+        # review restarts when that fresh extraction finished.
         start = extraction_end
     return start or extraction_end
 
@@ -369,13 +388,13 @@ def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | 
     more than once - failed, retried, finished days later - is timed on its final attempt
     only; see _erp_entry_minutes.
     """
-    # By request (2026-11-18):
-    #   Extracted Time  = created -> first "Documents extracted"
-    #   Review Time     = operator's first action (review_started_at) -> Final Submit
+    # By request (2026-11-18 / 19):
+    #   Extracted Time  = created -> "Documents extracted"; after a Re-extract, that press ->
+    #                     its "Documents extracted" (the earlier pass is dropped)
+    #   Review Time     = operator's first action after that extraction -> Final Submit
     #   ERP Entry Time  = Final Submit -> ERP submitted (unchanged, _erp_entry_minutes)
     events = sorted(job.events, key=lambda e: e.created_at)
-    extraction_start = job.created_at
-    extraction_end = _extraction_end(job)
+    extraction_start, extraction_end = _extraction_pass(job)
     extraction_minutes = None
     if extraction_start and extraction_end and extraction_end >= extraction_start:
         extraction_minutes = (extraction_end - extraction_start).total_seconds() / 60
