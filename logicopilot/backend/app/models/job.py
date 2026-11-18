@@ -253,6 +253,16 @@ def _stamp_erp_failed_at(target: Job, value, oldvalue, initiator) -> None:
         target.erp_failed_at = datetime.now(_tz.utc)
 
 
+@event.listens_for(Job.status, "set")
+def _stamp_failed_at_on_status(target: Job, value, oldvalue, initiator) -> None:
+    """The other way a job shows "Failed": job.status itself set to "failed" (the older ERP
+    flow, a run stopped by hand, a run that crashed). Same rule as above."""
+    if value == "failed" and oldvalue != "failed":
+        from datetime import timezone as _tz
+
+        target.erp_failed_at = datetime.now(_tz.utc)
+
+
 class JobDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A real uploaded file fulfilling one of the template set's declared documents."""
 

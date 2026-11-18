@@ -61,3 +61,13 @@ def test_the_job_list_row_carries_it(db_session):
     job.gk2_status = "failed"
     db_session.commit()
     assert JobOut.model_validate(job).erp_failed_at == job.erp_failed_at
+
+
+def test_a_job_failed_through_its_own_status_records_when_too(db_session):
+    job = _job(db_session)
+    job.status = "processing"
+    db_session.commit()
+    assert job.erp_failed_at is None
+    job.status = "failed"
+    db_session.commit()
+    assert job.erp_failed_at is not None
