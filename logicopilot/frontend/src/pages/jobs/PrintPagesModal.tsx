@@ -4,8 +4,8 @@ import * as jobsApi from "../../api/jobs";
 import type { JobDocument } from "../../types/jobs";
 
 /** Document Capture -> "Print pages...": for the occasional print that must leave out some
- *  pages. Every document's pages as thumbnails; nothing is ticked to start - tick exactly the
- *  pages to print. Print only: the job's documents are not changed. Whole-document printing
+ *  pages. Every document's pages as thumbnails; every classified page is ticked to start -
+ *  untick the pages not to print (Unclassified pages start unticked). Print only: the job's documents are not changed. Whole-document printing
  *  stays on the ordinary Print button (PrintDocumentsModal). */
 
 type PageItem =
@@ -66,7 +66,9 @@ export function PrintPagesModal({
   const looseItems: PageItem[] = useMemo(() => pages.map((p) => ({ kind: "loose" as const, key: `u:${p.id}`, pageId: p.id })), [pages]);
   const excelDocIds = classified.flatMap((s) => s.files.filter((f) => f.source_kind === "excel").map((f) => f.id));
 
-  const [picked, setPicked] = useState<Set<string>>(new Set());          // page keys, Excel doc ids, "x:<file id>"
+  // Starts with every page of every classified document ticked - untick what should not print.
+  // Unclassified pages start unticked. Keys: page keys, Excel doc ids, "x:<file id>".
+  const [picked, setPicked] = useState<Set<string>>(() => new Set([...docItems.map((i) => i.key), ...excelDocIds]));
   const [busy, setBusy] = useState<"print" | "download" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [big, setBig] = useState<string | null>(null);
@@ -146,14 +148,18 @@ export function PrintPagesModal({
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-700">
           <div>
             <h3 className="text-base font-semibold text-slate-900 dark:text-slate-50">Print pages</h3>
-            <p className="text-xs text-slate-500">Tick only the pages to print. The job's documents are not changed.</p>
+            <p className="text-xs text-slate-500">All classified pages are ticked to start - untick any page you do not want. The job's documents are not changed.</p>
           </div>
           <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">Close</button>
         </div>
         <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-2 text-xs dark:border-slate-700">
           <button onClick={() => flip([...classifiedKeys, ...unclassifiedKeys], true)} className={btn}>Select all</button>
-          <button onClick={() => flip(classifiedKeys, true)} className={btn}>Select all classified</button>
-          <button onClick={() => flip(unclassifiedKeys, true)} className={btn}>Select all unclassified</button>
+          <button onClick={() => flip(classifiedKeys, true)} disabled={classifiedKeys.length === 0}
+            title={classifiedKeys.length === 0 ? "Nothing classified on this job" : undefined}
+            className={`${btn} disabled:cursor-not-allowed disabled:opacity-40`}>Select all classified</button>
+          <button onClick={() => flip(unclassifiedKeys, true)} disabled={unclassifiedKeys.length === 0}
+            title={unclassifiedKeys.length === 0 ? "Nothing unclassified on this job" : undefined}
+            className={`${btn} disabled:cursor-not-allowed disabled:opacity-40`}>Select all unclassified</button>
           <button onClick={() => setPicked(new Set())} className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800">Clear</button>
           <span className="ml-auto self-center text-slate-500">
             {pageCount} page{pageCount === 1 ? "" : "s"}{sheetCount ? ` + ${sheetCount} Excel` : ""} selected
@@ -185,6 +191,9 @@ export function PrintPagesModal({
               })}
             </div>
           ))}
+          {looseItems.length === 0 && files.length === 0 && classified.length > 0 && (
+            <p className="text-xs text-slate-400"><span className="font-semibold uppercase tracking-wider">Unclassified</span> – none on this job.</p>
+          )}
           {(looseItems.length > 0 || files.length > 0) && (
             <div className="mb-2">
               <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">Unclassified</p>

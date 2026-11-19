@@ -118,8 +118,12 @@ export function PrintDocumentsModal({
         </div>
         <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-2 text-xs dark:border-slate-700">
           <button onClick={() => { selectClassified(); selectUnclassified(); }} className="rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">Select all</button>
-          <button onClick={selectClassified} className="rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">Select all classified</button>
-          <button onClick={selectUnclassified} className="rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">Select all unclassified</button>
+          <button onClick={selectClassified} disabled={allDocIds.length === 0}
+            title={allDocIds.length === 0 ? "Nothing classified on this job" : undefined}
+            className="rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800">Select all classified</button>
+          <button onClick={selectUnclassified} disabled={pageGroups.length === 0 && files.length === 0}
+            title={pageGroups.length === 0 && files.length === 0 ? "Nothing unclassified on this job" : undefined}
+            className="rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800">Select all unclassified</button>
           <button onClick={() => { setDocs(new Set()); setGroups(new Set()); setXls(new Set()); }} className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800">Clear</button>
           <span className="ml-auto self-center text-slate-500">{count} selected</span>
         </div>
