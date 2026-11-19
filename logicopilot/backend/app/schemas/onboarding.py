@@ -287,6 +287,12 @@ class TemplateGroupOut(BaseModel):
     prealert_shipments: bool = False
     # See TemplateGroup.importer_requires_gstin.
     importer_requires_gstin: bool = False
+    # Excel by sheet - see TemplateGroup.excel_mode / excel_ignore_patterns.
+    excel_mode: str = "legacy"
+    excel_ignore_patterns: list[str] | None = None
+    auto_extract: bool = True
+    large_zip_hold: bool = False
+    large_zip_mb: int = 5
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):

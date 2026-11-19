@@ -10,6 +10,12 @@ export interface AvailableGroup {
   mode?: string | null;
   pull_email?: string | null;
   pull_operator_id?: string | null;
+  /** How Excel files are handled: "legacy" (converted to PDF) or "sheet" (read per sheet). */
+  excel_mode?: string;
+  /** Excel file names that are never documents; null = the built-in defaults. */
+  excel_ignore_patterns?: string[] | null;
+  /** Off: documents are read, classified and placed; extraction waits for Extract. */
+  auto_extract?: boolean;
 }
 
 export async function listAvailableGroups(): Promise<AvailableGroup[]> {
@@ -370,9 +376,18 @@ export interface SmartUploadResult {
 /** Accepts any number of files in one request — several PDFs picked at once, or a mix of
  *  PDFs and ZIPs. They MUST go up together: the slot-vs-slot specificity rule that decides
  *  which file wins a contested slot only works when the whole batch is classified as one. */
-export async function smartUpload(jobId: string, files: File[]): Promise<SmartUploadResult> {
+export async function smartUpload(
+  jobId: string,
+  files: File[],
+  /** For a password-protected zip: the password, whether to save it for this customer, or
+   *  "read it without the locked zips". The server answers 409 (zip_password_needed) first. */
+  zip?: { password?: string; remember?: boolean; skipLocked?: boolean },
+): Promise<SmartUploadResult> {
   const form = new FormData();
   for (const file of files) form.append("files", file);
+  if (zip?.password) form.append("zip_password", zip.password);
+  if (zip?.remember) form.append("remember_password", "true");
+  if (zip?.skipLocked) form.append("skip_locked", "true");
   const { data } = await apiClient.post<SmartUploadResult>(`/jobs/${jobId}/smart-upload`, form);
   return data;
 }
@@ -393,6 +408,8 @@ export interface UnclassifiedPage {
   original_filename: string;
   page_number: number;
   preview_url: string;
+  /** Heading it is shown under, e.g. "Air Waybill" for a consolidation's house waybills. */
+  group_label?: string | null;
 }
 
 export async function getUnclassifiedPages(jobId: string): Promise<UnclassifiedPage[]> {
@@ -931,5 +948,78 @@ export async function approveDuplicate(jobId: string): Promise<JobDetail> {
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/duplicate-decision`, {
     decision: "approve",
   });
+  return data;
+}
+
+// ---- Excel by sheet (template excel_mode "sheet") ------------------------------------------
+
+/** An Excel file (or the sheets of one) that came with the job but was not placed in a slot. */
+export interface UnclassifiedFile {
+  id: string;
+  original_filename: string;
+  sheets: { name: string; rows: number; reason?: string | null }[];
+}
+
+/** A sheet as rows of cells, for showing it as a table. */
+export interface SheetTable {
+  name: string;
+  columns: string[];
+  rows: { row: number; cells: Record<string, string> }[];
+  total_rows: number;
+}
+
+export async function getUnclassifiedFiles(jobId: string): Promise<UnclassifiedFile[]> {
+  const { data } = await apiClient.get<UnclassifiedFile[]>(`/jobs/${jobId}/unclassified-files`);
+  return data;
+}
+
+export async function previewUnclassifiedFile(jobId: string, fileId: string): Promise<SheetTable[]> {
+  const { data } = await apiClient.get<SheetTable[]>(`/jobs/${jobId}/unclassified-files/${fileId}/sheets`);
+  return data;
+}
+
+/** Put one sheet (or every sheet left in the file, when `sheet` is omitted) into a slot. */
+export async function assignUnclassifiedFile(
+  jobId: string, fileId: string, templateDocumentId: string, sheet?: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/unclassified-files/${fileId}/assign`,
+    { template_document_id: templateDocumentId, ...(sheet ? { sheet } : {}) },
+  );
+  return data;
+}
+
+export async function deleteUnclassifiedFile(jobId: string, fileId: string, sheet?: string): Promise<void> {
+  await apiClient.delete(`/jobs/${jobId}/unclassified-files/${fileId}`, { params: sheet ? { sheet } : {} });
+}
+
+export async function getDocumentSheet(jobId: string, documentId: string): Promise<SheetTable> {
+  const { data } = await apiClient.get<SheetTable>(`/jobs/${jobId}/documents/${documentId}/sheet`);
+  return data;
+}
+
+
+// ---- a job held for a zip password ("Waiting for Password") ---------------------------------
+
+/** Give the held job its zip password (or read it without the locked zips). The whole mail is
+ *  then read once, into this job, in the background. */
+export async function unlockHeldJob(
+  jobId: string,
+  body: { password?: string; remember?: boolean; label?: string; skip_locked?: boolean },
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/held/unlock`, body);
+  return data;
+}
+
+/** Document Capture -> Print: the chosen documents as ONE PDF (Blob), in the order given. */
+export async function printDocuments(
+  jobId: string,
+  body: {
+    documents: string[]; unclassified_pages: string[]; unclassified_files: string[];
+    /** "Print pages...": only these pages (1-based) of a document; unlisted = whole document. */
+    document_pages?: Record<string, number[]>;
+  },
+): Promise<Blob> {
+  const { data } = await apiClient.post<Blob>(`/jobs/${jobId}/print`, body, { responseType: "blob" });
   return data;
 }

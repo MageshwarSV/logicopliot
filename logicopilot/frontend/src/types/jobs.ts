@@ -92,6 +92,9 @@ export interface JobDocument {
    */
   set_index: number | null;
   original_name: string | null;
+  /** "excel" for a sheet read from its cells (no page images - shown as a table). */
+  source_kind?: string;
+  sheet_name?: string | null;
   /** Operator (GK1) pressed "Submit for Approval" on this document, on Data Extraction. */
   approved?: boolean;
   /** GK2's OWN independent approval of this document — separate from GK1's `approved`. */
@@ -263,6 +266,18 @@ export interface JobDetail {
   /** Names of the mandatory documents still missing, in template order - set only when
    *  outer_status is "Missing Documents". */
   missing_documents?: string[] | null;
+  /** What came with the mail/upload but could NOT be read: password-protected zips (with the
+   *  file names inside) and skipped files with the reason. Null when everything was read. */
+  attachment_notes?: {
+    skipped?: { path: string; reason: string }[];
+    locked?: { path: string; files: string[] }[];
+    /** Locked zips a saved password opened. */
+    unlocked?: string[];
+    /** True while the job is held "Waiting for Password" (nothing read yet). */
+    held?: boolean;
+    /** A zip over the template's limit: placed, extraction waits for Run extraction. */
+    large_zip?: { size_mb: number; limit_mb: number };
+  } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;
   /** Whether this job's template submits via a bulk Excel import (TemplateGroup.entry_mode)

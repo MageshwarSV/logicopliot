@@ -153,6 +153,9 @@ class JobDocumentOut(BaseModel):
     file_index: int = 0
     set_index: int | None = None
     original_name: str | None = None
+    # "excel" for a sheet read from its cells (no page images - shown as a table), else "pdf".
+    source_kind: str = "pdf"
+    sheet_name: str | None = None
     # The raw OCR this document was read from, per page. Stored since the "save the extracted
     # OCR" change but never returned, which left no way to tell a genuine extraction fault
     # from the document simply having been read badly.
@@ -346,6 +349,8 @@ class JobDetailOut(BaseModel):
     # Names of the mandatory documents this job still has not received - same meaning as on
     # JobOut, populated only when outer_status is "Missing Documents".
     missing_documents: list[str] | None = None
+    # What came with the mail/upload but could not be read (see Job.attachment_notes).
+    attachment_notes: dict | None = None
     mode: str | None = None
     # Same meaning as on JobOut - who this job is assigned to, and their name, so the Jobs
     # list's assign dropdown reflects a change immediately without waiting for its own
@@ -471,3 +476,9 @@ class AvailableGroup(BaseModel):
     mode: str | None = None
     pull_email: str | None = None
     pull_operator_id: str | None = None
+    # Excel by sheet - see TemplateGroup.excel_mode / excel_ignore_patterns.
+    excel_mode: str = "legacy"
+    excel_ignore_patterns: list[str] | None = None
+    auto_extract: bool = True
+    large_zip_hold: bool = False
+    large_zip_mb: int = 5

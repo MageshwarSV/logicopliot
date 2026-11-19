@@ -4,7 +4,8 @@ import { apiClient } from "./client";
 export interface AppNotification {
   /** "<kind>:<job id>" - there is no notification row, so this is what identifies one. */
   id: string;
-  kind: "submitted" | "failed";
+  /** "password" / "password_reminder": a job waiting for a zip password (see HeldPasswordPanel). */
+  kind: "submitted" | "failed" | "password" | "password_reminder";
   job_id: string;
   job_reference: string;
   /** Why it failed, for kind "failed". */

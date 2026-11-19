@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
+import { HeldPasswordPanel } from "./HeldPasswordPanel";
+import { PrintPagesModal } from "./PrintPagesModal";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -9,7 +12,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { CalendarIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, CalendarIcon, LayersIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -950,6 +953,11 @@ export function JobRunPage() {
   // Pages a smart-upload could not confidently place - shown as draggable cards next to the
   // document slots so an operator resolves them by hand instead of them being silently gone.
   const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
+  // Excel by sheet: Excel files not placed in a slot, and the Excel document being viewed.
+  const [unclassifiedFiles, setUnclassifiedFiles] = useState<jobsApi.UnclassifiedFile[]>([]);
+  const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
+  // Document Capture -> Print pages (PrintPagesModal).
+  const [printPagesOpen, setPrintPagesOpen] = useState(false);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
@@ -982,9 +990,19 @@ export function JobRunPage() {
 
   async function refreshUnclassifiedPages() {
     try {
-      setUnclassifiedPages(await jobsApi.getUnclassifiedPages(jobId));
+      // Pages with a heading (e.g. a consolidation's house waybills, "Air Waybill") first and
+      // together, then the rest - same order the viewer's Prev/Next walks.
+      const pages = await jobsApi.getUnclassifiedPages(jobId);
+      const labelled = pages.filter((p) => p.group_label);
+      labelled.sort((a, b) => (a.group_label ?? "").localeCompare(b.group_label ?? ""));
+      setUnclassifiedPages([...labelled, ...pages.filter((p) => !p.group_label)]);
     } catch {
       /* non-critical - the slots themselves still load and work */
+    }
+    try {
+      setUnclassifiedFiles(await jobsApi.getUnclassifiedFiles(jobId));
+    } catch {
+      /* non-critical - same as above */
     }
   }
 
@@ -1461,13 +1479,37 @@ export function JobRunPage() {
     setSmartBusy(true);
     setError(null);
     setSmartResult(null);
+    const files = Array.from(fileList);
     try {
-      const res = await jobsApi.smartUpload(jobId, Array.from(fileList));
-      setJob(res.detail);
-      setSmartResult(res.results);
-      await refreshUnclassifiedPages();
+      let zip: { password?: string; remember?: boolean; skipLocked?: boolean } | undefined;
+      // A password-protected zip that no saved password opens: the server says so (409) before
+      // reading anything - ask for the password and send the same files again.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await jobsApi.smartUpload(jobId, files, zip);
+          setJob(res.detail);
+          setSmartResult(res.results);
+          await refreshUnclassifiedPages();
+          break;
+        } catch (err) {
+          const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+          if (!(axios.isAxiosError(err) && err.response?.status === 409 && detail?.code === "zip_password_needed") || attempt >= 5) throw err;
+          const names = (detail.locked ?? []).map((l: { path: string }) => l.path.split("/").slice(-2).join(" / ")).join("\n");
+          const pw = window.prompt(`${detail.message}\n\n${names}\n\nEnter the zip password (Cancel to read the upload without it):`);
+          if (pw && pw.trim()) {
+            zip = { password: pw.trim(), remember: window.confirm("Remember this password for this customer?") };
+          } else if (window.confirm("Read the upload without the password-protected zip(s)?")) {
+            zip = { skipLocked: true };
+          } else {
+            break;
+          }
+        }
+      }
     } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Smart upload failed.");
+      if (axios.isAxiosError(err)) {
+        const d = err.response?.data?.detail;
+        setError(typeof d === "string" ? d : d?.message ?? "Smart upload failed.");
+      }
     } finally {
       setSmartBusy(false);
     }
@@ -2692,6 +2734,53 @@ export function JobRunPage() {
           </div>
         </div>
       )}
+      {/* What came with the mail/upload but could not be read - a password-protected zip, a
+          damaged one, a file type that is not read - so nothing is missed without a trace. */}
+      {job.attachment_notes?.large_zip && job.status === "draft" && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span className="font-medium">Large zip ({job.attachment_notes.large_zip.size_mb} MB, over {job.attachment_notes.large_zip.limit_mb} MB)</span>
+          {" "}— the documents are placed. Check them in Data Capture, then press <span className="font-medium">Run extraction</span>.
+        </div>
+      )}
+      {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (
+        <HeldPasswordPanel job={job} readOnly={readOnly} onJob={setJob} />
+      )}
+      {(() => {
+        const held = job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password";
+        const locked = held ? [] : job.attachment_notes?.locked ?? [];
+        const skipped = job.attachment_notes?.skipped ?? [];
+        if (locked.length === 0 && skipped.length === 0) return null;
+        const shortPath = (p: string) => p.split("/").slice(-3).join(" / ");
+        return (
+          <div className="mb-4 space-y-2">
+            {locked.map((l, i) => (
+              <div key={`l${i}`} className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+                <div className="font-medium">
+                  🔒 Password-protected zip not opened: <span className="break-all">{shortPath(l.path)}</span>
+                </div>
+                <details className="mt-1 text-xs">
+                  <summary className="cursor-pointer">{l.files.length} file(s) inside were not read</summary>
+                  <ul className="mt-1 list-disc pl-5">
+                    {l.files.map((f, k) => <li key={k} className="break-all">{f}</li>)}
+                  </ul>
+                </details>
+              </div>
+            ))}
+            {skipped.length > 0 && (
+              <details className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                <summary className="cursor-pointer font-medium">Files not read ({skipped.length})</summary>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {skipped.map((sk, k) => (
+                    <li key={k} className="break-all">
+                      {shortPath(sk.path)} <span className="text-slate-500">— {sk.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        );
+      })()}
       <div className="mb-4 flex items-center justify-between">
         <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
         {(job.status === "failed" || completedWithoutJobNo) && (
@@ -2758,10 +2847,31 @@ export function JobRunPage() {
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-slate-50">Upload documents</h2>
+            {readOnly && !showsMachinery && (
+<button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
+                >
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
+                </button>
+            )}
             {(!readOnly || showsMachinery) && (
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
+                >
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
+                </button>
                 {!readOnly && (
-                  <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
+                  <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 shadow-sm transition-colors hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300 dark:hover:bg-violet-500/20 ${smartBusy ? "opacity-60" : ""}`}>
+                    <UploadIcon className="h-4 w-4" />
                     {smartBusy ? "Classifying…" : "Smart upload (auto-classify)"}
                     <input
                       type="file"
@@ -2786,15 +2896,16 @@ export function JobRunPage() {
                     gated the same way as every other super-admin-only recovery action on this
                     page (showsMachinery), not just hidden behind readOnly. */}
                 {showsMachinery && (
-                  <Button
-                    size="sm" variant="secondary"
+                  <button
+                    type="button"
                     onClick={handleReclassifyDocuments}
-                    isLoading={reclassifyBusy}
-                    disabled={!job.documents.some((d) => d.is_uploaded)}
+                    disabled={reclassifyBusy || !job.documents.some((d) => d.is_uploaded)}
                     title="Re-run classification on this job's own already-uploaded documents - replaces them entirely with the result."
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
                   >
-                    Re-classify documents
-                  </Button>
+                    <LayersIcon className="h-4 w-4" />
+                    {reclassifyBusy ? "Re-classifying…" : "Re-classify documents"}
+                  </button>
                 )}
                 {reclassifyNote && (
                   // Deliberately not <Alert> - that is styled for a failure, and this is the
@@ -2812,9 +2923,15 @@ export function JobRunPage() {
                   </span>
                 ) : (
                   !readOnly && (
-                    <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
-                      {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => runExtract()}
+                      disabled={extracting || !allUploaded}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {job.status === "draft" ? <SparklesIcon className="h-4 w-4" /> : <ArrowPathIcon className="h-4 w-4" />}
+                      {extracting ? "Starting…" : job.status === "draft" ? "Run extraction" : "Re-run extraction"}
+                    </button>
                   )
                 )}
               </div>
@@ -3006,12 +3123,27 @@ export function JobRunPage() {
                       >
                         <span className="min-w-0 truncate">
                           ✓ {d.original_name ?? `${d.page_count} page${d.page_count === 1 ? "" : "s"}`}
+                          {d.source_kind === "excel" && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setViewingExcelDoc({ id: d.id, title: d.original_name ?? "Excel sheet" }); }}
+                              className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300"
+                              title="Read from the sheet's cells - click to view the sheet"
+                            >
+                              Excel · view sheet
+                            </button>
+                          )}
                           <span className="ml-1 text-xs opacity-70">
-                            ({d.page_count} page{d.page_count === 1 ? "" : "s"}
                             {/* Which invoice this file was paired into — by invoice number,
-                                not by the order it was uploaded. */}
-                            {uploaded.length > 1 && d.set_index ? `, invoice ${d.set_index}` : ""}
-                            {uploaded.length > 1 && !d.set_index ? ", whole job" : ""})
+                                not by the order it was uploaded. An Excel sheet has no pages. */}
+                            {(() => {
+                              const bits = [
+                                d.source_kind === "excel" ? "" : `${d.page_count} page${d.page_count === 1 ? "" : "s"}`,
+                                uploaded.length > 1 && d.set_index ? `invoice ${d.set_index}` : "",
+                                uploaded.length > 1 && !d.set_index ? "whole job" : "",
+                              ].filter(Boolean);
+                              return bits.length ? `(${bits.join(", ")})` : "";
+                            })()}
                           </span>
                         </span>
                         {!readOnly && (
@@ -3108,8 +3240,17 @@ export function JobRunPage() {
               );
             })}
           </div>
-          {unclassifiedPages.length > 0 && (
+          {(unclassifiedPages.length > 0 || unclassifiedFiles.length > 0) && (
             <div className="lg:sticky lg:top-4 lg:self-start">
+              <UnclassifiedExcelFiles
+                jobId={jobId}
+                files={unclassifiedFiles}
+                slots={docSlots.map((sl) => ({ id: sl.tdocId, name: sl.name }))}
+                readOnly={readOnly}
+                onJob={setJob}
+                onChanged={refreshUnclassifiedPages}
+              />
+              {unclassifiedPages.length > 0 && (<>
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
                 Not Required pages · {unclassifiedPages.length}
               </p>
@@ -3121,6 +3262,14 @@ export function JobRunPage() {
                   document-type slots on the left out of reach while you're mid-drag. */}
               <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pr-1">
                 {unclassifiedPages.map((p, i) => (
+                  <div key={p.id}>
+                  {(i === 0 || (unclassifiedPages[i - 1].group_label ?? "") !== (p.group_label ?? "")) && (unclassifiedPages.some((x) => x.group_label)) && (
+                    <p className="mb-1 mt-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      {p.group_label
+                        ? `${p.group_label} · ${unclassifiedPages.filter((x) => x.group_label === p.group_label).length} pages (house waybills — not used)`
+                        : "Other pages"}
+                    </p>
+                  )}
                   <UnclassifiedPageCard
                     key={p.id}
                     jobId={jobId}
@@ -3134,9 +3283,28 @@ export function JobRunPage() {
                     onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); setDragOverDocId(null); }}
                     onView={() => setViewingPageIndex(i)}
                   />
+                  </div>
                 ))}
               </div>
+              </>)}
             </div>
+          )}
+          {printPagesOpen && job && (
+            <PrintPagesModal
+              jobId={jobId}
+              jobReference={job.reference}
+              slots={docSlots}
+              pages={unclassifiedPages}
+              files={unclassifiedFiles}
+              onClose={() => setPrintPagesOpen(false)}
+            />
+          )}
+          {viewingExcelDoc && (
+            <ExcelSheetModal
+              title={viewingExcelDoc.title}
+              load={async () => [await jobsApi.getDocumentSheet(jobId, viewingExcelDoc.id)]}
+              onClose={() => setViewingExcelDoc(null)}
+            />
           )}
           {viewingPageIndex !== null && unclassifiedPages[viewingPageIndex] && (
             <UnclassifiedPageViewer

@@ -32,12 +32,14 @@ import { EDocketPage } from "../pages/jobs/EDocketPage";
 import { IrnPendingListPage } from "../pages/irn/IrnPendingListPage";
 import { IrnPendingDetailPage } from "../pages/irn/IrnPendingDetailPage";
 import { CustomerListPage } from "../pages/tenant-admin/CustomerListPage";
+import { ZipPasswordsPage } from "../pages/tenant-admin/ZipPasswordsPage";
 import { DataTransformationPage } from "../pages/super-admin/DataTransformationPage";
 import { DataTransformationDetailPage } from "../pages/super-admin/DataTransformationDetailPage";
 import { PendingMailPage } from "../pages/super-admin/PendingMailPage";
 import { SettingsPage } from "../pages/super-admin/SettingsPage";
 import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
+import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
@@ -145,6 +147,14 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/super-admin/document-processing"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <DocumentProcessingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/super-admin/filter-pages"
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
@@ -237,6 +247,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <UserJobSummaryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/zip-passwords"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ZipPasswordsPage />
           </ProtectedRoute>
         }
       />

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -45,6 +45,25 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # entered yet, on would empty the Indian importer list on every job.
     importer_requires_gstin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
+    # How Excel attachments are handled - "legacy" (every existing template: converted to a PDF
+    # and classified like one) or "sheet": each sheet's cells are read directly, classified per
+    # sheet, placed in a slot or sent to Unclassified, and extracted from the cells (see
+    # app/core/excel_intake.py). Switched on per template once tested.
+    excel_mode: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="legacy", server_default="legacy")
+    # Excel file names that are never documents (internal tracking sheets) - matched as
+    # case-insensitive "contains"; such a file goes straight to Unclassified, no AI call.
+    # None = the defaults in app/core/excel_intake.DEFAULT_IGNORE_PATTERNS.
+    excel_ignore_patterns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Start extraction by itself once documents are placed (every existing template: yes). Off:
+    # mail and uploads are read, classified and placed, and extraction waits for someone to
+    # press Extract - for checking a new customer's documents before spending on extraction.
+    auto_extract: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Hold extraction for a mail / upload carrying a zip larger than large_zip_mb (a big
+    # consolidation): it is read, classified and placed, then waits for Run extraction so the
+    # documents can be checked first. Every other job extracts automatically. Off by default.
+    large_zip_hold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    large_zip_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:
