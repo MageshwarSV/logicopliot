@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { ArrowPathIcon, CalendarIcon, LayersIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -3686,14 +3686,27 @@ export function JobRunPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   {job.excel_entry && (
-                    <Button variant="secondary" onClick={() => setExcelEditorOpen(true)}>
-                      Open &amp; edit Excel
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => setExcelEditorOpen(true)}
+                      title="Open the ERP Excel here, add or correct details, and save - Submit to ERP then sends your saved copy"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/20"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                      Edit ERP Excel
+                    </button>
                   )}
                   {job.excel_entry && (
-                    <Button variant="secondary" onClick={downloadExcel} isLoading={excelBusy}>
-                      Download as Excel
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={downloadExcel}
+                      disabled={excelBusy}
+                      title="Download the Excel that goes to the ERP"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 disabled:cursor-wait disabled:opacity-60 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                    >
+                      <DownloadIcon className="h-4 w-4" />
+                      {excelBusy ? "Preparing…" : "Download ERP Excel"}
+                    </button>
                   )}
                   {!readOnly && isGk2 && (
                     <Button
@@ -3705,7 +3718,9 @@ export function JobRunPage() {
                     </Button>
                   )}
                   {!readOnly && !isGk2 && !gk2Started && (
-                    <Button
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-emerald-600/25 transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:bg-slate-700 dark:disabled:text-slate-400"
                       onClick={() => {
                         if (fixQueue.length > 0) {
                           // Ask for them one at a time instead of naming them in a banner and
@@ -3718,11 +3733,11 @@ export function JobRunPage() {
                         }
                         submitForGk2Approval();
                       }}
-                      isLoading={gk2Busy}
-                      disabled={job.status !== "extracted" || !job.validation_approved}
+                      disabled={gk2Busy || job.status !== "extracted" || !job.validation_approved}
                     >
-                      {gk2NotNeeded ? "Final Submit" : "Final Submit for Approval"}
-                    </Button>
+                      <ArrowRightIcon className="h-4 w-4" />
+                      {gk2Busy ? "Submitting…" : gk2NotNeeded ? "Submit to ERP" : "Submit for Approval"}
+                    </button>
                   )}
                   {/* GK1's own correct-and-resubmit, scoped to a FAILED ERP run only - the
                       original "pending" sign-off stays GK2's own (see gk2_approve's own
