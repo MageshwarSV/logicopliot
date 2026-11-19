@@ -23,11 +23,17 @@ import { currentMonthStr, formatInr, monthLabel, shiftMonth } from "./financeFor
  *  role-conditionals) - that file is the tenant-facing page the spec says must be preserved
  *  as-is, and a few dozen extra lines here is a cheap trade against ever risking a regression
  *  on it. */
+const fmtDay = (iso: string) =>
+  iso ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "";
+
 export function SaasFinanceUsageBillingPage() {
   const navigate = useNavigate();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [month, setMonth] = useState(currentMonthStr());
+  // Today / This week / a month - Today and This week are usage only (a bill is per month).
+  const [period, setPeriod] = useState<"today" | "week" | "month">("month");
+  const isRange = period !== "month";
   const [usage, setUsage] = useState<BillingUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,14 +43,16 @@ export function SaasFinanceUsageBillingPage() {
     setHighlight((prev) => (prev === value ? null : value));
   }
 
-  useEffect(() => setHighlight(null), [tenantId, month]);
+  useEffect(() => setHighlight(null), [tenantId, month, period]);
 
   useEffect(() => {
     tenantsApi
       .listTenants()
       .then((ts) => {
         setTenants(ts);
-        setTenantId((prev) => prev ?? ts[0]?.id ?? null);
+        // 4S Logistics first by default; any other customer is one pick away.
+        const fourS = ts.find((t) => /^\s*4\s*s\b/i.test(t.name) || /4s\s*logist/i.test(t.name));
+        setTenantId((prev) => prev ?? fourS?.id ?? ts[0]?.id ?? null);
       })
       .catch(() => {});
   }, []);
@@ -58,14 +66,14 @@ export function SaasFinanceUsageBillingPage() {
     setError(null);
     const isCurrentMonth = month === currentMonthStr();
     tenantsApi
-      .getBillingUsage(tenantId, isCurrentMonth ? undefined : month)
+      .getBillingUsage(tenantId, isCurrentMonth ? undefined : month, isRange ? (period as "today" | "week") : undefined)
       .then(setUsage)
       .catch((err) => {
         setUsage(null);
         setError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not load billing." : "Could not load billing.");
       })
       .finally(() => setLoading(false));
-  }, [tenantId, month]);
+  }, [tenantId, month, period, isRange]);
 
   return (
     <AppShell title="Usage & Billing" subtitle="Monthly usage and platform-fee calculation, per customer.">
@@ -84,14 +92,42 @@ export function SaasFinanceUsageBillingPage() {
         </select>
       </Card>
 
-      <Card className="mb-6 flex items-center justify-between p-4">
-        <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, -1))}>
-          ← Previous
-        </Button>
-        <p className="font-semibold text-slate-900 dark:text-slate-50">{monthLabel(month)}</p>
-        <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, 1))} disabled={month === currentMonthStr()}>
-          Next →
-        </Button>
+      <Card className="mb-6 flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-800">
+          {([["today", "Today"], ["week", "This week"], ["month", "Month"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                setPeriod(key);
+                if (key !== "month") setMonth(currentMonthStr());
+              }}
+              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${period === key ? "bg-white text-indigo-700 shadow-sm dark:bg-slate-900 dark:text-indigo-300" : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {isRange ? (
+          <p className="font-semibold text-slate-900 dark:text-slate-50">
+            {period === "today" ? "Today" : "This week"}
+            {usage?.range_from && (
+              <span className="ml-2 text-sm font-normal text-slate-500">
+                {usage.range_from === usage.range_to ? fmtDay(usage.range_from) : `${fmtDay(usage.range_from)} – ${fmtDay(usage.range_to ?? "")}`}
+              </span>
+            )}
+          </p>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, -1))}>
+              ← Previous
+            </Button>
+            <p className="min-w-[9rem] text-center font-semibold text-slate-900 dark:text-slate-50">{monthLabel(month)}</p>
+            <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, 1))} disabled={month === currentMonthStr()}>
+              Next →
+            </Button>
+          </div>
+        )}
       </Card>
 
       {error && <div className="mb-6"><Alert>{error}</Alert></div>}
@@ -164,6 +200,7 @@ export function SaasFinanceUsageBillingPage() {
               <JobBillingTable
                 tenantId={tenantId}
                 month={month}
+                range={isRange && usage.range_from && usage.range_to ? { from: usage.range_from, to: usage.range_to } : null}
                 shipmentTypes={usage.by_shipment_type}
                 onJobClick={(jobId) => navigate(`/jobs/${jobId}`)}
                 highlight={highlight}
@@ -172,6 +209,11 @@ export function SaasFinanceUsageBillingPage() {
             </div>
           )}
 
+          {isRange ? (
+            <p className="rounded-lg bg-slate-50 px-4 py-3 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+              Charges are calculated for a whole month — choose <b>Month</b> to see the bill.
+            </p>
+          ) : (
           <Card className="p-5">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Bill Calculation</h2>
             <dl className="space-y-2 text-sm">
@@ -212,6 +254,7 @@ export function SaasFinanceUsageBillingPage() {
               </div>
             </dl>
           </Card>
+          )}
         </>
       )}
     </AppShell>

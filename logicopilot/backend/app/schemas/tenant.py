@@ -125,6 +125,10 @@ class BillingUsageOut(BaseModel):
     own numbers (in which case invoice_id/invoice_number/status are also set)."""
     month: str  # YYYY-MM
     is_finalized: bool
+    # Set for the Today / This week views (YYYY-MM-DD, India time): the usage figures cover only
+    # this window; the bill amounts are still the whole month's.
+    range_from: str | None = None
+    range_to: str | None = None
     invoice_id: str | None = None
     invoice_number: str | None = None
     status: str | None = None

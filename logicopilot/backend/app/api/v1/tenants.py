@@ -413,6 +413,7 @@ def _require_billing_read_access(user: User, tenant_id: str) -> None:
 def get_billing_usage(
     tenant_id: str,
     month: str | None = None,
+    period: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> BillingUsageOut:
@@ -437,6 +438,28 @@ def get_billing_usage(
         period_start = today.replace(day=1)
 
     ensure_invoices_finalized(db, tenant_id)
+
+    if period in ("today", "week"):
+        # Today / This week, by India time (Monday-start week): live usage figures from the
+        # same page ledger. The bill amounts in the reply are the month's - a bill only exists
+        # for a whole month, and the screen hides them for these views.
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+
+        ist = ZoneInfo("Asia/Kolkata")
+        local_today = datetime.now(ist).date()
+        first = local_today if period == "today" else local_today - timedelta(days=local_today.weekday())
+        start_dt = datetime(first.year, first.month, first.day, tzinfo=ist)
+        end_dt = datetime(local_today.year, local_today.month, local_today.day, tzinfo=ist) + timedelta(days=1)
+        r_usage = compute_usage(db, tenant_id, today.replace(day=1), bounds=(start_dt, end_dt),
+                                job_dates=(first, local_today))
+        config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
+        m_usage = compute_usage(db, tenant_id, today.replace(day=1))
+        bill = calculate_bill(config, m_usage.total_pages, today.replace(day=1), m_usage.final_unclassified_pages)
+        return _live_usage_out(today.replace(day=1), r_usage, bill,
+                               range_from=first.isoformat(), range_to=local_today.isoformat())
+    if period not in (None, "", "month"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be today, week or month")
 
     if period_start < today.replace(day=1):
         invoice = (
@@ -470,8 +493,14 @@ def get_billing_usage(
     config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
     usage = compute_usage(db, tenant_id, period_start)
     bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
+    return _live_usage_out(period_start, usage, bill)
+
+
+def _live_usage_out(period_start: date, usage, bill, *, range_from: str | None = None,
+                    range_to: str | None = None) -> BillingUsageOut:
     return BillingUsageOut(
         month=period_start.strftime("%Y-%m"), is_finalized=False,
+        range_from=range_from, range_to=range_to,
         total_jobs=usage.total_jobs, total_pages=usage.total_pages,
         by_shipment_type=[
             ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
