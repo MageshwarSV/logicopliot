@@ -395,7 +395,11 @@ export function EDocketPage() {
       {/* @page margin 0: the browser prints its own header/footer (date, page title, URL,
           "1/1") INSIDE the page margin - with no margin there is nowhere to put them, so the
           printout carries only the docket. The docket's own spacing comes from .edocket-print. */}
-      <style>{`@page { margin: 0; } @media print { .no-print { display: none !important; } .edocket-print { padding: 12mm !important; } .edocket-page2 { break-before: page; page-break-before: always; margin-top: 0 !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
+      {/* Each printed page is its own A4 sheet: the whole sheet yellow (html/body too, so no
+          white shows anywhere), every page with its OWN 12mm top margin (page 2 used to start
+          flush against the paper's top edge), and no 100vh min-height - that plus padding ran a
+          sliver past page 2 and printed a third, mostly white page. */}
+      <style>{`@page { size: A4; margin: 0; } @media print { html, body { background: ${PAGE_BG} !important; margin: 0 !important; } .no-print { display: none !important; } .edocket-print { min-height: 0 !important; padding: 0 !important; } .edocket-page { box-sizing: border-box; width: 186mm !important; max-width: none !important; margin: 12mm auto 0 !important; } .edocket-page2 { break-before: page; page-break-before: always; height: 273mm; overflow: hidden; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
 
       <div className="no-print flex justify-end gap-2 p-3">
         <button
@@ -416,7 +420,7 @@ export function EDocketPage() {
       </div>
 
       <div
-        className="mx-auto max-w-3xl border-2 border-black p-4 font-sans text-sm"
+        className="edocket-page mx-auto max-w-3xl border-2 border-black p-4 font-sans text-sm"
         style={{ background: PAGE_BG }}
       >
         {/* Letterhead: logo | title+badges | address */}
@@ -595,7 +599,7 @@ export function EDocketPage() {
       {/* Page 2 - the back of the paper docket. On screen it sits below page 1; printed or saved
           as PDF it always starts on a page of its own (.edocket-page2: break-before page). */}
       <div
-        className="edocket-page2 mx-auto mt-6 max-w-3xl border-2 border-black p-4 font-sans text-sm"
+        className="edocket-page edocket-page2 mx-auto mt-6 max-w-3xl border-2 border-black p-4 font-sans text-sm"
         style={{ background: PAGE_BG }}
       >
         <h2 className="mb-2 text-base font-bold underline">FEEDBACK STATUS</h2>
