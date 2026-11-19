@@ -408,6 +408,8 @@ export interface UnclassifiedPage {
   original_filename: string;
   page_number: number;
   preview_url: string;
+  /** Heading it is shown under, e.g. "Air Waybill" for a consolidation's house waybills. */
+  group_label?: string | null;
 }
 
 export async function getUnclassifiedPages(jobId: string): Promise<UnclassifiedPage[]> {

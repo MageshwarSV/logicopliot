@@ -355,6 +355,10 @@ class UnmatchedUploadPage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     # 1-based position within that original file's own OCR'd pages - the same numbering
     # classify_document's own "pages" evidence already uses.
+    # A heading the page is shown under in Unclassified - e.g. "Air Waybill" for the house
+    # waybills of a consolidation, kept out of the slot because only the main folder's waybill
+    # is used (email_puller's consolidation rule). None = ordinary Unclassified page.
+    group_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     # The rendered page image, in this job's own permanent upload directory - never the
     # classify-time temp dir, which is still cleared exactly as before.

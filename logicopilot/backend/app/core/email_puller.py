@@ -1417,6 +1417,12 @@ def _harvest_mailbox(
             pass
 
 
+def _is_waybill_slot(slot: dict) -> bool:
+    """The Air Waybill / Bill of Lading slot of a template (by its document type or name)."""
+    dt = (slot.get("doc_type") or "").strip().upper().replace(" ", "")
+    return dt in {"BL", "AWB", "HAWB", "MAWB", "AIRWAYBILL", "BILLOFLADING"} or "waybill" in (slot.get("name") or "").lower()
+
+
 def _hold_for_password(db: Session, msg, mid: str, sender: str, subject: str, group: TemplateGroup,
                        raw_attachments: list[tuple[str, bytes]], notes: dict | None) -> dict:
     """Create the job as "Waiting for Password" - its slots empty, nothing read or billed - and
@@ -1790,9 +1796,15 @@ def _process_one_message(
     if unpacked.locked and not skip_locked and single_group is not None and resume_job is None:
         return _hold_for_password(db, msg, mid, sender, subject, single_group, raw_attachments,
                                   attachment_notes)
-    for name, blob in unpacked.files:
+    # Main folder or sub-folder of a zip, per file in `files` (see the consolidation rule below).
+    from app.core.attachment_unpack import root_flags
+
+    _flags = root_flags(unpacked.paths)
+    file_root: list[bool | None] = []
+    for (name, blob), flag in zip(unpacked.files, _flags):
         if Path(name).suffix.lower() in CLASSIFY_EXTS:
             files.append((name, blob))
+            file_root.append(flag)
         else:
             office_attachments.append((name, blob))
     # Excel by sheet (TemplateGroup.excel_mode = "sheet", on a mailbox tied to one template):
@@ -2024,6 +2036,7 @@ def _process_one_message(
                 logger.warning("could not open attachment %s", name)
                 continue
             prepared.append({"name": name, "ext": ext, "blob": blob,
+                             "zip_root": file_root[idx] if idx < len(file_root) else None,
                              "text": text, "image": first_png,
                              "drop_pages": list(dropped), "page_count": pages,
                              "page_images": page_images, "kept_pages": kept,
@@ -2265,7 +2278,50 @@ def _process_one_message(
             per_page_vision=True,
             tenant_id=job.tenant_id,
         ))
-        for item, claims, unmatched_rows in zip(prepared, claims_per_file, pages_by_file):
+        # ---- consolidation rule: a zip with a MAIN folder and sub-folders (an air consol -
+        # master waybill in the main folder, one sub-folder per house shipment). The Air Waybill
+        # is taken ONLY from the main folder; waybills in sub-folders go to Unclassified, grouped
+        # as "Air Waybill". Only when the main folder really has a waybill - otherwise nothing
+        # moves. If the main folder's waybill lost the classifier's cross-file tie-break (a file
+        # claiming more kinds of document loses a contested slot), that file is classified
+        # again on its own - one extra call, only for main-folder files left with no slot.
+        awb_hold_pages: dict[int, set[int]] = {}
+        consol_awb_keys: set[str] = set()
+        awb_keys = {c["key"] for c in cand_slots if _is_waybill_slot(c)}
+        if awb_keys and claims_per_file and any(it.get("zip_root") is True for it in prepared) \
+                and any(it.get("zip_root") is False for it in prepared):
+            def _has_awb(cl: list) -> bool:
+                return any(c.get("key") in awb_keys and c.get("source") != "ai_second" for c in cl)
+
+            sub_awb = [i for i, it in enumerate(prepared)
+                       if it.get("zip_root") is False and _has_awb(claims_per_file[i])]
+            root_idx = [i for i, it in enumerate(prepared) if it.get("zip_root") is True]
+            if sub_awb and not any(_has_awb(claims_per_file[i]) for i in root_idx):
+                for i in root_idx:
+                    if any(c.get("source") != "ai_second" for c in claims_per_file[i]):
+                        continue
+                    try:
+                        solo = run_queued(lambda it=prepared[i]: classifier_module(group.mode).assign_documents_detailed(
+                            [it], cand_slots, engine=extraction_engine, vision_model=vision_engine_model,
+                            per_page_vision=True, tenant_id=job.tenant_id))
+                        claims_per_file[i] = (solo or [[]])[0]
+                        logger.info("email classify: %s (main folder) classified on its own -> %s",
+                                    prepared[i]["name"],
+                                    ", ".join(slot_meta.get(c["key"], {}).get("name", "?") for c in claims_per_file[i]) or "nothing")
+                    except AIServiceUnavailable:
+                        raise
+                    except Exception:  # noqa: BLE001 - then the rule simply does not apply
+                        logger.exception("could not re-classify main-folder file %s", prepared[i]["name"])
+            if sub_awb and any(_has_awb(claims_per_file[i]) for i in root_idx):
+                consol_awb_keys = awb_keys
+                for i in sub_awb:
+                    moved = [c for c in claims_per_file[i] if c.get("key") in awb_keys]
+                    claims_per_file[i] = [c for c in claims_per_file[i] if c.get("key") not in awb_keys]
+                    awb_hold_pages[i] = {p for c in moved for p in (c.get("pages") or [])}
+                logger.info("email classify: consolidation - Air Waybill from the main folder only; "
+                            "%d sub-folder waybill(s) left in Unclassified", len(sub_awb))
+        awb_label = next((slot_meta[k]["name"] for k in awb_keys if k in slot_meta), "Air Waybill")
+        for _idx, (item, claims, unmatched_rows) in enumerate(zip(prepared, claims_per_file, pages_by_file)):
             # The AI second-opinion pathway (_ai_verify_second_type, source
             # "ai_second") is the weakest signal assign_documents_detailed produces -
             # a narrow, loosely-worded "does this ALSO contain Y" call with no regex
@@ -2343,6 +2399,8 @@ def _process_one_message(
                     if row.image_path:
                         Path(row.image_path).unlink(missing_ok=True)
                     db.delete(row)
+                elif row is not None and i in awb_hold_pages.get(_idx, set()):
+                    row.group_label = awb_label          # a sub-folder waybill (consolidation rule)
             # Say what the analyser decided, per file. Without this a document that
             # goes unrouted leaves no trace at all: the job simply has an empty slot
             # and nothing to explain why. The character count matters too - a file the
@@ -2438,7 +2496,8 @@ def _process_one_message(
                 named.append(f"{item['name']} -> {fname}")
         # Excel by sheet - after the PDFs, never weighed against them (see excel_intake).
         if excel_files:
-            xl = intake_excel_files(db, job, group, excel_files, cand_slots, slots, placed_pdf_texts)
+            xl = intake_excel_files(db, job, group, excel_files, cand_slots, slots, placed_pdf_texts,
+                                    blocked_keys=consol_awb_keys)
             for slot_name in xl.filled:
                 if slot_name not in filled:
                     filled.append(slot_name)

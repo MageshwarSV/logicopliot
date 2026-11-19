@@ -45,6 +45,10 @@ _QUIET_EXTS = {".gif", ".bmp", ".ico", ".ics", ".vcf", ".p7s", ".htm", ".html", 
 @dataclass
 class UnpackResult:
     files: list[tuple[str, bytes]] = field(default_factory=list)
+    # Where each of `files` came from, same order: "mail.zip/folder/file.pdf", or just the
+    # file name for an ordinary attachment. Lets a caller tell the main folder of a zip from
+    # its sub-folders (see email_puller's consolidation rule) without changing file names.
+    paths: list[str] = field(default_factory=list)
     # [{"path": "outer.zip/folder/x.rar", "reason": "file type not read"}]
     skipped: list[dict] = field(default_factory=list)
     # [{"path": "outer.zip/folder/locked.zip", "files": ["a.pdf", ...]}]
@@ -98,6 +102,7 @@ def unpack_attachments(items: list[tuple[str, bytes]], accept_exts: set[str],
             continue
         if PurePosixPath(name or "").suffix.lower() in accept:
             out.files.append((name, blob))           # exactly as before - no limits here
+            out.paths.append(name)
         elif name and PurePosixPath(name).suffix.lower() not in _QUIET_EXTS:
             out.skipped.append({"path": name, "reason": "file type not read"})
     return out
@@ -169,6 +174,7 @@ def _walk(z: zipfile.ZipFile, src: bytes, label: str, depth: int, accept: set[st
         data = _read(reader, info, path, out, budget, count_file=True)
         if data is not None:
             out.files.append((bare, data))
+            out.paths.append(path)
     if locked_names:
         out.locked.append({"path": label, "files": locked_names})
 
@@ -197,3 +203,30 @@ def _read(z: zipfile.ZipFile, info: zipfile.ZipInfo, path: str, out: UnpackResul
     if count_file:
         budget["files"] += 1
     return data
+
+
+def folder_depth(path: str) -> int:
+    """How many folders deep a file sits inside its zip: "mail.zip/a.pdf" -> 0,
+    "mail.zip/Top/a.pdf" -> 1, "mail.zip/Top/Sub/a.pdf" -> 2. An inner zip counts as a level.
+    An ordinary attachment (no zip) is -1."""
+    parts = [p for p in (path or "").split("/") if p]
+    return len(parts) - 2 if len(parts) >= 2 else -1
+
+
+def root_flags(paths: list[str]) -> list[bool | None]:
+    """For each path: True = in the main (shallowest) folder of its zip, False = in a sub-folder
+    of a zip that ALSO has files in its main folder, None = anything else (an ordinary
+    attachment, or a zip without that main-folder/sub-folder shape)."""
+    by_zip: dict[str, list[int]] = {}
+    depths = [folder_depth(p) for p in paths]
+    for i, p in enumerate(paths):
+        if depths[i] >= 0:
+            by_zip.setdefault(p.split("/", 1)[0], []).append(i)
+    out: list[bool | None] = [None] * len(paths)
+    for idxs in by_zip.values():
+        top = min(depths[i] for i in idxs)
+        if any(depths[i] > top for i in idxs):         # a main folder WITH sub-folders
+            for i in idxs:
+                out[i] = depths[i] == top
+    return out
+

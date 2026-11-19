@@ -8331,6 +8331,8 @@ class UnclassifiedPageOut(BaseModel):
     # no slot for it) without needing direct database access - same reasoning the page image
     # itself is already exposed for.
     ocr_text: str | None = None
+    # The heading it is shown under (e.g. "Air Waybill" for a consolidation's house waybills).
+    group_label: str | None = None
 
 
 @router.get("/jobs/{job_id}/unclassified-pages", response_model=list[UnclassifiedPageOut])
@@ -8356,6 +8358,7 @@ def list_unclassified_pages(
             id=r.id, original_filename=r.original_filename, page_number=r.page_number,
             preview_url=f"/api/v1/jobs/{job.id}/unclassified-pages/{r.id}/image",
             ocr_text=r.ocr_text,
+            group_label=getattr(r, "group_label", None),
         )
         for r in rows
     ]

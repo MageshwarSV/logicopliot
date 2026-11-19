@@ -987,7 +987,12 @@ export function JobRunPage() {
 
   async function refreshUnclassifiedPages() {
     try {
-      setUnclassifiedPages(await jobsApi.getUnclassifiedPages(jobId));
+      // Pages with a heading (e.g. a consolidation's house waybills, "Air Waybill") first and
+      // together, then the rest - same order the viewer's Prev/Next walks.
+      const pages = await jobsApi.getUnclassifiedPages(jobId);
+      const labelled = pages.filter((p) => p.group_label);
+      labelled.sort((a, b) => (a.group_label ?? "").localeCompare(b.group_label ?? ""));
+      setUnclassifiedPages([...labelled, ...pages.filter((p) => !p.group_label)]);
     } catch {
       /* non-critical - the slots themselves still load and work */
     }
@@ -3220,6 +3225,14 @@ export function JobRunPage() {
                   document-type slots on the left out of reach while you're mid-drag. */}
               <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pr-1">
                 {unclassifiedPages.map((p, i) => (
+                  <div key={p.id}>
+                  {(i === 0 || (unclassifiedPages[i - 1].group_label ?? "") !== (p.group_label ?? "")) && (unclassifiedPages.some((x) => x.group_label)) && (
+                    <p className="mb-1 mt-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      {p.group_label
+                        ? `${p.group_label} · ${unclassifiedPages.filter((x) => x.group_label === p.group_label).length} pages (house waybills — not used)`
+                        : "Other pages"}
+                    </p>
+                  )}
                   <UnclassifiedPageCard
                     key={p.id}
                     jobId={jobId}
@@ -3233,6 +3246,7 @@ export function JobRunPage() {
                     onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); setDragOverDocId(null); }}
                     onView={() => setViewingPageIndex(i)}
                   />
+                  </div>
                 ))}
               </div>
               </>)}

@@ -114,7 +114,7 @@ class ExcelIntake:
 
 def intake_excel_files(db, job, group, files: list[tuple[str, bytes]], cand_slots: list[dict],
                        slots: dict, placed_pdf_texts: dict[str, list[str]],
-                       *, is_rerun: bool = False) -> ExcelIntake:
+                       *, is_rerun: bool = False, blocked_keys: set[str] | None = None) -> ExcelIntake:
     """Place or park each sheet of `files` (Excel only) on `job`. `cand_slots` = the classifier's
     candidate slots ({"key", "name", "doc_type", ...}, as the PDF classifier got them); `slots` =
     {template_document_id: JobDocument} (updated in place when a slot gets another file);
@@ -159,6 +159,11 @@ def intake_excel_files(db, job, group, files: list[tuple[str, bytes]], cand_slot
                     parked.append({"name": sheet.name, "rows": sheet.data_rows, "reason": REASON_NOT_A_DOCUMENT})
                     continue
                 key = max(strong, key=lambda c: len(c.get("evidence") or ""))["key"]
+                if blocked_keys and key in blocked_keys:
+                    # e.g. the Air Waybill of a consolidation comes only from the zip's main folder.
+                    parked.append({"name": sheet.name, "rows": sheet.data_rows,
+                                   "reason": "Air Waybill is taken only from the main folder"})
+                    continue
                 number = document_number(sheet)
                 if same_as_pdf(number, placed_pdf_texts.get(key, [])):
                     parked.append({"name": sheet.name, "rows": sheet.data_rows,
