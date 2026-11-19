@@ -19,6 +19,9 @@ export const superAdminFeatures = [
   // Where a template's marks and transformations are reviewed and approved - the work of
   // whoever built the template, not the customer's.
   { path: "/super-admin/data-transformation", navLabel: "Data Transformation", group: "Platform Configuration", order: 5 },
+  // Pages removed from every document before classification (a supplier's terms and
+  // conditions, a recurring cover sheet) - the page existed but had no menu entry.
+  { path: "/super-admin/filter-pages", navLabel: "Filter Pages", group: "Platform Configuration", order: 5.5 },
 
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
