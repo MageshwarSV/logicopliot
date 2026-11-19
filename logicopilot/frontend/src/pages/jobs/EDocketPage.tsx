@@ -560,11 +560,6 @@ export function EDocketPage() {
           </tbody>
         </table>
 
-        <p className="no-print mt-3 text-xs text-slate-700">
-          Starting values come from what was extracted off the documents where a confident match
-          was found - everything above is editable or clearable before you print. Nothing here is
-          saved back to the job; this is a print/download view.
-        </p>
       </div>
     </div>
   );
