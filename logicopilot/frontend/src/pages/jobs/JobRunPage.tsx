@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
+import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -950,6 +952,9 @@ export function JobRunPage() {
   // Pages a smart-upload could not confidently place - shown as draggable cards next to the
   // document slots so an operator resolves them by hand instead of them being silently gone.
   const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
+  // Excel by sheet: Excel files not placed in a slot, and the Excel document being viewed.
+  const [unclassifiedFiles, setUnclassifiedFiles] = useState<jobsApi.UnclassifiedFile[]>([]);
+  const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
@@ -985,6 +990,11 @@ export function JobRunPage() {
       setUnclassifiedPages(await jobsApi.getUnclassifiedPages(jobId));
     } catch {
       /* non-critical - the slots themselves still load and work */
+    }
+    try {
+      setUnclassifiedFiles(await jobsApi.getUnclassifiedFiles(jobId));
+    } catch {
+      /* non-critical - same as above */
     }
   }
 
@@ -1461,13 +1471,37 @@ export function JobRunPage() {
     setSmartBusy(true);
     setError(null);
     setSmartResult(null);
+    const files = Array.from(fileList);
     try {
-      const res = await jobsApi.smartUpload(jobId, Array.from(fileList));
-      setJob(res.detail);
-      setSmartResult(res.results);
-      await refreshUnclassifiedPages();
+      let zip: { password?: string; remember?: boolean; skipLocked?: boolean } | undefined;
+      // A password-protected zip that no saved password opens: the server says so (409) before
+      // reading anything - ask for the password and send the same files again.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await jobsApi.smartUpload(jobId, files, zip);
+          setJob(res.detail);
+          setSmartResult(res.results);
+          await refreshUnclassifiedPages();
+          break;
+        } catch (err) {
+          const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+          if (!(axios.isAxiosError(err) && err.response?.status === 409 && detail?.code === "zip_password_needed") || attempt >= 5) throw err;
+          const names = (detail.locked ?? []).map((l: { path: string }) => l.path.split("/").slice(-2).join(" / ")).join("\n");
+          const pw = window.prompt(`${detail.message}\n\n${names}\n\nEnter the zip password (Cancel to read the upload without it):`);
+          if (pw && pw.trim()) {
+            zip = { password: pw.trim(), remember: window.confirm("Remember this password for this customer?") };
+          } else if (window.confirm("Read the upload without the password-protected zip(s)?")) {
+            zip = { skipLocked: true };
+          } else {
+            break;
+          }
+        }
+      }
     } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Smart upload failed.");
+      if (axios.isAxiosError(err)) {
+        const d = err.response?.data?.detail;
+        setError(typeof d === "string" ? d : d?.message ?? "Smart upload failed.");
+      }
     } finally {
       setSmartBusy(false);
     }
@@ -2694,8 +2728,12 @@ export function JobRunPage() {
       )}
       {/* What came with the mail/upload but could not be read - a password-protected zip, a
           damaged one, a file type that is not read - so nothing is missed without a trace. */}
+      {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (
+        <HeldPasswordPanel job={job} readOnly={readOnly} onJob={setJob} />
+      )}
       {(() => {
-        const locked = job.attachment_notes?.locked ?? [];
+        const held = job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password";
+        const locked = held ? [] : job.attachment_notes?.locked ?? [];
         const skipped = job.attachment_notes?.skipped ?? [];
         if (locked.length === 0 && skipped.length === 0) return null;
         const shortPath = (p: string) => p.split("/").slice(-3).join(" / ");
@@ -3043,12 +3081,27 @@ export function JobRunPage() {
                       >
                         <span className="min-w-0 truncate">
                           ✓ {d.original_name ?? `${d.page_count} page${d.page_count === 1 ? "" : "s"}`}
+                          {d.source_kind === "excel" && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setViewingExcelDoc({ id: d.id, title: d.original_name ?? "Excel sheet" }); }}
+                              className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300"
+                              title="Read from the sheet's cells - click to view the sheet"
+                            >
+                              Excel · view sheet
+                            </button>
+                          )}
                           <span className="ml-1 text-xs opacity-70">
-                            ({d.page_count} page{d.page_count === 1 ? "" : "s"}
                             {/* Which invoice this file was paired into — by invoice number,
-                                not by the order it was uploaded. */}
-                            {uploaded.length > 1 && d.set_index ? `, invoice ${d.set_index}` : ""}
-                            {uploaded.length > 1 && !d.set_index ? ", whole job" : ""})
+                                not by the order it was uploaded. An Excel sheet has no pages. */}
+                            {(() => {
+                              const bits = [
+                                d.source_kind === "excel" ? "" : `${d.page_count} page${d.page_count === 1 ? "" : "s"}`,
+                                uploaded.length > 1 && d.set_index ? `invoice ${d.set_index}` : "",
+                                uploaded.length > 1 && !d.set_index ? "whole job" : "",
+                              ].filter(Boolean);
+                              return bits.length ? `(${bits.join(", ")})` : "";
+                            })()}
                           </span>
                         </span>
                         {!readOnly && (
@@ -3145,8 +3198,17 @@ export function JobRunPage() {
               );
             })}
           </div>
-          {unclassifiedPages.length > 0 && (
+          {(unclassifiedPages.length > 0 || unclassifiedFiles.length > 0) && (
             <div className="lg:sticky lg:top-4 lg:self-start">
+              <UnclassifiedExcelFiles
+                jobId={jobId}
+                files={unclassifiedFiles}
+                slots={docSlots.map((sl) => ({ id: sl.tdocId, name: sl.name }))}
+                readOnly={readOnly}
+                onJob={setJob}
+                onChanged={refreshUnclassifiedPages}
+              />
+              {unclassifiedPages.length > 0 && (<>
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
                 Not Required pages · {unclassifiedPages.length}
               </p>
@@ -3173,7 +3235,15 @@ export function JobRunPage() {
                   />
                 ))}
               </div>
+              </>)}
             </div>
+          )}
+          {viewingExcelDoc && (
+            <ExcelSheetModal
+              title={viewingExcelDoc.title}
+              load={async () => [await jobsApi.getDocumentSheet(jobId, viewingExcelDoc.id)]}
+              onClose={() => setViewingExcelDoc(null)}
+            />
           )}
           {viewingPageIndex !== null && unclassifiedPages[viewingPageIndex] && (
             <UnclassifiedPageViewer

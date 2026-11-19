@@ -936,6 +936,11 @@ def _is_missing_documents(
     # classified into slots, and during those seconds it genuinely has no documents yet. See
     # _outer_status's own version of this check; the two must agree, or the badge on a job
     # and the list it is counted in say different things about the same job.
+    # Except a job held for a zip password (app/core/zip_passwords.py): it IS missing its
+    # documents - nothing has been read yet - and is listed under Missing Documents, with its
+    # own "Waiting for Password" badge.
+    if job.stage_override == "Waiting for Password" and job.status not in _MISSING_DOCS_EXCLUDED_STATUSES:
+        return True
     if job.stage_override is not None:
         return False
     if job.status in _MISSING_DOCS_EXCLUDED_STATUSES:
@@ -956,8 +961,8 @@ def _missing_documents_sql_candidates(query, bucket: str | None = None):
         # Same exclusion as _is_missing_documents' own stage_override check - a job still
         # being filled from its email cannot be "missing" anything yet. Narrowing it here
         # too keeps this cheap pass and the Python check from disagreeing about which jobs
-        # are even candidates.
-        Job.stage_override.is_(None),
+        # are even candidates. Except a job held for a zip password (see _is_missing_documents).
+        or_(Job.stage_override.is_(None), Job.stage_override == "Waiting for Password"),
         Job.status.notin_(_MISSING_DOCS_EXCLUDED_STATUSES),
     )
     if bucket:
@@ -1227,6 +1232,8 @@ def _maybe_auto_extract(db: Session, job: Job) -> None:
     group = db.get(TemplateGroup, job.group_id)
     if group is None or not group.documents:
         return
+    if getattr(group, "auto_extract", True) is False:
+        return                      # this template waits for someone to press Extract
     filled = {
         jd.template_document_id
         for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
@@ -1745,6 +1752,13 @@ def _delete_job_cascade(db: Session, job: Job, deleted_by: User | None = None,
         deleted_by_role=(deleted_by.role if deleted_by is not None else None),
         how=(how or ("Deleted from the Jobs list" if deleted_by is not None else "Removed by the system"))[:255],
     ))
+
+    # Excel files left in Unclassified (see app/core/excel_intake.py) - their rows and folder.
+    from app.models.job import UnclassifiedFile
+    from app.core.excel_intake import unclassified_excel_dir
+
+    dirs.append(unclassified_excel_dir(job.id))
+    db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id).delete()
 
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
     db.query(JobDocument).filter(JobDocument.job_id == job.id).delete()
@@ -3702,6 +3716,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             file_index=jd.file_index,
             set_index=jd.set_index,
             original_name=jd.original_name,
+            source_kind=getattr(jd, "source_kind", None) or "pdf",
+            sheet_name=jd.sheet_name,
             extracted_json=jd.extracted_json,
             approved=jd.approved,
             gk2_approved=jd.gk2_approved,
@@ -7482,6 +7498,15 @@ def _classify_and_place_files(
     # same way an unreadable PDF already is, rather than silently vanishing from the batch.
     office_work_dir = tmp / "_office"
     converted: list[tuple[str, bytes]] = []
+    # Excel by sheet (TemplateGroup.excel_mode = "sheet"): Excel is not converted - each sheet
+    # is read from its cells and placed after the PDFs (app/core/excel_intake.py).
+    from app.core.excel_intake import intake_excel_files, is_excel, is_sheet_mode
+
+    excel_files: list[tuple[str, bytes]] = []
+    if is_sheet_mode(group):
+        excel_files = [(n, d) for n, d in files if is_excel(n)]
+        files = [(n, d) for n, d in files if not is_excel(n)]
+    placed_pdf_texts: dict[str, list[str]] = {}
     for name, data in files:
         ext = Path(name).suffix.lower()
         if ext not in office_convert.OFFICE_EXTS:
@@ -7994,6 +8019,10 @@ def _classify_and_place_files(
                 )[:255] or None
                 jd.page_count = _render_pages(dorig, ddir / "pages")
             jd.file_path = str(dorig)
+            for p in cluster:
+                kept_txt = p["item"].get("kept_pages") or []
+                placed_pdf_texts.setdefault(key, []).append(
+                    "\n".join(kept_txt[pg - 1] for pg in (p["claim"].get("pages") or []) if 1 <= pg <= len(kept_txt)))
             # Not billed here - every page in this cluster was already billed above, the moment
             # it was first OCR'd during classification, regardless of which slot (or none) it
             # ends up in. See that call site's own comment.
@@ -8005,6 +8034,23 @@ def _classify_and_place_files(
             row = result_by_item_id[id(item)]
             row["matched"] = row["matched"] or None
             results.append(row)
+        # Excel by sheet - after the PDFs, never weighed against them (see excel_intake).
+        if excel_files:
+            slots: dict[str, JobDocument] = {}
+            for jd_row in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                           .order_by(JobDocument.file_index).all()):
+                slots[jd_row.template_document_id] = jd_row       # the last row of each slot
+            xl = intake_excel_files(db, job, group, excel_files, candidates, slots,
+                                    placed_pdf_texts, is_rerun=is_rerun)
+            for name, _data in excel_files:
+                got = [line.split(" -> ", 1)[1] for line in xl.placed if line.startswith(f"{name} - ")]
+                results.append({"filename": name, "matched": got or None,
+                                **({} if got else {"note": "sent to Unclassified"})})
+            if xl.skipped or xl.locked:
+                notes = dict(job.attachment_notes or {})
+                notes["skipped"] = list(notes.get("skipped") or []) + xl.skipped
+                notes["locked"] = list(notes.get("locked") or []) + xl.locked
+                job.attachment_notes = notes
         db.commit()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -8024,6 +8070,11 @@ def smart_upload(
     # misclassification (a bill of lading and an arrival notice swapping identities) without
     # guessing at what the classifier actually saw.
     debug: bool = False,
+    # A password-protected zip: the password typed in the upload dialog, whether to save it for
+    # this customer, or "read it without the locked zips".
+    zip_password: str | None = Form(None),
+    remember_password: bool = Form(False),
+    skip_locked: bool = Form(False),
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
@@ -8085,10 +8136,15 @@ def smart_upload(
     # every folder, and zips inside zips; what cannot be read is listed on the job.
     from app.core.attachment_unpack import unpack_attachments
 
+    from app.core.zip_passwords import candidate_passwords, mark_used, save_password
+
     max_upload = 100 * 1024 * 1024
     files: list[tuple[str, bytes]] = []
     skipped: list[dict] = []
     locked: list[dict] = []
+    typed_pw = (zip_password or "").strip()
+    saved_pw: list[tuple[str, str]] | None = None
+    used_pw: list[str] = []
     for uf in files_in:
         # One byte past the limit, so a file that is too big is refused with a clear message
         # instead of being silently cut short (which made a big zip look "invalid").
@@ -8098,7 +8154,11 @@ def smart_upload(
             raise HTTPException(status_code=422,
                                 detail=f"{fname}: larger than {max_upload // (1024 * 1024)} MB - too large to upload.")
         if fname.lower().endswith(".zip"):
-            unpacked = unpack_attachments([(fname, content)], UPLOAD_EXTS)
+            if saved_pw is None:                     # looked up once, only if a zip came
+                saved_pw = candidate_passwords(db, job.tenant_id, group_id=job.group_id)
+            unpacked = unpack_attachments([(fname, content)], UPLOAD_EXTS,
+                                          passwords=([typed_pw] if typed_pw else []) + [pw for _i, pw in saved_pw])
+            used_pw.extend(unpacked.used_passwords)
             if any(sk["path"] == fname and sk["reason"].startswith("damaged") for sk in unpacked.skipped):
                 raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
             files.extend(unpacked.files)
@@ -8106,6 +8166,22 @@ def smart_upload(
             locked.extend(unpacked.locked)
         else:
             files.append((fname, content))
+    if locked and not skip_locked:
+        # Asked BEFORE anything is read or billed: the dialog asks for the password and sends
+        # the same files again (or says "read it without the locked zips").
+        raise HTTPException(status_code=409, detail={
+            "code": "zip_password_needed",
+            "message": ("A zip is password-protected." if not typed_pw
+                        else "That password did not open the zip."),
+            "locked": locked,
+        })
+    if used_pw:
+        mark_used(db, [rid for rid, pw in (saved_pw or []) if pw in used_pw])
+        if typed_pw and typed_pw in used_pw and remember_password:
+            group_row = db.get(TemplateGroup, job.group_id)
+            save_password(db, tenant_id=job.tenant_id, label=(group_row.name if group_row else "Zip password"),
+                          password=typed_pw, created_by_id=user.id if user else None)
+        db.commit()
     if skipped or locked:
         notes = dict(job.attachment_notes or {})
         notes["skipped"] = (list(notes.get("skipped") or []) + skipped)[:200]
@@ -8402,6 +8478,283 @@ def assign_unclassified_page(
     db.delete(row)
     db.commit()
     _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+# ---- Excel by sheet: Unclassified Excel files and Excel documents (app/core/excel_intake.py) ----
+
+class UnclassifiedSheetOut(BaseModel):
+    name: str
+    rows: int
+    reason: str | None = None
+
+
+class UnclassifiedFileOut(BaseModel):
+    id: str
+    original_filename: str
+    sheets: list[UnclassifiedSheetOut]
+
+
+class AssignUnclassifiedFilePayload(BaseModel):
+    template_document_id: str
+    # One sheet's name, or None for every sheet still in this file.
+    sheet: str | None = None
+
+
+def _load_unclassified_file(db: Session, job: Job, file_id: str):
+    from app.models.job import UnclassifiedFile
+
+    row = (db.query(UnclassifiedFile)
+           .filter(UnclassifiedFile.id == file_id, UnclassifiedFile.job_id == job.id).first())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return row
+
+
+def _sheet_rows_out(sheet, max_rows: int = 200) -> dict:
+    """A sheet as rows of cells for the screen: {"name", "columns", "rows": [{"row", "cells"}],
+    "total_rows"} - only the first `max_rows` rows."""
+    cols: list[str] = []
+    for _r, cells in sheet.rows[:max_rows]:
+        for col, _v in cells:
+            if col not in cols:
+                cols.append(col)
+    cols.sort(key=lambda c: (len(c), c))
+    return {
+        "name": sheet.name,
+        "columns": cols,
+        "rows": [{"row": r, "cells": dict(cells)} for r, cells in sheet.rows[:max_rows]],
+        "total_rows": sheet.data_rows,
+    }
+
+
+@router.get("/jobs/{job_id}/unclassified-files", response_model=list[UnclassifiedFileOut])
+def list_unclassified_files(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[UnclassifiedFileOut]:
+    """Excel files (or sheets) that came with this job but were not placed in a slot."""
+    from app.models.job import UnclassifiedFile
+
+    job = _load_job(db, job_id, scope, user)
+    rows = (db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id)
+            .order_by(UnclassifiedFile.original_filename).all())
+    return [UnclassifiedFileOut(id=r.id, original_filename=r.original_filename,
+                                sheets=[UnclassifiedSheetOut(name=sh.get("name") or "", rows=sh.get("rows") or 0,
+                                                             reason=sh.get("reason")) for sh in (r.sheets or [])])
+            for r in rows]
+
+
+@router.get("/jobs/{job_id}/unclassified-files/{file_id}/sheets")
+def preview_unclassified_file(
+    job_id: str,
+    file_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[dict]:
+    """The file's still-unassigned sheets as tables (first 200 rows each), for a preview."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    wanted = {sh.get("name") for sh in (row.sheets or [])}
+    try:
+        wb = read_workbook(Path(row.file_path).read_bytes(), row.original_filename)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        raise HTTPException(status_code=422, detail="This Excel file could not be read.")
+    return [_sheet_rows_out(sh) for sh in wb.sheets if sh.name in wanted]
+
+
+@router.post("/jobs/{job_id}/unclassified-files/{file_id}/assign")
+def assign_unclassified_file(
+    job_id: str,
+    file_id: str,
+    payload: AssignUnclassifiedFilePayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """An operator puts an Unclassified Excel file - one sheet, or every sheet left in it - into a
+    document slot. Each sheet becomes its own Excel document, read from its cells at extraction.
+    Teaches the classifier the format (same as assigning an Unclassified page). Not billed again:
+    every sheet was billed when it was first read."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook, sheet_text
+    from app.core.excel_intake import _safe_name
+
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    tdoc = db.get(TemplateDocument, payload.template_document_id)
+    if tdoc is None or tdoc.group_id != job.group_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Document type not found on this job's template.")
+    left = [sh for sh in (row.sheets or []) if payload.sheet is None or sh.get("name") == payload.sheet]
+    if not left:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sheet not found")
+    try:
+        data = Path(row.file_path).read_bytes()
+        wb = read_workbook(data, row.original_filename)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        raise HTTPException(status_code=422, detail="This Excel file could not be read.")
+    by_name = {sh.name: sh for sh in wb.sheets}
+    for sh in left:
+        sheet = by_name.get(sh.get("name"))
+        if sheet is None:
+            continue
+        jd = _slot_for_new_file(db, job, tdoc.id)
+        if jd is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Could not find or create a slot for this document type.")
+        ddir = _job_doc_dir(jd.id)
+        ddir.mkdir(parents=True, exist_ok=True)
+        dest = ddir / _safe_name(row.original_filename)
+        dest.write_bytes(data)
+        jd.file_path = str(dest)
+        jd.source_kind = "excel"
+        jd.sheet_name = sheet.name
+        jd.page_count = 0
+        jd.original_name = f"{row.original_filename} - {sheet.name}"[:255]
+        db.flush()
+        try:
+            document_samples.remember(db, tenant_id=job.tenant_id, template_document_id=tdoc.id,
+                                      text=sheet_text(sheet, 60), job_document_id=jd.id)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not sample Excel %s for slot %s", jd.id, tdoc.id, exc_info=True)
+    remaining = [sh for sh in (row.sheets or []) if sh not in left]
+    if remaining:
+        row.sheets = remaining
+    else:
+        Path(row.file_path).unlink(missing_ok=True)
+        db.delete(row)
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+@router.delete("/jobs/{job_id}/unclassified-files/{file_id}")
+def delete_unclassified_file(
+    job_id: str,
+    file_id: str,
+    sheet: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """Remove one sheet (?sheet=name) or the whole Excel file from Unclassified."""
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    remaining = [sh for sh in (row.sheets or []) if sheet is not None and sh.get("name") != sheet]
+    if remaining:
+        row.sheets = remaining
+    else:
+        Path(row.file_path).unlink(missing_ok=True)
+        db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/jobs/{job_id}/documents/{document_id}/sheet")
+def get_document_sheet(
+    job_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """An Excel document's sheet as a table (first 500 rows), for the document viewer."""
+    job = _load_job(db, job_id, scope, user)
+    jd = db.query(JobDocument).filter(JobDocument.id == document_id, JobDocument.job_id == job.id).first()
+    if jd is None or jd.source_kind != "excel" or not jd.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Excel document not found")
+    sheet = _excel_sheet(jd)
+    if sheet is None:
+        raise HTTPException(status_code=422, detail="This Excel sheet could not be read.")
+    return _sheet_rows_out(sheet, max_rows=500)
+
+
+# ---- a job held for a zip password (app/core/zip_passwords.py, email_puller._hold_for_password) ----
+
+class UnlockHeldJobPayload(BaseModel):
+    password: str | None = None
+    # Save the password for this customer, so the next mail opens by itself.
+    remember: bool = False
+    label: str | None = None
+    # Read the job without the locked zips instead ("Process without locked files").
+    skip_locked: bool = False
+
+
+_UNLOCK_MAX_TRIES = 5
+_UNLOCK_LOCKOUT = timedelta(minutes=15)
+
+
+@router.post("/jobs/{job_id}/held/unlock")
+def unlock_held_job(
+    job_id: str,
+    payload: UnlockHeldJobPayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN)),
+):
+    """Give a job that is "Waiting for Password" its zip password (checked here, before anything
+    is read) - or read it without the locked zips. Either way the whole mail is then read ONCE,
+    into this same job, in the background. 5 wrong passwords lock it for 15 minutes."""
+    import threading
+
+    from app.core.attachment_unpack import unpack_attachments
+    from app.core.email_puller import ATTACH_EXTS, CLASSIFY_EXTS, _extract_attachments, resume_held_job
+    from app.core.job_email import job_email_dir
+    from app.core.office_convert import OFFICE_EXTS
+    from app.core.zip_passwords import WAITING_FOR_PASSWORD, save_password
+
+    job = _load_job(db, job_id, scope, user)
+    if job.stage_override != WAITING_FOR_PASSWORD:
+        raise HTTPException(status_code=409, detail="This job is not waiting for a password.")
+    notes = dict(job.attachment_notes or {})
+    until = notes.get("locked_until")
+    if until and datetime.fromisoformat(until) > datetime.now(timezone.utc):
+        raise HTTPException(status_code=429, detail="Too many wrong passwords - try again in a few minutes.")
+    password = (payload.password or "").strip() or None
+    if not payload.skip_locked:
+        if not password:
+            raise HTTPException(status_code=422, detail="Enter the zip password.")
+        try:
+            import email as _email
+            msg = _email.message_from_bytes((job_email_dir(job.id) / "original.eml").read_bytes())
+        except OSError:
+            raise HTTPException(status_code=422, detail="The original mail for this job is missing.")
+        check = unpack_attachments(_extract_attachments(msg, ATTACH_EXTS), CLASSIFY_EXTS | OFFICE_EXTS,
+                                   passwords=[password])
+        if check.locked:
+            tries = int(notes.get("failed_attempts") or 0) + 1
+            notes["failed_attempts"] = tries
+            if tries >= _UNLOCK_MAX_TRIES:
+                notes["failed_attempts"] = 0
+                notes["locked_until"] = (datetime.now(timezone.utc) + _UNLOCK_LOCKOUT).isoformat()
+            job.attachment_notes = notes
+            db.commit()
+            left = _UNLOCK_MAX_TRIES - tries if tries < _UNLOCK_MAX_TRIES else 0
+            raise HTTPException(status_code=422,
+                                detail=f"Incorrect password." + (f" {left} tries left." if left else
+                                                                   " Locked for 15 minutes."))
+        if payload.remember:
+            save_password(db, tenant_id=job.tenant_id, label=(payload.label or "").strip() or "Zip password",
+                          password=password, created_by_id=user.id if user else None)
+    notes.pop("failed_attempts", None)
+    notes.pop("locked_until", None)
+    job.attachment_notes = notes
+    job.stage_override = "Document Classifying"
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage="Document Classifying",
+                    note=("Read without the password-protected zip(s)" if payload.skip_locked
+                          else "Zip password given - reading the documents")))
+    db.commit()
+    threading.Thread(target=resume_held_job, args=(job.id,),
+                     kwargs={"password": None if payload.skip_locked else password,
+                             "skip_locked": payload.skip_locked},
+                     name=f"resume-held-{job.id[:8]}", daemon=True).start()
     db.refresh(job)
     return _build_detail(db, job)
 
@@ -8715,6 +9068,35 @@ def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int
     return created
 
 
+def _excel_sheet(jdoc: JobDocument):
+    """The one sheet an Excel document is (JobDocument.sheet_name), or None if unreadable."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+
+    try:
+        wb = read_workbook(Path(jdoc.file_path).read_bytes(), jdoc.file_path)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        logger.exception("could not read Excel document %s", jdoc.id)
+        return None
+    for sheet in wb.sheets:
+        if sheet.name == jdoc.sheet_name:
+            return sheet
+    return None
+
+
+def _excel_sheet_text(jdoc: JobDocument) -> str:
+    from app.core.excel_text import sheet_text
+
+    sheet = _excel_sheet(jdoc)
+    return sheet_text(sheet) if sheet is not None else ""
+
+
+def _excel_sheet_chunks(jdoc: JobDocument) -> list[str]:
+    from app.core.excel_text import sheet_chunks
+
+    sheet = _excel_sheet(jdoc)
+    return sheet_chunks(sheet) if sheet is not None else []
+
+
 def run_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -8771,7 +9153,8 @@ def run_extraction(
         # conditions: no file, no marks defined, or scoped to a different document) - billed
         # once, up front, so the cost is recorded even if a later per-document call fails.
         rerun_pages = sum(
-            jd.page_count or 0
+            (jd.page_count or 0) if getattr(jd, "source_kind", "pdf") != "excel"
+            else ((_excel_sheet(jd).billable_pages if _excel_sheet(jd) is not None else 0))
             for tdoc in group.documents if tdoc.marks
             for jd in docs_by_tdoc.get(tdoc.id, [])
             if jd.file_path and (not only_job_document_id or jd.id == only_job_document_id)
@@ -8847,6 +9230,13 @@ def run_extraction(
         database rather than only in the on-disk page cache.
         """
         if jdoc.id in doc_text_cache:
+            return doc_text_cache[jdoc.id]
+        # An Excel document (excel_mode "sheet") is read from its sheet's cells - exact values,
+        # no OCR, no page images. See app/core/excel_intake.py.
+        if getattr(jdoc, "source_kind", "pdf") == "excel":
+            doc_text_cache[jdoc.id] = _excel_sheet_text(jdoc)
+            doc_tokens_cache[jdoc.id] = []
+            doc_table_row_count_cache[jdoc.id] = 0
             return doc_text_cache[jdoc.id]
         tdoc_id = jdoc.template_document_id
         parts: list[str] = []
@@ -8981,13 +9371,15 @@ def run_extraction(
         # OCR-failure fallback (extraction.py then defaults to settings.openai_model exactly
         # as before this setting existed) and only becomes vision_engine_model when the
         # engine was deliberately chosen.
-        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
-        used_vision = engine_forces_vision or not ocr_text.strip()
+        is_excel_doc = getattr(jd, "source_kind", "pdf") == "excel"
+        # Never vision for an Excel sheet: it has no page image, and its text is exact.
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision" and not is_excel_doc
+        used_vision = engine_forces_vision or (not ocr_text.strip() and not is_excel_doc)
         model_override = vision_engine_model if engine_forces_vision else None
         # Computed unconditionally (cheap - just a filesystem check): the row cross-check below
         # needs these page images even when OCR text is present and single-value extraction
         # stays text-based.
-        image_paths: list = [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
+        image_paths: list = [] if is_excel_doc else [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
         image_paths = [p for p in image_paths if p.exists()]
         if used_vision and not engine_forces_vision:
             # WARNING, not INFO: reading page images instead of OCR text measurably degrades
@@ -9185,7 +9577,13 @@ def run_extraction(
             # and used below as a third, independent source of truth for "how many rows are
             # there really" - the two LLM reads otherwise only ever argue with each other.
             detected_row_count = doc_table_row_count_cache.get(jd.id, 0)
-            if not used_vision:
+            if is_excel_doc:
+                # A long sheet is read in parts, each repeating the heading rows, then joined in
+                # order - one huge table in one call is where rows get dropped.
+                rows = []
+                for part in _excel_sheet_chunks(jd):
+                    rows.extend(extract_document_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
+            elif not used_vision:
                 rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None,
                                              tenant_id=job.tenant_id)
                 # Line-item tables are the highest-error part of extraction: a table whose OCR
@@ -11436,11 +11834,13 @@ def recompute_mark(
         ocr_text = "\n".join(kept)
         tokens = [(p, tokens_by_page[p]) for p in range(1, len(parts) + 1)
                   if p not in dropped_pages and p in tokens_by_page]
+        if getattr(jd, "source_kind", "pdf") == "excel":       # read from the sheet's cells
+            ocr_text, tokens = _excel_sheet_text(jd), []
 
         # Same "deliberate engine choice" vs. "OCR genuinely found nothing" distinction as
         # run_extraction - see its own comment for why model_override stays None in the
         # fallback case.
-        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision" and getattr(jd, "source_kind", "pdf") != "excel"
         used_vision = engine_forces_vision or not ocr_text.strip()
         model_override = vision_engine_model if engine_forces_vision else None
         if not used_vision:

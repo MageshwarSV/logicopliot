@@ -425,6 +425,41 @@ def set_group_prealert_shipments(
     return TemplateGroupOut.model_validate(group)
 
 
+class ExcelSettingsPayload(BaseModel):
+    excel_mode: str                                   # "legacy" | "sheet"
+    # None = the built-in defaults (app/core/excel_intake.DEFAULT_IGNORE_PATTERNS).
+    excel_ignore_patterns: list[str] | None = None
+    # None = leave as it is.
+    auto_extract: bool | None = None
+
+
+@router.patch("/{group_id}/excel-settings", response_model=TemplateGroupOut)
+def set_group_excel_settings(
+    group_id: str,
+    payload: ExcelSettingsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> TemplateGroupOut:
+    """How this template handles Excel files: "legacy" (converted to PDF, as always) or "sheet"
+    (each sheet read from its cells, classified per sheet, Unclassified if not needed), and the
+    file names that are never documents (see TemplateGroup.excel_mode / excel_ignore_patterns)."""
+    if payload.excel_mode not in ("legacy", "sheet"):
+        raise HTTPException(status_code=422, detail="excel_mode must be 'legacy' or 'sheet'.")
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    group.excel_mode = payload.excel_mode
+    if payload.auto_extract is not None:
+        group.auto_extract = payload.auto_extract
+    if payload.excel_ignore_patterns is not None:
+        group.excel_ignore_patterns = [p.strip() for p in payload.excel_ignore_patterns if p.strip()][:50]
+    db.commit()
+    db.refresh(group)
+    return TemplateGroupOut.model_validate(group)
+
+
 class ImporterGstinPayload(BaseModel):
     importer_requires_gstin: bool
 

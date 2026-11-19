@@ -226,6 +226,19 @@ export async function setPullEmail(
 }
 
 /** Change which transport mode a template is tagged for. */
+/** Excel by sheet: "legacy" (converted to PDF) or "sheet" (each sheet read from its cells), and
+ *  the Excel file names that are never documents (null keeps the current list). */
+export async function setExcelSettings(
+  groupId: string, excelMode: string, ignorePatterns: string[] | null, autoExtract?: boolean,
+): Promise<TemplateGroup> {
+  const { data } = await apiClient.patch<TemplateGroup>(`/template-groups/${groupId}/excel-settings`, {
+    excel_mode: excelMode,
+    excel_ignore_patterns: ignorePatterns,
+    ...(autoExtract === undefined ? {} : { auto_extract: autoExtract }),
+  });
+  return data;
+}
+
 export async function setGroupMode(groupId: string, mode: string): Promise<TemplateGroup> {
   const { data } = await apiClient.patch<TemplateGroup>(`/template-groups/${groupId}/mode`, { mode });
   return data;

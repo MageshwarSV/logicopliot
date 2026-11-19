@@ -15,6 +15,9 @@ import type { User } from "../../types/auth";
 import { MODES } from "../../types/onboarding";
 import { useAuth } from "../../auth/useAuth";
 
+// Same as app/core/excel_intake.DEFAULT_IGNORE_PATTERNS - shown when a template has its own list unset.
+const DEFAULT_EXCEL_IGNORE = ["DSRImportTemplate", "Consol Planning Sheet", "PDFSummary", "ShipNotice"];
+
 export function CustomerListPage() {
   const { user } = useAuth();
   const [customers, setCustomers] = useState<jobsApi.AvailableGroup[]>([]);
@@ -35,6 +38,13 @@ export function CustomerListPage() {
   // Which modes THIS tenant is licensed for — empty means unrestricted, offer all of them.
   const [allowedModes, setAllowedModes] = useState<string[]>([]);
   const [modeSavingId, setModeSavingId] = useState<string | null>(null);
+  // Excel by sheet - per template (TemplateGroup.excel_mode / excel_ignore_patterns).
+  const [excelFor, setExcelFor] = useState<jobsApi.AvailableGroup | null>(null);
+  const [excelSheetMode, setExcelSheetMode] = useState(false);
+  const [autoExtract, setAutoExtract] = useState(true);
+  const [excelIgnore, setExcelIgnore] = useState("");
+  const [excelSaving, setExcelSaving] = useState(false);
+  const [excelError, setExcelError] = useState<string | null>(null);
 
   async function checkMailbox() {
     setMailStatus(null);
@@ -100,6 +110,31 @@ export function CustomerListPage() {
   }
 
   const modeOptions = allowedModes.length ? allowedModes : [...MODES];
+
+  function openExcel(c: jobsApi.AvailableGroup) {
+    setExcelFor(c);
+    setExcelSheetMode((c.excel_mode ?? "legacy") === "sheet");
+    setAutoExtract(c.auto_extract !== false);
+    setExcelIgnore((c.excel_ignore_patterns ?? DEFAULT_EXCEL_IGNORE).join("\n"));
+    setExcelError(null);
+  }
+
+  async function saveExcel(e: FormEvent) {
+    e.preventDefault();
+    if (!excelFor) return;
+    setExcelSaving(true);
+    setExcelError(null);
+    try {
+      const patterns = excelIgnore.split("\n").map((x) => x.trim()).filter(Boolean);
+      await onboardingApi.setExcelSettings(excelFor.id, excelSheetMode ? "sheet" : "legacy", patterns, autoExtract);
+      setExcelFor(null);
+      await refresh();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setExcelError(err.response?.data?.detail ?? "Could not save.");
+    } finally {
+      setExcelSaving(false);
+    }
+  }
 
   function openAssign(c: jobsApi.AvailableGroup) {
     setAssignFor(c);
@@ -254,6 +289,9 @@ export function CustomerListPage() {
               )}
             </div>
             <div className="flex gap-2">
+              <Button size="sm" variant="secondary" onClick={() => openExcel(c)} title="How Excel files are read for this customer">
+                Reading{(c.excel_mode ?? "legacy") === "sheet" ? " · Excel by sheet" : ""}{c.auto_extract === false ? " · no auto-extract" : ""}
+              </Button>
               <Button size="sm" variant="secondary" onClick={() => openEdit(c)}>Edit</Button>
               <Button size="sm" variant={c.pull_email ? "secondary" : "primary"} onClick={() => openAssign(c)}>
                 {c.pull_email ? "Change mail" : "Assign mail"}
@@ -262,6 +300,48 @@ export function CustomerListPage() {
           </div>
         ))}
       </Card>
+
+      <Modal open={excelFor !== null} onClose={() => setExcelFor(null)} title={`Document reading — ${excelFor?.name ?? ""}`}>
+        <form className="flex flex-col gap-4" onSubmit={saveExcel}>
+          <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" className="mt-1" checked={autoExtract} onChange={(e) => setAutoExtract(e.target.checked)} />
+            <span>
+              <span className="font-medium">Start extraction automatically</span>
+              <span className="block text-xs text-slate-500">
+                On (normal): once the documents are placed, their data is extracted straight away.
+                Off: mail and uploads are read, classified and placed in Data Capture only - extraction
+                waits until someone presses Extract on the job.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" className="mt-1" checked={excelSheetMode} onChange={(e) => setExcelSheetMode(e.target.checked)} />
+            <span>
+              <span className="font-medium">Read Excel by sheet</span>
+              <span className="block text-xs text-slate-500">
+                Each sheet is read straight from its cells and placed in the right document (e.g. an
+                invoice that only comes as Excel). Sheets that are not needed go to "Excel files not
+                used" on the job, where they can still be assigned. Off: Excel is converted to PDF, as before.
+              </span>
+            </span>
+          </label>
+          <div>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Never use these Excel files</label>
+            <p className="mb-1 text-xs text-slate-500">One per line - any file whose name contains it goes straight to "not used", without being read by the AI.</p>
+            <textarea
+              value={excelIgnore}
+              onChange={(e) => setExcelIgnore(e.target.value)}
+              rows={5}
+              className="w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+          {excelError && <Alert>{excelError}</Alert>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setExcelFor(null)}>Cancel</Button>
+            <Button type="submit" isLoading={excelSaving}>Save</Button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal open={editFor !== null} onClose={() => setEditFor(null)} title={`Edit — ${editFor?.name ?? ""}`}>
         <form className="flex flex-col gap-4" onSubmit={saveEdit}>

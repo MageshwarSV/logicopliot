@@ -9,6 +9,7 @@ from app.api.v1.template_documents import router as template_documents_router
 from app.api.v1.field_marks import router as field_marks_router
 from app.api.v1.jobs import router as jobs_router
 from app.api.v1.notifications import router as notifications_router
+from app.api.v1.zip_passwords import router as zip_passwords_router
 from app.api.v1.reviews import router as reviews_router
 from app.api.v1.erp_scripts import router as erp_scripts_router
 from app.api.v1.email import router as email_router
@@ -28,6 +29,7 @@ from app.api.v1.master_data_cth import router as master_data_cth_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
+api_router.include_router(zip_passwords_router)
 api_router.include_router(tenants_router)
 api_router.include_router(users_router)
 api_router.include_router(user_types_router)

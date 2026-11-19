@@ -49,6 +49,9 @@ OVERSIGHT_ROLES = (MANAGER, TENANT_ADMIN)
 # all as read" bounded: it can only ever write rows for what is on screen.
 WINDOW_DAYS = 30
 MAX_ITEMS = 50
+# A job held for a zip password (app/core/zip_passwords.py) is announced to the operator it is
+# assigned to (or anyone, while unassigned) - and again once it has waited this long.
+PASSWORD_REMINDER_AFTER = timedelta(hours=4)
 
 
 class NotificationOut(BaseModel):
@@ -76,6 +79,10 @@ def _event_time(job: Job, kind: str) -> datetime | None:
     """
     if kind == "submitted":
         return job.ai_submitted_at or job.updated_at
+    if kind == "password":
+        return job.created_at
+    if kind == "password_reminder":
+        return (_as_utc(job.created_at) or datetime.now(timezone.utc)) + PASSWORD_REMINDER_AFTER
     return job.updated_at
 
 
@@ -113,6 +120,20 @@ def _collect(db: Session, scope: TenantScope, user: User) -> list[tuple[str, Job
             .all()
         )
         out.extend((kind, job) for job in rows)
+    # Jobs waiting for a zip password - nothing in them can be read until someone enters it.
+    from sqlalchemy import or_
+
+    from app.core.zip_passwords import WAITING_FOR_PASSWORD
+
+    held = _jobs_visible_query(db, scope, user).filter(Job.stage_override == WAITING_FOR_PASSWORD,
+                                                       Job.created_at >= since)
+    if user.role not in OVERSIGHT_ROLES:
+        held = held.filter(or_(Job.assigned_operator_id == user.id, Job.assigned_operator_id.is_(None)))
+    now = datetime.now(timezone.utc)
+    for job in held.order_by(Job.created_at.desc()).limit(MAX_ITEMS).all():
+        out.append(("password", job))
+        if _as_utc(job.created_at) and _as_utc(job.created_at) + PASSWORD_REMINDER_AFTER <= now:
+            out.append(("password_reminder", job))
     # Newest first across both kinds, then capped - so a flood of one kind cannot push the
     # other off the list entirely.
     out.sort(key=lambda kj: _event_time(kj[1], kj[0]) or datetime.min.replace(tzinfo=timezone.utc),
@@ -213,7 +234,7 @@ def mark_read(
         wanted = set()
         for raw in payload.ids:
             kind, _, job_id = raw.partition(":")
-            if kind not in KINDS or not job_id:
+            if kind not in (*KINDS, "password", "password_reminder") or not job_id:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail=f"not a notification id: {raw}")
             wanted.add((kind, job_id))

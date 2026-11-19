@@ -189,7 +189,9 @@ export function NotificationBell() {
               </p>
             ) : (
               items.map((n) => {
-                const failed = n.kind === "failed";
+                // A job waiting for a zip password reads as a warning, like a failure.
+                const failed = n.kind !== "submitted";
+                const pw = n.kind === "password" || n.kind === "password_reminder";
                 return (
                   <button
                     key={n.id}
@@ -214,7 +216,9 @@ export function NotificationBell() {
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">
-                        {failed ? "Failed to submit to ERP" : "Submitted to ERP"}
+                        {pw
+                          ? n.kind === "password_reminder" ? "Still waiting for a zip password" : "Waiting for a zip password"
+                          : failed ? "Failed to submit to ERP" : "Submitted to ERP"}
                       </span>
                       <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                         {n.job_reference}
@@ -249,7 +253,8 @@ export function NotificationBell() {
             className="fixed right-4 top-16 z-[60] flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-2"
           >
             {toasts.map(({ key, n }) => {
-              const failed = n.kind === "failed";
+              const failed = n.kind !== "submitted";
+              const pw = n.kind === "password" || n.kind === "password_reminder";
               return (
                 <div
                   key={key}
@@ -274,10 +279,14 @@ export function NotificationBell() {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      {failed ? "Failed to submit to ERP" : "Submitted to ERP"}
+                      {pw
+                        ? n.kind === "password_reminder" ? "Still waiting for a zip password" : "Waiting for a zip password"
+                        : failed ? "Failed to submit to ERP" : "Submitted to ERP"}
                     </p>
                     <p className="text-xs text-slate-600 dark:text-slate-300">
-                      {failed
+                      {pw
+                        ? `${n.job_reference} has a password-protected zip - open the job and enter the password.`
+                        : failed
                         ? `${n.job_reference} could not be entered in the ERP.`
                         : `${n.job_reference} has been submitted to the ERP.`}
                     </p>

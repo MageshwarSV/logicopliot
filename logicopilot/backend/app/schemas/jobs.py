@@ -153,6 +153,9 @@ class JobDocumentOut(BaseModel):
     file_index: int = 0
     set_index: int | None = None
     original_name: str | None = None
+    # "excel" for a sheet read from its cells (no page images - shown as a table), else "pdf".
+    source_kind: str = "pdf"
+    sheet_name: str | None = None
     # The raw OCR this document was read from, per page. Stored since the "save the extracted
     # OCR" change but never returned, which left no way to tell a genuine extraction fault
     # from the document simply having been read badly.
@@ -473,3 +476,7 @@ class AvailableGroup(BaseModel):
     mode: str | None = None
     pull_email: str | None = None
     pull_operator_id: str | None = None
+    # Excel by sheet - see TemplateGroup.excel_mode / excel_ignore_patterns.
+    excel_mode: str = "legacy"
+    excel_ignore_patterns: list[str] | None = None
+    auto_extract: bool = True

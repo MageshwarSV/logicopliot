@@ -297,6 +297,11 @@ class JobDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     file_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     set_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     original_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # "pdf" (every document until Excel-by-sheet existed: PDF/image, page images on disk) or
+    # "excel": file_path is the original workbook and sheet_name the one sheet this document
+    # is - read from its cells, never OCR'd or shown as page images (app/core/excel_intake.py).
+    source_kind: Mapped[str] = mapped_column(String(10), nullable=False, default="pdf", server_default="pdf")
+    sheet_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Raw OCR for this uploaded document, kept in the database rather than only in the
     # on-disk page cache: {"document","doc_type","page_count","pages":[...],"text"}.
     # Survives the uploads folder being cleared and can be queried.
@@ -419,3 +424,26 @@ class JobFieldValue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     @property
     def value(self) -> str | None:
         return self.corrected_value if self.corrected_value is not None else self.extracted_value
+
+
+class UnclassifiedFile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """An Excel workbook (or the sheets of one) that came with a job but was not placed in any
+    document slot - on the template's ignore list, not a customs document, unsure, or the same
+    invoice as a PDF already placed. Kept so an operator can still assign it (a whole file or
+    one sheet) to a slot, exactly like an Unclassified page; deleted once nothing is left.
+
+    `sheets`: [{"name", "rows", "reason"}] - only the sheets still unassigned."""
+
+    __tablename__ = "unclassified_files"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    sheets: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+

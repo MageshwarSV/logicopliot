@@ -214,8 +214,67 @@ def test_an_email_with_a_nested_and_a_locked_zip_reads_everything_it_can(db_sess
             custom_filter_texts=[], reexamine=False,
         )
 
-    assert result and result.get("job_id"), result
-    assert seen == ["SINA2626873E.pdf", "MES_INV.pdf"]              # the inner zip's PDF is read
+    # A locked zip no saved password opens: the whole job is HELD - nothing is read until the
+    # password is given (agreed 2026-11-19; see tests/test_zip_passwords.py for the reading).
+    assert result and result.get("job_id") and result.get("held"), result
+    assert seen == []
     job = db_session.get(Job, result["job_id"])
     assert job.attachment_notes["locked"] == [
         {"path": "mail.zip/SINA2626873D - TAIYO/FLXINAUTO.zip", "files": ["MAL_IV.pdf"]}]
+
+    # ... and "Process without locked files" reads everything else, nested zip included.
+    with patch("app.core.docai.ocr_page_image", return_value={"text": "invoice", "tokens": []}), \
+         patch("app.core.classifier_sea_import.assign_documents_detailed", side_effect=_classify), \
+         patch("app.core.classifier_air_import.assign_documents_detailed", side_effect=_classify), \
+         patch("app.api.v1.jobs.run_extraction"):
+        _process_one_message(
+            db_session, b"1", msg.as_bytes(), ctx, mail_email=None, mail_app_password=None, mail_host=None,
+            extraction_engine="ocr_gpt4o_mini", vision_engine_model="gpt-5-mini",
+            custom_filter_texts=[], reexamine=False, resume_job_id=job.id, skip_locked=True)
+    assert seen == ["SINA2626873E.pdf", "MES_INV.pdf"]              # the inner zip's PDF is read
+
+
+# ---- saved passwords (test passwords only) ----------------------------------------------------
+
+import os
+
+LOCKED_ZIPCRYPTO = os.path.join(os.path.dirname(__file__), "fixtures", "locked_zipcrypto_test-pass-2.zip")
+# The classic zip encryption (what Flex's supplier zips use), made with `zip -P test-pass-2`.
+
+
+def _aes_zip(entries: dict[str, bytes], password: str) -> bytes:
+    import pyzipper
+    buf = io.BytesIO()
+    with pyzipper.AESZipFile(buf, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as z:
+        z.setpassword(password.encode())
+        for name, data in entries.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_a_classic_locked_zip_opens_with_the_second_saved_password():
+    locked = open(LOCKED_ZIPCRYPTO, "rb").read()
+    outer = _zip({"SINA2626873D - TAIYO/FLXINAUTO.zip": locked, "a.pdf": _pdf()})
+    res = unpack_attachments([("mail.zip", outer)], ACCEPT, passwords=["test-pass-1", "test-pass-2"])
+    assert sorted(_names(res)) == ["MAL_IV.pdf", "MAL_PL.pdf", "a.pdf"]
+    assert res.locked == [] and res.used_passwords == ["test-pass-2"]
+    assert res.unlocked == ["mail.zip/SINA2626873D - TAIYO/FLXINAUTO.zip"]
+
+
+def test_wrong_passwords_leave_it_locked():
+    locked = open(LOCKED_ZIPCRYPTO, "rb").read()
+    res = unpack_attachments([("FLXINAUTO.zip", locked)], ACCEPT, passwords=["nope", "also-wrong"])
+    assert res.files == [] and res.locked[0]["files"] == ["MAL_IV.pdf", "MAL_PL.pdf"]
+    assert res.used_passwords == []
+
+
+def test_an_aes_locked_zip_opens_too():
+    z = _aes_zip({"inv.pdf": _pdf("aes")}, "test-aes-pw")
+    res = unpack_attachments([("aes.zip", z)], ACCEPT, passwords=["test-aes-pw"])
+    assert _names(res) == ["inv.pdf"] and res.locked == []
+
+
+def test_no_passwords_behaves_exactly_as_before():
+    locked = open(LOCKED_ZIPCRYPTO, "rb").read()
+    res = unpack_attachments([("FLXINAUTO.zip", locked)], ACCEPT)
+    assert res.files == [] and len(res.locked) == 1

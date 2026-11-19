@@ -92,6 +92,9 @@ export interface JobDocument {
    */
   set_index: number | null;
   original_name: string | null;
+  /** "excel" for a sheet read from its cells (no page images - shown as a table). */
+  source_kind?: string;
+  sheet_name?: string | null;
   /** Operator (GK1) pressed "Submit for Approval" on this document, on Data Extraction. */
   approved?: boolean;
   /** GK2's OWN independent approval of this document — separate from GK1's `approved`. */
@@ -268,6 +271,10 @@ export interface JobDetail {
   attachment_notes?: {
     skipped?: { path: string; reason: string }[];
     locked?: { path: string; files: string[] }[];
+    /** Locked zips a saved password opened. */
+    unlocked?: string[];
+    /** True while the job is held "Waiting for Password" (nothing read yet). */
+    held?: boolean;
   } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;

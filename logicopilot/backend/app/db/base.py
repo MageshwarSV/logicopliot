@@ -10,7 +10,7 @@ from app.models.template_document import TemplateDocument  # noqa: F401
 from app.models.field_mark import FieldMark  # noqa: F401
 from app.models.notification_read import NotificationRead  # noqa: F401
 from app.models.cross_doc_link import CrossDocLink  # noqa: F401
-from app.models.job import Job, JobDocument, JobFieldValue, UnmatchedUploadPage  # noqa: F401
+from app.models.job import Job, JobDocument, JobFieldValue, UnclassifiedFile, UnmatchedUploadPage  # noqa: F401
 from app.models.template_review import TemplateReview  # noqa: F401
 from app.models.user_template import UserTemplateAssignment  # noqa: F401
 from app.models.erp_access import ErpAccessRequest  # noqa: F401
@@ -34,6 +34,7 @@ from app.models.invoice import Invoice  # noqa: F401
 from app.models.billable_page_event import BillablePageEvent  # noqa: F401
 from app.models.openai_api_key import OpenAIApiKey  # noqa: F401
 from app.models.tenant_extraction_config import TenantExtractionConfig  # noqa: F401
+from app.models.archive_password import ArchivePassword  # noqa: F401
 
 # Importing this installs the before_flush listener that writes a job's history. It
 # lives here so every entry point that touches the database gets it - the API, the

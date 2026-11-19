@@ -45,6 +45,20 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # entered yet, on would empty the Indian importer list on every job.
     importer_requires_gstin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
+    # How Excel attachments are handled - "legacy" (every existing template: converted to a PDF
+    # and classified like one) or "sheet": each sheet's cells are read directly, classified per
+    # sheet, placed in a slot or sent to Unclassified, and extracted from the cells (see
+    # app/core/excel_intake.py). Switched on per template once tested.
+    excel_mode: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="legacy", server_default="legacy")
+    # Excel file names that are never documents (internal tracking sheets) - matched as
+    # case-insensitive "contains"; such a file goes straight to Unclassified, no AI call.
+    # None = the defaults in app/core/excel_intake.DEFAULT_IGNORE_PATTERNS.
+    excel_ignore_patterns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Start extraction by itself once documents are placed (every existing template: yes). Off:
+    # mail and uploads are read, classified and placed, and extraction waits for someone to
+    # press Extract - for checking a new customer's documents before spending on extraction.
+    auto_extract: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

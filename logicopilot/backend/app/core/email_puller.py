@@ -313,7 +313,7 @@ def _body_cids(msg: email.message.Message) -> set[str]:
     return cids
 
 
-def _extract_attachments(msg: email.message.Message) -> list[tuple[str, bytes]]:
+def _extract_attachments(msg: email.message.Message, exts: set[str] | None = None) -> list[tuple[str, bytes]]:
     """Real attachments only - never an embedded signature image. The two conditions this
     used to have were redundant with each other (the second unconditionally re-applied the
     first's own extension check), so Content-Disposition was never actually consulted: any
@@ -354,7 +354,7 @@ def _extract_attachments(msg: email.message.Message) -> list[tuple[str, bytes]]:
         fname = _decode(part.get_filename())
         if not fname:
             continue
-        if Path(fname).suffix.lower() not in ATTACH_EXTS:
+        if Path(fname).suffix.lower() not in (exts or ATTACH_EXTS):
             continue
         payload = part.get_payload(decode=True)
         if payload:
@@ -1417,6 +1417,84 @@ def _harvest_mailbox(
             pass
 
 
+def _hold_for_password(db: Session, msg, mid: str, sender: str, subject: str, group: TemplateGroup,
+                       raw_attachments: list[tuple[str, bytes]], notes: dict | None) -> dict:
+    """Create the job as "Waiting for Password" - its slots empty, nothing read or billed - and
+    keep the mail with it, so it can be read in full once the password is given (see
+    resume_held_job). The operator sees it at once, in Missing Documents, with the locked zips
+    and the file names inside them."""
+    from app.api.v1.jobs import generate_job_no
+    from app.core.job_email import save_original_email
+    from app.core.zip_passwords import WAITING_FOR_PASSWORD
+
+    job = Job(
+        tenant_id=group.tenant_id, group_id=group.id, reference=generate_job_no(),
+        status="draft", created_by_id=None, stage_override=WAITING_FOR_PASSWORD,
+        assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+        eta_date=_eta_for_new_job(msg, subject, group.tenant_id),
+        attachment_notes={**(notes or {}), "held": True},
+    )
+    db.add(job)
+    db.flush()
+    for tdoc in (db.query(TemplateDocument).filter(TemplateDocument.group_id == group.id)
+                 .order_by(TemplateDocument.order_index).all()):
+        db.add(JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                           template_document_id=tdoc.id, page_count=0))
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status="draft", stage=WAITING_FOR_PASSWORD,
+                    note="A zip in this mail is password-protected - waiting for the password "
+                         "before reading anything."))
+    db.commit()
+    save_original_email(job.id, msg, raw_attachments, sender, subject,
+                        received_by=None)
+    locked = (notes or {}).get("locked") or []
+    _record(db, mid, sender, subject, "held_password",
+            f"{len(locked)} password-protected zip(s) - waiting for the password",
+            group_id=group.id, job_id=job.id)
+    logger.info("email %s: held as %s - %d password-protected zip(s)", mid[:60], job.reference, len(locked))
+    return {"from": sender, "subject": subject, "matched": group.name, "job_id": job.id,
+            "reason": "waiting for a zip password", "held": True}
+
+
+def resume_held_job(job_id: str, *, password: str | None = None, skip_locked: bool = False) -> dict | None:
+    """Read a held job's mail in full, into that same job: with `password` (already checked
+    by the caller) or, with `skip_locked`, without the locked zips. Runs in its own session -
+    called on a background thread from the job's "Enter password" / "Process without locked
+    files" buttons."""
+    from app.core.job_email import job_email_dir
+    from app.core.system_settings import get_extraction_engine
+    from app.core.custom_page_filter import get_active_custom_filter_texts
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if job is None:
+            return None
+        raw = (job_email_dir(job.id) / "original.eml").read_bytes()
+        ctx, early = _mailbox_setup(db, job.tenant_id, forced_group_id=job.group_id)
+        if early is not None:
+            return early
+        return _process_one_message(
+            db, b"", raw, ctx, None, None, None,
+            get_extraction_engine(db), get_settings().vision_engine_model,
+            get_active_custom_filter_texts(db), True,
+            resume_job_id=job.id, extra_passwords=[password] if password else [],
+            skip_locked=skip_locked,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("could not resume held job %s", job_id)
+        db.rollback()
+        from app.core.zip_passwords import WAITING_FOR_PASSWORD
+
+        job = db.get(Job, job_id)
+        if job is not None and job.stage_override in (None, "Document Classifying"):
+            job.stage_override = WAITING_FOR_PASSWORD
+            db.commit()
+        return None
+    finally:
+        db.close()
+
+
 def _discard_pre_created_job(db: Session, job: Job | None, unbill: bool = False) -> None:
     """Undoes the early job + empty-slots creation a single-template mailbox gets (see
     _process_one_message's own docstring) when the message turns out not to produce a real
@@ -1430,6 +1508,20 @@ def _discard_pre_created_job(db: Session, job: Job | None, unbill: bool = False)
     if job is None:
         return
     email_progress.clear(job.id)
+    if getattr(job, "_resumed_from_hold", False):
+        # A job that was waiting for a zip password and has just been given one: it is the
+        # operator's job, already on their list - never deleted. Back to waiting, unbilled.
+        from app.core.zip_passwords import WAITING_FOR_PASSWORD
+        from app.models.billable_page_event import BillablePageEvent
+
+        db.rollback()
+        live = db.get(Job, job.id)
+        if live is not None:
+            db.query(BillablePageEvent).filter(BillablePageEvent.job_id == live.id).delete(
+                synchronize_session=False)
+            live.stage_override = WAITING_FOR_PASSWORD
+            db.commit()
+        return
     if unbill:
         # The pages were written to the bill the moment they were OCR'd, before the model was
         # ever asked anything. The job they were billed against is about to stop existing and
@@ -1497,6 +1589,8 @@ def _process_one_message(
     mail_email: str | None, mail_app_password: str | None, mail_host: str | None,
     extraction_engine: str, vision_engine_model: str, custom_filter_texts: list,
     reexamine: bool, split_checked: bool = False, prealert_rec: dict | None = None,
+    resume_job_id: str | None = None, extra_passwords: list[str] | tuple = (),
+    skip_locked: bool = False,
 ) -> dict | None:
     """Everything _pull_one_mailbox's own loop used to do for ONE message, given its
     already-harvested raw bytes (see _harvest_mailbox) instead of a live, mailbox-owned IMAP
@@ -1543,8 +1637,14 @@ def _process_one_message(
                 "reason": "held - the AI service is unavailable; it is retried automatically",
                 "deferred": True}
 
-    # Claim it BEFORE reading it, not after. See _claim().
-    claimed, why_not = _claim(db, mid, sender, subject, steal=reexamine)
+    # Claim it BEFORE reading it, not after. See _claim(). A mail being RESUMED (a held job was
+    # just given its zip password) is already owned by that job - not claimed, not split again,
+    # not duplicate-checked again.
+    resume_job = db.get(Job, resume_job_id) if resume_job_id else None
+    if resume_job is not None:
+        claimed, why_not, split_checked, reexamine = True, "", True, True
+    else:
+        claimed, why_not = _claim(db, mid, sender, subject, steal=reexamine)
     if not claimed:
         return {"from": sender, "subject": subject, "matched": None,
                 "reason": why_not, "skipped_by_log": True}
@@ -1632,7 +1732,8 @@ def _process_one_message(
 
     # Keep this claim from looking stale to every OTHER worker/poll while this one is
     # genuinely still working it - see _start_claim_heartbeat's own docstring.
-    _start_claim_heartbeat(mid)
+    if resume_job is None:
+        _start_claim_heartbeat(mid)
 
     # ---- attachments, including whatever is inside a .zip
     import shutil
@@ -1651,14 +1752,57 @@ def _process_one_message(
     # be read (a password-protected zip, a damaged one, a type we do not read) is kept as
     # notes for the job instead of being dropped without a trace.
     from app.core.attachment_unpack import unpack_attachments
+    from app.core.excel_intake import intake_excel_files, is_excel, is_sheet_mode
+    from app.core.excel_text import EXCEL_EXTS
 
-    unpacked = unpack_attachments(_extract_attachments(msg), CLASSIFY_EXTS | office_convert.OFFICE_EXTS)
+    # A directly attached Excel file is only picked up on an Excel-by-sheet template; every other
+    # template keeps reading PDF/image/zip attachments only, exactly as before.
+    attach_exts = (ATTACH_EXTS | EXCEL_EXTS) if is_sheet_mode(single_group) else ATTACH_EXTS
+    raw_attachments = _extract_attachments(msg, attach_exts)
+    # Saved zip passwords for this customer (app/core/zip_passwords.py) - only looked up when a
+    # zip is attached, and tried only if one of them is actually password-protected.
+    from app.core.zip_passwords import WAITING_FOR_PASSWORD, candidate_passwords, mark_used
+
+    saved_pw: list[tuple[str, str]] = []
+    if any(n.lower().endswith(".zip") for n, _ in raw_attachments):
+        try:
+            for tid in sorted({g.tenant_id for g in by_id.values()}):
+                saved_pw += candidate_passwords(db, tid, group_id=single_group.id if single_group else None,
+                                                sender=sender)
+        except Exception:  # noqa: BLE001 - no passwords is the old behaviour, never a crash
+            logger.exception("could not load saved zip passwords")
+            db.rollback()
+    unpacked = unpack_attachments(raw_attachments, CLASSIFY_EXTS | office_convert.OFFICE_EXTS,
+                                  passwords=list(extra_passwords) + [pw for _id, pw in saved_pw])
+    if unpacked.used_passwords:
+        mark_used(db, [rid for rid, pw in saved_pw if pw in unpacked.used_passwords])
+        db.commit()
     attachment_notes = unpacked.notes()
+    if unpacked.unlocked:
+        attachment_notes = dict(attachment_notes or {})
+        attachment_notes["unlocked"] = unpacked.unlocked
+
+    # ---- a password-protected zip no saved password opens: HOLD the whole job, read nothing.
+    # Big consolidations take a long time to read, so they are read ONCE, with everything in
+    # them, once the password is given (on the job, or saved for the customer) - not half now
+    # and half later. Nothing is OCR'd, classified or billed while it waits. Only on a mailbox
+    # tied to one template, where the job's customer is already known.
+    if unpacked.locked and not skip_locked and single_group is not None and resume_job is None:
+        return _hold_for_password(db, msg, mid, sender, subject, single_group, raw_attachments,
+                                  attachment_notes)
     for name, blob in unpacked.files:
         if Path(name).suffix.lower() in CLASSIFY_EXTS:
             files.append((name, blob))
         else:
             office_attachments.append((name, blob))
+    # Excel by sheet (TemplateGroup.excel_mode = "sheet", on a mailbox tied to one template):
+    # Excel files are NOT converted to PDF - each sheet is read from its cells, classified and
+    # placed after the PDFs (app/core/excel_intake.py). Every other template: exactly as before.
+
+    excel_files: list[tuple[str, bytes]] = []
+    if is_sheet_mode(single_group):
+        excel_files = [(n, b) for n, b in office_attachments if is_excel(n)]
+        office_attachments = [(n, b) for n, b in office_attachments if not is_excel(n)]
 
     # Word -> one PDF, Excel -> one PDF per worksheet - the SAME conversion Smart Upload
     # already does for a manual upload (see its own identical block in jobs.py). Found live on
@@ -1714,13 +1858,13 @@ def _process_one_message(
             _prealert_cache["rec"] = rec if rec and rec.get("hawb") else None
         return _prealert_cache["rec"]
 
-    if not files and _prealert_shipment():
+    if not files and not excel_files and _prealert_shipment():
         # Nothing attached, but the mail itself says what the shipment is: its generated Air
         # Waybill becomes the job's document instead of the mail being thrown back.
         files.append((_ps.awb_filename(_prealert_shipment()), _ps.build_awb_pdf(_prealert_shipment())))
         logger.info("pre-alert %s has no attachments - Air Waybill generated from its data", mid[:60])
 
-    if not files:
+    if not files and not excel_files:
         what = unpacked.summary()
         _record(db, mid, sender, subject, "no_documents",
                 "nothing readable was attached" + (f" ({what})" if what else ""))
@@ -1732,6 +1876,8 @@ def _process_one_message(
     prepared: list[dict] = []
     group = None
     filled: list[str] = []
+    # {slot key: [text of each PDF placed there]} - for the Excel-vs-PDF duplicate check.
+    placed_pdf_texts: dict[str, list[str]] = {}
     named: list[str] = []
     who: dict = {}
     tie_note = ""
@@ -1750,25 +1896,37 @@ def _process_one_message(
         # the very thing OCR + classification below are about to work out.
         if single_group is not None:
             group = single_group
-            job = Job(
-                tenant_id=group.tenant_id, group_id=group.id, reference=generate_job_no(),
-                status="draft", created_by_id=None,
-                assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
-                # Straight off the mail that created it - see _eta_for_new_job. Operations
-                # typed this in by hand on every job, from an email that already said it.
-                eta_date=_eta_for_new_job(msg, subject, group.tenant_id),
-            )
-            db.add(job)
-            db.flush()
+            held_slots: dict[str, JobDocument] = {}
+            if resume_job is not None:
+                # The held job, given its password: read into IT, not into a new one.
+                job = resume_job
+                job._resumed_from_hold = True
+                job.stage_override = None
+                for jd_row in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                               .order_by(JobDocument.file_index).all()):
+                    held_slots[jd_row.template_document_id] = jd_row
+            else:
+                job = Job(
+                    tenant_id=group.tenant_id, group_id=group.id, reference=generate_job_no(),
+                    status="draft", created_by_id=None,
+                    assigned_operator_id=_operator_matching_sender(db, group.tenant_id, sender),
+                    # Straight off the mail that created it - see _eta_for_new_job. Operations
+                    # typed this in by hand on every job, from an email that already said it.
+                    eta_date=_eta_for_new_job(msg, subject, group.tenant_id),
+                )
+                db.add(job)
+                db.flush()
             for tdoc in (
                 db.query(TemplateDocument)
                 .filter(TemplateDocument.group_id == group.id)
                 .order_by(TemplateDocument.order_index)
                 .all()
             ):
-                jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
-                                 template_document_id=tdoc.id, page_count=0)
-                db.add(jd)
+                jd = held_slots.get(tdoc.id)
+                if jd is None:
+                    jd = JobDocument(tenant_id=group.tenant_id, job_id=job.id,
+                                     template_document_id=tdoc.id, page_count=0)
+                    db.add(jd)
                 slots[tdoc.id] = jd
                 slot_meta[tdoc.id] = {
                     "key": tdoc.id, "name": tdoc.name, "doc_type": tdoc.doc_type,
@@ -1881,7 +2039,7 @@ def _process_one_message(
                              "billable_pages": len(raw_pages)})
             doc_texts.append((name, text))
 
-        if not prepared:
+        if not prepared and not excel_files:
             _record(db, mid, sender, subject, "unreadable",
                     "the attachments could not be opened")
             _discard_pre_created_job(db, job)
@@ -2098,7 +2256,7 @@ def _process_one_message(
         # Shares the same cap as extraction (see extraction_queue's own docstring) -
         # classification makes the identical kind of slow OpenAI call and was found holding
         # the same kind of resource open on 2026-11-03, just never through this queue before.
-        claims_per_file = run_queued(lambda: classifier_module(group.mode).assign_documents_detailed(
+        claims_per_file = [] if not prepared else run_queued(lambda: classifier_module(group.mode).assign_documents_detailed(
             prepared, cand_slots, engine=extraction_engine,
             vision_model=vision_engine_model,
             # Classify every page from its own image instead of page 1 alone, same
@@ -2269,11 +2427,27 @@ def _process_one_message(
                     jd.page_count = _render_pages(dorig, ddir / "pages",
                                                   skip=item.get("drop_pages"))
                 jd.file_path = str(dorig)
+                kept_txt = item.get("kept_pages") or []
+                placed_pdf_texts.setdefault(key, []).append(
+                    "\n".join(kept_txt[p - 1] for p in (claim.get("pages") or []) if 1 <= p <= len(kept_txt))
+                    or (item["text"] or ""))
                 # Not billed here - this attachment was already billed above, the moment it
                 # was OCR'd, regardless of which slot (or none) it ends up in.
                 if meta["name"] not in filled:
                     filled.append(meta["name"])
                 named.append(f"{item['name']} -> {fname}")
+        # Excel by sheet - after the PDFs, never weighed against them (see excel_intake).
+        if excel_files:
+            xl = intake_excel_files(db, job, group, excel_files, cand_slots, slots, placed_pdf_texts)
+            for slot_name in xl.filled:
+                if slot_name not in filled:
+                    filled.append(slot_name)
+            named.extend(xl.placed)
+            if xl.skipped or xl.locked:
+                notes = dict(job.attachment_notes or {})
+                notes["skipped"] = list(notes.get("skipped") or []) + xl.skipped
+                notes["locked"] = list(notes.get("locked") or []) + xl.locked
+                job.attachment_notes = notes
         # Classification is done - clear the override so the job's own computed stage
         # (Document Capture once a slot has a real file, or whatever comes next) takes
         # over again. Left set, "Document Classifying" would win forever: stage_override
@@ -2287,7 +2461,7 @@ def _process_one_message(
         from app.core.job_email import save_original_email
 
         save_original_email(
-            job.id, msg, files, sender, subject,
+            job.id, msg, files + excel_files, sender, subject,
             received_by=mail_email or get_settings().gmail_user,
         )
     except AIServiceUnavailable as exc:
@@ -2305,6 +2479,13 @@ def _process_one_message(
         # before this feature existed; explicitly discard it, or the retry this handler
         # is about to enable creates a genuine SECOND job once the AI service recovers.
         _discard_pre_created_job(db, job, unbill=True)
+        if resume_job is not None:
+            # A held job being read after its password was given: it simply goes back to
+            # "Waiting for Password" (see _discard_pre_created_job) - the mail is not re-queued,
+            # or the next poll would hold it a second time as a new job.
+            _note_ai_down(str(exc))
+            return {"from": sender, "subject": subject, "matched": None, "deferred": True,
+                    "reason": "the AI service is temporarily unavailable - enter the password again later"}
         logger.warning(
             "email pull for %s deferred - AI service unavailable (%s); no mail is opened for "
             "the next %s minutes, then this one is retried", mid[:60], exc, AI_DOWN_WAIT_MINUTES)
@@ -2340,12 +2521,14 @@ def _process_one_message(
             db.rollback()
 
     if not filled:
+        from app.models.job import UnclassifiedFile
+
         unclassified_count = (
             db.query(UnmatchedUploadPage)
             .filter(UnmatchedUploadPage.job_id == job.id)
             .count()
-        )
-        if not unclassified_count:
+        ) + db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id).count()
+        if not unclassified_count and resume_job is None:
             # The customer was recognised, not one attachment belongs in any of their
             # slots, AND nothing survived as genuinely Unclassified either (every page
             # was blank/unreadable) - there is truly nothing to show an operator.
@@ -2379,7 +2562,13 @@ def _process_one_message(
             "Unclassified for an operator to resolve", mid[:60], unclassified_count)
 
     try:
-        run_extraction(db, job)
+        if getattr(group, "auto_extract", True) is False:
+            # This template reads, classifies and places only - extraction waits for someone to
+            # press Extract (TemplateGroup.auto_extract). The job stays a draft with its slots filled.
+            logger.info("email %s: auto-extract is off for %s - documents placed, extraction waits",
+                        mid[:60], group.name)
+        else:
+            run_extraction(db, job)
     except Exception:  # noqa: BLE001
         # Confirmed root cause of jobs sitting silently in "draft" forever with their pulled
         # email marked "matched" below as if nothing went wrong: logging and moving on left
@@ -2416,6 +2605,8 @@ def _process_one_message(
     # IMAP login costs a fraction of a second against a message that just took minutes of
     # OCR and AI calls to process.
     try:
+        if resume_job is not None:
+            raise RuntimeError("resumed from a held job - no mailbox connection to update")
         flag_conn = _connect(mail_email, mail_app_password, mail_host)
         try:
             flag_conn.select("INBOX")

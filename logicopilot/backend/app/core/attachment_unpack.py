@@ -49,6 +49,9 @@ class UnpackResult:
     skipped: list[dict] = field(default_factory=list)
     # [{"path": "outer.zip/folder/locked.zip", "files": ["a.pdf", ...]}]
     locked: list[dict] = field(default_factory=list)
+    # Saved passwords that opened a locked zip, and which zips they opened (paths).
+    used_passwords: list[str] = field(default_factory=list)
+    unlocked: list[str] = field(default_factory=list)
 
     def notes(self) -> dict | None:
         """What goes on the job (Job.attachment_notes), or None when everything was read."""
@@ -75,17 +78,21 @@ def _is_junk(entry_name: str) -> bool:
     return p.name.startswith("._") or p.name.lower() in _JUNK_NAMES
 
 
-def unpack_attachments(items: list[tuple[str, bytes]], accept_exts: set[str]) -> UnpackResult:
+def unpack_attachments(items: list[tuple[str, bytes]], accept_exts: set[str],
+                       passwords: list[str] | tuple = ()) -> UnpackResult:
     """`items` = (file name, bytes) as attached. `accept_exts` = the extensions the caller reads
-    (lower case, with the dot). Returns the readable files plus what was skipped or locked."""
+    (lower case, with the dot). `passwords` = saved zip passwords to try on a password-protected
+    zip (see app/core/zip_passwords.py). Returns the readable files plus what was skipped or
+    locked; `used_passwords` says which passwords opened something."""
     out = UnpackResult()
     budget = {"files": 0, "bytes": 0}
     accept = {e.lower() for e in accept_exts}
+    pwds = [p for p in passwords if p]
     for name, blob in items:
         if (name or "").lower().endswith(".zip"):
             try:
                 with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                    _walk(z, name, 1, accept, out, budget)
+                    _walk(z, blob, name, 1, accept, out, budget, pwds)
             except zipfile.BadZipFile:
                 out.skipped.append({"path": name, "reason": "damaged zip - could not be opened"})
             continue
@@ -96,29 +103,59 @@ def unpack_attachments(items: list[tuple[str, bytes]], accept_exts: set[str]) ->
     return out
 
 
-def _walk(z: zipfile.ZipFile, label: str, depth: int, accept: set[str],
-          out: UnpackResult, budget: dict) -> None:
-    locked_names: list[str] = []
-    for info in z.infolist():
-        entry = info.filename
-        if entry.endswith("/") or _is_junk(entry):
+def _unlocker(src: bytes, encrypted: list[zipfile.ZipInfo], passwords: list[str]):
+    """(a zip reader holding the working password, that password) - or (None, None) if no
+    password opens it. pyzipper reads both kinds of zip encryption (the classic one and AES);
+    without it, the standard library still reads the classic one."""
+    if not encrypted or not passwords:
+        return None, None
+    probe = min(encrypted, key=lambda i: i.compress_size)      # the cheapest entry to test with
+    try:
+        import pyzipper
+        opener = pyzipper.AESZipFile
+    except ImportError:  # pragma: no cover - pyzipper is in requirements
+        opener = zipfile.ZipFile
+    for pwd in passwords:
+        try:
+            zr = opener(io.BytesIO(src))
+            zr.setpassword(pwd.encode("utf-8"))
+            zr.read(probe.filename)                              # wrong password raises
+            return zr, pwd
+        except Exception:  # noqa: BLE001 - RuntimeError/BadZipFile/zlib.error for a wrong one
             continue
+    return None, None
+
+
+def _walk(z: zipfile.ZipFile, src: bytes, label: str, depth: int, accept: set[str],
+          out: UnpackResult, budget: dict, passwords: list[str]) -> None:
+    infos = [i for i in z.infolist() if not i.filename.endswith("/") and not _is_junk(i.filename)]
+    encrypted = [i for i in infos if i.flag_bits & 0x1]
+    unlocked, pwd = _unlocker(src, encrypted, passwords)
+    if unlocked is not None:
+        out.used_passwords.append(pwd)
+        out.unlocked.append(label)
+    locked_names: list[str] = []
+    for info in infos:
+        entry = info.filename
         path = f"{label}/{entry}"
         bare = PurePosixPath(entry).name
         ext = PurePosixPath(entry).suffix.lower()
+        reader = z
         if info.flag_bits & 0x1:                      # encrypted - needs a password
-            locked_names.append(bare)
-            continue
+            if unlocked is None:
+                locked_names.append(bare)
+                continue
+            reader = unlocked
         if ext == ".zip":
             if depth >= MAX_DEPTH:
                 out.skipped.append({"path": path, "reason": f"zip nested more than {MAX_DEPTH} levels deep"})
                 continue
-            data = _read(z, info, path, out, budget, count_file=False)
+            data = _read(reader, info, path, out, budget, count_file=False)
             if data is None:
                 continue
             try:
                 with zipfile.ZipFile(io.BytesIO(data)) as inner:
-                    _walk(inner, path, depth + 1, accept, out, budget)
+                    _walk(inner, data, path, depth + 1, accept, out, budget, passwords)
             except zipfile.BadZipFile:
                 out.skipped.append({"path": path, "reason": "damaged zip - could not be opened"})
             continue
@@ -129,7 +166,7 @@ def _walk(z: zipfile.ZipFile, label: str, depth: int, accept: set[str],
         if budget["files"] >= MAX_FILES:
             out.skipped.append({"path": path, "reason": f"more than {MAX_FILES} files in this mail"})
             continue
-        data = _read(z, info, path, out, budget, count_file=True)
+        data = _read(reader, info, path, out, budget, count_file=True)
         if data is not None:
             out.files.append((bare, data))
     if locked_names:
@@ -151,7 +188,7 @@ def _read(z: zipfile.ZipFile, info: zipfile.ZipInfo, path: str, out: UnpackResul
         out.skipped.append({"path": path, "reason": f"over {MAX_TOTAL_BYTES // (1024 * 1024)} MB unpacked for this mail"})
         return None
     try:
-        data = z.read(info)
+        data = z.read(info.filename)
     except (RuntimeError, zipfile.BadZipFile, zlib.error, NotImplementedError, OSError) as exc:
         logger.warning("attachment unpack: could not read %s: %s", path[:200], exc)
         out.skipped.append({"path": path, "reason": "could not be read"})

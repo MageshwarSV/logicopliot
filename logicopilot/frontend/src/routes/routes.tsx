@@ -32,6 +32,7 @@ import { EDocketPage } from "../pages/jobs/EDocketPage";
 import { IrnPendingListPage } from "../pages/irn/IrnPendingListPage";
 import { IrnPendingDetailPage } from "../pages/irn/IrnPendingDetailPage";
 import { CustomerListPage } from "../pages/tenant-admin/CustomerListPage";
+import { ZipPasswordsPage } from "../pages/tenant-admin/ZipPasswordsPage";
 import { DataTransformationPage } from "../pages/super-admin/DataTransformationPage";
 import { DataTransformationDetailPage } from "../pages/super-admin/DataTransformationDetailPage";
 import { PendingMailPage } from "../pages/super-admin/PendingMailPage";
@@ -237,6 +238,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <UserJobSummaryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/zip-passwords"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ZipPasswordsPage />
           </ProtectedRoute>
         }
       />
