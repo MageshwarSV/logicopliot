@@ -25,6 +25,8 @@ const PAGE2_ROWS = 10;
 const FEEDBACK_COLUMNS = ["Container No.", "Empty Received Date", "Handover to Liner Date"];
 const ADVANCE_COLUMNS = ["Sl.No.", "Remarks", "Cheque Favour", "Amount", "Cheque No.", "Cheque Dt.", "Paid by"];
 const ADVANCE_WIDTHS = ["7%", "13%", "28%", "12%", "13%", "13%", "14%"];
+// ADVANCE DETAILS rows 1 and 2: their Cheque Favour is this fixed label + Yes / No tick boxes.
+const ADVANCE_PRESET = ["Free Do", "CFS Charges On Forwarders Scope"];
 const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
 const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
@@ -193,15 +195,12 @@ export function EDocketPage() {
   // and every cell is editable.
   const [feedback, setFeedback] = useState<string[][]>(() =>
     Array.from({ length: PAGE2_ROWS }, () => FEEDBACK_COLUMNS.map(() => "")));
-  // ADVANCE DETAILS rows 1 and 2 come pre-printed (by request): row 1 is "Free Do  Yes / No"
-  // (tick boxes - freeDo below), row 2 is "CFS Charges On Forwarders Scope". The rest is blank.
+  // ADVANCE DETAILS rows 1 and 2 come pre-printed (by request): their Cheque Favour is a fixed
+  // label with Yes / No tick boxes (ADVANCE_PRESET, yesNo below). The rest is blank.
   const [advance, setAdvance] = useState<string[][]>(() =>
-    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) => {
-      if (j === 0 && i < 2) return String(i + 1);
-      if (i === 1 && j === 2) return "CFS Charges On Forwarders Scope";
-      return "";
-    })));
-  const [freeDo, setFreeDo] = useState<"Yes" | "No" | null>(null);
+    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) =>
+      (j === 0 && i < ADVANCE_PRESET.length ? String(i + 1) : ""))));
+  const [yesNo, setYesNo] = useState<Record<number, "Yes" | "No" | null>>({});
 
   const isExport = /export/i.test(job?.mode ?? "");
   const docketRows = useMemo(() => rows(isExport), [isExport]);
@@ -662,26 +661,30 @@ export function EDocketPage() {
               <tr key={i}>
                 {row.map((cell, j) => (
                   <td key={j} className="border border-black px-1" style={{ height: 30 }}>
-                    {i === 0 && j === 2 ? (
-                      // Row 1's Cheque Favour: "Free Do" with a Yes / No tick box - one or neither.
-                      <div className="flex items-center gap-3 text-xs font-semibold">
-                        <span>Free Do</span>
-                        {(["Yes", "No"] as const).map((o) => (
-                          <button
-                            key={o}
-                            type="button"
-                            onClick={() => setFreeDo((v) => (v === o ? null : o))}
-                            className="flex items-center gap-1"
-                          >
-                            <span
-                              className="flex h-3.5 w-3.5 shrink-0 items-center justify-center border border-black leading-none"
-                              style={{ fontSize: 10 }}
+                    {i < ADVANCE_PRESET.length && j === 2 ? (
+                      // Rows 1-2's Cheque Favour: a fixed label (plain text, so it WRAPS - a
+                      // text box never wraps and was cut off on the narrower printed page) and a
+                      // Yes / No tick box, one or neither.
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-0.5 text-xs font-semibold leading-tight">
+                        <span>{ADVANCE_PRESET[i]}</span>
+                        <span className="flex items-center gap-2.5">
+                          {(["Yes", "No"] as const).map((o) => (
+                            <button
+                              key={o}
+                              type="button"
+                              onClick={() => setYesNo((v) => ({ ...v, [i]: v[i] === o ? null : o }))}
+                              className="flex items-center gap-1"
                             >
-                              {freeDo === o ? "✓" : ""}
-                            </span>
-                            {o}
-                          </button>
-                        ))}
+                              <span
+                                className="flex h-3.5 w-3.5 shrink-0 items-center justify-center border border-black leading-none"
+                                style={{ fontSize: 10 }}
+                              >
+                                {yesNo[i] === o ? "✓" : ""}
+                              </span>
+                              {o}
+                            </button>
+                          ))}
+                        </span>
                       </div>
                     ) : (
                     <input
