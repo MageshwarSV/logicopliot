@@ -5990,6 +5990,9 @@ def _slot_for_new_file(db: Session, job: Job, template_document_id: str) -> JobD
         return None
     free = next((d for d in existing if not d.file_path), None)
     if free is not None:
+        # Never let an emptied row's old Excel marker stick to the file about to go in it.
+        free.source_kind = "pdf"
+        free.sheet_name = None
         return free
     jd = JobDocument(
         tenant_id=job.tenant_id,
@@ -7166,6 +7169,10 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
         jd.set_index = None
         jd.approved = False
         jd.gk2_approved = False
+        # An emptied slot row is a plain slot again - the next file put in it is a PDF unless
+        # whoever fills it says otherwise (an Excel sheet marks itself).
+        jd.source_kind = "pdf"
+        jd.sheet_name = None
     else:
         db.delete(jd)
         db.flush()

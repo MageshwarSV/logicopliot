@@ -327,3 +327,27 @@ def test_an_operator_can_assign_one_sheet_then_delete_the_rest(db_session, tmp_p
     jobs_api.delete_unclassified_file(job.id, uf.id, sheet=None, db=db_session, scope=scope, user=None)
     assert db_session.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id).count() == 0
     assert not path.exists()
+
+
+def test_an_emptied_excel_slot_row_is_a_plain_slot_again(db_session):
+    """Found on SIT (JOB-1CE234): a PDF put into a slot row an Excel sheet had used kept the
+    "excel" marker, so the screen showed it as a sheet with no page pictures."""
+    from app.api.v1.jobs import _remove_document_file, _slot_for_new_file
+
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Air Import", status="ready")
+    db_session.add(group)
+    db_session.flush()
+    awb = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Air Waybill", doc_type="BL")
+    db_session.add(awb)
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-ROWRESET", status="draft")
+    db_session.add(job)
+    db_session.flush()
+    jd = JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=awb.id, page_count=0,
+                     file_path="x.xlsx", source_kind="excel", sheet_name="Header")
+    db_session.add(jd)
+    db_session.commit()
+    _remove_document_file(db_session, job, jd)
+    assert jd.source_kind == "pdf" and jd.sheet_name is None
+    jd.source_kind = "excel"                                         # an old row left marked
+    assert _slot_for_new_file(db_session, job, awb.id).source_kind == "pdf"
