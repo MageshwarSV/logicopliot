@@ -81,7 +81,14 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, tenan
     test-extract call site, which must never be tenant-scoped."""
     from openai import AuthenticationError, RateLimitError
 
+    from app.core import ai_practice
     from app.core.openai_pool import get_openai_client, get_pool_size, mark_key_cooldown
+
+    # Practice AI (SIT only - see app/core/ai_practice.py): replay answers without calling
+    # OpenAI, or record real answers for later replays. Always "off" in production.
+    practice = ai_practice.current_mode()
+    if practice == "replay":
+        return ai_practice.replay(kwargs)
 
     own_client = client is None
     # Bounded by total PASSES, not distinct keys tried: if every pooled key is cooling down
@@ -112,7 +119,11 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, tenan
             kwargs["seed"] = 7
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             try:
-                return client.chat.completions.create(**kwargs)
+                started = time.monotonic()
+                resp = client.chat.completions.create(**kwargs)
+                if practice == "record":
+                    ai_practice.save(kwargs, resp, time.monotonic() - started)
+                return resp
             except RateLimitError as exc:
                 last_exc = exc
                 wait = _rate_limit_wait_seconds(exc)

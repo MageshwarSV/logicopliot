@@ -100,6 +100,7 @@ export interface TemplateGroup {
   auto_extract?: boolean;
   large_zip_hold?: boolean;
   large_zip_mb?: number;
+  large_job_lane?: boolean;
   excel_mode?: string;
   excel_ignore_patterns?: string[] | null;
 }

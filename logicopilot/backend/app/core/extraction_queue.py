@@ -121,4 +121,10 @@ def run_queued(fn: Callable[[], T]) -> T:
     which is what actually keeps a connection/thread burst from recreating 2026-11-03's outage
     no matter which of the two kinds of call it is made of.
     """
+    from app.core.large_job_lane import in_lane
+
+    if in_lane():
+        # Already on the large-job lane's own worker - run here rather than take one of the
+        # shared workers small jobs use (app/core/large_job_lane.py).
+        return fn()
     return _get_pool().submit(fn).result()

@@ -10,6 +10,7 @@ import * as tenantsApi from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
+import { LargeJobLaneSection } from "./LargeJobLaneSection";
 
 /** Two live kill switches for AI-dependent work - NOT a backend shutdown. Everything else
  *  keeps running: viewing jobs, correcting values already extracted, ERP submission for
@@ -624,6 +625,8 @@ export function SettingsPage() {
             )}
           </div>
         )}
+
+        {settings && <LargeJobLaneSection settings={settings} />}
 
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">

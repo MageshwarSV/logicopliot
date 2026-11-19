@@ -1216,6 +1216,15 @@ def _begin_extraction(
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage="Data Validation", note=note))
     db.commit()
+    if not only_job_document_id:
+        # A large consolidation on a template using the large-job lane: its extraction waits its
+        # turn on the lane instead of taking a shared worker (app/core/large_job_lane.py). A
+        # one-document re-read stays on the normal path - it is small.
+        from app.core.large_job_lane import is_lane_job, request_extraction
+
+        if is_lane_job(job, db.get(TemplateGroup, job.group_id)):
+            request_extraction(db, job, is_rerun=is_rerun)
+            return
     _start_extraction_background(job.id, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
 
 

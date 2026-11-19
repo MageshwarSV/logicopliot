@@ -430,6 +430,7 @@ class ProcessingSettingsPayload(BaseModel):
     auto_extract: bool | None = None
     large_zip_hold: bool | None = None
     large_zip_mb: int | None = None
+    large_job_lane: bool | None = None
     excel_mode: str | None = None                     # "legacy" | "sheet"
     excel_ignore_patterns: list[str] | None = None
 
@@ -459,6 +460,8 @@ def set_group_processing_settings(
         group.auto_extract = payload.auto_extract
     if payload.large_zip_hold is not None:
         group.large_zip_hold = payload.large_zip_hold
+    if payload.large_job_lane is not None:
+        group.large_job_lane = payload.large_job_lane
     if payload.excel_ignore_patterns is not None:
         group.excel_ignore_patterns = [p.strip() for p in payload.excel_ignore_patterns if p.strip()][:50]
     db.commit()

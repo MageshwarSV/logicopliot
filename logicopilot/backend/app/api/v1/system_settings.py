@@ -21,6 +21,7 @@ from app.core.openai_pool import (
     list_api_keys,
     set_api_key_active,
 )
+from app.core.ai_practice import allowed as ai_practice_allowed
 from app.core.system_settings import (
     VALID_EXTRACTION_ENGINES,
     InvalidExtractionEngine,
@@ -109,6 +110,10 @@ def read_system_settings(
         # How many real ERP submissions (browser automation) run at once - see
         # app/core/erp_queue.py. Defaults to 1.
         "erp_script_workers": row.erp_script_workers,
+        # The large-job lane (app/core/large_job_lane.py) and practice AI (app/core/ai_practice.py).
+        "large_job_parallel_calls": row.large_job_parallel_calls,
+        "practice_ai_mode": row.practice_ai_mode if ai_practice_allowed() else "off",
+        "practice_ai_allowed": ai_practice_allowed(),
         "max_erp_script_workers": max_erp_script_workers(),
         # Manually entered - see app/core/system_settings.set_openai_balance's docstring for
         # why this can never come from OpenAI's own API, not even the Admin key.
@@ -597,6 +602,49 @@ def spend_analytics(
     return SpendAnalyticsOut(
         start=start_date.isoformat(), end=end_inclusive.isoformat(), totals=totals, days=days,
     )
+
+
+class LargeJobSettingsIn(BaseModel):
+    parallel_calls: int | None = None
+    practice_ai_mode: str | None = None          # off | record | replay
+
+
+@router.post("/large-job")
+def set_large_job_settings(
+    payload: LargeJobSettingsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Parallel calls per large job, and practice AI (off / record / replay). Practice AI can
+    only be switched on where the server's .env allows it (SIT) - never in production."""
+    from app.core import ai_practice
+
+    row = get_system_settings(db)
+    if payload.parallel_calls is not None:
+        if not 1 <= payload.parallel_calls <= 12:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Parallel calls must be between 1 and 12.")
+        row.large_job_parallel_calls = payload.parallel_calls
+    if payload.practice_ai_mode is not None:
+        if payload.practice_ai_mode not in ai_practice.MODES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Practice AI must be off, record or replay.")
+        if payload.practice_ai_mode != "off" and not ai_practice.allowed():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Practice AI is not available on this server.")
+        row.practice_ai_mode = payload.practice_ai_mode
+    db.commit()
+    ai_practice.forget_cached_mode()
+    return {"large_job_parallel_calls": row.large_job_parallel_calls,
+            "practice_ai_mode": row.practice_ai_mode if ai_practice.allowed() else "off"}
+
+
+@router.get("/large-job-lane")
+def large_job_lane_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """What the large-job lane is doing now and what waits - readable from any worker process."""
+    from app.core.large_job_lane import read_status
+
+    return read_status()
 
 
 @router.post("/workers")

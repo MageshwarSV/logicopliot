@@ -293,6 +293,7 @@ class TemplateGroupOut(BaseModel):
     auto_extract: bool = True
     large_zip_hold: bool = False
     large_zip_mb: int = 5
+    large_job_lane: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):

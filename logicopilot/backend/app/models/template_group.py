@@ -64,6 +64,10 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # documents can be checked first. Every other job extracts automatically. Off by default.
     large_zip_hold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     large_zip_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    # Large-job lane (app/core/large_job_lane.py): a mail with a zip over large_zip_mb is handed
+    # to its own worker - one large job at a time - instead of the email cycle's shared pool,
+    # so it neither blocks the mail cycle nor takes the workers small jobs use. Off by default.
+    large_job_lane: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

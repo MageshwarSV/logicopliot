@@ -2791,6 +2791,12 @@ export function JobRunPage() {
           {" "}— the documents are placed. Check them in Data Capture, then press <span className="font-medium">Run extraction</span>.
         </div>
       )}
+      {job.attachment_notes?.lane_extract && job.status === "extracting" && (
+        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+          <span className="font-medium">Extraction is on the large-job lane</span>
+          {" "}— large jobs run one at a time, so it starts as soon as the one before it finishes. Small jobs are not held up by it.
+        </div>
+      )}
       {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (
         <HeldPasswordPanel job={job} readOnly={readOnly} onJob={setJob} />
       )}
