@@ -17,6 +17,9 @@ const CRISIL_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAApQAAAFKCAYAA
 const FTWZ_LOGO = "data:image/png;base64,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";
 
 const FCL_OPTIONS = ["FCL", "LCL", "B.B"] as const;
+// The container row's label - one constant, so the row and the value filled into it can never
+// drift apart. Its value ends with the job's own FCL / LCL (Consignment Type).
+const CONTAINER_ROW = "No. of Container 20” & 40” / FCL / LCL";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
 const TRANSACTION_MODES = ["Deferred", "Transaction"] as const;
 const PRIORITY_TYPES = ["Advance", "Prior", "Normal"] as const;
@@ -130,7 +133,7 @@ function rows(isExport: boolean): DocketRow[] {
       label: "No. of Cartons / Pallet / Drum",
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
     },
-    { label: "No. of Container 20\u201d & 40\u201d / LCL", patterns: [/container/i] },
+    { label: CONTAINER_ROW, patterns: [/container/i] },
     {
       label: "Weight (Gross)",
       docName: "Bill of lading",
@@ -275,10 +278,11 @@ export function EDocketPage() {
     // it should say, not just how many entries happen to follow it. The Shipment Type (the
     // same FCL/LCL/B.B this job's own tick-box above reads) closes the value out.
     const shipmentTypeDisplay = mappedFclLcl || (shipmentType?.value ?? "").trim();
+    // With no container read (the usual LCL case) the row still says FCL / LCL on its own.
     const containers = containerList.length
       ? `${containerList.length} x ${containerList.join(" , ")}`
         + (shipmentTypeDisplay ? ` / (${shipmentTypeDisplay})` : "")
-      : "";
+      : shipmentTypeDisplay;
     // "Ass. Value / Invoice Value" - the Invoice's own "Currency_type" + "Product Value"
     // ("Total Invoice Value") custom fields, appended after whatever Ass. Value itself
     // auto-filled to. Both are job-level custom fields (one value per job, not per-document),
@@ -314,8 +318,8 @@ export function EDocketPage() {
       if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
         next["No. of Cartons / Pallet / Drum"] = cartons;
       }
-      if (!("No. of Container 20” & 40” / LCL" in prev) && containers) {
-        next["No. of Container 20” & 40” / LCL"] = containers;
+      if (!(CONTAINER_ROW in prev) && containers) {
+        next[CONTAINER_ROW] = containers;
       }
       // "Weight (Gross)" always reads as three decimals plus the unit (e.g. "725.000 KG"),
       // whatever precision/format the BL's own "Gross Wt" mark happened to read as.
