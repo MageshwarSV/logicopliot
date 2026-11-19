@@ -147,6 +147,9 @@ export interface ShipmentTypeUsage {
  *  always live (is_finalized: false, no invoice fields set); any earlier month is a permanent,
  *  already-raised invoice's own frozen numbers. */
 export interface BillingUsage {
+  /** Set for Today / This week (YYYY-MM-DD). */
+  range_from?: string | null;
+  range_to?: string | null;
   month: string; // YYYY-MM
   is_finalized: boolean;
   invoice_id: string | null;
@@ -229,9 +232,11 @@ export interface Invoice {
 }
 
 /** Omit `month` for the current, live month; pass "YYYY-MM" for an earlier, finalized one. */
-export async function getBillingUsage(tenantId: string, month?: string): Promise<BillingUsage> {
+/** `period` "today" / "week": usage for just that window (India time); the bill amounts in the
+ *  reply stay the month's. */
+export async function getBillingUsage(tenantId: string, month?: string, period?: "today" | "week"): Promise<BillingUsage> {
   const response = await apiClient.get<BillingUsage>(`/tenants/${tenantId}/billing/usage`, {
-    params: month ? { month } : undefined,
+    params: period ? { period } : month ? { month } : undefined,
   });
   return response.data;
 }

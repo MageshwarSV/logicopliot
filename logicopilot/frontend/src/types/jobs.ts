@@ -268,6 +268,8 @@ export interface JobDetail {
   missing_documents?: string[] | null;
   /** What came with the mail/upload but could NOT be read: password-protected zips (with the
    *  file names inside) and skipped files with the reason. Null when everything was read. */
+  /** The ERP Excel was edited in the app and saved - it replaces the generated one. */
+  erp_excel_edited?: { saved_by?: string | null; saved_at?: string | null; file?: string } | null;
   attachment_notes?: {
     skipped?: { path: string; reason: string }[];
     locked?: { path: string; files: string[] }[];

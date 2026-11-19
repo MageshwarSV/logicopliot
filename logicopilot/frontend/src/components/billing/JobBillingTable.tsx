@@ -76,9 +76,13 @@ export function JobBillingTable({
   onJobClick,
   highlight,
   onClearHighlight,
+  range,
 }: {
   tenantId: string;
   month: string;
+  /** A narrower starting window than the month (Today / This week, YYYY-MM-DD). Kept inside
+   *  `month`, since the table is per month. */
+  range?: { from: string; to: string } | null;
   /** Options for the Shipment Type filter - reuse whatever this month's usage already named. */
   shipmentTypes: ShipmentTypeUsage[];
   onJobClick?: (jobId: string) => void;
@@ -89,7 +93,13 @@ export function JobBillingTable({
 }) {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
-  const defaultBounds = useMemo(() => monthBounds(month), [month]);
+  const rangeFrom = range?.from;
+  const rangeTo = range?.to;
+  const defaultBounds = useMemo(() => {
+    const m = monthBounds(month);
+    if (!rangeFrom || !rangeTo) return m;
+    return { from: rangeFrom < m.from ? m.from : rangeFrom, to: rangeTo > m.to ? m.to : rangeTo };
+  }, [month, rangeFrom, rangeTo]);
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");

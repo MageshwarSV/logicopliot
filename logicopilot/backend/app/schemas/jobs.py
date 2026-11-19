@@ -351,6 +351,8 @@ class JobDetailOut(BaseModel):
     missing_documents: list[str] | None = None
     # What came with the mail/upload but could not be read (see Job.attachment_notes).
     attachment_notes: dict | None = None
+    # The ERP Excel was edited in the app and saved (app/core/erp_excel_edit.py): who, when.
+    erp_excel_edited: dict | None = None
     mode: str | None = None
     # Same meaning as on JobOut - who this job is assigned to, and their name, so the Jobs
     # list's assign dropdown reflects a change immediately without waiting for its own

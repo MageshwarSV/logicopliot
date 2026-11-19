@@ -62,7 +62,9 @@ class UsageResult(NamedTuple):
     deleted_pages: int = 0
 
 
-def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResult:
+def compute_usage(db: Session, tenant_id: str, period_start: date, *,
+                  bounds: tuple[datetime, datetime] | None = None,
+                  job_dates: tuple[date, date] | None = None) -> UsageResult:
     """Every page actually processed counts toward the bill regardless of what happened to its
     job afterward (rejected, duplicate, failed extraction, a later delete, or even the job
     itself being deleted) - the AI-page-processing cost was already incurred the moment the
@@ -72,8 +74,12 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     app/api/v1/jobs.py), silently erasing cost that was already incurred.
 
     "Jobs" counts still come straight from Job - a job's own count isn't subject to the same
-    delete-erases-history problem an individual page's cost is."""
-    start_dt, end_dt = _month_bounds(period_start)
+    delete-erases-history problem an individual page's cost is.
+
+    `bounds` (with `job_dates`, the same window as calendar days) narrows it to a shorter window
+    than the month - the finance screen's Today / This week. Usage figures only: a bill is
+    always for a whole month."""
+    start_dt, end_dt = bounds or _month_bounds(period_start)
 
     jobs = (
         db.query(Job.id, Job.group_id)
@@ -161,7 +167,16 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     # event-date scoped on purpose - see compute_usage's own docstring and calculate_bill's
     # caller, which must never lose a later-month rerun's cost just because the job it belongs
     # to started in an earlier, already-finalized month.
-    month_rows = _resolve_job_billing_rows(db, _job_billing_query(db, tenant_id, period_start).all())
+    if job_dates:
+        # A window may start in the previous month (a week over the 1st) - each month's part.
+        month_rows = []
+        m = job_dates[0].replace(day=1)
+        while m <= job_dates[1]:
+            month_rows += _resolve_job_billing_rows(db, _job_billing_query(
+                db, tenant_id, m, date_from=job_dates[0], date_to=job_dates[1]).all())
+            m = (m.replace(day=28) + timedelta(days=4)).replace(day=1)
+    else:
+        month_rows = _resolve_job_billing_rows(db, _job_billing_query(db, tenant_id, period_start).all())
     deleted_pages = sum(r.deleted_pages for r in month_rows)
 
     return UsageResult(

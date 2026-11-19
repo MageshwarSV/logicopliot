@@ -1023,3 +1023,23 @@ export async function printDocuments(
   const { data } = await apiClient.post<Blob>(`/jobs/${jobId}/print`, body, { responseType: "blob" });
   return data;
 }
+
+// ---- the job's ERP Excel, opened and edited in the app ------------------------------------
+
+export interface ErpExcelSheet { name: string; rows: string[][] }
+export interface ErpExcelEdited { saved_by?: string | null; saved_at?: string | null; file?: string }
+
+export async function openJobExcel(jobId: string): Promise<{ edited: ErpExcelEdited | null; file: string; sheets: ErpExcelSheet[]; locked?: string | null }> {
+  const { data } = await apiClient.get(`/jobs/${jobId}/erp-excel/sheets`);
+  return data;
+}
+
+/** Save the edited workbook - from then on it replaces the generated one (download AND ERP import). */
+export async function saveJobExcel(jobId: string, sheets: ErpExcelSheet[]): Promise<{ edited: ErpExcelEdited | null }> {
+  const { data } = await apiClient.put(`/jobs/${jobId}/erp-excel/sheets`, { sheets });
+  return data;
+}
+
+export async function resetJobExcel(jobId: string): Promise<void> {
+  await apiClient.delete(`/jobs/${jobId}/erp-excel/edited`);
+}
