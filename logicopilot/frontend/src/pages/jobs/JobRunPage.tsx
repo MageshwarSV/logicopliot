@@ -4562,8 +4562,8 @@ export function JobRunPage() {
                 title={ready ? undefined : "This stage is not finished yet"}
                 className={`group inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${
                   ready
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25 hover:bg-indigo-500 hover:shadow-lg"
-                    : "border border-slate-200 bg-white text-slate-500 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-500 hover:shadow-lg"
+                    : "border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
                 }`}
               >
                 {ready ? <CheckCircleIcon className="h-5 w-5" /> : <ClockIcon className="h-4 w-4" />}
