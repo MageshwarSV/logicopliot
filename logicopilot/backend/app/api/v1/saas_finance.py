@@ -201,3 +201,71 @@ def export_finance_report(
         io.BytesIO(content), media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---- Invoice settings: Axiora's own details on every tax invoice (app/core/tax_invoice.py) ----
+
+from pydantic import BaseModel as _BaseModel  # noqa: E402
+
+
+class InvoiceSettingsIO(_BaseModel):
+    seller_name: str | None = None
+    address: str | None = None
+    state_name: str | None = None
+    state_code: str | None = None
+    country: str | None = None
+    gstin: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    sac_platform: str | None = None
+    sac_usage: str | None = None
+    terms: str | None = None
+    due_days: int | None = None
+    notes: str | None = None
+    bank_details: str | None = None
+    number_prefix: str | None = None
+
+
+def _settings_row(db: Session):
+    from app.models.invoice_settings import SINGLETON_ID, InvoiceSettings
+
+    row = db.get(InvoiceSettings, SINGLETON_ID)
+    if row is None:
+        row = InvoiceSettings(id=SINGLETON_ID, country="India", sac_platform="998315", sac_usage="998313",
+                              terms="Due on Receipt", due_days=0, notes="Thanks for your business.",
+                              number_prefix="INV")
+        db.add(row)
+        db.flush()
+    return row
+
+
+@router.get("/invoice-settings", response_model=InvoiceSettingsIO)
+def get_invoice_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SAAS_FINANCE, SUPER_ADMIN)),
+) -> InvoiceSettingsIO:
+    row = _settings_row(db)
+    db.commit()
+    return InvoiceSettingsIO(**{k: getattr(row, k) for k in InvoiceSettingsIO.model_fields})
+
+
+@router.put("/invoice-settings", response_model=InvoiceSettingsIO)
+def save_invoice_settings(
+    payload: InvoiceSettingsIO,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SAAS_FINANCE, SUPER_ADMIN)),
+) -> InvoiceSettingsIO:
+    """Axiora's details for invoices raised FROM NOW ON - an invoice already raised keeps the
+    details it was raised with."""
+    row = _settings_row(db)
+    data = payload.model_dump(exclude_unset=True)
+    if "gstin" in data and data["gstin"]:
+        data["gstin"] = data["gstin"].strip().upper()
+        if not data.get("state_code") and data["gstin"][:2].isdigit():
+            data["state_code"] = data["gstin"][:2]
+    if "due_days" in data and (data["due_days"] is None or not 0 <= data["due_days"] <= 365):
+        raise HTTPException(status_code=422, detail="Due days must be between 0 and 365.")
+    for k, v in data.items():
+        setattr(row, k, (v.strip() if isinstance(v, str) else v))
+    db.commit()
+    return InvoiceSettingsIO(**{k: getattr(row, k) for k in InvoiceSettingsIO.model_fields})

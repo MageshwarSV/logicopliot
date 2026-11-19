@@ -569,6 +569,21 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
             pass
     month = start_basis.replace(day=1)
 
+    # Proper tax invoice (app/core/tax_invoice.py): numbered in the financial year it is raised
+    # in (INV/2026-27/0001), with Axiora's and the customer's details frozen on it.
+    from sqlalchemy import func as _func
+
+    from app.core.tax_invoice import buyer_snapshot, financial_year, seller_snapshot, split_tax
+    from app.models.invoice_settings import SINGLETON_ID, InvoiceSettings
+    from app.models.tenant import Tenant
+
+    inv_settings = db.get(InvoiceSettings, SINGLETON_ID) or InvoiceSettings()
+    tenant_row = db.get(Tenant, tenant_id)
+    raised = today
+    fy = financial_year(raised)
+    prefix = (inv_settings.number_prefix or "INV").strip() or "INV"
+    next_seq = (db.query(_func.max(Invoice.fy_sequence)).filter(Invoice.financial_year == fy).scalar() or 0) + 1
+
     while month < current_month_start:
         exists = (
             db.query(Invoice.id)
@@ -579,9 +594,17 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
             usage = compute_usage(db, tenant_id, month)
             bill = calculate_bill(config, usage.total_pages, month, usage.final_unclassified_pages)
             last_day = calendar.monthrange(month.year, month.month)[1]
+            seller = seller_snapshot(inv_settings)
+            buyer = buyer_snapshot(tenant_row) if tenant_row is not None else {}
+            tax_mode, cgst, sgst, igst = split_tax(bill.gst_amount, seller.get("state_code"), buyer.get("state_code"))
+            due = raised + timedelta(days=inv_settings.due_days or 0)
             db.add(Invoice(
                 tenant_id=tenant_id,
-                invoice_number=_invoice_number(tenant_id, month),
+                invoice_number=f"{prefix}/{fy}/{next_seq:04d}",
+                invoice_date=raised.isoformat(), due_date=due.isoformat(),
+                financial_year=fy, fy_sequence=next_seq,
+                seller=seller, buyer=buyer, tax_mode=tax_mode,
+                cgst_amount=cgst, sgst_amount=sgst, igst_amount=igst,
                 period_start=month.isoformat(),
                 period_end=month.replace(day=last_day).isoformat(),
                 platform_fee=bill.platform_fee,
@@ -597,6 +620,7 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
                 by_shipment_type=usage.by_shipment_type,
                 status="unpaid",
             ))
+            next_seq += 1
         if month.month == 12:
             month = date(month.year + 1, 1, 1)
         else:

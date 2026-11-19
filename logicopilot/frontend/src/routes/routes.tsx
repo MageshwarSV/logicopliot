@@ -52,6 +52,7 @@ import { SaasFinancePaymentsPage } from "../pages/saas-finance/PaymentsPage";
 import { SaasFinancePricingPlansPage } from "../pages/saas-finance/PricingPlansPage";
 import { SaasFinanceReportsPage } from "../pages/saas-finance/ReportsPage";
 import { SaasFinanceInvoicePrintPage } from "../pages/saas-finance/InvoicePrintPage";
+import { SaasFinanceInvoiceSettingsPage } from "../pages/saas-finance/InvoiceSettingsPage";
 
 export function AppRoutes() {
   return (
@@ -431,6 +432,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["saas_finance"]}>
             <SaasFinancePaymentsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/invoice-settings"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance", "super_admin"]}>
+            <SaasFinanceInvoiceSettingsPage />
           </ProtectedRoute>
         }
       />

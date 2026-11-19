@@ -9,6 +9,7 @@ import * as tenantsApi from "../../api/tenants";
 import type { BillingUsage, Invoice } from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
 import { currentMonthStr, formatInr, monthLabel, shiftMonth } from "./financeFormat";
+import { BillingDetailsCard } from "./BillingDetailsCard";
 
 /** One customer's own billing breakdown, reusing the EXISTING getBillingUsage/listInvoices
  *  (frontend/src/api/tenants.ts) completely unchanged - no new API client code needed here,
@@ -114,6 +115,8 @@ export function SaasFinanceCustomerDetailPage() {
           </Card>
         </>
       )}
+
+      {tenantId && <BillingDetailsCard tenantId={tenantId} />}
 
       <Card className="p-5">
         <h2 className="mb-4 font-semibold text-slate-900 dark:text-slate-50">Invoice History</h2>

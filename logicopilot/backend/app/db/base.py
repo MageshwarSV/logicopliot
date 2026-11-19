@@ -35,6 +35,7 @@ from app.models.billable_page_event import BillablePageEvent  # noqa: F401
 from app.models.openai_api_key import OpenAIApiKey  # noqa: F401
 from app.models.tenant_extraction_config import TenantExtractionConfig  # noqa: F401
 from app.models.archive_password import ArchivePassword  # noqa: F401
+from app.models.invoice_settings import InvoiceSettings  # noqa: F401
 
 # Importing this installs the before_flush listener that writes a job's history. It
 # lives here so every entry point that touches the database gets it - the API, the
