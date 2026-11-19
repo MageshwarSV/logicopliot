@@ -7534,13 +7534,13 @@ def _classify_and_place_files(
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
                     extra_tokens.append([])
-        # Billed the same way as the initial OCR pass above (real text only) - these pages past
+        # Billed the same way as the initial OCR pass above (every page, blank too) - these pages past
         # the <=6-page cap are only ever rendered and OCR'd here, the first time a claim
         # actually needs them, so this IS their one OCR pass, whatever this function's own
         # docstring's idempotency note says about a second call being a no-op (it never re-runs
         # this block for the same item).
         record_billable_pages(
-            db, job, sum(1 for t in extra_raw if t.strip()), is_rerun=is_rerun,
+            db, job, len(extra_raw), is_rerun=is_rerun,
         )
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
@@ -7605,14 +7605,14 @@ def _classify_and_place_files(
                 # same whether it goes on to classify correctly, lands in Unclassified, or this
                 # whole run is a reclassify re-processing pages already billed once before. By
                 # request: the cost is the OCR pass itself, not the outcome, and a reclassify is
-                # its own fresh processing cost too, not a free re-run. A page with NO text at
-                # all (a blank separator page, say) is not billed - nothing was really read off
-                # it. Every later call site that used to bill once a page became part of a real
+                # its own fresh processing cost too, not a free re-run. EVERY page is billed,
+                # blank ones included (by request, 2026-11-19: a blank page costs the same render
+                # and OCR call as any other). Every later call site that used to bill once a page became part of a real
                 # document (the cluster write below, and both assign_unclassified_page branches
                 # further down) no longer does, so a page is billed exactly once per OCR pass,
                 # never twice for the same pass.
                 record_billable_pages(
-                    db, job, sum(1 for t in raw_pages if t.strip()), is_rerun=is_rerun,
+                    db, job, len(raw_pages), is_rerun=is_rerun,
                 )
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and

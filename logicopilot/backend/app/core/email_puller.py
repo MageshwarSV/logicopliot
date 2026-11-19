@@ -1880,12 +1880,13 @@ def _process_one_message(
                              # Same pages as kept_pages, same order - see jobs.py's own copy.
                              "kept_tokens": [raw_tokens[o - 1] for o in kept_to_orig
                                              if o - 1 < len(raw_tokens)],
-                             # How many of this file's pages actually had real OCR text, for
-                             # billing - counted here, where raw_pages (before carrier-terms
+                             # How many of this file's pages were read, for billing - EVERY
+                             # page, blank ones included (by request: a blank page costs the
+                             # same render + OCR call as any other) - counted here, where raw_pages (before carrier-terms
                              # filtering) is still in scope, since a job may not exist yet at
                              # this point (a shared mailbox only creates one once the customer
                              # is identified, further down) to bill against directly.
-                             "billable_pages": sum(1 for t in raw_pages if t.strip())})
+                             "billable_pages": len(raw_pages)})
             doc_texts.append((name, text))
 
         if not prepared:
