@@ -1010,3 +1010,12 @@ export async function unlockHeldJob(
   const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/held/unlock`, body);
   return data;
 }
+
+/** Document Capture -> Print: the chosen documents as ONE PDF (Blob), in the order given. */
+export async function printDocuments(
+  jobId: string,
+  body: { documents: string[]; unclassified_pages: string[]; unclassified_files: string[] },
+): Promise<Blob> {
+  const { data } = await apiClient.post<Blob>(`/jobs/${jobId}/print`, body, { responseType: "blob" });
+  return data;
+}

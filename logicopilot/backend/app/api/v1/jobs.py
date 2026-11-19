@@ -8686,6 +8686,118 @@ def get_document_sheet(
     return _sheet_rows_out(sheet, max_rows=500)
 
 
+# ---- Document Capture -> Print: the chosen documents as ONE PDF --------------------------------
+
+class PrintDocumentsPayload(BaseModel):
+    # Placed documents (JobDocument ids), Unclassified pages, and Unclassified Excel files - each
+    # printed in the order given here (the screen sends slots in template order, then the rest).
+    documents: list[str] = []
+    unclassified_pages: list[str] = []
+    unclassified_files: list[str] = []
+
+
+def _image_page(out, png_path: Path) -> bool:
+    """Add one page image to `out` as an A4-proportioned PDF page (JPEG inside, to keep a
+    190-page print from becoming a 40 MB file)."""
+    import fitz
+
+    try:
+        pix = fitz.Pixmap(str(png_path))
+        if pix.alpha:
+            pix = fitz.Pixmap(pix, 0)
+        jpg = pix.tobytes("jpeg", jpg_quality=80)
+        page = out.new_page(width=pix.width * 72 / 150, height=pix.height * 72 / 150)
+        page.insert_image(page.rect, stream=jpg)
+        return True
+    except Exception:  # noqa: BLE001 - one unreadable page must not lose the whole print
+        logger.warning("print: could not add page image %s", png_path)
+        return False
+
+
+def _sheet_pages(out, title: str, sheet) -> int:
+    """An Excel sheet as plain text pages (row by row, with its cell letters) - printable, and
+    the same text the sheet is read with."""
+    from app.core.excel_text import sheet_text
+
+    lines = [title, ""] + sheet_text(sheet).splitlines()
+    per_page, added = 70, 0
+    for start in range(0, len(lines), per_page):
+        page = out.new_page(width=842, height=595)                    # A4 landscape
+        page.insert_textbox(fitz_rect(page), "\n".join(l[:180] for l in lines[start:start + per_page]),
+                            fontsize=7, fontname="cour")
+        added += 1
+    return added
+
+
+def fitz_rect(page):
+    import fitz
+
+    return fitz.Rect(28, 28, page.rect.width - 28, page.rect.height - 28)
+
+
+@router.post("/jobs/{job_id}/print")
+def print_job_documents(
+    job_id: str,
+    payload: PrintDocumentsPayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+):
+    """Document Capture -> Print: the chosen documents, Unclassified pages and Excel files as one
+    PDF, in the order sent. Built from what is on screen (each document's own page images), so
+    it prints exactly what the operator sees. No AI, no OCR."""
+    import fitz
+    from fastapi.responses import Response
+
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+    from app.models.job import UnclassifiedFile
+
+    job = _load_job(db, job_id, scope, user)
+    if not (payload.documents or payload.unclassified_pages or payload.unclassified_files):
+        raise HTTPException(status_code=422, detail="Choose at least one document to print.")
+    out = fitz.open()
+    docs = {d.id: d for d in db.query(JobDocument).filter(JobDocument.job_id == job.id,
+                                                          JobDocument.id.in_(payload.documents or [""]))}
+    for did in payload.documents:
+        jd = docs.get(did)
+        if jd is None or not jd.file_path:
+            continue
+        if jd.source_kind == "excel":
+            sheet = _excel_sheet(jd)
+            if sheet is not None:
+                _sheet_pages(out, jd.original_name or "Excel sheet", sheet)
+            continue
+        pages_dir = _job_doc_dir(jd.id) / "pages"
+        for n in range(1, (jd.page_count or 0) + 1):
+            _image_page(out, pages_dir / f"page_{n}.png")
+    pages = {r.id: r for r in db.query(UnmatchedUploadPage).filter(
+        UnmatchedUploadPage.job_id == job.id, UnmatchedUploadPage.id.in_(payload.unclassified_pages or [""]))}
+    for pid in payload.unclassified_pages:
+        r = pages.get(pid)
+        if r is not None and r.image_path:
+            _image_page(out, Path(r.image_path))
+    files = {f.id: f for f in db.query(UnclassifiedFile).filter(
+        UnclassifiedFile.job_id == job.id, UnclassifiedFile.id.in_(payload.unclassified_files or [""]))}
+    for fid in payload.unclassified_files:
+        f = files.get(fid)
+        if f is None:
+            continue
+        try:
+            wb = read_workbook(Path(f.file_path).read_bytes(), f.original_filename)
+        except (OSError, WorkbookLocked, WorkbookUnreadable):
+            continue
+        wanted = {sh.get("name") for sh in (f.sheets or [])}
+        for sheet in wb.sheets:
+            if sheet.name in wanted:
+                _sheet_pages(out, f"{f.original_filename} - {sheet.name}", sheet)
+    if out.page_count == 0:
+        raise HTTPException(status_code=422, detail="Nothing printable in the chosen documents.")
+    data = out.tobytes(garbage=3, deflate=True)
+    out.close()
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{job.reference}-documents.pdf"'})
+
+
 # ---- a job held for a zip password (app/core/zip_passwords.py, email_puller._hold_for_password) ----
 
 class UnlockHeldJobPayload(BaseModel):
