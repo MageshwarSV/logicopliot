@@ -270,26 +270,14 @@ def _content_cache_path(image_bytes: bytes) -> Path:
     return root / digest[:2] / f"{digest}.json"
 
 
-def looks_sideways(tokens: list[dict]) -> bool:
-    """True when most of a page's longer words are TALLER than they are wide - text printed
-    sideways (a landscape invoice scanned in portrait). Only used to decide whether an OCR result
-    cached before "orientation" was recorded is worth re-reading to learn which way it is turned."""
-    tall = wide = 0
-    for t in tokens or []:
-        if len((t.get("text") or "").strip()) < 4:
-            continue
-        w, h = (t.get("x1", 0) - t.get("x0", 0)), (t.get("y1", 0) - t.get("y0", 0))
-        if h > w:
-            tall += 1
-        elif w > h:
-            wide += 1
-    return tall >= 5 and tall > wide
-
-
 def _needs_orientation(data: dict) -> bool:
-    """A cached read without "orientation" is re-read only for a sideways page - an upright page
-    (nearly all of them) is served from the cache exactly as before, at no extra cost."""
-    return "orientation" not in data and looks_sideways(data.get("tokens") or [])
+    """A cached read from before "orientation" was recorded is re-read ONCE to learn which way
+    the page is turned; it is cached again with it, so this never repeats for that page.
+
+    The page's own word boxes cannot tell: Document AI straightens them, so on a page printed
+    sideways 178 of 179 words still came back wider than tall (SIT, MAA/AI/34470 Vishay
+    invoice) - a "are the words tall?" test never fired and the page was never turned."""
+    return "orientation" not in data
 
 
 def ocr_page_image(image_path: Path) -> dict:
