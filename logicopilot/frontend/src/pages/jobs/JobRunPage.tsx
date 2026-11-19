@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
-import { ErpExcelEditor } from "./ErpExcelEditor";
+import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -1671,6 +1671,20 @@ export function JobRunPage() {
    *  queue (gk2_status "pending"). When this tenant has turned GK2 review off for this job's
    *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped),
    *  and the user is moved to the dashboard while it runs (see leaveWhileErpRuns). */
+  /** Final Submit as GK1 presses it: unanswered required fields are asked one at a time first
+   *  (instead of naming them in a banner), then the job is submitted. Used by the page button
+   *  and by the ERP Excel editor's Submit. */
+  function startFinalSubmit() {
+    if (fixQueue.length > 0) {
+      setFixAt(0);
+      setFixDraft(fixQueue[0].fv.corrected_value ?? fixQueue[0].fv.value ?? "");
+      setFixError(null);
+      setFixOpen(true);
+      return;
+    }
+    submitForGk2Approval();
+  }
+
   async function submitForGk2Approval() {
     setGk2Busy(true);
     setError(null);
@@ -1709,6 +1723,28 @@ export function JobRunPage() {
   /** "Download as Excel" — GK1's Final Submit for Approval and GK2's Final Approve & Proceed
    *  both offer this for an Excel-entry job: the same workbook the real submission builds,
    *  rebuilt fresh from the job's current data every time it's pressed. */
+  /** What the ERP Excel editor's Submit does - exactly what this page's own button would. */
+  function erpExcelSubmit(j: JobDetail): ErpExcelSubmit | null {
+    if (readOnly) return null;
+    if (user?.role === "gk2") {
+      const canAct = j.gk2_status === "pending" || j.gk2_status === "failed";
+      return { label: j.gk2_status === "failed" ? "Retry & submit to ERP" : "Approve & submit to ERP",
+        disabled: !canAct || gk2Busy, hint: canAct ? undefined : "Nothing for GK2 to approve on this job yet.",
+        run: gk2ApproveAndProceed };
+    }
+    if (j.gk2_status === "failed") {
+      return { label: "Retry & submit to ERP", disabled: gk2Busy, run: gk2ApproveAndProceed };
+    }
+    if (j.gk2_status != null) return null;
+    const notReady = j.status !== "extracted" || !j.validation_approved;
+    return {
+      label: j.gk2_required === false ? "Submit to ERP" : "Submit for Approval",
+      disabled: notReady || gk2Busy,
+      hint: notReady ? "Submit is available once the job's review steps are complete." : undefined,
+      run: startFinalSubmit,
+    };
+  }
+
   async function resetEditedExcel() {
     if (!window.confirm("Throw away the edited Excel and build it again from the job's data?")) return;
     try {
@@ -3628,6 +3664,7 @@ export function JobRunPage() {
         <ErpExcelEditor
           jobId={jobId}
           readOnly={readOnly}
+          submit={erpExcelSubmit(job)}
           onClose={() => setExcelEditorOpen(false)}
           onSaved={() => { jobsApi.getJob(jobId).then(setJob).catch(() => undefined); }}
         />
@@ -3721,18 +3758,7 @@ export function JobRunPage() {
                     <button
                       type="button"
                       className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-emerald-600/25 transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:bg-slate-700 dark:disabled:text-slate-400"
-                      onClick={() => {
-                        if (fixQueue.length > 0) {
-                          // Ask for them one at a time instead of naming them in a banner and
-                          // leaving the operator to find them on the page.
-                          setFixAt(0);
-                          setFixDraft(fixQueue[0].fv.corrected_value ?? fixQueue[0].fv.value ?? "");
-                          setFixError(null);
-                          setFixOpen(true);
-                          return;
-                        }
-                        submitForGk2Approval();
-                      }}
+                      onClick={startFinalSubmit}
                       disabled={gk2Busy || job.status !== "extracted" || !job.validation_approved}
                     >
                       <ArrowRightIcon className="h-4 w-4" />
