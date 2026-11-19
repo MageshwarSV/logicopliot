@@ -2692,6 +2692,43 @@ export function JobRunPage() {
           </div>
         </div>
       )}
+      {/* What came with the mail/upload but could not be read - a password-protected zip, a
+          damaged one, a file type that is not read - so nothing is missed without a trace. */}
+      {(() => {
+        const locked = job.attachment_notes?.locked ?? [];
+        const skipped = job.attachment_notes?.skipped ?? [];
+        if (locked.length === 0 && skipped.length === 0) return null;
+        const shortPath = (p: string) => p.split("/").slice(-3).join(" / ");
+        return (
+          <div className="mb-4 space-y-2">
+            {locked.map((l, i) => (
+              <div key={`l${i}`} className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+                <div className="font-medium">
+                  🔒 Password-protected zip not opened: <span className="break-all">{shortPath(l.path)}</span>
+                </div>
+                <details className="mt-1 text-xs">
+                  <summary className="cursor-pointer">{l.files.length} file(s) inside were not read</summary>
+                  <ul className="mt-1 list-disc pl-5">
+                    {l.files.map((f, k) => <li key={k} className="break-all">{f}</li>)}
+                  </ul>
+                </details>
+              </div>
+            ))}
+            {skipped.length > 0 && (
+              <details className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                <summary className="cursor-pointer font-medium">Files not read ({skipped.length})</summary>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {skipped.map((sk, k) => (
+                    <li key={k} className="break-all">
+                      {shortPath(sk.path)} <span className="text-slate-500">— {sk.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        );
+      })()}
       <div className="mb-4 flex items-center justify-between">
         <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
         {(job.status === "failed" || completedWithoutJobNo) && (

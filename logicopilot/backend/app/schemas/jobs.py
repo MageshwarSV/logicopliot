@@ -346,6 +346,8 @@ class JobDetailOut(BaseModel):
     # Names of the mandatory documents this job still has not received - same meaning as on
     # JobOut, populated only when outer_status is "Missing Documents".
     missing_documents: list[str] | None = None
+    # What came with the mail/upload but could not be read (see Job.attachment_notes).
+    attachment_notes: dict | None = None
     mode: str | None = None
     # Same meaning as on JobOut - who this job is assigned to, and their name, so the Jobs
     # list's assign dropdown reflects a change immediately without waiting for its own

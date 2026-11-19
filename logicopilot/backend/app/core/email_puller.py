@@ -1635,10 +1635,8 @@ def _process_one_message(
     _start_claim_heartbeat(mid)
 
     # ---- attachments, including whatever is inside a .zip
-    import io
     import shutil
     import uuid
-    import zipfile
 
     from app.core import office_convert
 
@@ -1648,26 +1646,19 @@ def _process_one_message(
     # Word/Excel attachments are converted below, same as a manual Smart Upload already does -
     # collected separately here since they need that extra step before they can join `files`.
     office_attachments: list[tuple[str, bytes]] = []
-    for name, blob in _extract_attachments(msg):
-        if name.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                    for n in z.namelist():
-                        if n.endswith("/"):
-                            continue
-                        n_ext = Path(n).suffix.lower()
-                        if n_ext in CLASSIFY_EXTS:
-                            files.append((Path(n).name, z.read(n)))
-                        elif n_ext in office_convert.OFFICE_EXTS:
-                            office_attachments.append((Path(n).name, z.read(n)))
-            except zipfile.BadZipFile:
-                continue
+    # Every readable file, including inside zips at any depth and zips inside zips - see
+    # attachment_unpack. Same names and order as before for an ordinary mail; what could not
+    # be read (a password-protected zip, a damaged one, a type we do not read) is kept as
+    # notes for the job instead of being dropped without a trace.
+    from app.core.attachment_unpack import unpack_attachments
+
+    unpacked = unpack_attachments(_extract_attachments(msg), CLASSIFY_EXTS | office_convert.OFFICE_EXTS)
+    attachment_notes = unpacked.notes()
+    for name, blob in unpacked.files:
+        if Path(name).suffix.lower() in CLASSIFY_EXTS:
+            files.append((name, blob))
         else:
-            ext = Path(name).suffix.lower()
-            if ext in CLASSIFY_EXTS:
-                files.append((name, blob))
-            elif ext in office_convert.OFFICE_EXTS:
-                office_attachments.append((name, blob))
+            office_attachments.append((name, blob))
 
     # Word -> one PDF, Excel -> one PDF per worksheet - the SAME conversion Smart Upload
     # already does for a manual upload (see its own identical block in jobs.py). Found live on
@@ -1730,10 +1721,11 @@ def _process_one_message(
         logger.info("pre-alert %s has no attachments - Air Waybill generated from its data", mid[:60])
 
     if not files:
+        what = unpacked.summary()
         _record(db, mid, sender, subject, "no_documents",
-                "nothing readable was attached")
+                "nothing readable was attached" + (f" ({what})" if what else ""))
         return {"from": sender, "subject": subject, "matched": None,
-                "reason": "no document attachments"}
+                "reason": "no document attachments" + (f" ({what})" if what else "")}
 
     # ---- read every page, and hold the text only as long as it is needed
     doc_texts: list[tuple[str, str]] = []
@@ -2031,6 +2023,8 @@ def _process_one_message(
         # happening rather than the job appearing to freeze between "every page read" and
         # "documents actually sorted into slots".
         email_progress.clear(job.id)
+        if attachment_notes:
+            job.attachment_notes = attachment_notes
         job.stage_override = "Document Classifying"
         # Billed HERE, now that `job` definitely exists either way (the single-template fast
         # path created it before OCR even started; a shared mailbox only just created it,

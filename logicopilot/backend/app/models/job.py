@@ -182,6 +182,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # listener at the end of this class, so every path that fails a job sets it, and a job that
     # fails again after a retry shows its latest failure. See migration s6erpfail01.
     erp_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What came with the mail/upload but could NOT be read - a password-protected zip, a damaged
+    # one, a file type we do not read, a zip-size limit hit - so nothing is missed without a
+    # trace. {"skipped": [{"path", "reason"}], "locked": [{"path", "files": [...]}]}, or None
+    # when everything was read. See app/core/attachment_unpack.py.
+    attachment_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # When an operator FIRST acted on the extracted job - corrected a value, submitted a
     # document page, pressed Next, accepted a check: the job goes from "Review" to "In Review".
     # "Review Time" on the dashboards runs from here to the Final Submit press. Stamped once,

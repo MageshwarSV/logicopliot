@@ -263,6 +263,12 @@ export interface JobDetail {
   /** Names of the mandatory documents still missing, in template order - set only when
    *  outer_status is "Missing Documents". */
   missing_documents?: string[] | null;
+  /** What came with the mail/upload but could NOT be read: password-protected zips (with the
+   *  file names inside) and skipped files with the reason. Null when everything was read. */
+  attachment_notes?: {
+    skipped?: { path: string; reason: string }[];
+    locked?: { path: string; files: string[] }[];
+  } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;
   /** Whether this job's template submits via a bulk Excel import (TemplateGroup.entry_mode)

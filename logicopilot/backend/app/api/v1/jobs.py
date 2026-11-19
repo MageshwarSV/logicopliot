@@ -5,7 +5,6 @@ import logging
 import math
 import re
 import shutil
-import zipfile
 from datetime import date, datetime, timedelta, timezone
 from app.core.modes import MODES
 from pathlib import Path
@@ -4194,6 +4193,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         outer_status=outer_status,
         missing_documents=(_missing_mandatory_documents(db, job)
                           if outer_status == "Missing Documents" else None),
+        attachment_notes=job.attachment_notes,
         mode=_shipment_mode(db, job),
         assigned_operator_id=job.assigned_operator_id,
         operator_name=_operator_name(db, job),
@@ -8081,21 +8081,41 @@ def smart_upload(
     ]
 
     # Collect the files to process — each uploaded item as itself, or unzipped if it is a ZIP.
+    # A zip is opened by the same unpacker the email puller uses (app/core/attachment_unpack.py):
+    # every folder, and zips inside zips; what cannot be read is listed on the job.
+    from app.core.attachment_unpack import unpack_attachments
+
+    max_upload = 100 * 1024 * 1024
     files: list[tuple[str, bytes]] = []
+    skipped: list[dict] = []
+    locked: list[dict] = []
     for uf in files_in:
-        content = uf.file.read(50 * 1024 * 1024)
+        # One byte past the limit, so a file that is too big is refused with a clear message
+        # instead of being silently cut short (which made a big zip look "invalid").
+        content = uf.file.read(max_upload + 1)
         fname = uf.filename or "upload"
+        if len(content) > max_upload:
+            raise HTTPException(status_code=422,
+                                detail=f"{fname}: larger than {max_upload // (1024 * 1024)} MB - too large to upload.")
         if fname.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    for n in z.namelist():
-                        if not n.endswith("/") and Path(n).suffix.lower() in UPLOAD_EXTS:
-                            files.append((Path(n).name, z.read(n)))
-            except zipfile.BadZipFile:
+            unpacked = unpack_attachments([(fname, content)], UPLOAD_EXTS)
+            if any(sk["path"] == fname and sk["reason"].startswith("damaged") for sk in unpacked.skipped):
                 raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
+            files.extend(unpacked.files)
+            skipped.extend(unpacked.skipped)
+            locked.extend(unpacked.locked)
         else:
             files.append((fname, content))
+    if skipped or locked:
+        notes = dict(job.attachment_notes or {})
+        notes["skipped"] = (list(notes.get("skipped") or []) + skipped)[:200]
+        notes["locked"] = (list(notes.get("locked") or []) + locked)[:200]
+        job.attachment_notes = notes
+        db.commit()
     if not files:
+        if locked:
+            raise HTTPException(status_code=422,
+                                detail="The zip is password-protected and could not be opened.")
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
     from app.core.extraction_queue import run_queued
