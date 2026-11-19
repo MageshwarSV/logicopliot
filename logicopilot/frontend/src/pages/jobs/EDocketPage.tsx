@@ -20,6 +20,11 @@ const FCL_OPTIONS = ["FCL", "LCL", "B.B"] as const;
 // The container row's label - one constant, so the row and the value filled into it can never
 // drift apart. Its value ends with the job's own FCL / LCL (Consignment Type).
 const CONTAINER_ROW = "No. of Container 20” & 40” / FCL / LCL";
+// Page 2 (the back of the paper docket): its two tables, ten rows each, as printed.
+const PAGE2_ROWS = 10;
+const FEEDBACK_COLUMNS = ["Container No.", "Empty Received Date", "Handover to Liner Date"];
+const ADVANCE_COLUMNS = ["Sl.No.", "Remarks", "Cheque Favour", "Amount", "Cheque No.", "Cheque Dt.", "Paid by"];
+const ADVANCE_WIDTHS = ["7%", "13%", "28%", "12%", "13%", "13%", "14%"];
 const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
 const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
@@ -184,6 +189,12 @@ export function EDocketPage() {
   // Keyed by row label (the paired Date row uses "<label> / Date") - editable from whatever
   // was auto-mapped, or blank where nothing was.
   const [values, setValues] = useState<Record<string, string>>({});
+  // Page 2 - the paper docket's back side. Each table is FEEDBACK_ROWS x its columns, all
+  // editable; Container No. starts from the job's own containers (see the starting-values effect).
+  const [feedback, setFeedback] = useState<string[][]>(() =>
+    Array.from({ length: PAGE2_ROWS }, () => FEEDBACK_COLUMNS.map(() => "")));
+  const [advance, setAdvance] = useState<string[][]>(() =>
+    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) => (j === 0 ? String(i + 1) : ""))));
 
   const isExport = /export/i.test(job?.mode ?? "");
   const docketRows = useMemo(() => rows(isExport), [isExport]);
@@ -275,6 +286,10 @@ export function EDocketPage() {
     // it should say, not just how many entries happen to follow it. The Shipment Type (the
     // same FCL/LCL/B.B this job's own tick-box above reads) closes the value out.
     const shipmentTypeDisplay = mappedFclLcl || (shipmentType?.value ?? "").trim();
+    // Page 2's FEEDBACK STATUS starts with these same containers, one per row, numbers only.
+    const containerNumbers = blContainerNumbers.map((f) => (f.value ?? "").trim()).filter(Boolean);
+    setFeedback((prev) => prev.map((row, i) =>
+      i < containerNumbers.length && !row[0] ? [containerNumbers[i], ...row.slice(1)] : row));
     // With no container read (the usual LCL case) the row still says FCL / LCL on its own.
     const containers = containerList.length
       ? `${containerList.length} x ${containerList.join(" , ")}`
@@ -380,7 +395,7 @@ export function EDocketPage() {
       {/* @page margin 0: the browser prints its own header/footer (date, page title, URL,
           "1/1") INSIDE the page margin - with no margin there is nowhere to put them, so the
           printout carries only the docket. The docket's own spacing comes from .edocket-print. */}
-      <style>{`@page { margin: 0; } @media print { .no-print { display: none !important; } .edocket-print { padding: 12mm !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
+      <style>{`@page { margin: 0; } @media print { .no-print { display: none !important; } .edocket-print { padding: 12mm !important; } .edocket-page2 { break-before: page; page-break-before: always; margin-top: 0 !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
 
       <div className="no-print flex justify-end gap-2 p-3">
         <button
@@ -575,6 +590,79 @@ export function EDocketPage() {
           </tbody>
         </table>
 
+      </div>
+
+      {/* Page 2 - the back of the paper docket. On screen it sits below page 1; printed or saved
+          as PDF it always starts on a page of its own (.edocket-page2: break-before page). */}
+      <div
+        className="edocket-page2 mx-auto mt-6 max-w-3xl border-2 border-black p-4 font-sans text-sm"
+        style={{ background: PAGE_BG }}
+      >
+        <h2 className="mb-2 text-base font-bold underline">FEEDBACK STATUS</h2>
+        <table className="mb-8 w-full table-fixed border-collapse text-sm">
+          <thead>
+            <tr>
+              {FEEDBACK_COLUMNS.map((c, j) => (
+                <th
+                  key={c}
+                  className="border border-black px-2 py-1.5 text-center font-medium"
+                  style={{ width: j === 0 ? "30%" : "35%" }}
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {feedback.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className="border border-black px-1.5" style={{ height: 30 }}>
+                    <input
+                      value={cell}
+                      onChange={(e) => setFeedback((t) => t.map((r, ri) =>
+                        ri === i ? r.map((c, ci) => (ci === j ? e.target.value : c)) : r))}
+                      className="w-full bg-transparent font-mono text-xs"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h2 className="mb-2 text-base font-bold underline">ADVANCE DETAILS</h2>
+        <table className="w-full table-fixed border-collapse text-sm">
+          <thead>
+            <tr>
+              {ADVANCE_COLUMNS.map((c, j) => (
+                <th
+                  key={c}
+                  className="border border-black px-1 py-1.5 text-center font-medium"
+                  style={{ width: ADVANCE_WIDTHS[j], fontSize: 12 }}
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {advance.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className="border border-black px-1" style={{ height: 30 }}>
+                    <input
+                      value={cell}
+                      onChange={(e) => setAdvance((t) => t.map((r, ri) =>
+                        ri === i ? r.map((c, ci) => (ci === j ? e.target.value : c)) : r))}
+                      className={`w-full bg-transparent font-mono text-xs ${j === 0 ? "text-center" : ""}`}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
