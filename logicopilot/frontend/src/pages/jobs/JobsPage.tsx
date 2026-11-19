@@ -197,7 +197,14 @@ export function JobsPage() {
   // already loaded at login — no extra request). "All" plus one tab per assigned mode.
   // Applied client-side to whatever has loaded so far, same as before pagination existed.
   const assignedModes = user?.modes ?? [];
-  const showModeTabs = (user?.role === "operator" || user?.role === "gk2") && assignedModes.length > 0;
+  // A Tenant Admin has no personal mode assignment, so the tabs never showed on their jobs
+  // workspace (the one their "Jobs" link opens). They oversee every shipment type, so they get
+  // all four - the same tab row an operator sees.
+  const modeTabModes =
+    user?.role === "tenant_admin" ? ["Air Export", "Air Import", "Sea Export", "Sea Import"] : assignedModes;
+  const showModeTabs =
+    user?.role === "tenant_admin" ||
+    ((user?.role === "operator" || user?.role === "gk2") && assignedModes.length > 0);
   const [activeModeTab, setActiveModeTab] = useState<string>("All");
   const [savingEtaId, setSavingEtaId] = useState<string | null>(null);
   const canEditEta = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
@@ -1310,7 +1317,7 @@ export function JobsPage() {
 
       {showModeTabs && (
         <div className="mb-4 flex gap-1.5 overflow-x-auto">
-          {["All", ...assignedModes].map((mode) => (
+          {["All", ...modeTabModes].map((mode) => (
             <button
               key={mode}
               type="button"
