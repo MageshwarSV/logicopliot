@@ -3081,6 +3081,29 @@ def _click_spot(loc, step: dict) -> dict:
         return {}
 
 
+def _pick_select_value(page, frames, sel, candidates) -> str | None:
+    """The first candidate value that one of this <select>'s options actually holds (by its
+    visible text or its value, spaces/case ignored); else the first non-empty candidate; None
+    when there is none. Waits for the dropdown up to 20s - the same allowance a step's element
+    gets - and never raises: a dropdown it cannot read leaves the step to its ordinary path."""
+    cands = [str(c).strip() for c in candidates if c and str(c).strip()]
+    if not cands:
+        return None
+    norm = lambda s: " ".join(str(s or "").split()).upper()  # noqa: E731
+    try:
+        loc = _scoped(page, frames, sel).first
+        loc.wait_for(state="attached", timeout=20000)
+        opts = loc.evaluate(
+            "el => Array.from(el.options || []).map(o => [o.text || '', o.value || ''])")
+    except Exception:  # noqa: BLE001
+        return cands[0]
+    have = {norm(x) for pair in (opts or []) for x in pair if x}
+    for c in cands:
+        if norm(c) in have:
+            return c
+    return cands[0]
+
+
 def _perform_step(page, step: dict, val: str) -> None:
     """Execute one element-bound step (element assumed present)."""
     action = step.get("action")
@@ -5821,6 +5844,22 @@ def _play_steps(
                     val = resolve_ai_value(step["prompt"], values, step.get("options"))
                 else:
                     val = resolve(step.get("value") or (f"[[{step['field_label']}]]" if step.get("field_label") else None))
+                if action == "select" and step.get("value_fields") and not step.get("prompt"):
+                    # Several job fields that may hold this dropdown's answer, tried in order -
+                    # the first whose value is really one of the options on screen wins.
+                    # Built for the ERP's organisation Address dropdown: a forwarder's addresses
+                    # are named after OUR branches ("CHENNAI" = Destination), a customer's after
+                    # its own ("3 (3)" = ERP Quotation Branch), and one fixed field could only
+                    # ever fit one of the two (ALLISON / FLEXTRONICS runs stuck here).
+                    cands = [resolve(f"[[{f}]]") for f in step["value_fields"]]
+                    if val:
+                        cands.append(val)
+                    picked = _pick_select_value(page, frames, sel, cands)
+                    if picked:
+                        if picked != val:
+                            log.append(f"step {i + 1} select: using {picked!r} - the first of "
+                                       f"{[c for c in cands if c]} the dropdown actually offers")
+                        val = picked
                 try:
                     if action == "navigate":
                         page.goto(step.get("value") or url, wait_until="domcontentloaded", timeout=45000)

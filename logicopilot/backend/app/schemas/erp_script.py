@@ -6,6 +6,12 @@ class ErpStep(BaseModel):
     selector: str | None = None
     value: str | None = None
     field_label: str | None = None  # template field mapped to this input (a data "pill")
+    # select only: several job fields that may hold the answer, tried in order at run time -
+    # the first whose value one of the dropdown's options actually holds is picked (see
+    # browser._pick_select_value). E.g. ["branch_name", "Destination"] for the ERP's
+    # organisation Address dropdown, named after a customer's own branches ("3 (3)") or,
+    # for a forwarder, after ours ("CHENNAI").
+    value_fields: list[str] | None = None
     prompt: str | None = None  # AI rule: decide the value at run time from the job's data
     goal: str | None = None  # AI step: natural-language goal for AI to pick what to click
     frames: list[str] | None = None  # iframe chain (top -> innermost) the element lives in
