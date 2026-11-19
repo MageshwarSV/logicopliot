@@ -5,8 +5,7 @@ import type { JobDocument } from "../../types/jobs";
 
 /** Document Capture -> "Print pages...": for the occasional print that must leave out some
  *  pages. Every document's pages as thumbnails; every classified page is ticked to start -
- *  untick the pages not to print (Unclassified pages start unticked). Print only: the job's documents are not changed. Whole-document printing
- *  stays on the ordinary Print button (PrintDocumentsModal). */
+ *  untick the pages not to print (Unclassified pages start unticked). Print only: the job's documents are not changed. */
 
 type PageItem =
   | { kind: "doc"; key: string; docId: string; page: number }

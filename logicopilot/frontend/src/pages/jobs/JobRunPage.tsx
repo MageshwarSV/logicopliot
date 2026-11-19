@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
-import { PrintDocumentsModal } from "./PrintDocumentsModal";
 import { PrintPagesModal } from "./PrintPagesModal";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
@@ -13,7 +12,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { CalendarIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, CalendarIcon, LayersIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -957,8 +956,7 @@ export function JobRunPage() {
   // Excel by sheet: Excel files not placed in a slot, and the Excel document being viewed.
   const [unclassifiedFiles, setUnclassifiedFiles] = useState<jobsApi.UnclassifiedFile[]>([]);
   const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
-  // Document Capture -> Print (PrintDocumentsModal).
-  const [printOpen, setPrintOpen] = useState(false);
+  // Document Capture -> Print pages (PrintPagesModal).
   const [printPagesOpen, setPrintPagesOpen] = useState(false);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
@@ -2844,45 +2842,30 @@ export function JobRunPage() {
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-slate-50">Upload documents</h2>
             {readOnly && !showsMachinery && (
-              <>
-              <button
-                  type="button"
-                  onClick={() => setPrintOpen(true)}
-                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                  title="Choose documents and print them, or download them as one PDF"
-                >
-                  Print
-                </button>
-                <button
+<button
                   type="button"
                   onClick={() => setPrintPagesOpen(true)}
-                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                  title="Pick individual pages to print - for leaving out an unwanted page"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
                 >
-                  Print pages…
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
                 </button>
-              </>
             )}
             {(!readOnly || showsMachinery) && (
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setPrintOpen(true)}
-                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                  title="Choose documents and print them, or download them as one PDF"
-                >
-                  Print
-                </button>
-                <button
-                  type="button"
                   onClick={() => setPrintPagesOpen(true)}
-                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                  title="Pick individual pages to print - for leaving out an unwanted page"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
                 >
-                  Print pages…
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
                 </button>
                 {!readOnly && (
-                  <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
+                  <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 shadow-sm transition-colors hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300 dark:hover:bg-violet-500/20 ${smartBusy ? "opacity-60" : ""}`}>
+                    <UploadIcon className="h-4 w-4" />
                     {smartBusy ? "Classifying…" : "Smart upload (auto-classify)"}
                     <input
                       type="file"
@@ -2907,15 +2890,16 @@ export function JobRunPage() {
                     gated the same way as every other super-admin-only recovery action on this
                     page (showsMachinery), not just hidden behind readOnly. */}
                 {showsMachinery && (
-                  <Button
-                    size="sm" variant="secondary"
+                  <button
+                    type="button"
                     onClick={handleReclassifyDocuments}
-                    isLoading={reclassifyBusy}
-                    disabled={!job.documents.some((d) => d.is_uploaded)}
+                    disabled={reclassifyBusy || !job.documents.some((d) => d.is_uploaded)}
                     title="Re-run classification on this job's own already-uploaded documents - replaces them entirely with the result."
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
                   >
-                    Re-classify documents
-                  </Button>
+                    <LayersIcon className="h-4 w-4" />
+                    {reclassifyBusy ? "Re-classifying…" : "Re-classify documents"}
+                  </button>
                 )}
                 {reclassifyNote && (
                   // Deliberately not <Alert> - that is styled for a failure, and this is the
@@ -2933,9 +2917,15 @@ export function JobRunPage() {
                   </span>
                 ) : (
                   !readOnly && (
-                    <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
-                      {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => runExtract()}
+                      disabled={extracting || !allUploaded}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {job.status === "draft" ? <SparklesIcon className="h-4 w-4" /> : <ArrowPathIcon className="h-4 w-4" />}
+                      {extracting ? "Starting…" : job.status === "draft" ? "Run extraction" : "Re-run extraction"}
+                    </button>
                   )
                 )}
               </div>
@@ -3292,16 +3282,6 @@ export function JobRunPage() {
               </div>
               </>)}
             </div>
-          )}
-          {printOpen && job && (
-            <PrintDocumentsModal
-              jobId={jobId}
-              jobReference={job.reference}
-              slots={docSlots}
-              pages={unclassifiedPages}
-              files={unclassifiedFiles}
-              onClose={() => setPrintOpen(false)}
-            />
           )}
           {printPagesOpen && job && (
             <PrintPagesModal

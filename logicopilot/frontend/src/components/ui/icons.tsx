@@ -404,3 +404,24 @@ export function CheckBadgeIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function PrinterIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M7 8V3h10v5" />
+      <path d="M7 17H5a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2" />
+      <path d="M7 14h10v7H7z" />
+      <path d="M17 11h.01" />
+    </Icon>
+  );
+}
+
+export function SparklesIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3Z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" />
+    </Icon>
+  );
+}
+
