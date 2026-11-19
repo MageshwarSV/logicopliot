@@ -4,6 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -926,6 +927,83 @@ def export_tenant_report(
         iter([content]), media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+class TenantBillingDetailsIO(BaseModel):
+    """The customer's details on their Cargora tax invoice (Bill To / Ship To / place of supply)."""
+    billing_legal_name: str | None = None
+    billing_gstin: str | None = None
+    billing_address: str | None = None
+    billing_state_name: str | None = None
+    billing_state_code: str | None = None
+    billing_email: str | None = None
+    billing_ship_to: str | None = None
+
+
+@router.get("/{tenant_id}/billing-details", response_model=TenantBillingDetailsIO)
+def get_tenant_billing_details(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TenantBillingDetailsIO:
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return TenantBillingDetailsIO(**{k: getattr(tenant, k) for k in TenantBillingDetailsIO.model_fields})
+
+
+@router.put("/{tenant_id}/billing-details", response_model=TenantBillingDetailsIO)
+def save_tenant_billing_details(
+    tenant_id: str,
+    payload: TenantBillingDetailsIO,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SAAS_FINANCE, SUPER_ADMIN)),
+) -> TenantBillingDetailsIO:
+    """Used for invoices raised from now on - an invoice already raised keeps the details it
+    was raised with. Saving these never starts invoicing (that is the billing config)."""
+    from app.core.tax_invoice import GST_STATES
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    data = payload.model_dump(exclude_unset=True)
+    gstin = (data.get("billing_gstin") or "").strip().upper()
+    if "billing_gstin" in data:
+        if gstin and len(gstin) != 15:
+            raise HTTPException(status_code=422, detail="A GSTIN has 15 characters.")
+        data["billing_gstin"] = gstin or None
+        if gstin and not data.get("billing_state_code"):
+            data["billing_state_code"] = gstin[:2]
+    code = (data.get("billing_state_code") or "").strip()
+    if code:
+        data["billing_state_code"] = code.zfill(2)[:2]
+        if not data.get("billing_state_name"):
+            data["billing_state_name"] = GST_STATES.get(data["billing_state_code"])
+    for k, v in data.items():
+        setattr(tenant, k, (v.strip() if isinstance(v, str) else v) or None)
+    db.commit()
+    return TenantBillingDetailsIO(**{k: getattr(tenant, k) for k in TenantBillingDetailsIO.model_fields})
+
+
+@router.get("/{tenant_id}/billing/invoices/{invoice_id}/print")
+def get_invoice_print(
+    tenant_id: str,
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Everything the tax invoice page prints (app/core/tax_invoice.printable)."""
+    from app.core.tax_invoice import printable
+    from app.models.invoice_settings import SINGLETON_ID, InvoiceSettings
+
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id).first()
+    if tenant is None or inv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    settings = db.get(InvoiceSettings, SINGLETON_ID) or InvoiceSettings()
+    return printable(inv, tenant, settings)
 
 
 @router.post("/{tenant_id}/billing/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)

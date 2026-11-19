@@ -504,6 +504,7 @@ export function AppShell({
                   { to: "/saas-finance/invoices", label: "Invoices" },
                   { to: "/saas-finance/payments", label: "Payments" },
                   { to: "/saas-finance/pricing-plans", label: "Pricing & Plans" },
+                  { to: "/saas-finance/invoice-settings", label: "Invoice Settings" },
                   { to: "/saas-finance/reports", label: "Reports" },
                 ].map((item) => (
                   <Link key={item.to} to={item.to} className={navClass(item.to)}>

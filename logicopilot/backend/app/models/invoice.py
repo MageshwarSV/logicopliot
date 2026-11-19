@@ -73,5 +73,18 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # else here is.
     by_shipment_type: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
+    # Proper tax invoice (app/core/tax_invoice.py): the date it was raised, due date, its place in
+    # the financial year's running series (INV/2026-27/0001), snapshots of Axiora's and the
+    # customer's details at that moment, and the GST split. All None on invoices raised before.
+    invoice_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    due_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    financial_year: Mapped[str | None] = mapped_column(String(7), nullable=True, index=True)
+    fy_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    seller: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    buyer: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tax_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)      # "cgst_sgst" | "igst"
+    cgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    igst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="unpaid")
     paid_at: Mapped[str | None] = mapped_column(String(30), nullable=True)
