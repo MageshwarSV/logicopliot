@@ -20,6 +20,8 @@ const FCL_OPTIONS = ["FCL", "LCL", "B.B"] as const;
 // The container row's label - one constant, so the row and the value filled into it can never
 // drift apart. Its value ends with the job's own FCL / LCL (Consignment Type).
 const CONTAINER_ROW = "No. of Container 20” & 40” / FCL / LCL";
+const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
+const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
 const TRANSACTION_MODES = ["Deferred", "Transaction"] as const;
 const PRIORITY_TYPES = ["Advance", "Prior", "Normal"] as const;
@@ -113,15 +115,10 @@ function rows(isExport: boolean): DocketRow[] {
     // the document.
     { label: "Quotation Name", patterns: [/^erp entry name$/i] },
     { label: "Documents Received on" },
-    { label: "HAWB BL No.", patterns: [/house.*(bl|bill|way\s*bill)/i, /\bhawb\b/i, /\bhbl\b/i] },
-    {
-      label: "MAWB BL No.",
-      // "MBL No" (Additional Details) tried first, exactly - it's the authoritative, typed/
-      // corrected value, not a guess off whatever document happens to print something
-      // MBL-shaped. The looser patterns stay as a fallback for a job whose "MBL No" field is
-      // itself still blank.
-      patterns: [/^mbl no\.?$/i, /master.*(bl|bill|way\s*bill)/i, /\bmawb\b/i, /\bmbl\b/i],
-    },
+    // Number and date together on one row ("41P0085362 / 17-Nov-2026") - filled in the
+    // starting-values effect below from the house / master waybill's own fields.
+    { label: HAWB_ROW },
+    { label: MAWB_ROW },
     { label: "Vessel Name / Voyage No" },
     {
       label: "Inward Date / IGM Date",
@@ -301,8 +298,26 @@ export function EDocketPage() {
     const ffConsolLiner = (erpQuotationName?.value ?? "").trim()
       ? `${(erpQuotationName?.value ?? "").trim()} / /`
       : "";
+    // "HAWB BL No. / HAWB BL Date" and "MAWB BL No. / MAWB BL Date": the number and its own
+    // date, read by EXACT field name - a loose /mawb/ also matches "MAWB Date" and could put the
+    // date where the number goes. Air import: HBL No (shown as HAWB Number) + HBL Date, MAWB
+    // Number + MAWB Date. Sea import: HBL No + HBL Date, MBL No + MBL Date. The waybill / bill of
+    // lading's own reading is preferred over another document's copy of the same label.
+    const exact = (...names: string[]) => {
+      const want = names.map((n) => n.toLowerCase());
+      const hits = job.field_values.filter(
+        (f) => f.row_index == null && want.includes(f.label_name.trim().toLowerCase()) && (f.value ?? "").trim(),
+      );
+      const own = hits.find((f) => f.document_name === "Air Waybill" || f.document_name === "Bill of lading");
+      return ((own ?? hits[0])?.value ?? "").trim();
+    };
+    const joinNoDate = (no: string, date: string) => [no, date].filter(Boolean).join(" / ");
+    const hawbLine = joinNoDate(exact("HBL No", "HBL No.", "HAWB Number", "HAWB No"), exact("HBL Date", "HAWB Date"));
+    const mawbLine = joinNoDate(exact("MAWB Number", "MAWB No", "MBL No", "MBL No."), exact("MAWB Date", "MBL Date"));
     setValues((prev) => {
       const next = { ...prev };
+      if (!(HAWB_ROW in prev) && hawbLine) next[HAWB_ROW] = hawbLine;
+      if (!(MAWB_ROW in prev) && mawbLine) next[MAWB_ROW] = mawbLine;
       for (const row of rows(isExport)) {
         if (!(row.label in next)) next[row.label] = bestValue(job.field_values, row.patterns, row.docName);
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
