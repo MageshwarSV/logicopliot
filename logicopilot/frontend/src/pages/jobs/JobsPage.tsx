@@ -435,9 +435,11 @@ export function JobsPage() {
   // The assign dropdown's candidate list — every operator in the tenant, filtered per-row to
   // whichever ones are scoped to that job's own mode. Fetched once; nothing about it changes
   // per row so there is no reason to re-fetch it.
+  // Also loaded for everyone else who sees the "Assigned To" filter (Tenant Admin, GK2,
+  // Manager): without it a Tenant Admin's filter offered "All assignees" and nothing else.
   useEffect(() => {
-    if (canAssign) usersApi.listUsers().then(setOperators).catch(() => {});
-  }, [canAssign]);
+    if (user) usersApi.listUsers().then(setOperators).catch(() => {});
+  }, [user]);
 
   useEffect(() => {
     loadFirstPage();
@@ -695,27 +697,22 @@ export function JobsPage() {
   // from, else nothing) when filtering - never a raw operator id, which the operator picking
   // from the dropdown below would have no way to recognise or match.
   const assignedToLabel = (j: Job) => j.operator_name ?? j.pulled_from_sender ?? "";
-  // The dropdown's own options: every real user of this tenant (operators already fetches
-  // this - see the effect above) who shares the CURRENT user's own User Type and Shipment
-  // Modes - never derived from whichever jobs happen to be loaded right now, and never
-  // restricted by existing job assignments (a brand new user must show up here the moment
-  // they're created, without needing a job of theirs to exist first) - only by this
-  // type/modes match. null/undefined on either side means "no custom type"/"no modes
-  // assigned" and is treated as its own value, not a wildcard.
-  const sameModeSet = (a?: string[] | null, b?: string[] | null) => {
-    const as = new Set(a ?? []);
-    const bs = new Set(b ?? []);
-    return as.size === bs.size && [...as].every((m) => bs.has(m));
-  };
+  // The dropdown's own options: real users of this tenant (operators - see the effect above),
+  // never derived from whichever jobs happen to be loaded, so a brand new user shows up the
+  // moment they are created.
+  // By request (2026-11-20): every operator of the tenant on the "All" tab, and on a shipment
+  // tab every operator who handles that shipment type (or has no type restriction). The old
+  // rule - same user type AND exactly the same set of modes as the viewer - left a GK1 with
+  // several shipment types, and a Tenant Admin (no modes of their own), with an empty list.
   const assignees = useMemo(() => {
+    const tab = showModeTabs && activeModeTab !== "All" ? activeModeTab : null;
     const matching = operators.filter(
       (o) =>
-        (o.user_type_id ?? null) === (user?.user_type_id ?? null) &&
-        sameModeSet(o.modes, user?.modes),
+        (o.role === "operator" || o.role === "gk2") &&
+        (!tab || !(o.modes ?? []).length || (o.modes ?? []).includes(tab)),
     );
     return [...new Set(matching.map((o) => o.full_name).filter(Boolean))].sort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operators, user?.user_type_id, user?.modes]);
+  }, [operators, showModeTabs, activeModeTab]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
