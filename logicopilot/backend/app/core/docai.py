@@ -270,28 +270,6 @@ def _content_cache_path(image_bytes: bytes) -> Path:
     return root / digest[:2] / f"{digest}.json"
 
 
-def looks_sideways(tokens: list[dict]) -> bool:
-    """True when most of a page's longer words are TALLER than they are wide - text printed
-    sideways (a landscape invoice scanned in portrait). Only used to decide whether an OCR result
-    cached before "orientation" was recorded is worth re-reading to learn which way it is turned."""
-    tall = wide = 0
-    for t in tokens or []:
-        if len((t.get("text") or "").strip()) < 4:
-            continue
-        w, h = (t.get("x1", 0) - t.get("x0", 0)), (t.get("y1", 0) - t.get("y0", 0))
-        if h > w:
-            tall += 1
-        elif w > h:
-            wide += 1
-    return tall >= 5 and tall > wide
-
-
-def _needs_orientation(data: dict) -> bool:
-    """A cached read without "orientation" is re-read only for a sideways page - an upright page
-    (nearly all of them) is served from the cache exactly as before, at no extra cost."""
-    return "orientation" not in data and looks_sideways(data.get("tokens") or [])
-
-
 def ocr_page_image(image_path: Path) -> dict:
     from google.cloud import documentai
 
@@ -300,7 +278,7 @@ def ocr_page_image(image_path: Path) -> dict:
     if cached_at.exists():
         try:
             data = json.loads(cached_at.read_text(encoding="utf-8"))
-            if "layout_text" in data and "structured_text" in data and not _needs_orientation(data):
+            if "layout_text" in data and "structured_text" in data:
                 logger.info("Document AI OCR served from the content cache: %s",
                             image_path.name)
                 return data
@@ -327,16 +305,7 @@ def ocr_page_image(image_path: Path) -> dict:
     table_row_counts: list[int] = []
     structured_text: str | None = None
     debug_blocks: list[dict] = []
-    # Which way up Document AI found the page: 1 PAGE_UP, 2 PAGE_RIGHT (turned 90 deg
-    # clockwise), 3 PAGE_DOWN, 4 PAGE_LEFT (turned 90 deg counter-clockwise), 0 unknown. The
-    # image reader turns a sideways page upright from this before reading it - see
-    # extraction._page_png_bytes.
-    orientation = 0
     for page in doc.pages:
-        try:
-            orientation = orientation or int(page.layout.orientation)
-        except (AttributeError, TypeError, ValueError):
-            pass
         for token in page.tokens:
             text = _layout_text(token.layout, doc.text).strip()
             if not text:
@@ -379,7 +348,6 @@ def ocr_page_image(image_path: Path) -> dict:
         # by any real caller, only by field_marks.py's own debug=true test-extract path, to
         # inspect real bounding boxes directly instead of guessing at them.
         "debug_blocks": debug_blocks,
-        "orientation": orientation,
     }
 
     # Cached by the image's own content so the next path to want this page - the
@@ -446,8 +414,7 @@ def get_page_ocr(document_dir: Path, page_number: int) -> dict:
     cache_file = document_dir / "ocr" / f"page_{page_number}.json"
     if cache_file.exists():
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
-        if ("layout_text" in cached and "table_row_counts" in cached and "structured_text" in cached
-                and not _needs_orientation(cached)):
+        if "layout_text" in cached and "table_row_counts" in cached and "structured_text" in cached:
             return cached
         # A cache written before layout-aware formatting (or table_row_counts, or
         # structured_text) existed. Re-read this one page rather than serving every

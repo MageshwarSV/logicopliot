@@ -917,52 +917,6 @@ def _field_lines(fields: list[dict]) -> list[str]:
     return lines
 
 
-# Document AI's page orientation -> the CLOCKWISE turn (degrees) that makes the page upright:
-# PAGE_RIGHT (2) is turned 90 clockwise, so it is turned back 90 anti-clockwise (-90);
-# PAGE_DOWN (3) 180; PAGE_LEFT (4) is turned 90 anti-clockwise, so +90 clockwise.
-# (PyMuPDF's Matrix.prerotate(+90) turns an image 90 degrees clockwise - checked.)
-_UPRIGHT_ROTATION = {2: -90, 3: 180, 4: 90}
-
-
-def _page_png_bytes(path: Path) -> bytes:
-    """A page image as the model should see it - UPRIGHT.
-
-    A landscape invoice scanned in portrait arrives sideways. Read that way, the model skipped
-    small printed values and misread others: a Vishay invoice gave no invoice number and the
-    date 16-Nov-2006 - the same page turned upright gave 6819852457 and 16-Nov-2026 (MAA/AI/
-    34470/26-27, by request 2026-11-20). Document AI already says which way each page is
-    turned (docai "orientation"); a sideways page is rotated here, in memory only - the stored
-    page image, its OCR and every highlight drawn on it are untouched. Any page this cannot
-    place (not a rendered job page, no OCR, upright) is sent exactly as before."""
-    raw = path.read_bytes()
-    try:
-        m = re.fullmatch(r"page_(\d+)\.png", path.name)
-        if not m or path.parent.name != "pages":
-            return raw
-        from app.core.docai import get_page_ocr
-
-        orientation = int((get_page_ocr(path.parent.parent, int(m.group(1))) or {}).get("orientation") or 0)
-        turn = _UPRIGHT_ROTATION.get(orientation)
-        if not turn:
-            return raw
-        import fitz  # PyMuPDF - already a dependency (it renders the page images); no Pillow needed
-
-        src = fitz.open(stream=raw, filetype="png")
-        try:
-            page = src[0]
-            scale = fitz.Pixmap(raw).width / page.rect.width     # keep the image's own resolution
-            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale).prerotate(turn), alpha=False)
-            upright = pix.tobytes("png")
-        finally:
-            src.close()
-        logger.info("%s: page is turned (Document AI orientation %d) - sent to the model upright",
-                    path, orientation)
-        return upright
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("could not check the orientation of %s: %s", path, exc)
-        return raw
-
-
 def extract_document_fields_from_images(
     image_paths: list[Path], fields: list[dict], model: str | None = None,
     tenant_id: str | None = None,
@@ -1003,7 +957,7 @@ def extract_document_fields_from_images(
             }
         ]
         for path in image_paths[:MAX_VISION_PAGES]:
-            b64 = base64.b64encode(_page_png_bytes(path)).decode()
+            b64 = base64.b64encode(path.read_bytes()).decode()
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = create_chat_completion_with_retry(
@@ -1096,7 +1050,7 @@ def extract_document_rows_from_images(
             }
         ]
         for path in image_paths:
-            b64 = base64.b64encode(_page_png_bytes(path)).decode()
+            b64 = base64.b64encode(path.read_bytes()).decode()
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = create_chat_completion_with_retry(
