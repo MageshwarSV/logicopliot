@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, CheckBadgeIcon, CheckCircleIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, CheckBadgeIcon, CheckCircleIcon, ClockIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -4550,9 +4550,28 @@ export function JobRunPage() {
               ? "This stage is not finished yet."
               : `Ready to continue to ${displayLabelFor(nextStage.key)}.`}
           </p>
-          <Button variant="secondary" onClick={goNext}>
-            Next: {displayLabelFor(nextStage.key)} →
-          </Button>
+          {(() => {
+            const ready = !blockedBecause(activeTab);
+            const label = activeTab === "extraction" && nextStage.key === "validation"
+              ? "Review Completed — Start Cross-Document Verification"
+              : `Next: ${displayLabelFor(nextStage.key)}`;
+            return (
+              <button
+                type="button"
+                onClick={goNext}
+                title={ready ? undefined : "This stage is not finished yet"}
+                className={`group inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${
+                  ready
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25 hover:bg-indigo-500 hover:shadow-lg"
+                    : "border border-slate-200 bg-white text-slate-500 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+                }`}
+              >
+                {ready ? <CheckCircleIcon className="h-5 w-5" /> : <ClockIcon className="h-4 w-4" />}
+                {label}
+                <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              </button>
+            );
+          })()}
         </div>
       )}
 
