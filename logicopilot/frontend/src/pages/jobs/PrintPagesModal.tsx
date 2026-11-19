@@ -13,7 +13,7 @@ type PageItem =
   | { kind: "loose"; key: string; pageId: string };
 
 function Thumb({ load, onOpen }: { load: () => Promise<string>; onOpen: (url: string) => void }) {
-  const ref = useRef<HTMLButtonElement | null>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     const el = ref.current;
@@ -30,11 +30,20 @@ function Thumb({ load, onOpen }: { load: () => Promise<string>; onOpen: (url: st
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <button ref={ref} type="button" onClick={() => url && onOpen(url)}
-      className="flex h-32 w-24 items-center justify-center overflow-hidden rounded border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800"
-      title="Click to see the page full size">
+    <div ref={ref} className="relative flex h-32 w-24 items-center justify-center overflow-hidden rounded bg-slate-50 dark:bg-slate-800">
       {url ? <img src={url} alt="" className="h-full w-full object-contain" /> : <span className="text-[10px] text-slate-400">{url === "" ? "no image" : "…"}</span>}
-    </button>
+      {url && (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => { e.stopPropagation(); onOpen(url); }}
+          className="absolute bottom-1 right-1 rounded bg-white/90 px-1 text-[11px] shadow hover:bg-white dark:bg-slate-900/90"
+          title="See the page full size"
+        >
+          🔍
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -132,14 +141,38 @@ export function PrintPagesModal({
     }
   }
 
-  const tile = (key: string, label: string, thumb: React.ReactNode) => (
-    <div key={key} className="flex flex-col items-center gap-1">
-      {thumb}
-      <label className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300">
-        <input type="checkbox" checked={picked.has(key)} onChange={() => flip([key])} /> {label}
+  // Click anywhere on a page to tick or untick it (the 🔍 opens it full size instead).
+  const tile = (key: string, label: string, thumb: React.ReactNode) => {
+    const on = picked.has(key);
+    return (
+      <div key={key} role="button" tabIndex={0} onClick={() => flip([key])}
+        onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip([key]); } }}
+        className="flex cursor-pointer select-none flex-col items-center gap-1" title={on ? "Click to leave this page out" : "Click to print this page"}>
+        <div className={`relative rounded border-2 ${on ? "border-indigo-500" : "border-slate-200 opacity-60 dark:border-slate-700"}`}>
+          {thumb}
+          {on && <span className="absolute left-1 top-1 rounded-full bg-indigo-600 px-1.5 text-[11px] font-bold text-white">✓</span>}
+        </div>
+        <span className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300">
+          <input type="checkbox" readOnly checked={on} className="pointer-events-none" /> {label}
+        </span>
+      </div>
+    );
+  };
+  // A heading's tick box: ticked when everything under it is ticked; click to tick or clear it all.
+  const headingBox = (keys: string[], label: string, big = false) => {
+    const all = keys.length > 0 && keys.every((k) => picked.has(k));
+    const some = !all && keys.some((k) => picked.has(k));
+    return (
+      <label className={`flex cursor-pointer items-center gap-2 ${big ? "text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300" : "text-xs font-semibold uppercase tracking-wider text-slate-500"}`}>
+        <input type="checkbox" className="h-4 w-4" checked={all} disabled={keys.length === 0}
+          ref={(el) => { if (el) el.indeterminate = some; }} onChange={() => flip(keys, !all)} />
+        {label}
+        <span className="font-normal normal-case tracking-normal text-slate-400">
+          {keys.filter((k) => picked.has(k)).length} of {keys.length}
+        </span>
       </label>
-    </div>
-  );
+    );
+  };
   const btn = "rounded-md border border-slate-200 px-2 py-1 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800";
 
   return (
@@ -166,9 +199,11 @@ export function PrintPagesModal({
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3 text-sm">
+          {classified.length > 0 && <div className="mb-3 border-b border-slate-100 pb-2 dark:border-slate-800">{headingBox(classifiedKeys, "Classified", true)}</div>}
           {classified.map((s) => (
-            <div key={s.tdocId} className="mb-4">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{s.name}</p>
+            <div key={s.tdocId} className="mb-4 ml-2">
+              <div className="mb-1">{headingBox(s.files.flatMap((f) => f.source_kind === "excel" ? [f.id]
+                : Array.from({ length: f.page_count || 0 }, (_, i) => `${f.id}:${i + 1}`)), s.name)}</div>
               {s.files.map((f) => {
                 const keys = f.source_kind === "excel" ? [f.id]
                   : Array.from({ length: f.page_count || 0 }, (_, i) => `${f.id}:${i + 1}`);
@@ -196,7 +231,7 @@ export function PrintPagesModal({
           )}
           {(looseItems.length > 0 || files.length > 0) && (
             <div className="mb-2">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">Unclassified</p>
+              <div className="mb-2 border-b border-slate-100 pb-2 dark:border-slate-800">{headingBox(unclassifiedKeys, "Unclassified", true)}</div>
               <div className="flex flex-wrap gap-3">
                 {pages.map((p) => tile(`u:${p.id}`, `${p.group_label ? `${p.group_label} · ` : ""}${p.original_filename.slice(0, 18)} p${p.page_number}`,
                   <Thumb load={() => jobsApi.unclassifiedPageImageUrl(jobId, p.id)} onOpen={setBig} />))}
