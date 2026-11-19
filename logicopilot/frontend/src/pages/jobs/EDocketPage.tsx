@@ -357,8 +357,11 @@ export function EDocketPage() {
   }
 
   return (
-    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className="text-black">
-      <style>{`@media print { .no-print { display: none !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
+    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className="edocket-print text-black">
+      {/* @page margin 0: the browser prints its own header/footer (date, page title, URL,
+          "1/1") INSIDE the page margin - with no margin there is nowhere to put them, so the
+          printout carries only the docket. The docket's own spacing comes from .edocket-print. */}
+      <style>{`@page { margin: 0; } @media print { .no-print { display: none !important; } .edocket-print { padding: 12mm !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
 
       <div className="no-print flex justify-end gap-2 p-3">
         <button
@@ -553,7 +556,7 @@ export function EDocketPage() {
           </tbody>
         </table>
 
-        <p className="mt-3 text-xs text-slate-700">
+        <p className="no-print mt-3 text-xs text-slate-700">
           Starting values come from what was extracted off the documents where a confident match
           was found - everything above is editable or clearable before you print. Nothing here is
           saved back to the job; this is a print/download view.
