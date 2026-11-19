@@ -1765,6 +1765,9 @@ def _process_one_message(
     # template keeps reading PDF/image/zip attachments only, exactly as before.
     attach_exts = (ATTACH_EXTS | EXCEL_EXTS) if is_sheet_mode(single_group) else ATTACH_EXTS
     raw_attachments = _extract_attachments(msg, attach_exts)
+    # The biggest zip as attached (compressed size) - for the template's "hold extraction for a
+    # large zip" rule (TemplateGroup.large_zip_hold / large_zip_mb).
+    biggest_zip = max((len(b) for n, b in raw_attachments if n.lower().endswith(".zip")), default=0)
     # Saved zip passwords for this customer (app/core/zip_passwords.py) - only looked up when a
     # zip is attached, and tried only if one of them is actually password-protected.
     from app.core.zip_passwords import WAITING_FOR_PASSWORD, candidate_passwords, mark_used
@@ -2621,7 +2624,18 @@ def _process_one_message(
             "Unclassified for an operator to resolve", mid[:60], unclassified_count)
 
     try:
-        if getattr(group, "auto_extract", True) is False:
+        limit_mb = getattr(group, "large_zip_mb", 5) or 5
+        if getattr(group, "large_zip_hold", False) is True and biggest_zip > limit_mb * 1024 * 1024:
+            # A large zip (a big consolidation): read, classified and placed - extraction waits
+            # for Run extraction so the documents can be checked first. Every other job of this
+            # template still extracts automatically.
+            notes = dict(job.attachment_notes or {})
+            notes["large_zip"] = {"size_mb": round(biggest_zip / (1024 * 1024), 1), "limit_mb": limit_mb}
+            job.attachment_notes = notes
+            db.commit()
+            logger.info("email %s: zip of %.1f MB is over %s MB - documents placed, extraction waits",
+                        mid[:60], biggest_zip / (1024 * 1024), limit_mb)
+        elif getattr(group, "auto_extract", True) is False:
             # This template reads, classifies and places only - extraction waits for someone to
             # press Extract (TemplateGroup.auto_extract). The job stays a draft with its slots filled.
             logger.info("email %s: auto-extract is off for %s - documents placed, extraction waits",

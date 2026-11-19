@@ -425,6 +425,47 @@ def set_group_prealert_shipments(
     return TemplateGroupOut.model_validate(group)
 
 
+class ProcessingSettingsPayload(BaseModel):
+    """Super Admin -> Document Processing. Every field optional: only what is sent changes."""
+    auto_extract: bool | None = None
+    large_zip_hold: bool | None = None
+    large_zip_mb: int | None = None
+    excel_mode: str | None = None                     # "legacy" | "sheet"
+    excel_ignore_patterns: list[str] | None = None
+
+
+@router.patch("/{group_id}/processing-settings", response_model=TemplateGroupOut)
+def set_group_processing_settings(
+    group_id: str,
+    payload: ProcessingSettingsPayload,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(SUPER_ADMIN)),
+) -> TemplateGroupOut:
+    """How this template's documents are processed: start extraction automatically, hold it for
+    a large zip, Excel by sheet and the Excel files never used. Super Admin only - these change
+    how every job of the template is read and what it costs."""
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    if payload.excel_mode is not None:
+        if payload.excel_mode not in ("legacy", "sheet"):
+            raise HTTPException(status_code=422, detail="excel_mode must be 'legacy' or 'sheet'.")
+        group.excel_mode = payload.excel_mode
+    if payload.large_zip_mb is not None:
+        if not 1 <= payload.large_zip_mb <= 500:
+            raise HTTPException(status_code=422, detail="The zip size must be between 1 and 500 MB.")
+        group.large_zip_mb = payload.large_zip_mb
+    if payload.auto_extract is not None:
+        group.auto_extract = payload.auto_extract
+    if payload.large_zip_hold is not None:
+        group.large_zip_hold = payload.large_zip_hold
+    if payload.excel_ignore_patterns is not None:
+        group.excel_ignore_patterns = [p.strip() for p in payload.excel_ignore_patterns if p.strip()][:50]
+    db.commit()
+    db.refresh(group)
+    return TemplateGroupOut.model_validate(group)
+
+
 class ExcelSettingsPayload(BaseModel):
     excel_mode: str                                   # "legacy" | "sheet"
     # None = the built-in defaults (app/core/excel_intake.DEFAULT_IGNORE_PATTERNS).
@@ -438,7 +479,7 @@ def set_group_excel_settings(
     group_id: str,
     payload: ExcelSettingsPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+    user: User = Depends(require_role(SUPER_ADMIN)),
 ) -> TemplateGroupOut:
     """How this template handles Excel files: "legacy" (converted to PDF, as always) or "sheet"
     (each sheet read from its cells, classified per sheet, Unclassified if not needed), and the

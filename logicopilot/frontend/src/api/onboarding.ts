@@ -605,3 +605,16 @@ export async function readExcelTemplateHeaders(
   );
   return data;
 }
+
+/** Super Admin -> Document Processing: only the fields sent are changed. */
+export async function setProcessingSettings(
+  groupId: string,
+  body: {
+    auto_extract?: boolean; large_zip_hold?: boolean; large_zip_mb?: number;
+    excel_mode?: string; excel_ignore_patterns?: string[];
+  },
+): Promise<TemplateGroup> {
+  const { data } = await apiClient.patch<TemplateGroup>(`/template-groups/${groupId}/processing-settings`, body);
+  return data;
+}
+

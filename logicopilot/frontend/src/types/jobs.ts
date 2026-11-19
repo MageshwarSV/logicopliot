@@ -275,6 +275,8 @@ export interface JobDetail {
     unlocked?: string[];
     /** True while the job is held "Waiting for Password" (nothing read yet). */
     held?: boolean;
+    /** A zip over the template's limit: placed, extraction waits for Run extraction. */
+    large_zip?: { size_mb: number; limit_mb: number };
   } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;

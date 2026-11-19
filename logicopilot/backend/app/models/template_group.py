@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -59,6 +59,11 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # mail and uploads are read, classified and placed, and extraction waits for someone to
     # press Extract - for checking a new customer's documents before spending on extraction.
     auto_extract: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Hold extraction for a mail / upload carrying a zip larger than large_zip_mb (a big
+    # consolidation): it is read, classified and placed, then waits for Run extraction so the
+    # documents can be checked first. Every other job extracts automatically. Off by default.
+    large_zip_hold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    large_zip_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

@@ -2736,6 +2736,12 @@ export function JobRunPage() {
       )}
       {/* What came with the mail/upload but could not be read - a password-protected zip, a
           damaged one, a file type that is not read - so nothing is missed without a trace. */}
+      {job.attachment_notes?.large_zip && job.status === "draft" && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span className="font-medium">Large zip ({job.attachment_notes.large_zip.size_mb} MB, over {job.attachment_notes.large_zip.limit_mb} MB)</span>
+          {" "}— the documents are placed. Check them in Data Capture, then press <span className="font-medium">Run extraction</span>.
+        </div>
+      )}
       {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (
         <HeldPasswordPanel job={job} readOnly={readOnly} onJob={setJob} />
       )}

@@ -1234,6 +1234,8 @@ def _maybe_auto_extract(db: Session, job: Job) -> None:
         return
     if getattr(group, "auto_extract", True) is False:
         return                      # this template waits for someone to press Extract
+    if (job.attachment_notes or {}).get("large_zip"):
+        return                      # a large zip job waits for Run extraction (large_zip_hold)
     filled = {
         jd.template_document_id
         for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
@@ -8150,6 +8152,7 @@ def smart_upload(
     skipped: list[dict] = []
     locked: list[dict] = []
     typed_pw = (zip_password or "").strip()
+    zipped_sizes: list[tuple[int, str]] = []
     saved_pw: list[tuple[str, str]] | None = None
     used_pw: list[str] = []
     for uf in files_in:
@@ -8157,6 +8160,7 @@ def smart_upload(
         # instead of being silently cut short (which made a big zip look "invalid").
         content = uf.file.read(max_upload + 1)
         fname = uf.filename or "upload"
+        zipped_sizes.append((len(content), fname))
         if len(content) > max_upload:
             raise HTTPException(status_code=422,
                                 detail=f"{fname}: larger than {max_upload // (1024 * 1024)} MB - too large to upload.")
@@ -8188,6 +8192,16 @@ def smart_upload(
             group_row = db.get(TemplateGroup, job.group_id)
             save_password(db, tenant_id=job.tenant_id, label=(group_row.name if group_row else "Zip password"),
                           password=typed_pw, created_by_id=user.id if user else None)
+        db.commit()
+    # "Hold extraction for a large zip" (TemplateGroup.large_zip_hold): placed, then waits for
+    # Run extraction - set before placing, so _maybe_auto_extract leaves it alone.
+    biggest_zip = max((size for size, n in zipped_sizes if n.lower().endswith(".zip")), default=0)
+    _grp = db.get(TemplateGroup, job.group_id)
+    _limit = (getattr(_grp, "large_zip_mb", 5) or 5) if _grp is not None else 5
+    if _grp is not None and getattr(_grp, "large_zip_hold", False) is True and biggest_zip > _limit * 1024 * 1024:
+        notes = dict(job.attachment_notes or {})
+        notes["large_zip"] = {"size_mb": round(biggest_zip / (1024 * 1024), 1), "limit_mb": _limit}
+        job.attachment_notes = notes
         db.commit()
     if skipped or locked:
         notes = dict(job.attachment_notes or {})

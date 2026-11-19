@@ -22,6 +22,9 @@ export const superAdminFeatures = [
   // Pages removed from every document before classification (a supplier's terms and
   // conditions, a recurring cover sheet) - the page existed but had no menu entry.
   { path: "/super-admin/filter-pages", navLabel: "Filter Pages", group: "Platform Configuration", order: 5.5 },
+  // Per template: start extraction automatically, hold it for a large zip, Excel by sheet and
+  // the Excel files never used - how documents are processed, so Super Admin only.
+  { path: "/super-admin/document-processing", navLabel: "Document Processing", group: "Platform Configuration", order: 5.6 },
 
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own

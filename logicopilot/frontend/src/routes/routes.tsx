@@ -39,6 +39,7 @@ import { PendingMailPage } from "../pages/super-admin/PendingMailPage";
 import { SettingsPage } from "../pages/super-admin/SettingsPage";
 import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
+import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
@@ -142,6 +143,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <EmailPullerPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/document-processing"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <DocumentProcessingPage />
           </ProtectedRoute>
         }
       />

@@ -480,3 +480,5 @@ class AvailableGroup(BaseModel):
     excel_mode: str = "legacy"
     excel_ignore_patterns: list[str] | None = None
     auto_extract: bool = True
+    large_zip_hold: bool = False
+    large_zip_mb: int = 5
