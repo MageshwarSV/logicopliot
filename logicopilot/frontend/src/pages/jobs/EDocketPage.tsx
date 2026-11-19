@@ -193,8 +193,15 @@ export function EDocketPage() {
   // and every cell is editable.
   const [feedback, setFeedback] = useState<string[][]>(() =>
     Array.from({ length: PAGE2_ROWS }, () => FEEDBACK_COLUMNS.map(() => "")));
+  // ADVANCE DETAILS rows 1 and 2 come pre-printed (by request): row 1 is "Free Do  Yes / No"
+  // (tick boxes - freeDo below), row 2 is "CFS Charges On Forwarders Scope". The rest is blank.
   const [advance, setAdvance] = useState<string[][]>(() =>
-    Array.from({ length: PAGE2_ROWS }, () => ADVANCE_COLUMNS.map(() => "")));
+    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) => {
+      if (j === 0 && i < 2) return String(i + 1);
+      if (i === 1 && j === 2) return "CFS Charges On Forwarders Scope";
+      return "";
+    })));
+  const [freeDo, setFreeDo] = useState<"Yes" | "No" | null>(null);
 
   const isExport = /export/i.test(job?.mode ?? "");
   const docketRows = useMemo(() => rows(isExport), [isExport]);
@@ -655,12 +662,37 @@ export function EDocketPage() {
               <tr key={i}>
                 {row.map((cell, j) => (
                   <td key={j} className="border border-black px-1" style={{ height: 30 }}>
+                    {i === 0 && j === 2 ? (
+                      // Row 1's Cheque Favour: "Free Do" with a Yes / No tick box - one or neither.
+                      <div className="flex items-center gap-3 text-xs font-semibold">
+                        <span>Free Do</span>
+                        {(["Yes", "No"] as const).map((o) => (
+                          <button
+                            key={o}
+                            type="button"
+                            onClick={() => setFreeDo((v) => (v === o ? null : o))}
+                            className="flex items-center gap-1"
+                          >
+                            <span
+                              className="flex h-3.5 w-3.5 shrink-0 items-center justify-center border border-black leading-none"
+                              style={{ fontSize: 10 }}
+                            >
+                              {freeDo === o ? "✓" : ""}
+                            </span>
+                            {o}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
                     <input
                       value={cell}
                       onChange={(e) => setAdvance((t) => t.map((r, ri) =>
                         ri === i ? r.map((c, ci) => (ci === j ? e.target.value : c)) : r))}
-                      className={`w-full bg-transparent font-mono text-xs ${j === 0 ? "text-center" : ""}`}
+                      className={`w-full bg-transparent text-xs ${
+                        i < 2 && (j === 0 || j === 2) ? "font-semibold" : "font-mono"
+                      } ${j === 0 ? "text-center" : ""}`}
                     />
+                    )}
                   </td>
                 ))}
               </tr>
