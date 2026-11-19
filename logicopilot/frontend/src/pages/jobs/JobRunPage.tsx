@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
+import { ErpExcelEditor } from "./ErpExcelEditor";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -958,6 +959,8 @@ export function JobRunPage() {
   const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
   // Document Capture -> Print pages (PrintPagesModal).
   const [printPagesOpen, setPrintPagesOpen] = useState(false);
+  // The job's ERP Excel, opened and edited in the app (ErpExcelEditor).
+  const [excelEditorOpen, setExcelEditorOpen] = useState(false);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
@@ -1706,6 +1709,16 @@ export function JobRunPage() {
   /** "Download as Excel" — GK1's Final Submit for Approval and GK2's Final Approve & Proceed
    *  both offer this for an Excel-entry job: the same workbook the real submission builds,
    *  rebuilt fresh from the job's current data every time it's pressed. */
+  async function resetEditedExcel() {
+    if (!window.confirm("Throw away the edited Excel and build it again from the job's data?")) return;
+    try {
+      await jobsApi.resetJobExcel(jobId);
+      setJob(await jobsApi.getJob(jobId));
+    } catch {
+      window.alert("Could not reset the Excel.");
+    }
+  }
+
   async function downloadExcel() {
     setExcelBusy(true);
     setExcelError(null);
@@ -3289,6 +3302,14 @@ export function JobRunPage() {
               </>)}
             </div>
           )}
+          {excelEditorOpen && job && (
+            <ErpExcelEditor
+              jobId={jobId}
+              readOnly={readOnly}
+              onClose={() => setExcelEditorOpen(false)}
+              onSaved={() => { jobsApi.getJob(jobId).then(setJob).catch(() => undefined); }}
+            />
+          )}
           {printPagesOpen && job && (
             <PrintPagesModal
               jobId={jobId}
@@ -3648,8 +3669,26 @@ export function JobRunPage() {
                             ? "Waiting on GK2's final approval."
                             : "Hand this job over to GK2 for a final approval and the real ERP entry."}
                   </p>
+                  {job.excel_entry && job.erp_excel_edited && (
+                    <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                      Edited Excel in use
+                      {job.erp_excel_edited.saved_by ? ` — saved by ${job.erp_excel_edited.saved_by}` : ""}
+                      {job.erp_excel_edited.saved_at ? ` on ${formatDateTime(job.erp_excel_edited.saved_at)}` : ""}.
+                      {" "}Download and the ERP import use this copy; field changes made after it are not in it.
+                      {!readOnly && (
+                        <button type="button" onClick={resetEditedExcel} className="ml-2 font-semibold underline hover:text-amber-900">
+                          Reset to generated
+                        </button>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {job.excel_entry && (
+                    <Button variant="secondary" onClick={() => setExcelEditorOpen(true)}>
+                      Open &amp; edit Excel
+                    </Button>
+                  )}
                   {job.excel_entry && (
                     <Button variant="secondary" onClick={downloadExcel} isLoading={excelBusy}>
                       Download as Excel

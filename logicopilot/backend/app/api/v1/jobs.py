@@ -1760,6 +1760,9 @@ def _delete_job_cascade(db: Session, job: Job, deleted_by: User | None = None,
     from app.core.excel_intake import unclassified_excel_dir
 
     dirs.append(unclassified_excel_dir(job.id))
+    from app.core.erp_excel_edit import edited_dir as _edited_xlsx_dir
+
+    dirs.append(_edited_xlsx_dir(job.id))
     db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id).delete()
 
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
@@ -3495,6 +3498,82 @@ def download_job_excel(
     )
 
 
+# ---- the ERP Excel, opened and edited in the app (app/core/erp_excel_edit.py) ----
+
+class ErpExcelSheets(BaseModel):
+    sheets: list[dict]
+
+
+@router.get("/jobs/{job_id}/erp-excel/sheets")
+def open_job_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """The job's ERP workbook as sheets of cell text, for the in-app editor - the saved edited
+    copy when there is one, else freshly built from the job's data."""
+    from app.core.erp_excel_edit import edited_meta, read_sheets
+
+    job = _load_job(db, job_id, scope, user)
+    try:
+        book = _build_job_excel(db, job)
+    except ExcelBuildFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from app.core.erp_excel_edit import locked_reason
+
+    return {"edited": edited_meta(job.id), "file": book.name, "sheets": read_sheets(book),
+            "locked": locked_reason(job)}
+
+
+@router.put("/jobs/{job_id}/erp-excel/sheets")
+def save_job_excel(
+    job_id: str,
+    payload: ErpExcelSheets,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Save the edited workbook. From now on it is the job's ERP Excel - Download as Excel and
+    the real ERP import use it - until "Reset to generated"."""
+    from app.core.erp_excel_edit import edited_file, edited_meta, locked_reason, save_sheets
+
+    job = _load_job(db, job_id, scope, user)
+    if (why := locked_reason(job)):
+        raise HTTPException(status_code=409, detail=why)
+    try:
+        base = edited_file(job.id) or _build_job_excel(db, job, ignore_edited=True)
+    except ExcelBuildFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    save_sheets(base, payload.sheets, job.id, f"{job.reference or job.id}.xlsx",
+                saved_by=(user.full_name or user.email) if user else None)
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage=None,
+                    note="ERP Excel edited and saved in the app - it replaces the generated one"))
+    db.commit()
+    return {"edited": edited_meta(job.id)}
+
+
+@router.delete("/jobs/{job_id}/erp-excel/edited")
+def reset_job_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Throw the edited copy away - the workbook is built from the job's data again."""
+    from app.core.erp_excel_edit import edited_file, locked_reason, reset
+
+    job = _load_job(db, job_id, scope, user)
+    if (why := locked_reason(job)):
+        raise HTTPException(status_code=409, detail=why)
+    if edited_file(job.id) is not None:
+        reset(job.id)
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage=None,
+                        note="Edited ERP Excel reset - built from the job's data again"))
+        db.commit()
+    return {"edited": None}
+
+
 @router.get("/jobs/{job_id}/dump-preview")
 def dump_preview(
     job_id: str,
@@ -3697,6 +3776,12 @@ def _ensure_manual_entry_fields(db: Session, job: Job, group: TemplateGroup) -> 
         db.flush()
         logger.info("job %s: created %d empty hand-entry field(s)", job.id, created)
     return created
+
+
+def _erp_excel_edited_meta(job_id: str) -> dict | None:
+    from app.core.erp_excel_edit import edited_meta
+
+    return edited_meta(job_id)
 
 
 def _build_detail(db: Session, job: Job) -> JobDetailOut:
@@ -4212,6 +4297,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         missing_documents=(_missing_mandatory_documents(db, job)
                           if outer_status == "Missing Documents" else None),
         attachment_notes=job.attachment_notes,
+        erp_excel_edited=_erp_excel_edited_meta(job.id),
         mode=_shipment_mode(db, job),
         assigned_operator_id=job.assigned_operator_id,
         operator_name=_operator_name(db, job),
@@ -5215,7 +5301,7 @@ class ExcelBuildFailed(Exception):
     operator-readable reason, never a bare exception."""
 
 
-def _build_job_excel(db: Session, job: Job, out_dir=None) -> Path:
+def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False) -> Path:
     """Build this job's ERP-import workbook fresh from its CURRENT extracted values.
 
     The same build complete_job's Excel-entry path already uses (see entry_uploads below),
@@ -5233,6 +5319,13 @@ def _build_job_excel(db: Session, job: Job, out_dir=None) -> Path:
     grp = db.get(TemplateGroup, job.group_id)
     if grp is None or (grp.entry_mode or "fields") != "excel":
         raise ExcelBuildFailed("This job's template is not set up for Excel entry.")
+    # Edited in the app and saved: that copy is the job's workbook until it is reset
+    # (app/core/erp_excel_edit.py) - for the download and the real ERP import alike.
+    from app.core.erp_excel_edit import edited_file, use_edited_or_build
+
+    if not ignore_edited and edited_file(job.id) is not None:
+        target = Path(out_dir) if out_dir else Path(get_settings().uploads_dir) / "job_excel" / job.id
+        return use_edited_or_build(job.id, target, lambda: None)
     cfg = grp.excel_config or {}
     values, rows = entry_values_and_rows(db, job)
     filled, mapped = _column_fill(cfg, values, rows)
@@ -5281,8 +5374,10 @@ def entry_uploads(db: Session, job: Job, values: dict, rows: dict, out_dir) -> d
         tpl_dir = _P(get_settings().uploads_dir) / "excel_templates" / grp.id
         tpl = (next((x for x in tpl_dir.glob("template.*")), None)
                if cfg.get("source") == "template" else None)
-        book = build_for_job(cfg, values, rows, _P(out_dir), tpl,
-                             name_as=job.reference or job.id)
+        from app.core.erp_excel_edit import use_edited_or_build
+
+        book = use_edited_or_build(job.id, _P(out_dir), lambda: build_for_job(
+            cfg, values, rows, _P(out_dir), tpl, name_as=job.reference or job.id))
         up_map.setdefault("excel_import", str(book))
         up_map.setdefault(book.name, str(book))
         # The file is now named after the job, but a step recorded before that still asks for
@@ -5830,9 +5925,13 @@ def complete_job(
                     tpl = (next((p for p in tpl_dir.glob("template.*")), None)
                            if cfg.get("source") == "template" else None)
                     try:
-                        book = build_for_job(cfg, values, rows,
-                                             Path(dl_dir) if dl_dir else Path("."), tpl,
-                                             name_as=job.reference or job.id)
+                        from app.core.erp_excel_edit import use_edited_or_build
+
+                        book = use_edited_or_build(
+                            job.id, Path(dl_dir) if dl_dir else Path("."),
+                            lambda: build_for_job(cfg, values, rows,
+                                                  Path(dl_dir) if dl_dir else Path("."), tpl,
+                                                  name_as=job.reference or job.id))
                         up_map.setdefault("excel_import", str(book))
                         up_map.setdefault(book.name, str(book))
                         # ...and under the template's own name, so a step recorded before the
