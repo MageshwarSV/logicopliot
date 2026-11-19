@@ -63,5 +63,11 @@ def test_print_combines_the_chosen_documents_in_order(db_session, tmp_path, monk
     assert pdf.page_count == 4                                         # 2 AWB + 1 page + 1 sheet
     assert "INV-1" in pdf[3].get_text()
 
+    # "Print pages...": only page 2 of the waybill, nothing else.
+    resp = jobs_api.print_job_documents(job.id, jobs_api.PrintDocumentsPayload(
+        documents=[jd.id], document_pages={jd.id: [2, 9]}), db=db_session, scope=scope, user=None)
+    pdf = fitz.open(stream=resp.body, filetype="pdf")
+    assert pdf.page_count == 1                                         # page 9 does not exist
+
     with pytest.raises(HTTPException):
         jobs_api.print_job_documents(job.id, jobs_api.PrintDocumentsPayload(), db=db_session, scope=scope, user=None)

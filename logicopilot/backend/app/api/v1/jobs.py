@@ -8694,6 +8694,9 @@ class PrintDocumentsPayload(BaseModel):
     documents: list[str] = []
     unclassified_pages: list[str] = []
     unclassified_files: list[str] = []
+    # "Print pages...": only these pages (1-based, as shown) of a document; a document not
+    # listed here prints whole. Print only - the document itself is not changed.
+    document_pages: dict[str, list[int]] = {}
 
 
 def _image_page(out, png_path: Path) -> bool:
@@ -8768,7 +8771,10 @@ def print_job_documents(
                 _sheet_pages(out, jd.original_name or "Excel sheet", sheet)
             continue
         pages_dir = _job_doc_dir(jd.id) / "pages"
-        for n in range(1, (jd.page_count or 0) + 1):
+        chosen = payload.document_pages.get(did)
+        numbers = (sorted({n for n in chosen if 1 <= n <= (jd.page_count or 0)}) if chosen is not None
+                   else range(1, (jd.page_count or 0) + 1))
+        for n in numbers:
             _image_page(out, pages_dir / f"page_{n}.png")
     pages = {r.id: r for r in db.query(UnmatchedUploadPage).filter(
         UnmatchedUploadPage.job_id == job.id, UnmatchedUploadPage.id.in_(payload.unclassified_pages or [""]))}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintDocumentsModal } from "./PrintDocumentsModal";
+import { PrintPagesModal } from "./PrintPagesModal";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -958,6 +959,7 @@ export function JobRunPage() {
   const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
   // Document Capture -> Print (PrintDocumentsModal).
   const [printOpen, setPrintOpen] = useState(false);
+  const [printPagesOpen, setPrintPagesOpen] = useState(false);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
@@ -2842,6 +2844,7 @@ export function JobRunPage() {
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-slate-50">Upload documents</h2>
             {readOnly && !showsMachinery && (
+              <>
               <button
                   type="button"
                   onClick={() => setPrintOpen(true)}
@@ -2850,6 +2853,15 @@ export function JobRunPage() {
                 >
                   Print
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                  title="Pick individual pages to print - for leaving out an unwanted page"
+                >
+                  Print pages…
+                </button>
+              </>
             )}
             {(!readOnly || showsMachinery) && (
               <div className="flex items-center gap-2">
@@ -2860,6 +2872,14 @@ export function JobRunPage() {
                   title="Choose documents and print them, or download them as one PDF"
                 >
                   Print
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                  title="Pick individual pages to print - for leaving out an unwanted page"
+                >
+                  Print pages…
                 </button>
                 {!readOnly && (
                   <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
@@ -3281,6 +3301,16 @@ export function JobRunPage() {
               pages={unclassifiedPages}
               files={unclassifiedFiles}
               onClose={() => setPrintOpen(false)}
+            />
+          )}
+          {printPagesOpen && job && (
+            <PrintPagesModal
+              jobId={jobId}
+              jobReference={job.reference}
+              slots={docSlots}
+              pages={unclassifiedPages}
+              files={unclassifiedFiles}
+              onClose={() => setPrintPagesOpen(false)}
             />
           )}
           {viewingExcelDoc && (
