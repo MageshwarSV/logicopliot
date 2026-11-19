@@ -4083,12 +4083,19 @@ export function JobRunPage() {
                       (() => {
                         // Live, pre-save drafts (see liveErpEntryName/liveBranchName above) -
                         // previews as the operator picks, not only once each is saved.
-                        const nameValue = liveErpEntryName.toUpperCase();
-                        const branchValue = liveBranchName.toUpperCase();
+                        // Compared the way the server stores reference keys (reference_cache.
+                        // normalize_key: single spaces, no surrounding " -–—:,;()", upper case) -
+                        // a branch such as "3 (3)" is stored as "3 (3", so an exact comparison
+                        // never found its address.
+                        const norm = (s: string) =>
+                          s.split(/\s+/).filter(Boolean).join(" ")
+                            .replace(/^[ \-–—:,;()]+|[ \-–—:,;()]+$/g, "").toUpperCase();
+                        const nameValue = norm(liveErpEntryName);
+                        const branchValue = norm(liveBranchName);
                         const match = quotationAddressOptions.find(
                           (o) =>
-                            (o.match_values[0] ?? "").toUpperCase() === nameValue &&
-                            (o.match_values[1] ?? "").toUpperCase() === branchValue,
+                            norm(o.match_values[0] ?? "") === nameValue &&
+                            norm(o.match_values[1] ?? "") === branchValue,
                         );
                         return (
                           <div className="mt-3">
