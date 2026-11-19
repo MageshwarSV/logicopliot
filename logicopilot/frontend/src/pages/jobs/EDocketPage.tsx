@@ -189,12 +189,12 @@ export function EDocketPage() {
   // Keyed by row label (the paired Date row uses "<label> / Date") - editable from whatever
   // was auto-mapped, or blank where nothing was.
   const [values, setValues] = useState<Record<string, string>>({});
-  // Page 2 - the paper docket's back side. Each table is FEEDBACK_ROWS x its columns, all
-  // editable; Container No. starts from the job's own containers (see the starting-values effect).
+  // Page 2 - the paper docket's back side: both tables start blank, exactly like the paper,
+  // and every cell is editable.
   const [feedback, setFeedback] = useState<string[][]>(() =>
     Array.from({ length: PAGE2_ROWS }, () => FEEDBACK_COLUMNS.map(() => "")));
   const [advance, setAdvance] = useState<string[][]>(() =>
-    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) => (j === 0 ? String(i + 1) : ""))));
+    Array.from({ length: PAGE2_ROWS }, () => ADVANCE_COLUMNS.map(() => "")));
 
   const isExport = /export/i.test(job?.mode ?? "");
   const docketRows = useMemo(() => rows(isExport), [isExport]);
@@ -286,10 +286,6 @@ export function EDocketPage() {
     // it should say, not just how many entries happen to follow it. The Shipment Type (the
     // same FCL/LCL/B.B this job's own tick-box above reads) closes the value out.
     const shipmentTypeDisplay = mappedFclLcl || (shipmentType?.value ?? "").trim();
-    // Page 2's FEEDBACK STATUS starts with these same containers, one per row, numbers only.
-    const containerNumbers = blContainerNumbers.map((f) => (f.value ?? "").trim()).filter(Boolean);
-    setFeedback((prev) => prev.map((row, i) =>
-      i < containerNumbers.length && !row[0] ? [containerNumbers[i], ...row.slice(1)] : row));
     // With no container read (the usual LCL case) the row still says FCL / LCL on its own.
     const containers = containerList.length
       ? `${containerList.length} x ${containerList.join(" , ")}`
