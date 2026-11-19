@@ -359,10 +359,15 @@ export function EDocketPage() {
         const num = Number(next["Weight (Gross)"].replace(/[^0-9.]/g, ""));
         if (!Number.isNaN(num)) next["Weight (Gross)"] = `${num.toFixed(3)} KG`;
       }
-      // "Chargeable Weight" is an air-freight concept (the greater of actual vs volumetric
-      // weight) - a sea shipment is never charged this way, so it always reads "NA" there.
+      // "Chargeable Weight" on a sea docket shows the Bill of lading's own MEASUREMENT (its
+      // "CBM Measurement" field, by request 2026-11-19), e.g. "1.460 CBM"; "NA" only when the
+      // B/L gives none. Air keeps whatever its own fields read.
       if (!("Chargeable Weight" in prev) && /sea/i.test(job.mode ?? "")) {
-        next["Chargeable Weight"] = "NA";
+        const cbm = exact("CBM Measurement");
+        const cbmNum = Number(cbm.replace(/[^0-9.]/g, ""));
+        next["Chargeable Weight"] = cbm
+          ? (/cbm|m3|cu/i.test(cbm) || Number.isNaN(cbmNum) ? cbm : `${cbm} CBM`)
+          : "NA";
       }
       if (!("Ass. Value / Invoice Value" in prev) && invoiceValueDisplay) {
         const assValue = next["Ass. Value / Invoice Value"] ?? "";
