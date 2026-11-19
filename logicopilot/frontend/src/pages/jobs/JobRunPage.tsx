@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, CheckBadgeIcon, CheckCircleIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -2324,7 +2324,7 @@ export function JobRunPage() {
         if (unapproved.length) {
           return `${unapproved.length} document${unapproved.length === 1 ? "" : "s"} still need${
             unapproved.length === 1 ? "s" : ""
-          } "${isGk2Tab ? "Approve & Proceed" : "Submit for Approval"}": ${unapproved.map((d) => d.name).join(", ")}.`;
+          } ${isGk2Tab ? '"Approve & Proceed"' : "their review completed (Complete … Review)"}: ${unapproved.map((d) => d.name).join(", ")}.`;
         }
         // Formerly Dump Data's own gate: a part the reference sheet does not carry is left
         // blank on purpose rather than guessed — and a Bill of Entry cannot go without a CTH.
@@ -6770,7 +6770,8 @@ function ExtractionReview({
   );
   const { user } = useAuth();
   const isGk2 = user?.role === "gk2";
-  const proceedLabel = isGk2 ? "Approve & Proceed" : "Submit for Approval";
+  // GK1 completes the review of each document; GK2 approves it.
+  const proceedLabel = (name: string) => (isGk2 ? `Approve & Proceed — ${name}` : `Complete ${name} Review`);
   // GK2 re-reviews every document independently, on its own column — never GK1's.
   const isApproved = (d: JobDocument) => (isGk2 ? d.gk2_approved : d.approved);
   const active = files.find((f) => f.id === activeFileId) ?? files[0];
@@ -8508,17 +8509,31 @@ function ExtractionReview({
         <div className="flex items-center justify-end gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700">
           {isApproved(active) ? (
             <>
-              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                ✓ Approved — {active.name}
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                <CheckBadgeIcon className="h-4 w-4" />
+                {isGk2 ? "Approved" : "Review complete"} — {active.name}
               </span>
-              <Button variant="secondary" onClick={approveActive} isLoading={approvingId === active.id}>
-                Undo
-              </Button>
+              <button
+                type="button"
+                onClick={approveActive}
+                disabled={approvingId === active.id}
+                title="Mark this document as not reviewed again"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                <ArrowPathIcon className="h-4 w-4" />
+                {approvingId === active.id ? "Undoing…" : "Undo"}
+              </button>
             </>
           ) : (
-            <Button onClick={approveActive} isLoading={approvingId === active.id}>
-              {proceedLabel} — {active.name}
-            </Button>
+            <button
+              type="button"
+              onClick={approveActive}
+              disabled={approvingId === active.id}
+              className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-emerald-600/25 transition-colors hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-70"
+            >
+              <CheckCircleIcon className="h-5 w-5" />
+              {approvingId === active.id ? "Saving…" : proceedLabel(active.name)}
+            </button>
           )}
         </div>
       )}
