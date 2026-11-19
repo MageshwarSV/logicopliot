@@ -3302,14 +3302,6 @@ export function JobRunPage() {
               </>)}
             </div>
           )}
-          {excelEditorOpen && job && (
-            <ErpExcelEditor
-              jobId={jobId}
-              readOnly={readOnly}
-              onClose={() => setExcelEditorOpen(false)}
-              onSaved={() => { jobsApi.getJob(jobId).then(setJob).catch(() => undefined); }}
-            />
-          )}
           {printPagesOpen && job && (
             <PrintPagesModal
               jobId={jobId}
@@ -3631,6 +3623,15 @@ export function JobRunPage() {
       )}
 
       {/* ---------------- ERP Submission ---------------- */}
+      {/* Outside every tab block - the button lives on Final Submit. */}
+      {excelEditorOpen && job && (
+        <ErpExcelEditor
+          jobId={jobId}
+          readOnly={readOnly}
+          onClose={() => setExcelEditorOpen(false)}
+          onSaved={() => { jobsApi.getJob(jobId).then(setJob).catch(() => undefined); }}
+        />
+      )}
       {activeTab === "submission" && (
         <Card className="p-5">
           {(() => {
