@@ -6952,7 +6952,11 @@ function ExtractionReview({
       const relocated = job.field_values.filter(
         (fv) =>
           fv.row_index == null &&
-          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id),
+          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id) &&
+          // Only this document's own value, or the one job-level value - never another file's.
+          // A consolidation has many invoices sharing one template, each with its own Product
+          // Value; one blank on invoice 47 used to block approving invoice 1 (JOB-12B137).
+          (!fv.job_document_id || fv.job_document_id === active.id),
       );
       // Insurance Rate (%) / Insurance Amount are a pair - only whichever one the operator
       // picked (see the check just above, which already returned early if nothing was picked
