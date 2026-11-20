@@ -1307,8 +1307,12 @@ def _if_condition_met(page, step: dict, val: str, timeout_s: float | None = None
     want = (val or "").strip()
     if not want:
         return False, "the value to look for is empty"
+    # With an iframe chain recorded, look ONLY inside it. The Change Branch test must ask "is
+    # Chennai in the popup's list?", not "is Chennai anywhere" - the page header names the
+    # branch in use, and a whole-page search would find it there and call the test passed.
+    frames = step.get("frames") or []
     while True:
-        if _text_on_screen(page, want):
+        if (_exact_text_selector(page, frames, want) is not None) if frames else _text_on_screen(page, want):
             return True, f"{want!r} is on screen"
         if _t.monotonic() >= deadline:
             return False, f"{want!r} is not on screen"
