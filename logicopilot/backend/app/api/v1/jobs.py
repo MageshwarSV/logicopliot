@@ -1201,6 +1201,16 @@ def _begin_extraction(
     job.stage_override = None
     job.status = "extracting"
     job.extraction_is_rerun = is_rerun
+    # Which document a one-document re-read is for, so a restart that interrupts it resumes
+    # THAT read rather than re-reading the whole job (app/core/restart_resume.py).
+    if job.attachment_notes is None or isinstance(job.attachment_notes, dict):
+        _notes = dict(job.attachment_notes or {})
+        if only_job_document_id:
+            _notes["extract_doc"] = only_job_document_id
+        else:
+            _notes.pop("extract_doc", None)
+        if _notes != (job.attachment_notes or {}):
+            job.attachment_notes = _notes
     # A fresh read means a fresh review: "Review Time" restarts from the operator's first
     # action AFTER this extraction finishes (by request, 2026-11-19), not from the first
     # action before it. _mark_review_started stamps it again once they start working the job.
@@ -3434,13 +3444,6 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     def _live(shot, log, debug=None, _jid=job.id):
         live_runs.publish(_jid, shot, log, debug=debug)
 
-    # Everything up to here was preparation - "AI - Preparing for ERP" is still accurate. Only
-    # from here does the run actually touch the real ERP, so that is when the badge moves to
-    # "ERP Entry Process Started" - a visibly different, longer-running stage from a workbook
-    # build that finishes in under a second.
-    job.gk2_status = "entering_erp"
-    db.commit()
-
     # The same session reuse complete_job's Submit Entry has had all along, which this path
     # - the one GK2's "Final Approve & Proceed" actually runs - never got. Without it every
     # job here replays the full login, and with erp_script_workers above 1 that is several
@@ -3451,20 +3454,48 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     if ckpt is not None:
         sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
 
+    from app.core import erp_priority
     from app.core.erp_session import script_slot
 
-    try:
-        # A script with no session to share has to take turns, however many workers are
-        # configured - see script_slot. One with a shared session does not.
-        with script_slot(script.id, shared_login=ckpt is not None):
-            result = play_steps(
-                script.url, login, script.steps or [], values, headless=True, rows=rows,
-                downloads_dir=dl_dir, uploads=up_map, progress=_live,
-                checkpoint_index=ckpt, session_file=sess_file,
-            )
-    except Exception as exc:  # noqa: BLE001
-        _fail(f"The ERP entry could not be run: {exc}")
-        return
+    while True:
+        # An Entry Browser run holds the ERP (one login per account) - wait it out before
+        # logging in, still reading "AI - Preparing for ERP". See app/core/erp_priority.py.
+        erp_priority.wait_turn()
+        db.refresh(job)
+        if job.gk2_status != "preparing_erp":
+            # The Entry Browser run that held the ERP was THIS job, and wrote it up
+            # (persist_run_outcome clears gk2_status) - running it again would enter it twice.
+            logger.info("job %s: already run from the Entry Browser - not queued again",
+                        job.reference)
+            return
+        # Everything up to here was preparation - "AI - Preparing for ERP" is still accurate.
+        # Only from here does the run actually touch the real ERP, so that is when the badge
+        # moves to "ERP Entry Process Started" - a visibly different, longer-running stage from
+        # a workbook build that finishes in under a second.
+        job.gk2_status = "entering_erp"
+        db.commit()
+        try:
+            # A script with no session to share has to take turns, however many workers are
+            # configured - see script_slot. One with a shared session does not.
+            with erp_priority.queued_run(job.id), \
+                    script_slot(script.id, shared_login=ckpt is not None):
+                result = play_steps(
+                    script.url, login, script.steps or [], values, headless=True, rows=rows,
+                    downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                    checkpoint_index=ckpt, session_file=sess_file,
+                    cancel=erp_priority.manual_active,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _fail(f"The ERP entry could not be run: {exc}")
+            return
+        if not erp_priority.was_preempted(result):
+            break
+        # Paused for an Entry Browser run: back in line, then the WHOLE entry again from step 0
+        # - the half-filled form it was on went with the login the Entry Browser took over.
+        logger.info("job %s: ERP run paused for an Entry Browser run - will start again "
+                    "from the beginning", job.reference)
+        job.gk2_status = "preparing_erp"
+        db.commit()
     live_runs.publish(job.id, None, result.get("log") or [], done=True)
 
     persist_run_outcome(db, job, script, result, operator_id=job.assigned_operator_id)
@@ -6039,14 +6070,25 @@ def complete_job(
                 def _live(shot, log, debug=None, _jid=job.id):
                     live_runs.publish(_jid, shot, log, debug=debug)
 
+                from app.core import erp_priority
                 from app.core.erp_session import script_slot
 
-                with script_slot(script.id, shared_login=ckpt is not None):
-                    result = play_steps(
-                        script.url, login, script.steps or [], values, headless=True,
-                        rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
-                        session_file=sess_file, uploads=up_map, progress=_live,
-                    )
+                while True:
+                    # Same rule as the queued GK2 run: an Entry Browser run goes first, and a
+                    # run it interrupts starts again from step 0. See app/core/erp_priority.py.
+                    erp_priority.wait_turn()
+                    with erp_priority.queued_run(job.id), \
+                            script_slot(script.id, shared_login=ckpt is not None):
+                        result = play_steps(
+                            script.url, login, script.steps or [], values, headless=True,
+                            rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
+                            session_file=sess_file, uploads=up_map, progress=_live,
+                            cancel=erp_priority.manual_active,
+                        )
+                    if not erp_priority.was_preempted(result):
+                        break
+                    logger.info("job %s: ERP run paused for an Entry Browser run - will start "
+                                "again from the beginning", job.reference)
                 live_runs.publish(job.id, None, result.get("log") or [], done=True)
         except HTTPException:
             # Raised deliberately above (the workbook could not be built, or nothing would

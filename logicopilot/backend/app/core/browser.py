@@ -4904,6 +4904,10 @@ class SessionManager:
             self._touched[sid] = _time.monotonic()
         return s
 
+    def has(self, sid: str) -> bool:
+        """Is this browser still open - without counting as a touch the way get() does."""
+        return sid in self._sessions
+
     def stop(self, sid: str) -> None:
         with self._lock:
             s = self._sessions.pop(sid, None)
@@ -4958,7 +4962,7 @@ class PlaybackManager:
               # run must not be harder than running it.
               time_budget: int = 300, stall_after: int = STALL_SECONDS,
               rows: dict | None = None, uploads: dict | None = None,
-              downloads_dir=None, on_done=None) -> str:
+              downloads_dir=None, on_done=None, before=None) -> str:
         sid = uuid.uuid4().hex
         state = {"screenshot": None, "log": [], "done": False, "status": "running",
                  "result": None, "cancel": False, "total": len(steps or []), "debug": None}
@@ -4973,6 +4977,10 @@ class PlaybackManager:
 
         def _run():
             try:
+                if before is not None:
+                    # e.g. wait for a queued ERP run to close its browser before this one logs
+                    # in (app/core/erp_priority.py) - on this thread, never the request's.
+                    before(state)
                 # Live rerun: headless + streamed, and fail FAST (short budget, fewer AI
                 # retries) so a stuck run returns quickly instead of hanging.
                 res = play_steps(
