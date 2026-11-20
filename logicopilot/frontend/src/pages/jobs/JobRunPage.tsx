@@ -2625,6 +2625,10 @@ export function JobRunPage() {
                   {reviewFiles.map((f) => {
                     const approved = isFileApproved(f);
                     const isOpen = activeFile?.id === f.id;
+                    // Serial number within its document type (Invoice 1, Invoice 2 ... of 57) -
+                    // only when the type has more than one file, so a single Air Waybill stays plain.
+                    const sameType = reviewFiles.filter((x) => x.name === f.name);
+                    const serial = sameType.length > 1 ? sameType.indexOf(f) + 1 : null;
                     return (
                       <li key={f.id}>
                         <button
@@ -2645,8 +2649,9 @@ export function JobRunPage() {
                           >
                             {approved ? "✓" : ""}
                           </span>
-                          <span className="min-w-0 flex-1 truncate">
+                          <span className="min-w-0 flex-1 truncate" title={serial ? `${f.name} ${serial} of ${sameType.length}${f.original_name ? ` · ${f.original_name}` : ""}` : undefined}>
                             {f.name}
+                            {serial ? <span className="ml-1 font-semibold tabular-nums">{serial}</span> : null}
                             {f.original_name ? <span className="opacity-60"> · {f.original_name}</span> : null}
                             {f.manual_entry ? <span className="opacity-60"> · enter by hand</span> : null}
                             {f.set_index ? <span className="opacity-60"> · set {f.set_index}</span> : null}
@@ -2789,6 +2794,12 @@ export function JobRunPage() {
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
           <span className="font-medium">Large zip ({job.attachment_notes.large_zip.size_mb} MB, over {job.attachment_notes.large_zip.limit_mb} MB)</span>
           {" "}— the documents are placed. Check them in Data Capture, then press <span className="font-medium">Run extraction</span>.
+        </div>
+      )}
+      {job.attachment_notes?.lane_extract && job.status === "extracting" && (
+        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+          <span className="font-medium">Extraction is on the large-job lane</span>
+          {" "}— large jobs run one at a time, so it starts as soon as the one before it finishes. Small jobs are not held up by it.
         </div>
       )}
       {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (

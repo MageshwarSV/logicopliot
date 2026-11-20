@@ -1154,6 +1154,10 @@ def _pull_inbox(
             finally:
                 worker_db.close()
 
+        # A big consolidation mail on a template using the large-job lane goes to its own worker
+        # and this cycle carries on without waiting for it (app/core/large_job_lane.py).
+        tasks = _hand_large_mail_to_lane(db, tasks, reexamine, _process_with_own_session)
+
         process_workers = max(1, min(get_email_poll_workers(db), len(tasks)))
         with ThreadPoolExecutor(max_workers=process_workers, thread_name_prefix="email-pull") as pool:
             futures = {pool.submit(_process_with_own_session, task): task for task in tasks}
@@ -1186,6 +1190,68 @@ def _pull_inbox(
     if mailbox_errors:
         out["mailbox_errors"] = mailbox_errors
     return out
+
+
+def _hand_large_mail_to_lane(db: Session, tasks: list[dict], reexamine: bool, run_task) -> list[dict]:
+    """The tasks this cycle should process itself. A mail whose mailbox template has the
+    large-job lane on (TemplateGroup.large_job_lane) and whose biggest zip is over the
+    template's large_zip_mb is handed to the lane instead (app/core/large_job_lane.py) - the
+    cycle does not wait for it. Everything else - and every case where anything is unclear - is
+    returned unchanged, so it is processed here exactly as before.
+
+    Only in the process that owns the singleton background work (where the lane runs); a
+    manual re-examine and pre-alert split parts always stay in the cycle."""
+    if reexamine or not tasks:
+        return tasks
+    try:
+        from app.core.worker_lock import am_i_the_singleton_worker
+
+        if not am_i_the_singleton_worker():
+            return tasks
+    except Exception:  # noqa: BLE001
+        return tasks
+    from app.core import large_job_lane
+
+    groups: dict[str, TemplateGroup | None] = {}
+    keep: list[dict] = []
+    for task in tasks:
+        gid = (task.get("src") or {}).get("group_id")
+        if not gid or task.get("parent_mid") or task.get("prealert_rec"):
+            keep.append(task)
+            continue
+        if gid not in groups:
+            groups[gid] = db.get(TemplateGroup, gid)
+        group = groups[gid]
+        if group is None or getattr(group, "large_job_lane", False) is not True:
+            keep.append(task)
+            continue
+        try:
+            msg = email.message_from_bytes(task["raw"])
+            biggest = max((len(b) for n, b in _extract_attachments(msg, {".zip"})
+                           if n.lower().endswith(".zip")), default=0)
+            mid = _message_id(msg)
+            subject = _decode(msg.get("Subject"))
+        except Exception:  # noqa: BLE001
+            logger.exception("large-job lane: could not size a mail - processing it normally")
+            keep.append(task)
+            continue
+        if biggest <= (getattr(group, "large_zip_mb", 5) or 5) * 1024 * 1024:
+            keep.append(task)
+            continue
+        # Already examined (it stays unread in the inbox on purpose, so every poll of the day
+        # finds it again): leave it to the cycle, whose _claim() skips it at once - exactly as
+        # before the lane. Only a new mail, or one held "failed" for a retry, goes to the lane.
+        seen = db.query(EmailSeen.verdict).filter(EmailSeen.message_id == mid).first()
+        if seen is not None and seen[0] not in (FAILED_VERDICT,):
+            keep.append(task)
+            continue
+        size_mb = biggest / (1024 * 1024)
+        if large_job_lane.submit_email(mid, f"{subject or mid} ({size_mb:.1f} MB)",
+                                       lambda t=task: run_task(t)):
+            logger.info("email %s: zip of %.1f MB - handed to the large-job lane", mid[:60], size_mb)
+        else:
+            logger.info("email %s: already waiting on the large-job lane", mid[:60])
+    return keep
 
 
 def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tuple[list[dict], dict | None]:
@@ -2625,6 +2691,15 @@ def _process_one_message(
 
     try:
         limit_mb = getattr(group, "large_zip_mb", 5) or 5
+        from app.core.large_job_lane import in_lane
+
+        if in_lane():
+            # Read on the large-job lane: its Run extraction / Re-extract go back to the lane
+            # too (large_job_lane.is_lane_job). A Smart Upload never carries this mark.
+            notes = dict(job.attachment_notes or {})
+            notes["large_job"] = True
+            job.attachment_notes = notes
+            db.commit()
         if getattr(group, "large_zip_hold", False) is True and biggest_zip > limit_mb * 1024 * 1024:
             # A large zip (a big consolidation): read, classified and placed - extraction waits
             # for Run extraction so the documents can be checked first. Every other job of this

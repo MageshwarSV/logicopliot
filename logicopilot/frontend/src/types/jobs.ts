@@ -279,6 +279,8 @@ export interface JobDetail {
     held?: boolean;
     /** A zip over the template's limit: placed, extraction waits for Run extraction. */
     large_zip?: { size_mb: number; limit_mb: number };
+    /** Run extraction queued on the large-job lane (one large job at a time). */
+    lane_extract?: { requested_at: string; is_rerun?: boolean };
   } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;

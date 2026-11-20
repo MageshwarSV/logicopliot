@@ -111,7 +111,12 @@ def create_app() -> FastAPI:
                 job.erp_reason = ("The server restarted while this entry was in progress, so "
                                   "the run was lost. Nothing was submitted by it - check the "
                                   "ERP before re-running.")
-            stuck_extracting = db.query(Job).filter(Job.status == "extracting").all()
+            stuck_extracting = [
+                j for j in db.query(Job).filter(Job.status == "extracting").all()
+                # Queued on the large-job lane: it stays queued and the lane runs it again
+                # (app/core/large_job_lane.py) rather than being dropped back to draft.
+                if not (isinstance(j.attachment_notes, dict) and j.attachment_notes.get("lane_extract"))
+            ]
             for job in stuck_extracting:
                 job.status = "draft"
             stuck = stuck + stuck_extracting
@@ -171,6 +176,15 @@ def create_app() -> FastAPI:
         from app.core.email_puller import start_scheduler
 
         start_scheduler()
+        # The large-job lane (app/core/large_job_lane.py) - also picks up extractions queued on
+        # it before a restart. Only where mail is polled at all: that is the only thing that
+        # ever puts work on it.
+        from app.core.config import get_settings as _gs
+
+        if _gs().email_poll_minutes > 0:
+            from app.core.large_job_lane import start as start_large_job_lane
+
+            start_large_job_lane()
 
     @app.on_event("startup")
     def _resume_parked_sessions() -> None:

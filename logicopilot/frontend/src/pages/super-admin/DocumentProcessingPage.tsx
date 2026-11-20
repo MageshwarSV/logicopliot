@@ -14,6 +14,7 @@ type Draft = {
   auto_extract: boolean;
   large_zip_hold: boolean;
   large_zip_mb: number;
+  large_job_lane: boolean;
   excel_sheet: boolean;
   ignore: string;
 };
@@ -23,6 +24,7 @@ function draftOf(g: TemplateGroup): Draft {
     auto_extract: g.auto_extract !== false,
     large_zip_hold: g.large_zip_hold === true,
     large_zip_mb: g.large_zip_mb ?? 5,
+    large_job_lane: g.large_job_lane === true,
     excel_sheet: (g.excel_mode ?? "legacy") === "sheet",
     ignore: (g.excel_ignore_patterns ?? DEFAULT_EXCEL_IGNORE).join("\n"),
   };
@@ -62,6 +64,7 @@ export function DocumentProcessingPage() {
         auto_extract: d.auto_extract,
         large_zip_hold: d.large_zip_hold,
         large_zip_mb: d.large_zip_mb,
+        large_job_lane: d.large_job_lane,
         excel_mode: d.excel_sheet ? "sheet" : "legacy",
         excel_ignore_patterns: d.ignore.split("\n").map((x) => x.trim()).filter(Boolean),
       });
@@ -125,6 +128,16 @@ export function DocumentProcessingPage() {
                           onChange={(e) => set(g.id, { large_zip_mb: Math.max(1, Number(e.target.value) || 1) })}
                           className="w-16 rounded border border-slate-300 px-1 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-800" />
                         MB is placed, then waits for Run extraction. Every other job extracts automatically.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="mb-3 flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+                    <input type="checkbox" className="mt-1" checked={d.large_job_lane} onChange={(e) => set(g.id, { large_job_lane: e.target.checked })} />
+                    <span>
+                      <span className="font-medium">Use the large-job lane</span>
+                      <span className="block text-xs text-slate-500">
+                        A mail with a zip larger than {d.large_zip_mb} MB gets its own worker, one large job at a time - the mail
+                        cycle does not wait for it and small jobs keep their workers. Its Run extraction also waits its turn there.
                       </span>
                     </span>
                   </label>

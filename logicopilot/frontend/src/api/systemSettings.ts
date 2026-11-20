@@ -22,6 +22,10 @@ export interface SystemSettings {
    *  two simultaneous ERP logins against the same account. */
   erp_script_workers: number;
   max_erp_script_workers: number;
+  /** Large-job lane + practice AI (SIT only). */
+  large_job_parallel_calls?: number;
+  practice_ai_mode?: "off" | "record" | "replay";
+  practice_ai_allowed?: boolean;
   /** Manually entered (see setOpenAIBalance) - OpenAI has no API, not even the Admin key,
    *  that returns account credit balance or its expiry. null when never set. */
   openai_balance_usd: number | null;
@@ -287,5 +291,27 @@ export interface UsdInrRate {
  *  balance in INR alongside USD. */
 export async function getUsdInrRate(): Promise<UsdInrRate> {
   const { data } = await apiClient.get<UsdInrRate>("/system-settings/usd-inr-rate");
+  return data;
+}
+
+// ---- large-job lane + practice AI --------------------------------------------------------------
+
+export interface LargeJobLaneStatus {
+  updated_at?: string;
+  current: { label: string; started_at: string } | null;
+  waiting_emails: { label: string; queued_at: string }[];
+  waiting_extractions: { job_id: string; reference: string; requested_at?: string }[];
+}
+
+export async function getLargeJobLaneStatus(): Promise<LargeJobLaneStatus> {
+  const { data } = await apiClient.get<LargeJobLaneStatus>("/system-settings/large-job-lane");
+  return data;
+}
+
+export async function setLargeJobSettings(body: {
+  parallel_calls?: number;
+  practice_ai_mode?: "off" | "record" | "replay";
+}): Promise<{ large_job_parallel_calls: number; practice_ai_mode: "off" | "record" | "replay" }> {
+  const { data } = await apiClient.post("/system-settings/large-job", body);
   return data;
 }

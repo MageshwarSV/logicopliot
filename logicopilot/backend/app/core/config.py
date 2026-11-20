@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Minutes between automatic inbox polls. 0 disables the background poller
     # (documents are then only pulled when someone clicks "Pull email now").
     email_poll_minutes: int = 0
+    # Practice AI (app/core/ai_practice.py) - free testing. Only a server whose .env sets
+    # PRACTICE_AI_ALLOWED=1 (SIT) can switch it on; production never sets it.
+    practice_ai_allowed: bool = False
+    practice_ai_miss_seconds: float = 30.0
     # How many mailboxes are read AT ONCE is a live, database-backed Super Admin setting now
     # (see app.core.system_settings.get_email_poll_workers / SettingsPage), not an env value -
     # changing it should not need a restart. See that module for why: reading a message is
