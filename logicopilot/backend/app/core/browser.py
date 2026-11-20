@@ -1217,6 +1217,104 @@ def _text_selector(page, frames: list | None, text: str) -> str | None:
     return None
 
 
+_EXACT_TEXT_JS = """(t) => {
+  t = (t || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+  if (!t) return false;
+  for (const e of document.querySelectorAll('body *')) {
+    const isOpt = e.tagName === 'OPTION';
+    // Only the element that OWNS the words: a container holding "Chennai FTWZ" and more is
+    // not a match for "Chennai", and neither is "Chennai FTWZ" itself.
+    if (!isOpt && e.children.length) continue;
+    const s = (e.innerText || e.textContent || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+    if (s !== t) continue;
+    if (isOpt) return true;
+    const r = e.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return true;
+  }
+  return false;
+}"""
+
+
+def _exact_text_selector(page, frames: list | None, text: str) -> str | None:
+    """Last resort for Search & Click: ANY visible element whose own text is exactly `text`.
+
+    _text_selector only looks at links and buttons. A plain list - the Change Branch popup's
+    branch names - is rows of text with a click handler on the row, so it found nothing and
+    the step fell through to the AI, which pressed "Close" instead. Exact text only, so a
+    value never lands on a longer label that merely contains it ("Chennai" vs "Chennai FTWZ")."""
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return None
+    esc = t.replace("\\", "\\\\").replace('"', '\\"')
+    scope = page
+    for f in frames or []:
+        scope = scope.frame_locator(f)
+    for cand in (f'option:text-is("{esc}")', f'li:text-is("{esc}")', f'td:text-is("{esc}")',
+                 f'*:text-is("{esc}")'):
+        try:
+            loc = scope.locator(cand)
+            n = min(loc.count(), 5)
+        except Exception:  # noqa: BLE001
+            continue
+        for k in range(n):
+            try:
+                if cand.startswith("option") or loc.nth(k).is_visible():
+                    return f"{cand} >> nth={k}"
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def _text_on_screen(page, text: str) -> bool:
+    """Is there something on screen - in ANY frame - whose own text is exactly `text`?
+
+    Exact, not "contains": the Change Branch list holds "Chennai FTWZ" but not "Chennai" when
+    Chennai is the branch already in use, and a contains-match would call that found.
+    Every frame is searched, so the condition needs no recorded iframe chain."""
+    for fr in list(page.frames):
+        try:
+            if fr.evaluate(_EXACT_TEXT_JS, text):
+                return True
+        except Exception:  # noqa: BLE001 - a frame mid-navigation or cross-origin
+            continue
+    return False
+
+
+def _if_condition_met(page, step: dict, val: str, timeout_s: float | None = None) -> tuple[bool, str]:
+    """The test an `if_else` step makes. Two kinds (step["cond"]):
+
+      "text"    (default) - the step's value - a data field ([[label]]) or fixed text - is
+                on screen as the exact text of something;
+      "element" - the step's selector is on screen.
+
+    Polled for a few seconds (step["timeout"], default 5): the screen the test is about is
+    often still drawing - a popup that has just been opened by the step before.
+    Returns (met, a sentence for the log)."""
+    import time as _t
+
+    secs = float(timeout_s if timeout_s is not None else (step.get("timeout") or 5))
+    deadline = _t.monotonic() + max(0.5, secs)
+    if (step.get("cond") or "text") == "element":
+        sel = step.get("selector")
+        if not sel:
+            return False, "no element was recorded for the test"
+        while True:
+            if _present(page, sel, step.get("frames") or [], timeout=1000):
+                return True, f"{sel!r} is on screen"
+            if _t.monotonic() >= deadline:
+                return False, f"{sel!r} is not on screen"
+            page.wait_for_timeout(400)
+    want = (val or "").strip()
+    if not want:
+        return False, "the value to look for is empty"
+    while True:
+        if _text_on_screen(page, want):
+            return True, f"{want!r} is on screen"
+        if _t.monotonic() >= deadline:
+            return False, f"{want!r} is not on screen"
+        page.wait_for_timeout(400)
+
+
 def _reveal(page, frames, opener: dict | None, sel: str,
             timeout: int = 2500) -> dict | None:
     """Bring back a menu item whose menu has closed, by HOVERING what opened it.
@@ -3837,6 +3935,11 @@ class RecorderSession:
             # down - including the _resolve_val call above, before any such assignment has
             # run - and raise UnboundLocalError on every single call, matched or not.
             run_step = step
+            if (step.get("action") or "") == "if_else":
+                # Recording an IF / ELSE: only TEST the screen - nothing is clicked. The answer
+                # tells the Super Admin which branch the screen in front of them belongs to.
+                met, why = _if_condition_met(p, step, val, timeout_s=2)
+                return ("IF" if met else "ELSE") + f": {why}"
             # Same reason as play_steps's and _replay_span's own copies of this: a "search &
             # select" style step's recorded position is never trustworthy, even while still
             # sitting on the very screen it was just recorded on - the point of arming this in
@@ -3845,7 +3948,7 @@ class RecorderSession:
             # one a real run will make later.
             if (step.get("action") or "") in ("click", "double_click") and step.get("field_label") and val:
                 is_dbl = step.get("action") == "double_click"
-                found = _row_selector(p, frames, val) if is_dbl else _text_selector(p, frames, val)
+                found = _row_selector(p, frames, val) if is_dbl else (_text_selector(p, frames, val) or _exact_text_selector(p, frames, val))
                 if found:
                     run_step = {**step, "selector": found}
                     # A matched ROW's own centre is not safe to click blind - see
@@ -3951,7 +4054,7 @@ class RecorderSession:
 
     def _replay_span(self, p, steps: list, values: dict, start: int, end: int, log: list,
                      uploads: dict | None = None,
-                     keep_going: bool = False) -> int:
+                     keep_going: bool = False, _nested: bool = False) -> int:
         """Run steps[start:end] in the live page. Returns the new cursor — the number of steps
         now applied. Stops at the first failure: carrying on would compound the drift.
 
@@ -3970,8 +4073,12 @@ class RecorderSession:
         """
         steps = steps or []
         end = min(end, len(steps))
+        if not _nested and start == 0:
+            self._if_jumps = {}     # IF / ELSE loop guard - counted per replay from the top
         # "If this alert comes" steps cover the whole replay, wherever they sit in the list.
-        if self._ctx is not None:
+        # Not for an IF / ELSE branch run from inside it: that would replace the script's own
+        # rules with the branch's few for the rest of the replay.
+        if self._ctx is not None and not _nested:
             set_dialog_rules(self._ctx, steps)
         i = start
         # The page can CHANGE mid-replay: a switch_tab step moves the recorder to another tab
@@ -4004,6 +4111,44 @@ class RecorderSession:
             act = st.get("action") or ""
             frames = st.get("frames") or []
             try:
+                if act == "if_else":
+                    # Test the screen, run the chosen branch's own steps right here, then go on
+                    # from "continue at step N" (or the next step). See _if_condition_met.
+                    _settle(page)
+                    met, why = _if_condition_met(page, st, _resolve_val(st, values or {}))
+                    branch = list((st.get("then_steps") if met else st.get("else_steps")) or [])
+                    goto = st.get("then_goto") if met else st.get("else_goto")
+                    log.append(f"{i + 1}. if: {why} - running the {'IF' if met else 'ELSE'} "
+                               f"steps ({len(branch)})")
+                    if branch:
+                        done_n = self._replay_span(page, branch, values, 0, len(branch), log,
+                                                   uploads=uploads, keep_going=keep_going,
+                                                   _nested=True)
+                        page = getattr(self, "_page", None) or page
+                        if done_n < len(branch) and not keep_going:
+                            raise RuntimeError(
+                                f"{'IF' if met else 'ELSE'} step {done_n + 1} of {len(branch)} failed")
+                    jumps = getattr(self, "_if_jumps", None)
+                    if jumps is None:
+                        jumps = self._if_jumps = {}
+                    if goto:
+                        target = int(goto)
+                        if not (1 <= target <= len(steps)):
+                            raise RuntimeError(f"'continue at step {target}' - the script has "
+                                               f"only {len(steps)} steps")
+                        jumps[target] = jumps.get(target, 0) + 1
+                        if jumps[target] > 3:
+                            raise RuntimeError(f"jumped to step {target} more than 3 times - the "
+                                               "IF / ELSE steps are going round in a loop")
+                        log.append(f"{i + 1}. continuing at step {target}")
+                        i = target - 1
+                        if i < start or i >= end:
+                            # Outside the span asked for (a single Next, a Run-to): just move
+                            # the cursor there; the next press carries on from it.
+                            return i
+                    else:
+                        i += 1
+                    continue
                 if act == "navigate":
                     page.goto(st.get("value") or self.url, wait_until="domcontentloaded", timeout=45000)
                     _settle(page)
@@ -4106,7 +4251,7 @@ class RecorderSession:
                         step_val = _resolve_val(st, values)
                         if step_val:
                             is_dbl = act == "double_click"
-                            found = _row_selector(page, frames, step_val) if is_dbl else _text_selector(page, frames, step_val)
+                            found = _row_selector(page, frames, step_val) if is_dbl else (_text_selector(page, frames, step_val) or _exact_text_selector(page, frames, step_val))
                             if found:
                                 use = {**st, "selector": found}
                                 # A matched ROW's own centre is not safe to click blind - see
@@ -4286,7 +4431,7 @@ class RecorderSession:
                 # the rails and carrying on would file an empty entry.
                 log.append(f"{i + 1}. skipped and carrying on (keep going is on)")
             i += 1
-        return end
+        return max(i, end)
 
     @staticmethod
     def _step_label(steps: list, idx: int) -> str:
@@ -4647,6 +4792,30 @@ class RecorderSession:
 
             step = steps[self._idx]
             action = step.get("action")
+            if action == "if_else":
+                # One press: test the screen, run the chosen branch, move on to "continue at
+                # step N" (or the next step).
+                _settle(p)
+                met, why = _if_condition_met(p, step, _resolve_val(step, values))
+                branch = list((step.get("then_steps") if met else step.get("else_steps")) or [])
+                goto = step.get("then_goto") if met else step.get("else_goto")
+                sub_log: list = []
+                if branch:
+                    n = self._replay_span(getattr(self, "_page", None) or p, branch, values, 0,
+                                          len(branch), sub_log,
+                                          uploads=getattr(self, "_uploads", None), _nested=True)
+                    if n < len(branch):
+                        return {"ok": False, "status": "error", "action": "if_else",
+                                "note": f"{why}; {'IF' if met else 'ELSE'} step {n + 1} failed: "
+                                        + (str(sub_log[-1]) if sub_log else ""),
+                                "ran": [str(x) for x in sub_log]}
+                self._done_set.add(self._idx)
+                self._idx = (int(goto) - 1) if goto and 1 <= int(goto) <= len(steps) else self._idx + 1
+                self._done_components += 1
+                return {"ok": True, "status": "ok", "action": "if_else",
+                        "description": f"If: {why} - ran the {'IF' if met else 'ELSE'} steps"
+                                       + (f", continuing at step {int(goto)}" if goto else ""),
+                        "ran": [str(x) for x in sub_log]}
             # A navigate / wait is its own page-load step.
             if action == "navigate":
                 p.goto(step.get("value") or p.url, wait_until="domcontentloaded", timeout=45000)
@@ -5715,6 +5884,14 @@ def _play_steps(
             # Resuming means the setup steps (login, navigation) are already done - the saved
             # session put us where they would have. Start at the first step AFTER the checkpoint.
             i = (checkpoint_index + 1) if resumed else 0
+            # IF / ELSE steps swap the chosen branch into `steps` as the run goes, so a step's
+            # POSITION stops being its number. orig_no[k] is the recorded step number (1-based)
+            # of whatever now sits at position k - None for a branch's own steps - which is
+            # what "continue at step N" means to the Super Admin who typed it.
+            orig_steps = list(steps)
+            orig_no: list[int | None] = list(range(1, len(steps) + 1))
+            orig_ckpt = checkpoint_index
+            jump_counts: dict[int, int] = {}
             safety = 0
             aborted = False
             checkpoint_saved = False
@@ -5900,6 +6077,52 @@ def _play_steps(
                                        f"{[c for c in cands if c]} the dropdown actually offers")
                         val = picked
                 try:
+                    if action == "if_else":
+                        # Test the screen, then put the chosen branch's steps where this step
+                        # was - followed, when one was set, by a jump to "continue at step N".
+                        _settle(page)
+                        met, why = _if_condition_met(page, step, val)
+                        branch = list((step.get("then_steps") if met else step.get("else_steps")) or [])
+                        goto = step.get("then_goto") if met else step.get("else_goto")
+                        new = branch + ([{"action": "_goto", "value": str(int(goto)),
+                                          "description": f"continue at step {int(goto)}"}]
+                                        if goto else [])
+                        log.append(f"step {i + 1} if: {why} - running the "
+                                   f"{'IF' if met else 'ELSE'} steps ({len(branch)})"
+                                   + (f", then continuing at step {int(goto)}" if goto else ""))
+                        delta = len(new) - 1
+                        steps = steps[:i] + new + steps[i + 1:]
+                        orig_no = orig_no[:i] + [None] * len(new) + orig_no[i + 1:]
+                        _shifted = {k if k < i else k + delta for k in executed if k != i}
+                        executed.clear()
+                        executed.update(_shifted)
+                        if checkpoint_index is not None and checkpoint_index > i:
+                            checkpoint_index += delta
+                        continue        # position i now holds the branch's first step
+                    if action == "_goto":
+                        target = int(step.get("value") or 0)
+                        jump_counts[target] = jump_counts.get(target, 0) + 1
+                        if not (1 <= target <= len(orig_steps)):
+                            log.append(f"step {i + 1}: 'continue at step {target}' - the script "
+                                       f"has only {len(orig_steps)} steps; stopping")
+                            aborted = True
+                            break
+                        if jump_counts[target] > 3:
+                            log.append(f"ABORTED: jumped back to step {target} more than 3 times "
+                                       "- the IF / ELSE steps are going round in a loop")
+                            aborted = True
+                            break
+                        # The rest of the run is the recorded script from step `target` on.
+                        steps = steps[:i] + orig_steps[target - 1:]
+                        orig_no = orig_no[:i] + list(range(target, len(orig_steps) + 1))
+                        _kept = {k for k in executed if k < i}
+                        executed.clear()
+                        executed.update(_kept)
+                        if checkpoint_index is not None and not checkpoint_saved and orig_ckpt is not None:
+                            checkpoint_index = (i + (orig_ckpt + 1 - target)
+                                                if orig_ckpt + 1 >= target else None)
+                        log.append(f"continuing at step {target}")
+                        continue
                     if action == "navigate":
                         page.goto(step.get("value") or url, wait_until="domcontentloaded", timeout=45000)
                         _settle(page)
@@ -6154,7 +6377,7 @@ def _play_steps(
                     # that same recorded spot.
                     if action in ("click", "double_click") and step.get("field_label") and val:
                         is_dbl = action == "double_click"
-                        found = _row_selector(page, frames, val) if is_dbl else _text_selector(page, frames, val)
+                        found = _row_selector(page, frames, val) if is_dbl else (_text_selector(page, frames, val) or _exact_text_selector(page, frames, val))
                         if found:
                             step = {**step, "selector": found}
                             # A matched ROW's own centre is not safe to click blind - see
