@@ -93,11 +93,13 @@ def create_app() -> FastAPI:
         could not be re-run, could not be completed, and no screen ever admitted they were
         dead. One had been stuck for nearly six hours before anybody could say why.
 
-        An ERP run in that state is marked failed, which is the truth and is re-runnable, with
-        the reason spelled out so nobody mistakes it for the ERP rejecting the entry. A stranded
-        extraction is put back to `draft` instead - nothing was submitted anywhere by it, and
-        `draft` is what lets the auto-trigger simply pick it back up rather than requiring the
-        operator to notice and press Extract themselves.
+        An ERP run in that state (the direct Submit Entry path, which ran inside the operator's
+        own request) is marked failed, which is the truth and is re-runnable, with the reason
+        spelled out so nobody mistakes it for the ERP rejecting the entry.
+
+        A stranded extraction is NOT touched here any more: it stays `extracting` and is read
+        again, oldest first, by app/core/restart_resume.py (started below, in the process that
+        owns background work) - `draft` only looked recoverable; nothing ever picked it back up.
         """
         from app.db.session import SessionLocal
         from app.models.job import Job
@@ -111,15 +113,6 @@ def create_app() -> FastAPI:
                 job.erp_reason = ("The server restarted while this entry was in progress, so "
                                   "the run was lost. Nothing was submitted by it - check the "
                                   "ERP before re-running.")
-            stuck_extracting = [
-                j for j in db.query(Job).filter(Job.status == "extracting").all()
-                # Queued on the large-job lane: it stays queued and the lane runs it again
-                # (app/core/large_job_lane.py) rather than being dropped back to draft.
-                if not (isinstance(j.attachment_notes, dict) and j.attachment_notes.get("lane_extract"))
-            ]
-            for job in stuck_extracting:
-                job.status = "draft"
-            stuck = stuck + stuck_extracting
             if stuck:
                 db.commit()
                 logging.getLogger(__name__).warning(
@@ -234,14 +227,21 @@ def create_app() -> FastAPI:
 
         def _go() -> None:
             from app.core.erp_redis_queue import start
+            from app.core.restart_resume import resume_interrupted_work
             from app.core.system_settings import get_erp_script_workers
             from app.db.session import SessionLocal
 
             db = SessionLocal()
             try:
                 start(get_erp_script_workers(db))
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).exception("could not start the ERP queue")
             finally:
                 db.close()
+            # Then everything the previous process was in the middle of - extractions and ERP
+            # runs - back in its queue, oldest first. After start(), so Redis has already put
+            # back its own reserved items and nothing is queued twice.
+            resume_interrupted_work()
 
         # Off the startup path: a Redis that is slow to answer must not hold up the app.
         threading.Thread(target=_go, name="erp-queue-start", daemon=True).start()
