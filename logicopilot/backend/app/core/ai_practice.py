@@ -40,14 +40,22 @@ _cached: tuple[float, str] = (0.0, "off")
 
 
 def allowed() -> bool:
-    """Practice AI only exists on a server whose .env says so - never production."""
-    return os.environ.get("PRACTICE_AI_ALLOWED", "").strip() == "1"
+    """Practice AI only exists on a server whose .env says so - never production. Read through
+    Settings: the backend loads .env into Settings only, not into the process environment (a
+    real environment variable still counts, for tests and one-off runs)."""
+    if os.environ.get("PRACTICE_AI_ALLOWED", "").strip() == "1":
+        return True
+    try:
+        return bool(get_settings().practice_ai_allowed)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _miss_wait() -> float:
+    raw = os.environ.get("PRACTICE_AI_MISS_SECONDS")
     try:
-        return max(0.0, float(os.environ.get("PRACTICE_AI_MISS_SECONDS", "30")))
-    except ValueError:
+        return max(0.0, float(raw) if raw is not None else float(get_settings().practice_ai_miss_seconds))
+    except (TypeError, ValueError):
         return 30.0
 
 

@@ -9,8 +9,16 @@ from app.core import ai_practice, llm
 
 def test_off_without_the_env_flag(monkeypatch):
     monkeypatch.delenv("PRACTICE_AI_ALLOWED", raising=False)
+    monkeypatch.setattr(ai_practice, "get_settings", lambda: SimpleNamespace(practice_ai_allowed=False))
     assert not ai_practice.allowed()
     assert ai_practice.current_mode() == "off"
+
+
+def test_allowed_from_dotenv_settings(monkeypatch):
+    """The real SIT case: PRACTICE_AI_ALLOWED=1 is in .env, which reaches Settings only."""
+    monkeypatch.delenv("PRACTICE_AI_ALLOWED", raising=False)
+    monkeypatch.setattr(ai_practice, "get_settings", lambda: SimpleNamespace(practice_ai_allowed=True))
+    assert ai_practice.allowed()
 
 
 def test_request_key_ignores_seed_but_not_content():
