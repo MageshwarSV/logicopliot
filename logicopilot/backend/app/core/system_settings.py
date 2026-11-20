@@ -200,8 +200,52 @@ def max_erp_script_workers() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def _mem_available_mb() -> int | None:
+    """MemAvailable from /proc/meminfo (Linux servers); None where it cannot be read."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+# What one ERP run costs: a full Chromium with the ERP open, measured at 300-400 MB.
+_MB_PER_ERP_RUN = 450
+# Left free for everything else on the box - the API, Postgres, extraction workers.
+_MB_RESERVED = 2048
+
+
+def auto_erp_script_workers() -> int:
+    """How many ERP runs THIS server can take right now: one per CPU core at most, no more
+    than free memory holds at ~450 MB a browser (2 GB kept back), halved while the machine
+    is already busy (1-minute load above 75% of its cores). Never below 1."""
+    cpu = max(1, os.cpu_count() or 1)
+    n = cpu
+    mem = _mem_available_mb()
+    if mem is not None:
+        n = min(n, max(1, (mem - _MB_RESERVED) // _MB_PER_ERP_RUN))
+    try:
+        if os.getloadavg()[0] > cpu * 0.75:
+            n = max(1, n // 2)
+    except (AttributeError, OSError):  # Windows has no load average
+        pass
+    return max(1, n)
+
+
 def get_erp_script_workers(db: Session) -> int:
-    return get_system_settings(db).erp_script_workers
+    row = get_system_settings(db)
+    if getattr(row, "erp_script_workers_auto", False):
+        return auto_erp_script_workers()
+    return row.erp_script_workers
+
+
+def set_erp_script_workers_auto(db: Session, on: bool) -> None:
+    row = get_system_settings(db)
+    row.erp_script_workers_auto = bool(on)
+    db.commit()
 
 
 def set_erp_script_workers(db: Session, count: int) -> None:
@@ -211,6 +255,7 @@ def set_erp_script_workers(db: Session, count: int) -> None:
             f"This server can run at most {cap} at once (one per CPU core); {count} was refused.")
     row = get_system_settings(db)
     row.erp_script_workers = count
+    row.erp_script_workers_auto = False  # typing a number is choosing it over Auto
     db.commit()
 
 

@@ -5416,6 +5416,7 @@ def _play_steps(
     job_gate=None,        # JobGate — park at the checkpoint and wait for a job (see parked.py)
     cancel=None,          # callable() -> True when somebody has pressed Stop
     stall_after: int = STALL_SECONDS,   # give up on ONE step that never moves on
+    branch_session: dict | None = None,  # {"state", "url"} of a live branch login - see below
     _unscripted_alerts: list | None = None,   # filled by play_steps' own wrapper - see there
 ) -> dict:
     """Replay a saved step sequence. `values` maps field_label -> value; a step's value
@@ -5559,7 +5560,12 @@ def _play_steps(
             # last run. Reuse it and skip straight past the login/setup steps. No checkpoint
             # (or no saved session) => this is all None and the run behaves exactly as before.
             sess_state, sess_url = (None, None)
-            if checkpoint_index is not None:
+            if branch_session is not None:
+                # An always-on BRANCH login (app/core/branch_sessions.py) kept by its own
+                # keeper. Start on it after the checkpoint and never log in here: a login
+                # from this run would log the branch's user out of every other job on it.
+                sess_state, sess_url = branch_session.get("state"), branch_session.get("url")
+            elif checkpoint_index is not None:
                 # Not a plain read of the file. With erp_script_workers > 1 several jobs start
                 # together; the one that finds no session logs in while the others WAIT for
                 # it, instead of every job opening its own login against the same ERP account
@@ -5887,7 +5893,7 @@ def _play_steps(
 
             # Resuming means the setup steps (login, navigation) are already done - the saved
             # session put us where they would have. Start at the first step AFTER the checkpoint.
-            i = (checkpoint_index + 1) if resumed else 0
+            i = (checkpoint_index + 1) if (resumed and checkpoint_index is not None) else 0
             # IF / ELSE steps swap the chosen branch into `steps` as the run goes, so a step's
             # POSITION stops being its number. orig_no[k] is the recorded step number (1-based)
             # of whatever now sits at position k - None for a branch's own steps - which is
@@ -5963,11 +5969,23 @@ def _play_steps(
                 # exactly where they would have. Record them as executed, or the end-of-run checks
                 # read a resumed run as one that skipped half its steps: it would name the login
                 # steps as "failed steps" and spend a vision call diagnosing a perfectly good run.
-                executed.update(range(0, checkpoint_index + 1))
+                if checkpoint_index is not None:
+                    executed.update(range(0, checkpoint_index + 1))
                 # The cookie may be live while the ERP has still logged us out, or the entry
                 # screen may have moved. Probe the first recorded element after the checkpoint;
                 # if it is not there, throw the session away and replay the whole script.
                 probe = next((s for s in steps[i:] if s.get("selector")), None)
+                if (branch_session is not None and probe is not None
+                        and not present(probe.get("selector"), probe.get("frames") or [], timeout=8000)):
+                    # Not ours to repair: the branch keeper logs in again, and the caller puts
+                    # this job back on the login once it is live (branch_sessions.play_on_branch).
+                    log.append("the branch login no longer reaches the entry screen - handing "
+                               "it back to its keeper to log in again")
+                    return {"status": "failed", "session_lost": True, "stopped": False,
+                            "log": log, "final_url": page_url_safe(),
+                            "reason": "The branch's ERP login had dropped before this entry started.",
+                            "steps_done": 0, "steps_total": len(steps), "captured": {},
+                            "resumed": True, "checkpoint_saved": False}
                 if probe is not None and not present(probe.get("selector"), probe.get("frames") or [], timeout=8000):
                     log.append(
                         "the saved session no longer reaches the entry screen - discarding it "
