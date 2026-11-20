@@ -7002,6 +7002,24 @@ def _play_steps(
                 else:
                     reason = ("Could not complete the ERP entry — a required step could not be "
                               "done, even with AI assistance.")
+                if branch_session is not None and not stopped:
+                    # On a branch login, a run that ends on the ERP's login page did not fail on
+                    # its own account: the login dropped under it (expired, or someone else
+                    # logged in as the branch's user). Say so, and the caller hands the login
+                    # back to its keeper and runs this job again once it is live
+                    # (branch_sessions.play_on_branch) instead of reporting a failed entry.
+                    try:
+                        on_login = any("/login" in (pg.url or "").lower() for pg in ctx.pages)
+                    except Exception:  # noqa: BLE001
+                        on_login = False
+                    if on_login:
+                        log.append("the branch login dropped during the entry - it will run again "
+                                   "once the login is back")
+                        return {"status": "failed", "session_lost": True, "stopped": False,
+                                "log": log, "final_url": final_url, "screenshot": shot,
+                                "reason": "The branch's ERP login dropped during the entry.",
+                                "steps_done": len(executed), "steps_total": len(steps),
+                                "captured": captured, "resumed": resumed, "checkpoint_saved": False}
                 failed_steps = [
                     (success_check_failed.get("description") or success_check_failed.get("field_label")
                      or success_check_failed.get("capture_as") or "success check")
