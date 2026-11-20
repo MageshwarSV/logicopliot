@@ -36,6 +36,58 @@ const XIcon = (p: SVGProps<SVGSVGElement>) => svg(p, <path d="M6 6l12 12M18 6L6 
 const ZoomInIcon = (p: SVGProps<SVGSVGElement>) => svg(p, <><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.2-4.2M11 8.5v5M8.5 11h5" /></>);
 const ZoomOutIcon = (p: SVGProps<SVGSVGElement>) => svg(p, <><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.2-4.2M8.5 11h5" /></>);
 const TableIcon = (p: SVGProps<SVGSVGElement>) => svg(p, <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10" /></>);
+const FunnelIcon = (p: SVGProps<SVGSVGElement>) => svg(p, <path d="M4 5h16l-6 7.5V18l-4 2v-7.5L4 5z" />);
+
+/** Per sheet: column -> the values still shown (a column without an entry is not filtered). */
+type ColFilters = Record<number, string[]>;
+
+const cellKey = (v: string | undefined) => (v ?? "").trim();
+
+/** Excel-style column filter: search, (Select all), one checkbox per distinct value. */
+function FilterMenu({ values, allowed, onApply, onClose }: {
+  values: string[]; allowed: string[] | undefined; onApply: (allowed: string[] | null) => void; onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(allowed ?? values));
+  const needle = q.trim().toLowerCase();
+  const shown = values.filter((v) => (v || "(Blanks)").toLowerCase().includes(needle));
+  const allShown = shown.length > 0 && shown.every((v) => picked.has(v));
+  const chosen = values.filter((v) => picked.has(v) && (!needle || shown.includes(v)));
+  const toggle = (v: string) => setPicked((p) => { const n = new Set(p); if (n.has(v)) n.delete(v); else n.add(v); return n; });
+  const toggleAll = () => setPicked((p) => { const n = new Set(p); shown.forEach((v) => (allShown ? n.delete(v) : n.add(v))); return n; });
+  const apply = () => { if (chosen.length) onApply(chosen.length === values.length ? null : chosen); };
+  const row = "flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 hover:bg-slate-100 dark:hover:bg-slate-700";
+  return (
+    <>
+      <div className="fixed inset-0 z-40 cursor-default" onClick={onClose} />
+      <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-slate-200 bg-white p-2 text-left text-xs font-normal text-slate-700 shadow-xl dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
+          onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
+          className="mb-1.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-400 dark:border-slate-600 dark:bg-slate-900" />
+        <label className={`${row} font-medium`}>
+          <input type="checkbox" checked={allShown} onChange={toggleAll} /> (Select all{needle ? " shown" : ""})
+        </label>
+        <div className="max-h-56 overflow-auto border-t border-slate-100 pt-1 dark:border-slate-700">
+          {shown.map((v) => (
+            <label key={v} className={row}>
+              <input type="checkbox" checked={picked.has(v)} onChange={() => toggle(v)} />
+              <span className={`truncate ${v ? "" : "italic text-slate-400"}`}>{v || "(Blanks)"}</span>
+            </label>
+          ))}
+          {!shown.length && <p className="px-1.5 py-1 text-slate-400">No matches</p>}
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 dark:border-slate-700">
+          <button type="button" onClick={() => onApply(null)} disabled={!allowed}
+            className="rounded px-2 py-1 text-rose-600 hover:bg-rose-50 disabled:opacity-40 dark:hover:bg-rose-500/10">Clear filter</button>
+          <span className="flex gap-1.5">
+            <button type="button" onClick={onClose} className="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700">Cancel</button>
+            <button type="button" onClick={apply} disabled={!chosen.length} className="rounded bg-indigo-600 px-3 py-1 font-medium text-white hover:bg-indigo-500 disabled:opacity-40">OK</button>
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
 
 const btn = "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -50,7 +102,13 @@ export function ErpExcelEditor({
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<"save" | "reset" | "submit" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [onlyFilled, setOnlyFilled] = useState(true);
+  // Every sheet of the workbook is shown by default - the ERP import reads them all.
+  const [onlyFilled, setOnlyFilled] = useState(false);
+  const [filters, setFilters] = useState<Record<number, ColFilters>>({});
+  const [menuCol, setMenuCol] = useState<number | null>(null);
+  // Rows edited or added while a filter is on stay visible, even if they no longer match -
+  // a row must not vanish under the cursor mid-edit.
+  const [touched, setTouched] = useState<Set<number>>(new Set());
   const [zoom, setZoom] = useState<number>(() => {
     try { const z = Number(localStorage.getItem(ZOOM_KEY)); return ZOOMS.includes(z) ? z : 1; } catch { return 1; }
   });
@@ -81,13 +139,59 @@ export function ErpExcelEditor({
     setSheets(sheets.map((s, i) => (i === active ? { ...s, rows: fn(s.rows.map((r) => [...r])) } : s)));
     setDirty(true);
   }
-  const setCell = (r: number, c: number, v: string) => update((rows) => {
-    while (rows[r].length <= c) rows[r].push("");
-    rows[r][c] = v;
-    return rows;
-  });
-  const addRow = () => update((rows) => [...rows, Array(Math.max(width, 1)).fill("")]);
-  const delRow = (r: number) => update((rows) => rows.filter((_, i) => i !== r));
+  const colFilters: ColFilters = filters[active] ?? {};
+  const filterCount = Object.keys(colFilters).length;
+  const keep = (r: number) => setTouched((t) => (filterCount && !t.has(r) ? new Set(t).add(r) : t));
+
+  const setCell = (r: number, c: number, v: string) => {
+    keep(r);
+    update((rows) => {
+      while (rows[r].length <= c) rows[r].push("");
+      rows[r][c] = v;
+      return rows;
+    });
+  };
+  const addRow = () => {
+    keep(sheet?.rows.length ?? 0);
+    update((rows) => [...rows, Array(Math.max(width, 1)).fill("")]);
+  };
+  const delRow = (r: number) => {
+    setTouched((t) => new Set([...t].filter((x) => x !== r).map((x) => (x > r ? x - 1 : x))));
+    update((rows) => rows.filter((_, i) => i !== r));
+  };
+
+  function selectSheet(i: number) {
+    setActive(i);
+    setMenuCol(null);
+    setTouched(new Set());
+  }
+  function setColFilter(c: number, allowed: string[] | null) {
+    setFilters((f) => {
+      const cur = { ...(f[active] ?? {}) };
+      if (allowed === null) delete cur[c];
+      else cur[c] = allowed;
+      return { ...f, [active]: cur };
+    });
+    setTouched(new Set());
+    setMenuCol(null);
+  }
+  function clearFilters() {
+    setFilters((f) => ({ ...f, [active]: {} }));
+    setTouched(new Set());
+  }
+  const distinct = (c: number) =>
+    [...new Set((sheet?.rows ?? []).slice(1).map((row) => cellKey(row[c])))]
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  /** Data rows (by their real index) that pass this sheet's filters. */
+  const bodyRows = useMemo(() => {
+    const rows = sheet?.rows ?? [];
+    const entries = Object.entries(filters[active] ?? {});
+    const out: number[] = [];
+    for (let r = 1; r < rows.length; r++) {
+      if (touched.has(r) || entries.every(([c, allowed]) => allowed.includes(cellKey(rows[r][Number(c)])))) out.push(r);
+    }
+    return out;
+  }, [sheet, filters, active, touched]);
 
   /** true when saved (or nothing to save). */
   async function save(): Promise<boolean> {
@@ -141,7 +245,7 @@ export function ErpExcelEditor({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); if (!readOnly) save(); }
-      else if (e.key === "Escape") close();
+      else if (e.key === "Escape") { if (menuCol !== null) setMenuCol(null); else close(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -227,9 +331,10 @@ export function ErpExcelEditor({
       <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-2 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex min-w-0 gap-1 overflow-x-auto">
           {tabs.map(({ s, i }) => (
-            <button key={s.name} type="button" onClick={() => setActive(i)}
-              className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium ${i === active ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            <button key={s.name} type="button" onClick={() => selectSheet(i)} title={nonEmpty(s) ? undefined : "No data rows in this sheet"}
+              className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium ${i === active ? "bg-emerald-600 text-white shadow-sm" : nonEmpty(s) ? "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800" : "text-slate-400 hover:bg-slate-100 dark:text-slate-500 dark:hover:bg-slate-800"}`}>
               {s.name}
+              {Object.keys(filters[i] ?? {}).length > 0 && <FunnelIcon className="ml-1 inline h-3 w-3" />}
             </button>
           ))}
         </div>
@@ -254,6 +359,15 @@ export function ErpExcelEditor({
         </div>
       </div>
 
+      {filterCount > 0 && sheet && (
+        <div className="flex items-center gap-3 border-b border-indigo-200 bg-indigo-50 px-5 py-1.5 text-xs text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
+          <FunnelIcon className="h-3.5 w-3.5" />
+          Filter on {filterCount} column{filterCount > 1 ? "s" : ""} — showing {bodyRows.length} of {sheet.rows.length - 1} rows.
+          Filters only change what you see; Save and Submit always use every row.
+          <button type="button" onClick={clearFilters} className="ml-auto rounded px-2 py-0.5 font-medium hover:bg-indigo-100 dark:hover:bg-indigo-500/20">Clear filters</button>
+        </div>
+      )}
+
       {/* Grid */}
       <div className="min-h-0 flex-1 overflow-auto bg-white dark:bg-slate-900">
         {!sheets && !error && <p className="p-5 text-sm text-slate-500">Opening…</p>}
@@ -262,18 +376,41 @@ export function ErpExcelEditor({
             <table className="border-separate border-spacing-0 text-xs">
               <thead>
                 <tr>
-                  <th className="sticky left-0 top-0 z-30 min-w-[3.25rem] border-b border-r border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800" />
+                  <th className="sticky left-0 top-0 z-30 h-7 min-w-[3.25rem] border-b border-r border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800" />
                   {Array.from({ length: width }, (_, c) => (
-                    <th key={c} className="sticky top-0 z-20 border-b border-r border-slate-200 bg-slate-100 px-2 py-1 font-medium text-slate-500 dark:border-slate-700 dark:bg-slate-800">{colName(c)}</th>
+                    <th key={c} className="sticky top-0 z-20 h-7 border-b border-r border-slate-200 bg-slate-100 px-2 py-1 font-medium text-slate-500 dark:border-slate-700 dark:bg-slate-800">{colName(c)}</th>
                   ))}
                 </tr>
+                {sheet.rows.length > 0 && (
+                  <tr>
+                    <th className="sticky left-0 top-7 z-30 min-w-[3.25rem] border-b border-r border-slate-200 bg-slate-50 px-1.5 text-right font-normal text-slate-400 shadow-[2px_0_0_0_rgba(148,163,184,0.25)] dark:border-slate-700 dark:bg-slate-800">1</th>
+                    {Array.from({ length: width }, (_, c) => {
+                      const head = sheet.rows[0][c] ?? "";
+                      const on = !!colFilters[c];
+                      return (
+                        <th key={c} className={`sticky top-7 ${menuCol === c ? "z-40" : "z-20"} border-b border-r border-slate-200 bg-slate-50 p-0 text-left dark:border-slate-700 dark:bg-slate-800`}>
+                          <div className="relative flex items-center">
+                            <span title={`${head} (header - locked)`} className="w-32 truncate px-1.5 py-1 font-semibold text-slate-800 dark:text-slate-100">{head}</span>
+                            <button type="button" onClick={() => setMenuCol(menuCol === c ? null : c)} title={on ? "Filtered - change or clear" : "Filter this column"}
+                              className={`mr-1 rounded p-0.5 ${on ? "bg-indigo-600 text-white" : "text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"}`}>
+                              <FunnelIcon className="h-3.5 w-3.5" />
+                            </button>
+                            {menuCol === c && (
+                              <FilterMenu values={distinct(c)} allowed={colFilters[c]} onApply={(a) => setColFilter(c, a)} onClose={() => setMenuCol(null)} />
+                            )}
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                )}
               </thead>
               <tbody>
-                {sheet.rows.map((row, r) => (
+                {bodyRows.map((r) => { const row = sheet.rows[r]; return (
                   <tr key={r} className="group">
                     <td className="sticky left-0 z-10 min-w-[3.25rem] border-b border-r border-slate-200 bg-slate-50 px-1.5 text-right text-slate-400 shadow-[2px_0_0_0_rgba(148,163,184,0.25)] dark:border-slate-700 dark:bg-slate-800">
                       <span className="inline-flex items-center gap-1">
-                        {!readOnly && r > 0 && (
+                        {!readOnly && (
                           <button type="button" onClick={() => delRow(r)} title="Delete this row"
                             className="invisible text-rose-500 hover:text-rose-700 group-hover:visible">
                             <XIcon className="h-3 w-3" />
@@ -283,18 +420,21 @@ export function ErpExcelEditor({
                       </span>
                     </td>
                     {Array.from({ length: width }, (_, c) => (
-                      <td key={c} className={`border-b border-r border-slate-200 p-0 dark:border-slate-700 ${r === 0 ? "bg-slate-50 dark:bg-slate-800/60" : ""}`}>
+                      <td key={c} className="border-b border-r border-slate-200 p-0 dark:border-slate-700">
                         <input
                           value={row[c] ?? ""}
-                          readOnly={readOnly || r === 0}
+                          readOnly={readOnly}
                           onChange={(e) => setCell(r, c, e.target.value)}
-                          title={r === 0 ? `${row[c] ?? ""} (header - locked)` : row[c] ?? ""}
-                          className={`w-36 bg-transparent px-1.5 py-1 text-slate-800 outline-none dark:text-slate-100 ${r === 0 ? "cursor-default font-semibold" : "focus:bg-indigo-50 focus:ring-2 focus:ring-inset focus:ring-indigo-400 dark:focus:bg-indigo-500/10"}`}
+                          title={row[c] ?? ""}
+                          className="w-[9.5rem] bg-transparent px-1.5 py-1 text-slate-800 outline-none focus:bg-indigo-50 focus:ring-2 focus:ring-inset focus:ring-indigo-400 dark:text-slate-100 dark:focus:bg-indigo-500/10"
                         />
                       </td>
                     ))}
                   </tr>
-                ))}
+                ); })}
+                {filterCount > 0 && bodyRows.length === 0 && (
+                  <tr><td colSpan={width + 1} className="px-3 py-4 text-slate-500">No rows match the filter.</td></tr>
+                )}
               </tbody>
             </table>
             {!readOnly && (
