@@ -238,6 +238,14 @@ def create_app() -> FastAPI:
                 logging.getLogger(__name__).exception("could not start the ERP queue")
             finally:
                 db.close()
+            # The always-on branch logins (app/core/branch_sessions.py) - before the backlog
+            # comes back, so branch jobs find their login coming up rather than missing.
+            try:
+                from app.core import branch_sessions
+
+                branch_sessions.start()
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).exception("could not start the branch logins")
             # Then everything the previous process was in the middle of - extractions and ERP
             # runs - back in its queue, oldest first. After start(), so Redis has already put
             # back its own reserved items and nothing is queued twice.

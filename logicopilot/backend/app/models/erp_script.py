@@ -36,5 +36,10 @@ class ErpScript(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Reuse the session reached at the checkpoint for the next job instead of logging in again.
     stay_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # The job field naming the job's ERP branch (e.g. "Destination"). Set = a job whose branch
+    # has a live branch session (app/core/branch_sessions.py) runs on THAT login from after
+    # the checkpoint, in parallel with the branch's other jobs. NULL = the script's own login.
+    branch_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")  # draft | ready
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

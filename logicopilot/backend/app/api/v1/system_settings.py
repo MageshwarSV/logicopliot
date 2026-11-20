@@ -24,6 +24,9 @@ from app.core.openai_pool import (
 from app.core.ai_practice import allowed as ai_practice_allowed
 from app.core.system_settings import (
     VALID_EXTRACTION_ENGINES,
+    auto_erp_script_workers,
+    get_erp_script_workers,
+    set_erp_script_workers_auto,
     InvalidExtractionEngine,
     InvalidOpenAIAdminKey,
     InvalidOpenAIBalance,
@@ -62,6 +65,10 @@ class OpenAIKeyIn(BaseModel):
 
 class WorkerCountIn(BaseModel):
     count: int
+
+
+class AutoIn(BaseModel):
+    on: bool
 
 
 class ExtractionEngineIn(BaseModel):
@@ -110,6 +117,11 @@ def read_system_settings(
         # How many real ERP submissions (browser automation) run at once - see
         # app/core/erp_queue.py. Defaults to 1.
         "erp_script_workers": row.erp_script_workers,
+        # Auto: the server sizes the pool itself (free memory, CPU cores, load) on every
+        # queued run - see system_settings.auto_erp_script_workers. The value is what Auto
+        # would pick right now.
+        "erp_script_workers_auto": bool(row.erp_script_workers_auto),
+        "erp_script_workers_auto_value": auto_erp_script_workers(),
         # The large-job lane (app/core/large_job_lane.py) and practice AI (app/core/ai_practice.py).
         "large_job_parallel_calls": row.large_job_parallel_calls,
         "practice_ai_mode": row.practice_ai_mode if ai_practice_allowed() else "off",
@@ -681,6 +693,18 @@ def set_erp_workers(
     return {"erp_script_workers": get_system_settings(db).erp_script_workers}
 
 
+@router.post("/erp-workers/auto")
+def set_erp_workers_auto(
+    payload: AutoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Switch Auto on or off. On: every queued ERP run sizes the pool from this server's free
+    memory, CPU cores and load (never above one per core). Off: the saved number again."""
+    set_erp_script_workers_auto(db, payload.on)
+    return {"erp_script_workers_auto": payload.on, "erp_script_workers": get_erp_script_workers(db)}
+
+
 @router.get("/erp-queue")
 def get_erp_queue_status(
     db: Session = Depends(get_db),
@@ -696,7 +720,7 @@ def get_erp_queue_status(
     from app.core.erp_redis_queue import queue_depth
 
     depth = queue_depth()
-    depth["workers"] = get_system_settings(db).erp_script_workers
+    depth["workers"] = get_erp_script_workers(db)
     depth["max_workers"] = max_erp_script_workers()
     return depth
 

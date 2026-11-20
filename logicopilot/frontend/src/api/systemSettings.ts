@@ -22,6 +22,10 @@ export interface SystemSettings {
    *  two simultaneous ERP logins against the same account. */
   erp_script_workers: number;
   max_erp_script_workers: number;
+  /** Auto: the server sizes the ERP worker pool itself from free memory, CPU cores and load,
+   *  on every queued run. `_value` is what Auto would pick right now. */
+  erp_script_workers_auto?: boolean;
+  erp_script_workers_auto_value?: number;
   /** Large-job lane + practice AI (SIT only). */
   large_job_parallel_calls?: number;
   practice_ai_mode?: "off" | "record" | "replay";
@@ -138,6 +142,16 @@ export async function setErpScriptWorkers(count: number): Promise<{ erp_script_w
   const { data } = await apiClient.post<{ erp_script_workers: number }>(
     "/system-settings/erp-workers",
     { count },
+  );
+  return data;
+}
+
+/** Auto on: every queued ERP run sizes the pool from this server's free memory, CPU cores and
+ *  load. Off: the saved number again. Typing a number and saving also turns Auto off. */
+export async function setErpScriptWorkersAuto(on: boolean): Promise<{ erp_script_workers_auto: boolean; erp_script_workers: number }> {
+  const { data } = await apiClient.post<{ erp_script_workers_auto: boolean; erp_script_workers: number }>(
+    "/system-settings/erp-workers/auto",
+    { on },
   );
   return data;
 }

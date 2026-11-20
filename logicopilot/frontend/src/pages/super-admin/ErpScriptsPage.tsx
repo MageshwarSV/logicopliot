@@ -13,6 +13,7 @@ import * as onboardingApi from "../../api/onboarding";
 import type { ErpScript } from "../../types/erpScript";
 import type { Tenant } from "../../types/tenant";
 import type { TemplateGroup } from "../../types/onboarding";
+import { BranchLoginsCard } from "./BranchLoginsCard";
 
 export function ErpScriptsPage() {
   const navigate = useNavigate();
@@ -40,6 +41,7 @@ export function ErpScriptsPage() {
   const [editPassword, setEditPassword] = useState("");
   const [editSelected, setEditSelected] = useState<string[]>([]);
   const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editBranchField, setEditBranchField] = useState("");
 
   useEffect(() => {
     tenantsApi.listTenants().then((t) => {
@@ -123,6 +125,7 @@ export function ErpScriptsPage() {
     // login_password is never sent back by the API - leave blank, keeps the saved one unless typed.
     setEditPassword("");
     setEditSelected(s.template_ids ?? []);
+    setEditBranchField(s.branch_field ?? "");
     setEditOpen(true);
   }
 
@@ -140,6 +143,7 @@ export function ErpScriptsPage() {
         // Omitted (not null) when left blank, so a saved password is kept rather than wiped.
         ...(editHasLogin && editPassword ? { login_password: editPassword } : {}),
         template_ids: editSelected,
+        branch_field: editBranchField.trim() || null,
       });
       setEditOpen(false);
       refresh(tenantId);
@@ -198,6 +202,9 @@ export function ErpScriptsPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{s.name}</span>
+                  {s.branch_field && (
+                    <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">by branch: {s.branch_field}</span>
+                  )}
                   <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.status === "ready" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300"}`}>{s.status}</span>
                 </div>
                 <p className="truncate text-xs text-slate-400">{s.url}</p>
@@ -214,6 +221,8 @@ export function ErpScriptsPage() {
           ))}
         </div>
       </Card>
+
+      {tenantId && <BranchLoginsCard tenantId={tenantId} scripts={scripts} />}
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="New ERP Script">
         <form className="flex flex-col gap-4" onSubmit={createScript}>
@@ -279,6 +288,20 @@ export function ErpScriptsPage() {
               </div>
             )}
             <p className="mt-1 text-xs text-slate-400">Reassign which template(s) feed this ERP form.</p>
+          </div>
+          <div>
+            <Input
+              label="Branch field (optional)"
+              value={editBranchField}
+              onChange={(e) => setEditBranchField(e.target.value)}
+              placeholder="e.g. Destination"
+            />
+            <p className="mt-1 text-xs text-slate-400">
+              The job field that names the ERP branch. When set, each job runs on that branch's
+              always-on login (see Branch logins below) from after the checkpoint — no login of its
+              own — alongside the branch's other jobs. A job whose branch has no login fails with
+              a clear reason. Leave empty to run this script the usual way.
+            </p>
           </div>
           {error && <Alert>{error}</Alert>}
           <Button type="submit" isLoading={editSubmitting} disabled={editSelected.length === 0}>Save changes</Button>

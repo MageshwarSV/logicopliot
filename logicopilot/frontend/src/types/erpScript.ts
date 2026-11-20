@@ -85,4 +85,6 @@ export interface ErpScript {
   checkpoint_index: number | null;
   /** Reuse the logged-in session reached at the checkpoint for the next job. */
   stay_open: boolean;
+  /** Job field naming the ERP branch - routes each job to that branch's always-on login. */
+  branch_field?: string | null;
 }

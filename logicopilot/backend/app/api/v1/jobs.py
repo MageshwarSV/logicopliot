@@ -3454,8 +3454,17 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     if ckpt is not None:
         sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
 
-    from app.core import erp_priority
+    from app.core import branch_sessions, erp_priority
     from app.core.erp_session import script_slot
+
+    # A branch-routed script runs on its branch's always-on login (app/core/branch_sessions.py)
+    # alongside that branch's other jobs; anything else runs exactly as before.
+    branch = branch_sessions.branch_for_job(db, script, values)
+    if branch is not None and branch.get("missing"):
+        _fail(branch["missing"])
+        return
+    if branch is not None:
+        logger.info("job %s: ERP entry on the %s branch login", job.reference, branch["branch"])
 
     while True:
         # An Entry Browser run holds the ERP (one login per account) - wait it out before
@@ -3475,16 +3484,25 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
         job.gk2_status = "entering_erp"
         db.commit()
         try:
-            # A script with no session to share has to take turns, however many workers are
-            # configured - see script_slot. One with a shared session does not.
-            with erp_priority.queued_run(job.id), \
-                    script_slot(script.id, shared_login=ckpt is not None):
-                result = play_steps(
-                    script.url, login, script.steps or [], values, headless=True, rows=rows,
-                    downloads_dir=dl_dir, uploads=up_map, progress=_live,
-                    checkpoint_index=ckpt, session_file=sess_file,
-                    cancel=erp_priority.manual_active,
-                )
+            if branch is not None:
+                with erp_priority.queued_run(job.id):
+                    result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                        script.url, None, script.steps or [], values, headless=True, rows=rows,
+                        downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                        checkpoint_index=script.checkpoint_index, branch_session=sess,
+                        cancel=erp_priority.manual_active,
+                    ))
+            else:
+                # A script with no session to share has to take turns, however many workers
+                # are configured - see script_slot. One with a shared session does not.
+                with erp_priority.queued_run(job.id), \
+                        script_slot(script.id, shared_login=ckpt is not None):
+                    result = play_steps(
+                        script.url, login, script.steps or [], values, headless=True, rows=rows,
+                        downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                        checkpoint_index=ckpt, session_file=sess_file,
+                        cancel=erp_priority.manual_active,
+                    )
         except Exception as exc:  # noqa: BLE001
             _fail(f"The ERP entry could not be run: {exc}")
             return
@@ -5937,7 +5955,17 @@ def complete_job(
             needs_attachment = (
                 grp_for_mode is not None and (grp_for_mode.entry_mode or "fields") == "excel"
             )
-            if ckpt is not None and not needs_attachment:
+            from app.core import branch_sessions
+
+            # A branch-routed job runs on its branch's always-on login, never a parked browser.
+            branch = branch_sessions.branch_for_job(db, script, values)
+            if branch is not None and branch.get("missing"):
+                job.status = "failed"
+                job.erp_status = "error"
+                job.erp_reason = branch["missing"]
+                db.commit()
+                raise HTTPException(status_code=422, detail=branch["missing"])
+            if ckpt is not None and not needs_attachment and branch is None:
                 # A browser may already be parked at this script's checkpoint — logged in and
                 # sitting on the entry screen. Hand it the job: it runs only the steps below
                 # the checkpoint, then closes and re-parks itself. If nothing is parked, or the
@@ -6077,14 +6105,24 @@ def complete_job(
                     # Same rule as the queued GK2 run: an Entry Browser run goes first, and a
                     # run it interrupts starts again from step 0. See app/core/erp_priority.py.
                     erp_priority.wait_turn()
-                    with erp_priority.queued_run(job.id), \
-                            script_slot(script.id, shared_login=ckpt is not None):
-                        result = play_steps(
-                            script.url, login, script.steps or [], values, headless=True,
-                            rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
-                            session_file=sess_file, uploads=up_map, progress=_live,
-                            cancel=erp_priority.manual_active,
-                        )
+                    if branch is not None:
+                        # On the branch's always-on login - see app/core/branch_sessions.py.
+                        with erp_priority.queued_run(job.id):
+                            result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                                script.url, None, script.steps or [], values, headless=True,
+                                rows=rows, downloads_dir=dl_dir,
+                                checkpoint_index=script.checkpoint_index, branch_session=sess,
+                                uploads=up_map, progress=_live, cancel=erp_priority.manual_active,
+                            ))
+                    else:
+                        with erp_priority.queued_run(job.id), \
+                                script_slot(script.id, shared_login=ckpt is not None):
+                            result = play_steps(
+                                script.url, login, script.steps or [], values, headless=True,
+                                rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
+                                session_file=sess_file, uploads=up_map, progress=_live,
+                                cancel=erp_priority.manual_active,
+                            )
                     if not erp_priority.was_preempted(result):
                         break
                     logger.info("job %s: ERP run paused for an Entry Browser run - will start "

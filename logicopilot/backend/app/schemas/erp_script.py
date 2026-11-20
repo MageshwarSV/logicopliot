@@ -132,6 +132,8 @@ class ErpScriptUpdate(BaseModel):
     # 0-based index of the step marked as the checkpoint; null clears it.
     checkpoint_index: int | None = None
     stay_open: bool | None = None
+    # The job field naming the job's ERP branch - routes it to that branch's always-on login.
+    branch_field: str | None = None
     name: str | None = None
     url: str | None = None
     has_login: bool | None = None
@@ -148,6 +150,7 @@ class ErpScriptOut(BaseModel):
 
     checkpoint_index: int | None = None
     stay_open: bool = False
+    branch_field: str | None = None
 
     id: str
     tenant_id: str
