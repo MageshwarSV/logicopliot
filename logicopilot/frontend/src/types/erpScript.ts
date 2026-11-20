@@ -59,6 +59,15 @@ export interface ErpStep {
   end_steps?: ErpStep[] | null;
   /** This step is the CHECKPOINT — login and navigation are done, the entry screen is up. */
   is_checkpoint?: boolean | null;
+  /** action "if_else": test the screen, run ONE of two recorded sequences, then carry on.
+   *  cond "text" (default): the value (field_label / value) is on screen as exact text, in any
+   *  frame. cond "element": `selector` is on screen. `timeout` = seconds to keep looking.
+   *  *_goto = step number (1-based) to continue at afterwards; empty = the next step. */
+  cond?: "text" | "element" | null;
+  then_steps?: ErpStep[] | null;
+  else_steps?: ErpStep[] | null;
+  then_goto?: number | null;
+  else_goto?: number | null;
 }
 
 export interface ErpScript {

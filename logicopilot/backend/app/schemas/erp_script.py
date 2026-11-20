@@ -102,6 +102,18 @@ class ErpStep(BaseModel):
     row_steps: list["ErpStep"] | None = None
     end_steps: list["ErpStep"] | None = None
 
+    # action "if_else": test the screen, run ONE of two recorded step sequences, then carry on.
+    #   cond        "text" (default) - the value (field_label / value) is on screen as the
+    #               exact text of something, in any frame; "element" - `selector` is on screen.
+    #   timeout     seconds to keep looking before deciding "not there" (default 5).
+    #   then_steps  run when the test passes;  then_goto  step number (1-based) to continue at
+    #   else_steps  run when it fails;         else_goto  afterwards - empty = the next step.
+    cond: str | None = None
+    then_steps: list["ErpStep"] | None = None
+    else_steps: list["ErpStep"] | None = None
+    then_goto: int | None = None
+    else_goto: int | None = None
+
 
 # row_steps/end_steps refer to ErpStep itself, so the forward reference must be resolved.
 ErpStep.model_rebuild()

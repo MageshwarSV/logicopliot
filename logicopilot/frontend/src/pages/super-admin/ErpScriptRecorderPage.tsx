@@ -187,6 +187,15 @@ export function ErpScriptRecorderPage() {
   /** While set, recorded actions are collected into the loop instead of the main script:
    *  phase "row" = the block replayed after every value, "end" = run once after the last. */
   const [rowCapture, setRowCapture] = useState<{ index: number; phase: "row" | "end" } | null>(null);
+  /** ⑂ IF / ELSE: while set, recorded actions go into that step's IF (then) or ELSE list
+   *  instead of the main script. */
+  const [branchCapture, setBranchCapture] = useState<{ index: number; phase: "then" | "else" } | null>(null);
+  /** The "⑂ If / Else" popup: what the test looks for on screen. */
+  const [ifOpen, setIfOpen] = useState(false);
+  const [ifMode, setIfMode] = useState<"field" | "literal">("field");
+  const [ifField, setIfField] = useState("");
+  const [ifLiteral, setIfLiteral] = useState("");
+  const [ifTimeout, setIfTimeout] = useState("5");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<ErpStep>({ action: "click", selector: "", value: "", description: "" });
@@ -530,6 +539,13 @@ export function ErpScriptRecorderPage() {
   function pushStep(rawStep: ErpStep) {
     const s = forceEnableArmed ? { ...rawStep, force_enable: true } : rawStep;
     if (forceEnableArmed) setForceEnableArmed(false);
+    if (branchCapture) {
+      const key = branchCapture.phase === "then" ? "then_steps" : "else_steps";
+      setSteps((arr) =>
+        arr.map((st, idx) => (idx === branchCapture.index ? { ...st, [key]: [...(st[key] ?? []), s] } : st)),
+      );
+      return;
+    }
     if (rowCapture) {
       const key = rowCapture.phase === "row" ? "row_steps" : "end_steps";
       setSteps((arr) =>
@@ -1361,6 +1377,56 @@ export function ErpScriptRecorderPage() {
     }
   }
 
+  /** Confirm for ⑂ If / Else: adds the test as one step (inserted where recording stands),
+   *  checks the live screen right now, and starts recording the branch the screen is IN -
+   *  so whatever is done next goes into IF when the value is on screen, ELSE when it is not. */
+  async function confirmIfElse() {
+    if (!sid) return;
+    const label = ifMode === "field" ? ifField : "";
+    const literal = ifMode === "literal" ? ifLiteral.trim() : "";
+    if (!label && !literal) {
+      setError(ifMode === "field" ? "Pick the data field to look for." : "Enter the text to look for.");
+      return;
+    }
+    const secs = Number(ifTimeout);
+    const step: ErpStep = {
+      action: "if_else",
+      cond: "text",
+      field_label: label || undefined,
+      value: literal || undefined,
+      timeout: Number.isFinite(secs) && secs > 0 ? secs : 5,
+      description: `if ${label ? `[${label}]` : `"${literal}"`} is on screen`,
+      then_steps: [],
+      else_steps: [],
+      then_goto: null,
+      else_goto: null,
+    };
+    setBusy(true);
+    setError(null);
+    try {
+      const at = insertAt !== null ? Math.max(0, Math.min(insertAt, steps.length)) : steps.length;
+      const next = [...steps.slice(0, at), step, ...steps.slice(at)];
+      setSteps(next);
+      if (insertAt !== null) {
+        setInsertAt(at + 1);
+        seekReplay(next, at + 1);
+      }
+      let phase: "then" | "else" = "then";
+      try {
+        const res = await erpApi.recorderApplyStep(scriptId, sid, step);
+        const said = String(res.value ?? "");
+        if (said.startsWith("ELSE")) phase = "else";
+        setStatus(`Step ${at + 1} added. On screen now → ${said || "could not tell"}. Recording the ${phase === "then" ? "IF" : "ELSE"} steps — do them in the browser.`);
+      } catch {
+        setStatus(`Step ${at + 1} added. Recording the IF steps — do them in the browser.`);
+      }
+      setBranchCapture({ index: at, phase });
+      setIfOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** Confirm for Search & Click / Search & Double-click: no element to touch first — this
    *  searches the WHOLE live screen for whatever holds the chosen field's value and clicks
    *  (or double-clicks) it directly, right now, and records a step that does the same on
@@ -2075,6 +2141,22 @@ export function ErpScriptRecorderPage() {
                     className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                   >
                     🔎 Search & Double-click
+                  </button>
+                  {/* ⑂ IF / ELSE: test the screen for a value, then run one of two recorded
+                      sequences - e.g. switch branch when the job's branch is in the list, close
+                      the popup when it is not (it is the branch already in use). */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIfOpen(true);
+                      setIfMode(fields.length > 0 ? "field" : "literal");
+                      setIfField(""); setIfLiteral(""); setIfTimeout("5");
+                    }}
+                    disabled={busy || !!branchCapture || !!rowCapture}
+                    title="If / Else: look for a value on screen, then run the IF steps when it is there and the ELSE steps when it is not"
+                    className="shrink-0 whitespace-nowrap rounded-lg border border-fuchsia-200 px-2.5 py-1.5 text-xs font-medium text-fuchsia-700 hover:bg-fuchsia-50 disabled:opacity-40 dark:border-fuchsia-500/40 dark:text-fuchsia-300 dark:hover:bg-fuchsia-500/10"
+                  >
+                    ⑂ If / Else
                   </button>
                   {/* Pressed DURING recording, at the moment the login and navigation are done
                       and the entry screen is up. Marks the step just recorded, so everything
@@ -2838,6 +2920,75 @@ export function ErpScriptRecorderPage() {
                 </button>
               </span>
             </div>
+            {s.action === "if_else" && (
+              <div className="ml-9 grid gap-2 rounded-lg border border-fuchsia-200 bg-fuchsia-50/40 p-2 text-xs dark:border-fuchsia-500/30 dark:bg-fuchsia-500/5 sm:grid-cols-2">
+                {(["then", "else"] as const).map((ph) => {
+                  const list = (ph === "then" ? s.then_steps : s.else_steps) ?? [];
+                  const goto = ph === "then" ? s.then_goto : s.else_goto;
+                  const recording = branchCapture?.index === i && branchCapture.phase === ph;
+                  return (
+                    <div key={ph} className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ph === "then" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200" : "bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200"}`}>
+                          {ph === "then" ? "IF found" : "ELSE not found"}
+                        </span>
+                        <span className="text-slate-500">{list.length} step{list.length === 1 ? "" : "s"}</span>
+                        <button
+                          type="button"
+                          disabled={!sid || (!!branchCapture && !recording) || !!rowCapture}
+                          onClick={() => setBranchCapture(recording ? null : { index: i, phase: ph })}
+                          className="ml-auto rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-white disabled:opacity-40 dark:border-slate-600 dark:text-slate-300"
+                          title={sid ? "Record more steps into this branch from the live browser" : "Start the recorder first"}
+                        >
+                          {recording ? "● recording — stop" : "● record"}
+                        </button>
+                        {list.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!window.confirm(`Remove all ${list.length} ${ph === "then" ? "IF" : "ELSE"} step(s) of step ${i + 1}?`)) return;
+                              const key = ph === "then" ? "then_steps" : "else_steps";
+                              setSteps((arr) => arr.map((st, j) => (j === i ? { ...st, [key]: [] } : st)));
+                            }}
+                            className="text-[10px] text-rose-600 hover:underline"
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                      {list.length > 0 && (
+                        <ol className="ml-1 list-decimal space-y-0.5 pl-4 text-[11px] text-slate-600 dark:text-slate-300">
+                          {list.map((b, k) => (
+                            <li key={k} className="truncate">
+                              <span className="font-medium">{b.action}</span>{" "}
+                              {b.field_label ? <span className="text-emerald-600">[{b.field_label}] </span> : null}
+                              {b.description || b.selector || ""}
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                      <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                        then continue at step
+                        <input
+                          type="number"
+                          min={1}
+                          max={steps.length}
+                          value={goto ?? ""}
+                          placeholder={String(i + 2)}
+                          onChange={(e) => {
+                            const n = e.target.value === "" ? null : Math.max(1, Math.floor(Number(e.target.value)));
+                            const key = ph === "then" ? "then_goto" : "else_goto";
+                            setSteps((arr) => arr.map((st, j) => (j === i ? { ...st, [key]: Number.isFinite(n as number) ? n : null } : st)));
+                          }}
+                          className="w-14 rounded border border-slate-300 px-1 py-0.5 text-[11px] dark:border-slate-600 dark:bg-slate-800"
+                        />
+                        <span className="text-slate-400">(empty = next)</span>
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {s.is_checkpoint && (
               <div className="flex items-center gap-2 py-0.5">
                 <span className="h-px flex-1 bg-amber-300 dark:bg-amber-500/40" />
@@ -3255,6 +3406,96 @@ export function ErpScriptRecorderPage() {
           </p>
         </div>
       )}
+
+      {/* ---------- Recording an IF / ELSE branch ---------- */}
+      {branchCapture && steps[branchCapture.index]?.action === "if_else" && (() => {
+        const bs = steps[branchCapture.index];
+        const isThen = branchCapture.phase === "then";
+        const n = ((isThen ? bs.then_steps : bs.else_steps) ?? []).length;
+        return (
+          <div className="fixed bottom-4 left-1/2 z-50 w-[42rem] -translate-x-1/2 rounded-xl border border-fuchsia-400 bg-white p-4 shadow-xl dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-fuchsia-800 dark:text-fuchsia-200">
+                  ⑂ Step {branchCapture.index + 1}: recording the {isThen ? "IF (found)" : "ELSE (not found)"} steps
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {bs.description} · Do them in the browser. Captured: <b>{n}</b> action(s)
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setBranchCapture({ ...branchCapture, phase: isThen ? "else" : "then" })}
+                >
+                  Switch to {isThen ? "ELSE" : "IF"}
+                </Button>
+                <Button onClick={() => setBranchCapture(null)}>Done</Button>
+              </div>
+            </div>
+            <p className="mt-2 rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-500 dark:bg-slate-800">
+              The browser shows one case at a time. Record the other branch later with its
+              “● record” button on step {branchCapture.index + 1}, when the screen is in that case —
+              and set “continue at step” there (empty = the step after the If).
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* ---------- ⑂ If / Else popup ---------- */}
+      <Modal open={ifOpen} onClose={() => setIfOpen(false)} title="⑂ If / Else">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            On every run this step looks for a value on screen — the exact text of something, in
+            any frame. <b>Found</b> → the IF steps run. <b>Not found</b> → the ELSE steps run.
+            Then the run continues at the step you choose (or the next one).
+          </p>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => setIfMode("field")}
+              className={`rounded-lg border px-2 py-2 text-xs font-medium ${ifMode === "field" ? "border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-500/10 dark:text-fuchsia-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              A data field's value
+            </button>
+            <button
+              type="button"
+              onClick={() => setIfMode("literal")}
+              className={`rounded-lg border px-2 py-2 text-xs font-medium ${ifMode === "literal" ? "border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-500/10 dark:text-fuchsia-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              Fixed text
+            </button>
+          </div>
+          {ifMode === "field" ? (
+            <Select label="Look for the value of" value={ifField} onChange={(e) => setIfField(e.target.value)}>
+              <option value="">— choose a field —</option>
+              {mappableFields.map((f) => <option key={f} value={f}>{f}</option>)}
+            </Select>
+          ) : (
+            <Input
+              label="Look for this exact text"
+              value={ifLiteral}
+              onChange={(e) => setIfLiteral(e.target.value)}
+              placeholder="e.g. Record already exists"
+              autoFocus
+            />
+          )}
+          <Input
+            label="Keep looking for (seconds) before deciding “not found”"
+            type="number"
+            value={ifTimeout}
+            onChange={(e) => setIfTimeout(e.target.value)}
+          />
+          <p className="rounded-lg bg-fuchsia-50 px-3 py-2 text-[11px] text-fuchsia-900 dark:bg-fuchsia-500/10 dark:text-fuchsia-200">
+            Exact match: “Chennai” is not found in a list that only has “Chennai FTWZ”. After you
+            confirm, the live screen is checked and recording starts on the branch it matches.
+          </p>
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+            <Button variant="secondary" onClick={() => setIfOpen(false)}>Cancel</Button>
+            <Button onClick={confirmIfElse} isLoading={busy} disabled={!sid}>Add If / Else</Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* ---------- Value popup (opens when an input is touched) ---------- */}
       <Modal
