@@ -241,7 +241,16 @@ def login_plan(script, bs) -> tuple[list[dict], dict, dict | None]:
             ustep.update({"value": user, "field_label": None, "prompt": None})
         if pwd and pstep is not None:
             pstep.update({"value": pwd, "field_label": None, "prompt": None})
-    values = {(getattr(script, "branch_field", None) or "Destination"): bs.branch}
+    bfield = getattr(script, "branch_field", None) or "Destination"
+    values = {bfield: bs.branch}
+    # The step that picks the branch at login is only there for a user with several branches.
+    # A user with ONE branch (a branch's own bot user - "4SCDCBILLING" sees Chennai as plain
+    # text, no dropdown) has nothing to pick, and the step would fail the whole login. So it is
+    # optional HERE - for the branch login only, never in the saved script - and _login checks
+    # afterwards that the ERP really is on this branch.
+    for s in steps:
+        if (s.get("field_label") or "").strip().casefold() == bfield.strip().casefold():
+            s["is_optional"] = True
     probe = None
     if ckpt is not None:
         probe = next((s for s in (script.steps or [])[ckpt + 1:] if s.get("selector")), None)
@@ -365,6 +374,17 @@ class _Keeper:
             return f"login stopped at step {(r or {}).get('index', 0) + 1}: {last[0][:200]}"
         if not self._probe_ok(plan):
             return "logged in, but the screen after the checkpoint never appeared"
+        # The branch step may have been skipped (single-branch user), and a user can be set up
+        # on a different branch than this row says. Entering a job on the wrong branch is the
+        # one thing this whole design exists to prevent, so the logged-in screen must name it.
+        want = plan["branch"].strip().casefold()
+        try:
+            text = self._ses.submit(lambda p: p.inner_text("body"), timeout=30) or ""
+        except Exception:  # noqa: BLE001
+            text = ""
+        if want not in text.casefold():
+            return (f"logged in, but the ERP screen does not show the {plan['branch']} branch - "
+                    "check that this user is set up for it")
         if not self._save():
             return "logged in, but the session could not be saved"
         return None
