@@ -24,12 +24,28 @@ def _mail(zip_bytes: int, mid: str = "<m1@test>") -> bytes:
     return msg.as_bytes()
 
 
+class _Q:
+    def __init__(self, row):
+        self.row = row
+
+    def filter(self, *_a):
+        return self
+
+    def first(self):
+        return self.row
+
+
 class _DB:
-    def __init__(self, groups):
+    """get() for the template, query().filter().first() for the EmailSeen verdict."""
+    def __init__(self, groups, verdict=None):
         self.groups = groups
+        self.verdict = verdict
 
     def get(self, _cls, gid):
         return self.groups.get(gid)
+
+    def query(self, *_a):
+        return _Q((self.verdict,) if self.verdict else None)
 
 
 @pytest.fixture
@@ -132,3 +148,31 @@ def test_request_extraction_only_leaves_a_marker(monkeypatch):
     assert job.attachment_notes["lane_extract"]["is_rerun"] is True
     assert job.attachment_notes["large_zip"] == {"size_mb": 9.6}
     assert commits == [1]
+
+
+def test_already_processed_mail_stays_in_the_cycle(lane):
+    """Processed mail stays unread in the inbox, so every poll finds it again - the cycle's
+    _claim skips it; it must not be handed to the lane each minute."""
+    task = _task("g", 9 * MB)
+    keep = email_puller._hand_large_mail_to_lane(_DB({"g": ON}, verdict="matched"), [task], False, lambda t: None)
+    assert keep == [task] and len(lane._emails) == 0
+    # being read right now by the lane: also left to the cycle (its _claim says "reading it now")
+    keep = email_puller._hand_large_mail_to_lane(_DB({"g": ON}, verdict="working"), [task], False, lambda t: None)
+    assert keep == [task] and len(lane._emails) == 0
+
+
+def test_mail_held_failed_goes_back_to_the_lane(lane):
+    keep = email_puller._hand_large_mail_to_lane(_DB({"g": ON}, verdict="failed"), [_task("g", 9 * MB)], False, lambda t: None)
+    assert keep == [] and len(lane._emails) == 1
+
+
+def test_status_writes_do_not_collide(tmp_path, monkeypatch):
+    monkeypatch.setattr(large_job_lane, "_status_path", lambda: tmp_path / "status.json")
+    errors = []
+    monkeypatch.setattr(large_job_lane.logger, "exception", lambda *a, **k: errors.append(a))
+    threads = [threading.Thread(target=large_job_lane._write_status) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and (tmp_path / "status.json").exists()

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -39,6 +40,7 @@ MARKER = "lane_extract"
 _POLL_SECONDS = 10.0
 
 _lock = threading.Lock()
+_status_lock = threading.Lock()   # one status write at a time (the cycle and the lane both write)
 _wake = threading.Event()
 _emails: deque[dict] = deque()
 _queued_keys: set[str] = set()
@@ -70,9 +72,10 @@ def _write_status() -> None:
     try:
         path = _status_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
-        tmp.replace(path)
+        with _status_lock:
+            tmp = path.with_name(f"status.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data))
+            tmp.replace(path)
     except Exception:  # noqa: BLE001 - status is for display only
         logger.exception("large-job lane: could not write status")
 

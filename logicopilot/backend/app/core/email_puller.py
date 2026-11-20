@@ -1238,6 +1238,13 @@ def _hand_large_mail_to_lane(db: Session, tasks: list[dict], reexamine: bool, ru
         if biggest <= (getattr(group, "large_zip_mb", 5) or 5) * 1024 * 1024:
             keep.append(task)
             continue
+        # Already examined (it stays unread in the inbox on purpose, so every poll of the day
+        # finds it again): leave it to the cycle, whose _claim() skips it at once - exactly as
+        # before the lane. Only a new mail, or one held "failed" for a retry, goes to the lane.
+        seen = db.query(EmailSeen.verdict).filter(EmailSeen.message_id == mid).first()
+        if seen is not None and seen[0] not in (FAILED_VERDICT,):
+            keep.append(task)
+            continue
         size_mb = biggest / (1024 * 1024)
         if large_job_lane.submit_email(mid, f"{subject or mid} ({size_mb:.1f} MB)",
                                        lambda t=task: run_task(t)):

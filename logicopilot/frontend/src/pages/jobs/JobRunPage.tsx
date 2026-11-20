@@ -2625,6 +2625,10 @@ export function JobRunPage() {
                   {reviewFiles.map((f) => {
                     const approved = isFileApproved(f);
                     const isOpen = activeFile?.id === f.id;
+                    // Serial number within its document type (Invoice 1, Invoice 2 ... of 57) -
+                    // only when the type has more than one file, so a single Air Waybill stays plain.
+                    const sameType = reviewFiles.filter((x) => x.name === f.name);
+                    const serial = sameType.length > 1 ? sameType.indexOf(f) + 1 : null;
                     return (
                       <li key={f.id}>
                         <button
@@ -2645,8 +2649,9 @@ export function JobRunPage() {
                           >
                             {approved ? "✓" : ""}
                           </span>
-                          <span className="min-w-0 flex-1 truncate">
+                          <span className="min-w-0 flex-1 truncate" title={serial ? `${f.name} ${serial} of ${sameType.length}${f.original_name ? ` · ${f.original_name}` : ""}` : undefined}>
                             {f.name}
+                            {serial ? <span className="ml-1 font-semibold tabular-nums">{serial}</span> : null}
                             {f.original_name ? <span className="opacity-60"> · {f.original_name}</span> : null}
                             {f.manual_entry ? <span className="opacity-60"> · enter by hand</span> : null}
                             {f.set_index ? <span className="opacity-60"> · set {f.set_index}</span> : null}
