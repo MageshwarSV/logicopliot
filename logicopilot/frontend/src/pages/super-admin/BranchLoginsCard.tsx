@@ -39,6 +39,10 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // "Check now": which rows are being checked (with the last-check time before the press), and
+  // what each check found - otherwise a live login stays "Live" and the press looks like nothing.
+  const [checking, setChecking] = useState<Record<string, string | null>>({});
+  const [checked, setChecked] = useState<Record<string, string>>({});
 
   const loginScripts = scripts.filter((s) => s.checkpoint_index !== null && s.checkpoint_index !== undefined);
   const scriptName = new Map(scripts.map((s) => [s.id, s.name]));
@@ -111,6 +115,61 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
     }
   }
 
+  async function checkNow(r: BranchLogin) {
+    setChecking((c) => ({ ...c, [r.id]: r.last_check_at }));
+    setChecked((c) => {
+      const n = { ...c };
+      delete n[r.id];
+      return n;
+    });
+    try {
+      await api.checkBranchLogin(r.id);
+    } catch (err) {
+      setChecking((c) => {
+        const n = { ...c };
+        delete n[r.id];
+        return n;
+      });
+      setError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not check." : "Could not check.");
+      return;
+    }
+    // The keeper picks the request up within a few seconds; poll until it has answered.
+    const before = r.last_check_at;
+    const started = Date.now();
+    const poll = async () => {
+      let rowsNow: BranchLogin[] = [];
+      try {
+        rowsNow = await api.listBranchLogins(tenantId);
+        setRows(rowsNow);
+      } catch {
+        /* keep polling */
+      }
+      const now = rowsNow.find((x) => x.id === r.id);
+      const answered = now && (now.last_check_at !== before || now.status !== "live");
+      if (answered || Date.now() - started > 90000) {
+        const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setChecked((c) => ({
+          ...c,
+          [r.id]: !now
+            ? "Check sent - refresh to see the result."
+            : now.status === "live" && now.last_check_at !== before
+              ? `Checked ${t} — login is live and reaches the entry screen.`
+              : now.status === "live"
+                ? "No answer from the keeper yet - it may be busy; the status above is current."
+                : `Checked ${t} — the login had dropped, logging in again…`,
+        }));
+        setChecking((c) => {
+          const n = { ...c };
+          delete n[r.id];
+          return n;
+        });
+        return;
+      }
+      window.setTimeout(poll, 2000);
+    };
+    window.setTimeout(poll, 2000);
+  }
+
   async function act(fn: () => Promise<unknown>) {
     try {
       await fn();
@@ -159,9 +218,12 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
                   {r.live_since && r.status === "live" ? ` · live since ${ago(r.live_since)}` : ""}
                 </p>
                 {r.status_note && r.enabled && <p className="text-xs text-rose-600 dark:text-rose-400">{r.status_note}</p>}
+                {checked[r.id] && <p className="text-xs text-emerald-700 dark:text-emerald-400">{checked[r.id]}</p>}
               </div>
               <div className="flex shrink-0 gap-1">
-                <Button size="sm" variant="secondary" onClick={() => act(() => api.checkBranchLogin(r.id))} disabled={!r.enabled}>Check now</Button>
+                <Button size="sm" variant="secondary" onClick={() => checkNow(r)} disabled={!r.enabled || r.id in checking}>
+                  {r.id in checking ? "Checking…" : "Check now"}
+                </Button>
                 <Button size="sm" variant="secondary" onClick={() => openEdit(r)}>Edit</Button>
                 <Button size="sm" variant="secondary" onClick={() => act(() => api.updateBranchLogin(r.id, { enabled: !r.enabled }))}>
                   {r.enabled ? "Turn off" : "Turn on"}
