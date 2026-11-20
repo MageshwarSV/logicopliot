@@ -203,22 +203,23 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
       <div className="divide-y divide-slate-100 dark:divide-slate-800">
         {rows.length === 0 && <p className="px-5 py-4 text-sm text-slate-400">No branch logins yet.</p>}
         {rows.map((r) => {
-          const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.off;
+          // Turned off wins over whatever the keeper last wrote - it may not have stopped yet.
+          const st = r.enabled ? (STATUS_STYLE[r.status] ?? STATUS_STYLE.off) : STATUS_STYLE.off;
           return (
             <div key={r.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{r.branch}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${st.cls}`}>{r.enabled ? st.label : "Off"}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${st.cls}`}>{st.label}</span>
                   <span className="text-xs text-slate-500">up to {r.max_tabs} job{r.max_tabs === 1 ? "" : "s"} at once</span>
                 </div>
                 <p className="text-xs text-slate-400">
                   User: {r.username || "the login script's own"} · Logs in with: {scriptName.get(r.login_script_id) ?? "—"} ·
                   Last check: {ago(r.last_check_at)}
-                  {r.live_since && r.status === "live" ? ` · live since ${ago(r.live_since)}` : ""}
+                  {r.enabled && r.live_since && r.status === "live" ? ` · live since ${ago(r.live_since)}` : ""}
                 </p>
                 {r.status_note && r.enabled && <p className="text-xs text-rose-600 dark:text-rose-400">{r.status_note}</p>}
-                {checked[r.id] && <p className="text-xs text-emerald-700 dark:text-emerald-400">{checked[r.id]}</p>}
+                {checked[r.id] && r.enabled && <p className="text-xs text-emerald-700 dark:text-emerald-400">{checked[r.id]}</p>}
               </div>
               <div className="flex shrink-0 gap-1">
                 <Button size="sm" variant="secondary" onClick={() => checkNow(r)} disabled={!r.enabled || r.id in checking}>
