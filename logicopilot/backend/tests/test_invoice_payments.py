@@ -32,6 +32,7 @@ def gateway(monkeypatch):
     monkeypatch.setattr(s, "razorpay_fee_gst_percent", 18.0)
     calls = {"orders": [], "captures": []}
     payments: dict[str, dict] = {}
+    order_payments: dict[str, list[dict]] = {}
 
     def create_order(amount_paise, receipt, notes):
         calls["orders"].append(amount_paise)
@@ -48,7 +49,8 @@ def gateway(monkeypatch):
     monkeypatch.setattr(gw, "create_order", create_order)
     monkeypatch.setattr(gw, "fetch_payment", fetch_payment)
     monkeypatch.setattr(gw, "capture_payment", capture_payment)
-    return {"calls": calls, "payments": payments}
+    monkeypatch.setattr(gw, "fetch_order_payments", lambda oid: order_payments.get(oid, []))
+    return {"calls": calls, "payments": payments, "order_payments": order_payments}
 
 
 def _invoice(db, tenant, total=1000.0, status="unpaid", number="INV-2026-10-001"):
@@ -161,6 +163,9 @@ def test_verified_payment_marks_the_invoice_paid(client, db_session, gateway):
     assert resp.json()["status"] == "paid" and resp.json()["payment_reference"] == "pay_1"
     db_session.refresh(inv)
     assert inv.status == "paid" and inv.paid_at
+    # Postgres refuses more than 30 chars in paid_at (SQLite here would not) - the SIT crash.
+    assert len(inv.paid_at) <= 30
+    assert len(db_session.query(InvoicePayment).one().paid_at) <= 30
     listed = client.get(f"/api/v1/tenants/{tenant.id}/billing/invoices").json()
     assert listed[0]["payment_reference"] == "pay_1"
 
@@ -250,3 +255,58 @@ def test_webhook_failed_payment_is_recorded_and_unknown_orders_ignored(client, d
     assert row.status == "failed" and row.error == "Bank declined"
     unknown = {"event": "payment.captured", "payload": {"payment": {"entity": {"order_id": "order_x"}}}}
     assert _hook(client, unknown).status_code == 200
+
+
+def _captured(pid, order_id, amount=102360):
+    return {"id": pid, "order_id": order_id, "amount": amount, "currency": "INR",
+            "status": "captured", "method": "upi", "created_at": 1}
+
+
+def test_mark_paid_by_hand_fits_the_paid_at_column(client, db_session):
+    tenant = make_tenant(db_session)
+    inv = _invoice(db_session, tenant)
+    sa = make_user(db_session, role="super_admin", email="sa-mark@example.com")
+    login(client, sa.email)
+    resp = client.post(f"/api/v1/tenants/{tenant.id}/billing/invoices/{inv.id}/mark-paid", json={"paid": True})
+    assert resp.status_code == 200 and len(resp.json()["paid_at"]) <= 30
+
+
+def test_opening_invoices_settles_a_payment_we_never_heard_back_on(client, db_session, gateway):
+    tenant = make_tenant(db_session)
+    inv = _invoice(db_session, tenant)
+    _tenant_admin(client, db_session, tenant)
+    order_id = _start(client, tenant, inv).json()["order_id"]
+    gateway["order_payments"][order_id] = [_captured("pay_r1", order_id)]
+    client.get(f"/api/v1/tenants/{tenant.id}/billing/payment-options")
+    db_session.refresh(inv)
+    assert inv.status == "paid"
+    assert client.get(f"/api/v1/tenants/{tenant.id}/billing/invoices").json()[0]["payment_reference"] == "pay_r1"
+
+
+def test_pay_now_does_not_charge_twice_when_an_earlier_attempt_was_paid(client, db_session, gateway):
+    tenant = make_tenant(db_session)
+    inv = _invoice(db_session, tenant)
+    _tenant_admin(client, db_session, tenant)
+    order_id = _start(client, tenant, inv).json()["order_id"]
+    gateway["order_payments"][order_id] = [_captured("pay_r2", order_id)]
+    resp = _start(client, tenant, inv)
+    assert resp.status_code == 409
+    assert len(gateway["calls"]["orders"]) == 1  # no second order was created
+
+
+def test_a_second_captured_payment_is_kept_as_duplicate_not_counted(client, db_session, gateway):
+    tenant = make_tenant(db_session)
+    inv = _invoice(db_session, tenant)
+    _tenant_admin(client, db_session, tenant)
+    first = _start(client, tenant, inv).json()["order_id"]
+    second = _start(client, tenant, inv).json()["order_id"]
+    gateway["order_payments"][first] = [_captured("pay_a", first)]
+    gateway["order_payments"][second] = [_captured("pay_b", second)]
+    client.get(f"/api/v1/tenants/{tenant.id}/billing/payment-options")
+    rows = {r.razorpay_order_id: r for r in db_session.query(InvoicePayment).all()}
+    for r in rows.values():
+        db_session.refresh(r)
+    assert rows[first].status == "paid" and rows[second].status == "duplicate"
+    assert "refund" in rows[second].error
+    db_session.refresh(inv)
+    assert inv.status == "paid"

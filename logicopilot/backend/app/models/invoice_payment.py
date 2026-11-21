@@ -7,7 +7,8 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 # created - a Razorpay order exists, the Tenant Admin has (or had) the payment window open
 # paid    - Razorpay confirmed the money; the invoice is marked paid
 # failed  - Razorpay reported the attempt failed (the tenant can simply press Pay now again)
-PAYMENT_STATUSES = ("created", "paid", "failed")
+# duplicate - money captured, but the invoice was already paid by another attempt: refund it
+PAYMENT_STATUSES = ("created", "paid", "failed", "duplicate")
 
 
 class InvoicePayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):

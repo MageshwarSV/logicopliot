@@ -1065,7 +1065,8 @@ def mark_invoice_paid(
     if invoice is None or invoice.tenant_id != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     invoice.status = "paid" if payload.paid else "unpaid"
-    invoice.paid_at = datetime.now(timezone.utc).isoformat() if payload.paid else None
+    # To the second: paid_at is String(30), and a full isoformat() (32 chars) is refused by Postgres.
+    invoice.paid_at = datetime.now(timezone.utc).isoformat(timespec="seconds") if payload.paid else None
     db.commit()
     db.refresh(invoice)
     return InvoiceOut.model_validate(invoice)

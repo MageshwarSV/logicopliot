@@ -79,10 +79,13 @@ export function InvoicesPage() {
   const load = useCallback(() => {
     if (!tenantId) return;
     setLoading(true);
-    Promise.all([
-      tenantsApi.listInvoices(tenantId).then(setInvoices),
-      paymentsApi.getPaymentOptions(tenantId).then(setOptions).catch(() => setOptions(null)),
-    ])
+    // Options first: loading them also settles any payment Razorpay confirmed that we had not
+    // heard back on yet, so the list below already shows it as paid.
+    paymentsApi
+      .getPaymentOptions(tenantId)
+      .then(setOptions, () => setOptions(null))
+      .then(() => tenantsApi.listInvoices(tenantId))
+      .then(setInvoices)
       .catch((err) => setError(errText(err, "Could not load invoices.")))
       .finally(() => setLoading(false));
   }, [tenantId]);

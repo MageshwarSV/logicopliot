@@ -7,6 +7,7 @@ and SaaS Finance can still mark an invoice paid by hand for those.
 """
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -77,6 +78,16 @@ def payment_options(tenant_id: str, db: Session = Depends(get_db),
     """What the Invoices page offers: Pay now (when the gateway is set up, Tenant Admin only),
     the gateway charge that will be added, and the bank details for a transfer instead."""
     _require_billing_read_access(user, tenant_id)
+    if gw.is_configured():
+        # Settle attempts we never heard back on (closed tab, no webhook yet) before the page
+        # lists the invoices - recent ones only, so a page load costs at most a few lookups.
+        since = datetime.now(timezone.utc) - timedelta(days=3)
+        open_rows = (db.query(InvoicePayment)
+                     .filter(InvoicePayment.tenant_id == tenant_id,
+                             InvoicePayment.status.in_(("created", "failed")),
+                             InvoicePayment.created_at >= since)
+                     .order_by(InvoicePayment.created_at).limit(10).all())
+        gw.reconcile(db, open_rows)
     s = get_settings()
     inv_settings = db.get(InvoiceSettings, SINGLETON_ID)
     return PaymentOptionsOut(
@@ -101,6 +112,16 @@ def start_payment(tenant_id: str, invoice_id: str, db: Session = Depends(get_db)
     if not gw.is_configured():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Online payment is not set up yet. Please pay by bank transfer.")
+    # An earlier attempt on this invoice may have been paid without us hearing back - settle it
+    # first, so the tenant is never asked to pay twice.
+    earlier = (db.query(InvoicePayment)
+               .filter(InvoicePayment.invoice_id == inv.id, InvoicePayment.status.in_(("created", "failed")))
+               .all())
+    if earlier and gw.reconcile(db, earlier):
+        db.refresh(inv)
+        if inv.status == "paid":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="This invoice has just been confirmed as paid. Refresh the page.")
     charge = gw.compute_charge(inv.total_amount)
     try:
         order = gw.create_order(charge.amount_paise, inv.invoice_number,

@@ -139,16 +139,28 @@ def capture_payment(payment_id: str, amount_paise: int) -> dict:
     return _call("POST", f"/payments/{payment_id}/capture", {"amount": amount_paise, "currency": "INR"})
 
 
+def fetch_order_payments(order_id: str) -> list[dict]:
+    return list(_call("GET", f"/orders/{order_id}/payments").get("items") or [])
+
+
+def now_text() -> str:
+    """The paid-at timestamp as stored (the columns are String(30)): to the second, 25 chars.
+    A plain isoformat() carries microseconds - 32 chars - which Postgres refuses."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 # ---- applying a confirmed payment --------------------------------------------------------
 
 def apply_payment(db: Session, payment_row, entity: dict) -> bool:
     """Mark the attempt and its invoice paid from a Razorpay payment entity - once. Called from
-    both the browser's confirmation and the webhook; whichever comes second finds it already
-    paid and does nothing. Refuses a payment that is not captured, is for another order, or is
-    for any amount but the one this order was created for. True when it is (now) paid."""
+    the browser's confirmation, the webhook and reconcile(); whichever comes second finds it
+    already paid and does nothing. Refuses a payment that is not captured, is for another order,
+    or is for any amount but the one this order was created for. A captured payment on an invoice
+    some OTHER attempt already paid is kept as "duplicate" (to refund), never counted twice.
+    True when this attempt is (now) settled."""
     from app.models.invoice import Invoice
 
-    if payment_row.status == "paid":
+    if payment_row.status in ("paid", "duplicate"):
         return True
     if (entity.get("order_id") != payment_row.razorpay_order_id
             or int(entity.get("amount") or 0) != payment_row.amount_paise
@@ -157,12 +169,25 @@ def apply_payment(db: Session, payment_row, entity: dict) -> bool:
         logger.warning("razorpay payment %s does not match order %s (status %s, amount %s)",
                        entity.get("id"), payment_row.razorpay_order_id, entity.get("status"), entity.get("amount"))
         return False
-    now = datetime.now(timezone.utc).isoformat()
-    payment_row.status = "paid"
+    from app.models.invoice_payment import InvoicePayment
+
+    now = now_text()
+    already = (db.query(InvoicePayment.id)
+               .filter(InvoicePayment.invoice_id == payment_row.invoice_id,
+                       InvoicePayment.status == "paid", InvoicePayment.id != payment_row.id)
+               .first())
     payment_row.razorpay_payment_id = entity.get("id")
     payment_row.method = (entity.get("method") or "")[:20] or None
-    payment_row.error = None
     payment_row.paid_at = now
+    if already is not None:
+        payment_row.status = "duplicate"
+        payment_row.error = "The invoice was already paid by another payment - refund this one in the Razorpay dashboard."
+        db.commit()
+        logger.warning("invoice %s: second payment %s captured - marked duplicate, refund it",
+                       payment_row.invoice_id, entity.get("id"))
+        return True
+    payment_row.status = "paid"
+    payment_row.error = None
     invoice = db.get(Invoice, payment_row.invoice_id)
     if invoice is not None and invoice.status != "paid":
         invoice.status = "paid"
@@ -170,3 +195,25 @@ def apply_payment(db: Session, payment_row, entity: dict) -> bool:
     db.commit()
     logger.info("invoice %s paid online (razorpay %s)", payment_row.invoice_id, entity.get("id"))
     return True
+
+
+def reconcile(db: Session, rows) -> int:
+    """Ask Razorpay about attempts we never heard back on (closed tab, a crash, no webhook yet)
+    and record any that were in fact paid - capturing an authorized one first. Never raises: a
+    gateway hiccup just leaves the attempt as it was for the next look. Returns how many settled."""
+    settled = 0
+    for row in rows:
+        if row.status not in ("created", "failed"):
+            continue
+        try:
+            items = fetch_order_payments(row.razorpay_order_id)
+            for entity in sorted(items, key=lambda e: e.get("created_at") or 0):
+                if entity.get("status") == "authorized" and int(entity.get("amount") or 0) == row.amount_paise:
+                    entity = capture_payment(entity["id"], row.amount_paise)
+                if entity.get("status") == "captured" and apply_payment(db, row, entity):
+                    settled += 1
+                    break
+        except Exception:  # noqa: BLE001 - a lookup must never break the page
+            db.rollback()
+            logger.warning("razorpay reconcile failed for order %s", row.razorpay_order_id, exc_info=True)
+    return settled
