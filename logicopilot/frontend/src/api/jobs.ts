@@ -157,6 +157,22 @@ export async function jobPullProgress(jobId: string): Promise<PullProgress> {
   return data;
 }
 
+/** Live progress of a running extraction (Run / Re-run extraction): which phase, "N of M",
+ *  and a time estimate. `active` is false whenever the job is not extracting. */
+export interface ExtractionProgress {
+  active: boolean;
+  phase?: "text" | "ai" | "docs" | "finishing";
+  done?: number;
+  total?: number;
+  eta_seconds?: number | null;
+  elapsed_seconds?: number;
+}
+
+export async function jobExtractionProgress(jobId: string): Promise<ExtractionProgress> {
+  const { data } = await apiClient.get<ExtractionProgress>(`/jobs/${jobId}/extraction-progress`);
+  return data;
+}
+
 /** Everything that has happened to this job, oldest first. */
 export async function jobHistory(jobId: string): Promise<JobEvent[]> {
   const { data } = await apiClient.get<JobEvent[]>(`/jobs/${jobId}/history`);

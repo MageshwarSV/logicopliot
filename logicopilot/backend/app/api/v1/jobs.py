@@ -2748,6 +2748,31 @@ def job_pull_progress(
     }
 
 
+@router.get("/jobs/{job_id}/extraction-progress")
+def job_extraction_progress(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """Where a running extraction has got to (app/core/extraction_progress.py): the phase,
+    "N of M", and a time estimate. "active": false whenever the job is not extracting - so a
+    run that failed and left a frame behind never shows a stale bar."""
+    import time as _time
+
+    from app.core import extraction_progress
+
+    job = _load_job(db, job_id, scope, user)
+    frame = extraction_progress.latest(job_id) if job.status == "extracting" else None
+    if frame is None:
+        return {"active": False}
+    return {
+        "active": True, "phase": frame["phase"], "done": frame["done"], "total": frame["total"],
+        "eta_seconds": frame["eta_seconds"],
+        "elapsed_seconds": round(_time.time() - frame["started"]),
+    }
+
+
 @router.get("/jobs/{job_id}/live")
 def job_live(
     job_id: str,
@@ -9688,6 +9713,11 @@ def run_extraction(
     from app.core.large_job_lane import in_lane as _in_lane
     from app.core.parallel_extract import Prefetch, prefetch_page_ocr, workers_for as _xworkers
 
+    # Live progress for the job page (app/core/extraction_progress.py): text -> ai -> docs ->
+    # finishing. Cleared first so a re-run never inherits the previous run's start time.
+    from app.core import extraction_progress as _xprog
+
+    _xprog.clear(job.id)
     _pf = Prefetch(_xworkers(_in_lane()))
     _pf_fields = _pf.wrap("fields", extract_document_fields)
     _pf_fields_img = _pf.wrap("fields_img", extract_document_fields_from_images)
@@ -9702,7 +9732,7 @@ def run_extraction(
             [(_job_doc_dir(d.id), p) for _t, d in _todo
              if getattr(d, "source_kind", "pdf") != "excel" and d.id not in doc_text_cache
              for p in range(1, (d.page_count or 0) + 1)],
-            _pf.workers)
+            _pf.workers, on_done=lambda d, t: _xprog.publish(job.id, "text", d, t))
         # 2. each document's text, one at a time as before; 3. plan the loop's calls
         for _t, _d in _todo:
             _text = text_for_doc(_d)
@@ -9735,7 +9765,13 @@ def run_extraction(
                 else:
                     _pf.plan("rows_img", _imgs, _specs, _rows_hint or None, model=_model,
                              tenant_id=job.tenant_id)
-        _pf.run()
+        _pf.run(on_done=lambda d, t: _xprog.publish(job.id, "ai", d, t))
+
+    # The documents the loop below will actually read - for its "document N of M".
+    _loop_total = sum(1 for t in group.documents for d in docs_by_tdoc.get(t.id, [])
+                      if d.file_path is not None and t.marks
+                      and not (only_job_document_id and d.id != only_job_document_id))
+    _loop_no = 0
 
     # Every FILE, not every slot: a slot holding three invoices is read three times, and each
     # file's values are kept under its own job_document_id so three invoice numbers stay three
@@ -9749,6 +9785,8 @@ def run_extraction(
         if only_job_document_id and jd.id != only_job_document_id:
             continue
 
+        _loop_no += 1
+        _xprog.publish(job.id, "docs", _loop_no, _loop_total)
         ocr_text = text_for_doc(jd)
 
         def _spec(m, inline_format: bool = True):
@@ -10207,6 +10245,7 @@ def run_extraction(
     if _pf.on:
         logger.info("job %s: parallel extraction - %d of %d AI call(s) answered from the prefetch",
                     job.reference, _pf.hits, _pf.hits + _pf.misses)
+    _xprog.publish(job.id, "finishing")
 
     # A scoped run read ONE file, so per_file only holds that file's invoice number. Every other
     # file looked unnumbered to the pairing, which then put the re-read invoice - and every
