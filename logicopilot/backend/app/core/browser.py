@@ -3535,7 +3535,11 @@ def _detect_block(page) -> dict | None:
 
 
 class RecorderSession:
-    def __init__(self, url: str, login: dict | None = None, headless: bool | None = None):
+    def __init__(self, url: str, login: dict | None = None, headless: bool | None = None,
+                 storage_state: dict | None = None):
+        # storage_state: start already logged in (a branch login's saved session, see
+        # app/core/branch_sessions.py) - `url` is then the page that login stood on.
+        self._storage_state = storage_state
         self._q: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self._error: str | None = None
@@ -3581,7 +3585,8 @@ class RecorderSession:
                     args=["--disable-blink-features=AutomationControlled",
                           "--start-maximized", *BROWSER_ARGS],
                 )
-                ctx = browser.new_context(viewport=VIEWPORT, user_agent=_UA, ignore_https_errors=True)
+                ctx = browser.new_context(viewport=VIEWPORT, user_agent=_UA, ignore_https_errors=True,
+                                          storage_state=self._storage_state or None)
                 page = ctx.new_page()
 
                 def _remember_dialog(d):
@@ -5061,9 +5066,10 @@ class SessionManager:
         self._lock = threading.Lock()
         self._sweeper: threading.Thread | None = None
 
-    def start(self, url: str, login: dict | None = None, headless: bool | None = None) -> str:
+    def start(self, url: str, login: dict | None = None, headless: bool | None = None,
+              storage_state: dict | None = None) -> str:
         sid = uuid.uuid4().hex
-        session = RecorderSession(url, login, headless=headless)
+        session = RecorderSession(url, login, headless=headless, storage_state=storage_state)
         with self._lock:
             self._sessions[sid] = session
             self._touched[sid] = _time.monotonic()
@@ -5135,7 +5141,11 @@ class PlaybackManager:
               # run must not be harder than running it.
               time_budget: int = 300, stall_after: int = STALL_SECONDS,
               rows: dict | None = None, uploads: dict | None = None,
-              downloads_dir=None, on_done=None, before=None) -> str:
+              downloads_dir=None, on_done=None, before=None,
+              branch: dict | None = None, checkpoint_index: int | None = None) -> str:
+        """`branch`: run on that branch's always-on login from after `checkpoint_index`, the way
+        a queued job does (branch_sessions.play_on_branch) - no login of its own, so it cannot
+        log out the jobs already running on that branch."""
         sid = uuid.uuid4().hex
         state = {"screenshot": None, "log": [], "done": False, "status": "running",
                  "result": None, "cancel": False, "total": len(steps or []), "debug": None}
@@ -5156,15 +5166,25 @@ class PlaybackManager:
                     before(state)
                 # Live rerun: headless + streamed, and fail FAST (short budget, fewer AI
                 # retries) so a stuck run returns quickly instead of hanging.
-                res = play_steps(
-                    url, login, steps, values,
-                    progress=_progress, headless=True, time_budget=time_budget,
-                    ai_attempts=2, cancel=lambda: state["cancel"], stall_after=stall_after,
-                    # A replay without the job's files or its line-item rows is not a replay of
-                    # that job: the upload step has nothing to attach and every product line
-                    # gets the same value.
-                    rows=rows, uploads=uploads, downloads_dir=downloads_dir,
-                )
+                def _play(branch_session=None):
+                    return play_steps(
+                        url, None if branch_session is not None else login, steps, values,
+                        progress=_progress, headless=True, time_budget=time_budget,
+                        ai_attempts=2, cancel=lambda: state["cancel"], stall_after=stall_after,
+                        # A replay without the job's files or its line-item rows is not a replay
+                        # of that job: the upload step has nothing to attach and every product
+                        # line gets the same value.
+                        rows=rows, uploads=uploads, downloads_dir=downloads_dir,
+                        checkpoint_index=checkpoint_index if branch_session is not None else None,
+                        branch_session=branch_session,
+                    )
+
+                if branch is not None:
+                    from app.core import branch_sessions
+
+                    res = branch_sessions.play_on_branch(branch, _play)
+                else:
+                    res = _play()
                 state["result"] = {k: v for k, v in res.items() if k != "screenshot"}
                 state["status"] = res.get("status", "ok")
                 if res.get("screenshot"):
