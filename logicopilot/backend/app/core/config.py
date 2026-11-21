@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     # side by side must not multiply into a burst Document AI throttles.
     parallel_ocr_max_total: int = 12
 
+    # Parallel extraction (app/core/parallel_extract.py): how many of ONE job's AI extraction
+    # calls run at once (prefetched before the per-document loop). 1 = one at a time, exactly as
+    # before. A large-job-lane job uses Platform Settings' "parallel calls" when this is > 1.
+    parallel_extract_workers: int = 1
+    # Ceiling on prefetched AI calls in flight across the whole process.
+    parallel_extract_max_total: int = 12
+
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
     # Test keys (rzp_test_...) on SIT, live keys on production - never the same keys on both.

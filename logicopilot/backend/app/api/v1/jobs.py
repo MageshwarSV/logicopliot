@@ -9680,6 +9680,63 @@ def run_extraction(
     # Every value written this run, so set_index can be stamped once pairing is known.
     written: list[JobFieldValue] = []
 
+    # Parallel extraction by prefetch (app/core/parallel_extract.py). Off (the default,
+    # parallel_extract_workers=1): the wrapped names below ARE the original functions and
+    # nothing is planned. On: page text and every AI call the loop below will make are fetched
+    # side by side first, mirroring the loop's own decisions exactly; the loop is unchanged and
+    # finds each answer waiting. Its "every field blank -> retry once" calls bypass this.
+    from app.core.large_job_lane import in_lane as _in_lane
+    from app.core.parallel_extract import Prefetch, prefetch_page_ocr, workers_for as _xworkers
+
+    _pf = Prefetch(_xworkers(_in_lane()))
+    _pf_fields = _pf.wrap("fields", extract_document_fields)
+    _pf_fields_img = _pf.wrap("fields_img", extract_document_fields_from_images)
+    _pf_rows = _pf.wrap("rows", extract_document_rows)
+    _pf_rows_img = _pf.wrap("rows_img", extract_document_rows_from_images)
+    if _pf.on:
+        _todo = [(t, d) for t in group.documents for d in docs_by_tdoc.get(t.id, [])
+                 if d.file_path is not None and t.marks
+                 and not (only_job_document_id and d.id != only_job_document_id)]
+        # 1. page text, side by side, into the per-page cache files (no database)
+        prefetch_page_ocr(
+            [(_job_doc_dir(d.id), p) for _t, d in _todo
+             if getattr(d, "source_kind", "pdf") != "excel" and d.id not in doc_text_cache
+             for p in range(1, (d.page_count or 0) + 1)],
+            _pf.workers)
+        # 2. each document's text, one at a time as before; 3. plan the loop's calls
+        for _t, _d in _todo:
+            _text = text_for_doc(_d)
+            _single = [m for m in _t.marks if not m.is_multi_value]
+            _multi = [m for m in _t.marks if m.is_multi_value]
+            _fields = [field_spec(m, inline_format=True) for m in _single]
+            _excel = getattr(_d, "source_kind", "pdf") == "excel"
+            _force = extraction_engine == "gpt5_mini_vision" and not _excel
+            _vision = _force or (not _text.strip() and not _excel)
+            _model = vision_engine_model if _force else None
+            _imgs: list = [] if _excel else [_job_doc_dir(_d.id) / "pages" / f"page_{p}.png"
+                                            for p in range(1, _d.page_count + 1)]
+            _imgs = [p for p in _imgs if p.exists()]
+            if not _vision:
+                _pf.plan("fields", _text, _fields, tenant_id=job.tenant_id)
+            else:
+                _pf.plan("fields_img", _imgs, _fields, model=_model, tenant_id=job.tenant_id)
+            _aligned = [m for m in _multi if not m.standalone_multi_value]
+            for _group in ([_aligned] if _aligned else []) + [[m] for m in _multi if m.standalone_multi_value]:
+                _specs = [field_spec(m, inline_format=False) for m in _group]
+                _standalone = len(_group) == 1 and getattr(_group[0], "standalone_multi_value", False)
+                _rows_hint = doc_table_row_count_cache.get(_d.id, 0)
+                if _excel:
+                    for _part in _excel_sheet_chunks(_d):
+                        _pf.plan("rows", _part, _specs, None, tenant_id=job.tenant_id)
+                elif not _vision:
+                    _pf.plan("rows", _text, _specs, _rows_hint or None, tenant_id=job.tenant_id)
+                    if _imgs and not _standalone:
+                        _pf.plan("rows_img", _imgs, _specs, _rows_hint or None, tenant_id=job.tenant_id)
+                else:
+                    _pf.plan("rows_img", _imgs, _specs, _rows_hint or None, model=_model,
+                             tenant_id=job.tenant_id)
+        _pf.run()
+
     # Every FILE, not every slot: a slot holding three invoices is read three times, and each
     # file's values are kept under its own job_document_id so three invoice numbers stay three
     # invoice numbers instead of overwriting one another.
@@ -9740,9 +9797,9 @@ def run_extraction(
             )
 
         if not used_vision:
-            extracted = extract_document_fields(ocr_text, fields, tenant_id=job.tenant_id)
+            extracted = _pf_fields(ocr_text, fields, tenant_id=job.tenant_id)
         else:
-            extracted = extract_document_fields_from_images(
+            extracted = _pf_fields_img(
                 image_paths, fields, model=model_override, tenant_id=job.tenant_id)
 
         # By request: a document whose EVERY single-value field came back blank in one pass is
@@ -9925,10 +9982,10 @@ def run_extraction(
                 # order - one huge table in one call is where rows get dropped.
                 rows = []
                 for part in _excel_sheet_chunks(jd):
-                    rows.extend(extract_document_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
+                    rows.extend(_pf_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
             elif not used_vision:
-                rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None,
-                                             tenant_id=job.tenant_id)
+                rows = _pf_rows(ocr_text, row_specs, detected_row_count or None,
+                                tenant_id=job.tenant_id)
                 # Line-item tables are the highest-error part of extraction: a table whose OCR
                 # text doesn't preserve visual column order can make the model silently drop or
                 # merge rows (see ROW_IS_A_PRODUCT in extraction.py) no matter how the prompt is
@@ -9939,7 +9996,7 @@ def run_extraction(
                 # text read itself looks broken - but never prefer a candidate that itself looks
                 # broken just because it has a higher row count.
                 if image_paths and not is_standalone_group:
-                    vision_rows = extract_document_rows_from_images(
+                    vision_rows = _pf_rows_img(
                         image_paths, row_specs, detected_row_count or None,
                         tenant_id=job.tenant_id)
                     vision_broken = _row_read_looks_broken(vision_rows, row_labels)
@@ -10074,7 +10131,7 @@ def run_extraction(
                 # Previously this branch required OCR text, so with none the line items were
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
-                rows = extract_document_rows_from_images(
+                rows = _pf_rows_img(
                     image_paths, row_specs, detected_row_count or None, model=model_override,
                     tenant_id=job.tenant_id)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
@@ -10146,6 +10203,10 @@ def run_extraction(
     # Only possible now: the pairing is made on the invoice numbers, and those had to be read
     # off the documents first. Never on upload order — see app/core/doc_sets.py.
     from app.core.doc_sets import assign_sets, describe_sets, pairing_key
+
+    if _pf.on:
+        logger.info("job %s: parallel extraction - %d of %d AI call(s) answered from the prefetch",
+                    job.reference, _pf.hits, _pf.hits + _pf.misses)
 
     # A scoped run read ONE file, so per_file only holds that file's invoice number. Every other
     # file looked unnumbered to the pairing, which then put the re-read invoice - and every
