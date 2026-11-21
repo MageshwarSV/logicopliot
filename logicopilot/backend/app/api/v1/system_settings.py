@@ -659,6 +659,41 @@ def large_job_lane_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
     return read_status()
 
 
+class PipelinePingIn(BaseModel):
+    count: int = 5
+    sleep: float = 0.0
+    fail: bool = False
+
+
+@router.get("/pipeline")
+def pipeline_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Phase 2 pipeline: on/off, Redis, every stage's waiting / running / dead counts."""
+    from app.pipeline import runner
+
+    return runner.status()
+
+
+@router.post("/pipeline/ping")
+def pipeline_ping(payload: PipelinePingIn, _: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Queue a batch of do-nothing "ping" items - proves on SIT that items flow, survive a
+    restart and are counted, before any real work is routed to the pipeline."""
+    from app.pipeline import runner
+
+    if not runner.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="The pipeline is off here (PIPELINE_V2) or Redis is not reachable.")
+    count = max(1, min(int(payload.count), 500))
+    batch = runner.send_pings(count, sleep=max(0.0, min(payload.sleep, 30.0)), fail=payload.fail)
+    return {"batch": batch, "count": count}
+
+
+@router.get("/pipeline/ping/{batch}")
+def pipeline_ping_progress(batch: str, _: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    from app.pipeline import queues
+
+    return queues.progress(batch)
+
+
 @router.post("/workers")
 def set_workers(
     payload: WorkerCountIn,

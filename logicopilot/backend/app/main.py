@@ -284,6 +284,29 @@ def create_app() -> FastAPI:
         # Off the startup path: a Redis that is slow to answer must not hold up the app.
         threading.Thread(target=_go, name="erp-queue-start", daemon=True).start()
 
+    @app.on_event("startup")
+    def _start_pipeline() -> None:
+        """Phase 2 pipeline workers (app/pipeline/). Off unless PIPELINE_V2 is set AND Redis
+        answers - then nothing starts and the app is exactly as before. Same singleton gate as
+        the mail cycle and the ERP queue, so items are worked by one process only."""
+        from app.core.worker_lock import am_i_the_singleton_worker
+
+        if not am_i_the_singleton_worker():
+            return
+        import threading
+
+        def _go() -> None:
+            try:
+                from app.core.config import get_settings as _gs
+                from app.pipeline import runner
+
+                if runner.enabled():
+                    runner.start(_gs().pipeline_threads_per_stage)
+            except Exception:  # noqa: BLE001 - must never stop the app starting
+                logging.getLogger(__name__).exception("could not start the pipeline")
+
+        threading.Thread(target=_go, name="pipeline-start", daemon=True).start()
+
     @app.on_event("shutdown")
     def _stop_parked_sessions() -> None:
         """Close parked browsers on the way down, so a restart cannot leak a Chromium."""

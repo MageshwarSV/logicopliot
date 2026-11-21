@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
 
+    # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
+    # default and on every box that does not say otherwise - with it off nothing is queued and no
+    # worker starts, so the app runs exactly as before. Needs REDIS_URL as well.
+    pipeline_v2: bool = False
+    # Worker threads per stage when the pipeline runs inside the backend process (until it moves
+    # to its own logicopilot-worker process).
+    pipeline_threads_per_stage: int = 2
+
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
     # Test keys (rzp_test_...) on SIT, live keys on production - never the same keys on both.
