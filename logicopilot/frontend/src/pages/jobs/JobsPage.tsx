@@ -704,15 +704,22 @@ export function JobsPage() {
   // tab every operator who handles that shipment type (or has no type restriction). The old
   // rule - same user type AND exactly the same set of modes as the viewer - left a GK1 with
   // several shipment types, and a Tenant Admin (no modes of their own), with an empty list.
+  // By request (2026-11-21): a viewer limited to certain streams (e.g. a GK1 with only Sea
+  // Import) sees only the users of THOSE streams - someone with no stream set, or only other
+  // streams, is not theirs to filter by. A viewer with no stream limit (Tenant Admin) keeps the
+  // rule above.
   const assignees = useMemo(() => {
     const tab = showModeTabs && activeModeTab !== "All" ? activeModeTab : null;
-    const matching = operators.filter(
-      (o) =>
-        (o.role === "operator" || o.role === "gk2") &&
-        (!tab || !(o.modes ?? []).length || (o.modes ?? []).includes(tab)),
-    );
+    const viewerModes = assignedModes;
+    const scope = tab ? [tab] : viewerModes;
+    const matching = operators.filter((o) => {
+      if (o.role !== "operator" && o.role !== "gk2") return false;
+      const modes = o.modes ?? [];
+      if (viewerModes.length) return modes.some((m) => scope.includes(m));
+      return !tab || !modes.length || modes.includes(tab);
+    });
     return [...new Set(matching.map((o) => o.full_name).filter(Boolean))].sort();
-  }, [operators, showModeTabs, activeModeTab]);
+  }, [operators, showModeTabs, activeModeTab, assignedModes]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
