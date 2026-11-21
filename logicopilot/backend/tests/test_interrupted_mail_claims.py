@@ -60,7 +60,7 @@ def test_nothing_to_release(db_session):
     assert ep.release_interrupted_claims(db_session) == []
 
 
-def _job(db, stage):
+def _job(db, stage, status="draft"):
     from app.models.job import Job, JobDocument
     from app.models.template_group import TemplateGroup
     from tests.conftest import make_tenant
@@ -70,7 +70,7 @@ def _job(db, stage):
     db.add(group)
     db.commit()
     job = Job(tenant_id=tenant.id, group_id=group.id, reference=f"JOB-{stage or 'DONE'}"[:20],
-              status="draft", stage_override=stage)
+              status=status, stage_override=stage)
     db.add(job)
     db.commit()
     from app.models.template_document import TemplateDocument
@@ -106,7 +106,7 @@ def test_a_half_made_job_is_removed_so_the_reread_makes_one_job(db_session):
 def test_a_job_that_finished_before_the_restart_is_not_read_again(db_session):
     from app.models.job import Job
 
-    job = _job(db_session, None)
+    job = _job(db_session, None, status="extracting")
     row = _seen(db_session, "<late@x>", "working", subject="cut at the very end")
     row.job_id = job.id
     db_session.commit()
@@ -114,3 +114,18 @@ def test_a_job_that_finished_before_the_restart_is_not_read_again(db_session):
     assert db_session.get(Job, job.id) is not None
     db_session.refresh(row)
     assert row.verdict == "matched" and row.job_id == job.id
+
+
+def test_a_job_cut_off_before_its_stage_was_set_is_still_removed(db_session):
+    """SIT, 2026-11-21 (JOB-6F1B41): cut off mid-read while stage_override was still None - it
+    was wrongly taken as finished. Still in draft = not past reading = removed and re-read."""
+    from app.models.job import Job
+
+    job = _job(db_session, None)
+    row = _seen(db_session, "<early@x>", "working", subject="cut early")
+    row.job_id = job.id
+    db_session.commit()
+    assert ep.release_interrupted_claims(db_session) == ["cut early"]
+    assert db_session.get(Job, job.id) is None
+    db_session.refresh(row)
+    assert row.verdict == ep.FAILED_VERDICT

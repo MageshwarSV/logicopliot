@@ -798,7 +798,11 @@ def release_interrupted_claims(db: Session) -> list[str]:
     for row in rows:
         label = (row.subject or row.message_id)[:80]
         job = db.get(Job, row.job_id) if row.job_id else None
-        if job is not None and job.stage_override != "Document Classifying":
+        # Judged by STATUS, not stage_override: "Document Classifying" is set part-way through,
+        # and the screen shows it from in-memory progress before then (SIT, 2026-11-21: a job
+        # cut off mid-read still had stage_override None and was wrongly taken as finished).
+        # A job still in "draft" has not got past reading; anything later has.
+        if job is not None and job.status != "draft":
             # Its job got past reading before the restart (the cut came at the very end):
             # the mail is done - reading it again would only make a second job.
             row.verdict = "matched"
