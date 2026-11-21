@@ -152,10 +152,16 @@ def branch_for_job(db, script, values: dict) -> dict | None:
                            f"Fill in {field}, then press Retry."}
     from app.models.erp_branch_session import ErpBranchSession
 
-    for bs in db.query(ErpBranchSession).filter(
-            ErpBranchSession.tenant_id == script.tenant_id, ErpBranchSession.enabled.is_(True)).all():
-        if (bs.branch or "").strip().casefold() == want:
+    same_branch = [bs for bs in db.query(ErpBranchSession).filter(
+        ErpBranchSession.tenant_id == script.tenant_id, ErpBranchSession.enabled.is_(True)).all()
+        if (bs.branch or "").strip().casefold() == want]
+    # A login ticked for this script beats one left on "all scripts".
+    for bs in sorted(same_branch, key=lambda b: 0 if b.script_ids else 1):
+        if not bs.script_ids or script.id in bs.script_ids:
             return {"id": bs.id, "branch": bs.branch, "max_tabs": bs.max_tabs}
+    if same_branch:
+        return {"missing": f"The {raw} branch login is not ticked for the {script.name} script. "
+                           "Tick it under ERP Scripts → Branch logins → Used by scripts, then press Retry."}
     return {"missing": f"No ERP login is set up for the {raw} branch. Add one under ERP Scripts "
                        f"→ Branch logins (or correct the job's {field}), then press Retry."}
 
