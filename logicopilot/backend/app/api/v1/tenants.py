@@ -846,7 +846,19 @@ def list_invoices(
         .order_by(Invoice.period_start.desc())
         .all()
     )
-    return [InvoiceOut.model_validate(inv) for inv in invoices]
+    from app.models.invoice_payment import InvoicePayment
+
+    refs = dict(
+        db.query(InvoicePayment.invoice_id, InvoicePayment.razorpay_payment_id)
+        .filter(InvoicePayment.tenant_id == tenant_id, InvoicePayment.status == "paid")
+        .all()
+    )
+    out = []
+    for inv in invoices:
+        row = InvoiceOut.model_validate(inv)
+        row.payment_reference = refs.get(inv.id)
+        out.append(row)
+    return out
 
 
 TENANT_REPORT_TYPES = ("monthly-usage", "billing-summary", "revenue-trend", "outstanding-payments")

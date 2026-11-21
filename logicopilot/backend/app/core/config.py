@@ -107,6 +107,20 @@ class Settings(BaseSettings):
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
 
+    # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
+    # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
+    # Test keys (rzp_test_...) on SIT, live keys on production - never the same keys on both.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    # The secret typed into the dashboard's webhook form; Razorpay signs every webhook with it.
+    razorpay_webhook_secret: str = ""
+    # Gateway charge passed on to the tenant, as a % of the invoice total, plus GST on that
+    # charge. 0 = the tenant pays exactly the invoice amount. Set it to the rate agreed with
+    # IDFC/Razorpay (a convenience fee must be approved by them first).
+    razorpay_fee_percent: float = 0.0
+    razorpay_fee_gst_percent: float = 18.0
+    razorpay_api_base: str = "https://api.razorpay.com/v1"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
