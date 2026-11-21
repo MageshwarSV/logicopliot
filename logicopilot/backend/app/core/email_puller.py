@@ -794,12 +794,31 @@ def release_interrupted_claims(db: Session) -> list[str]:
             if (_touched(r) or now) >= cutoff]
     if not rows:
         return []
+    released: list[str] = []
     for row in rows:
+        label = (row.subject or row.message_id)[:80]
+        job = db.get(Job, row.job_id) if row.job_id else None
+        if job is not None and job.stage_override != "Document Classifying":
+            # Its job got past reading before the restart (the cut came at the very end):
+            # the mail is done - reading it again would only make a second job.
+            row.verdict = "matched"
+            row.note = "Finished just before a server restart."
+            row.updated_at = now
+            db.commit()
+            continue
+        if job is not None:
+            # Cut off while reading: the half-made job (created the moment the mail arrived,
+            # see _process_one_message) goes, with any pages already billed to it, so the
+            # re-read makes ONE clean job instead of a second one beside a stuck shell.
+            _discard_pre_created_job(db, job, unbill=True)
+            row = db.query(EmailSeen).filter(EmailSeen.id == row.id).one()
         row.verdict = FAILED_VERDICT
         row.note = INTERRUPTED_NOTE
+        row.job_id = None
         row.updated_at = now
-    db.commit()
-    return [(r.subject or r.message_id)[:80] for r in rows]
+        db.commit()
+        released.append(label)
+    return released
 
 
 def failed_emails(db: Session) -> list[EmailSeen]:
@@ -2060,6 +2079,11 @@ def _process_one_message(
             # transaction; the operator's own browser is polling through a completely
             # different connection, and a job it can never actually see yet is no better
             # than the delay this whole feature exists to remove.
+            # The claim learns its job NOW, not only at the end: if a restart cuts this read
+            # off, release_interrupted_claims must know which half-made job belongs to this
+            # mail - otherwise the re-read makes a second job beside it.
+            db.query(EmailSeen).filter(EmailSeen.message_id == mid).update(
+                {"job_id": job.id}, synchronize_session=False)
             db.commit()
 
         # Page count across every attachment, BEFORE any OCR runs - so the progress bar

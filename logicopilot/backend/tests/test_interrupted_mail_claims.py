@@ -58,3 +58,59 @@ def test_an_old_leftover_claim_is_not_started_now(db_session):
 def test_nothing_to_release(db_session):
     _seen(db_session, "<done@x>", "matched")
     assert ep.release_interrupted_claims(db_session) == []
+
+
+def _job(db, stage):
+    from app.models.job import Job, JobDocument
+    from app.models.template_group import TemplateGroup
+    from tests.conftest import make_tenant
+
+    tenant = make_tenant(db, name=f"T-{stage}")
+    group = TemplateGroup(tenant_id=tenant.id, name="Air Import", status="approved", mode="Air Import")
+    db.add(group)
+    db.commit()
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference=f"JOB-{stage or 'DONE'}"[:20],
+              status="draft", stage_override=stage)
+    db.add(job)
+    db.commit()
+    from app.models.template_document import TemplateDocument
+
+    tdoc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice", doc_type="Invoice")
+    db.add(tdoc)
+    db.commit()
+    db.add(JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=tdoc.id, page_count=0))
+    db.commit()
+    return job
+
+
+def test_a_half_made_job_is_removed_so_the_reread_makes_one_job(db_session):
+    """SIT, 2026-11-21: the restart cut a mail off at "Document Classifying" (JOB-E351AB); the
+    re-read then made JOB-DCDB5F beside it. The half-made job must go, with its billed pages."""
+    from app.models.billable_page_event import BillablePageEvent
+    from app.models.job import Job, JobDocument
+
+    job = _job(db_session, "Document Classifying")
+    db_session.add(BillablePageEvent(tenant_id=job.tenant_id, job_id=job.id, job_reference=job.reference,
+                                     shipment_type="Air Import", page_count=3))
+    row = _seen(db_session, "<cut@x>", "working")
+    row.job_id = job.id
+    db_session.commit()
+    assert ep.release_interrupted_claims(db_session) == ["FW: Tomorrow Landing - DHL AWB 7112625343"]
+    assert db_session.get(Job, job.id) is None
+    assert db_session.query(JobDocument).filter(JobDocument.job_id == job.id).count() == 0
+    assert db_session.query(BillablePageEvent).filter(BillablePageEvent.job_id == job.id).count() == 0
+    db_session.refresh(row)
+    assert row.verdict == ep.FAILED_VERDICT and row.job_id is None
+
+
+def test_a_job_that_finished_before_the_restart_is_not_read_again(db_session):
+    from app.models.job import Job
+
+    job = _job(db_session, None)
+    row = _seen(db_session, "<late@x>", "working", subject="cut at the very end")
+    row.job_id = job.id
+    db_session.commit()
+    assert ep.release_interrupted_claims(db_session) == []
+    assert db_session.get(Job, job.id) is not None
+    db_session.refresh(row)
+    assert row.verdict == "matched" and row.job_id == job.id
