@@ -53,7 +53,10 @@ def create_app() -> FastAPI:
     async def require_custom_header_on_mutations(request: Request, call_next):
         """Cheap CSRF mitigation alongside SameSite=Lax cookies: a cross-site form POST
         cannot set custom headers, so a same-origin XHR/fetch header is required here."""
-        if request.method in MUTATING_METHODS and "x-requested-with" not in request.headers:
+        # The one exception: Razorpay's server-to-server webhook cannot send the header. It
+        # uses no cookie and is authenticated by its signature instead (app/api/v1/payments.py).
+        if (request.method in MUTATING_METHODS and "x-requested-with" not in request.headers
+                and request.url.path != "/api/v1/payments/razorpay/webhook"):
             return JSONResponse(status_code=403, content={"detail": "Missing required header"})
         return await call_next(request)
 

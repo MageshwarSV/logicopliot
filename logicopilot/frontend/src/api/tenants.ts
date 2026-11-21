@@ -229,6 +229,8 @@ export interface Invoice {
   status: "unpaid" | "paid";
   paid_at: string | null;
   created_at: string;
+  /** Razorpay payment id when paid online with Pay now; null for bank transfer or unpaid. */
+  payment_reference?: string | null;
 }
 
 /** Omit `month` for the current, live month; pass "YYYY-MM" for an earlier, finalized one. */

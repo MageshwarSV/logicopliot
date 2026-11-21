@@ -315,6 +315,9 @@ class InvoiceOut(BaseModel):
     status: str
     paid_at: str | None
     created_at: datetime
+    # Razorpay payment id when the invoice was paid online with "Pay now"; None for a bank
+    # transfer marked paid by hand, or an unpaid invoice.
+    payment_reference: str | None = None
 
 
 class MarkInvoicePaid(BaseModel):
