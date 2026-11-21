@@ -169,7 +169,34 @@ def create_app() -> FastAPI:
 
         if not am_i_the_singleton_worker():
             return
-        from app.core.email_puller import start_scheduler
+        from app.core.email_puller import release_interrupted_claims, start_scheduler
+
+        # Before the first poll: mails the previous process was in the middle of reading are
+        # handed back, so they are fetched and read again - whatever day they arrived.
+        # Only where mail is actually polled (SIT and production) - never in tests or local dev.
+        _db = None
+        try:
+            from app.core.config import get_settings as _gs0
+
+            if _gs0().email_poll_minutes <= 0:
+                raise LookupError("mail polling is off here")
+            from app.db.session import SessionLocal as _SessionLocal
+
+            _db = _SessionLocal()
+            released = release_interrupted_claims(_db)
+            if released:
+                logging.getLogger(__name__).warning(
+                    "restart: %d mail(s) interrupted mid-read will be read again: %s",
+                    len(released), "; ".join(released))
+        except LookupError:
+            pass
+        except Exception:  # noqa: BLE001 - must never stop mail polling from starting
+            logging.getLogger(__name__).exception("could not release interrupted mail claims")
+            if _db is not None:
+                _db.rollback()
+        finally:
+            if _db is not None:
+                _db.close()
 
         start_scheduler()
         # The large-job lane (app/core/large_job_lane.py) - also picks up extractions queued on
