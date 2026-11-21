@@ -37,6 +37,8 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
   const [password, setPassword] = useState("");
   const [maxTabs, setMaxTabs] = useState("3");
   const [enabled, setEnabled] = useState(true);
+  const [usedBy, setUsedBy] = useState<string[]>([]);
+  const [usedByOpen, setUsedByOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   // "Check now": which rows are being checked (with the last-check time before the press), and
@@ -70,6 +72,8 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
     setPassword("");
     setMaxTabs("3");
     setEnabled(true);
+    setUsedBy([]);
+    setUsedByOpen(false);
     setFormError(null);
     setOpen(true);
   }
@@ -82,6 +86,8 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
     setPassword("");
     setMaxTabs(String(r.max_tabs));
     setEnabled(r.enabled);
+    setUsedBy(r.script_ids ?? []);
+    setUsedByOpen(false);
     setFormError(null);
     setOpen(true);
   }
@@ -102,6 +108,7 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
         username: username.trim() || null,
         max_tabs: tabs,
         enabled,
+        script_ids: usedBy,
         ...(password ? { password } : {}),
       };
       if (editId) await api.updateBranchLogin(editId, body);
@@ -215,6 +222,7 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
                 </div>
                 <p className="text-xs text-slate-400">
                   User: {r.username || "the login script's own"} · Logs in with: {scriptName.get(r.login_script_id) ?? "—"} ·
+                  Used by: {r.script_ids?.length ? r.script_ids.map((id) => scriptName.get(id) ?? "?").join(", ") : "all scripts"} ·
                   Last check: {ago(r.last_check_at)}
                   {r.enabled && r.live_since && r.status === "live" ? ` · live since ${ago(r.live_since)}` : ""}
                 </p>
@@ -263,6 +271,48 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
               placeholder={editId ? "leave blank to keep" : "the script's own if empty"}
               autoComplete="new-password"
             />
+          </div>
+          <div className="relative">
+            <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Used by scripts</p>
+            <button
+              type="button"
+              onClick={() => setUsedByOpen((o) => !o)}
+              className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-left text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            >
+              <span className="truncate">
+                {usedBy.length === 0
+                  ? "All scripts"
+                  : usedBy.map((id) => scriptName.get(id) ?? "?").join(", ")}
+              </span>
+              <span className="ml-2 text-slate-400">{usedByOpen ? "▲" : "▼"}</span>
+            </button>
+            {usedByOpen && (
+              <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                <label className="flex items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">
+                  <input type="checkbox" checked={usedBy.length === 0} onChange={() => setUsedBy([])} />
+                  All scripts
+                </label>
+                {scripts.map((s) => (
+                  <label key={s.id} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={usedBy.includes(s.id)}
+                      onChange={(e) => setUsedBy((arr) => (e.target.checked ? [...arr, s.id] : arr.filter((x) => x !== s.id)))}
+                    />
+                    <span className="truncate">{s.name}</span>
+                    {s.branch_field ? (
+                      <span className="ml-auto shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">by branch</span>
+                    ) : (
+                      <span className="ml-auto shrink-0 text-[11px] text-slate-400">no branch field</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="mt-1 text-xs text-slate-400">
+              Which stream scripts (Air Import, Sea Import…) may run their jobs on this login. Leave on
+              All scripts to share it. Two logins of the same branch must tick different scripts.
+            </p>
           </div>
           <div className="grid grid-cols-2 items-end gap-3">
             <Input label="Jobs at once" type="number" min={1} max={20} value={maxTabs} onChange={(e) => setMaxTabs(e.target.value)} />

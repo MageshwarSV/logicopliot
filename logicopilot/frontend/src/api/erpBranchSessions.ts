@@ -10,6 +10,8 @@ export interface BranchLogin {
   has_password: boolean;
   max_tabs: number;
   enabled: boolean;
+  /** Stream scripts allowed to run their jobs on this login; empty = all scripts. */
+  script_ids: string[];
   /** starting | logging_in | live | error | off */
   status: string;
   status_note: string | null;
@@ -25,6 +27,7 @@ export interface BranchLoginInput {
   password?: string;
   max_tabs: number;
   enabled: boolean;
+  script_ids?: string[];
 }
 
 export async function listBranchLogins(tenantId: string): Promise<BranchLogin[]> {

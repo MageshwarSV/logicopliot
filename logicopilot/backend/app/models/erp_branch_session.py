@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -35,6 +35,10 @@ class ErpBranchSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # This branch's own ERP user. Empty = the login script's recorded user ID / password.
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which stream scripts (Air Import, Sea Import, ...) may run their jobs on this login.
+    # NULL / empty = every branch-routed script of the tenant. Lets one branch have two logins
+    # for different scripts (Chennai Air on one user, Chennai Sea on another).
+    script_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # How many jobs of this branch may run on the login at once.
     max_tabs: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
