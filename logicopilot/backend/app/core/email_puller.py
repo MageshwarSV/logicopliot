@@ -2135,19 +2135,23 @@ def _process_one_message(
                 # text cannot tell a column header from the value printed under it (see
                 # doc_sets.invoice_number_from_tokens), the geometry can.
                 raw_tokens: list[list[dict]] = []
-                for i in range(1, pages + 1):
-                    try:
-                        res = ocr_page_image(fdir / "pages" / f"page_{i}.png")
-                        got = res.get("text", "")
-                        raw_tokens.append(res.get("tokens") or [])
-                    except Exception:  # noqa: BLE001
-                        logger.warning("OCR unavailable for %s p%s", name, i)
-                        got = ""
-                        raw_tokens.append([])
-                    raw_pages.append(got)
-                    pages_done += 1
+                # Several pages at once when switched on (app/core/parallel_ocr.py); with
+                # parallel_ocr_workers=1 this is the old page-by-page loop, call for call.
+                from app.core.large_job_lane import in_lane
+                from app.core.parallel_ocr import ocr_pages, workers_for
+
+                file_pages_start = pages_done
+
+                def _page_done(n_done: int, _start=file_pages_start) -> None:
                     if job is not None and total_pages:
-                        email_progress.publish(job.id, pages_done, total_pages, pull_started_at)
+                        email_progress.publish(job.id, _start + n_done, total_pages, pull_started_at)
+
+                for res in ocr_pages([fdir / "pages" / f"page_{i}.png" for i in range(1, pages + 1)],
+                                     workers=workers_for(in_lane()), label=name,
+                                     on_page_done=_page_done, ocr=ocr_page_image):
+                    raw_pages.append(res.get("text", ""))
+                    raw_tokens.append(res.get("tokens") or [])
+                pages_done += pages
                 # Drop the carrier's terms and conditions BEFORE classifying, not just
                 # before extracting. A 2-page sea waybill is 42,551 characters of which
                 # ~39,000 are terms that define "Freight", "Package", "Packing List"

@@ -234,7 +234,18 @@ _OCR_MAX_SIDE = 2500
 _OCR_REENCODE_BYTES = 8 * 1024 * 1024
 
 
+# PyMuPDF is not safe to use from several threads at once, and parallel OCR
+# (app/core/parallel_ocr.py) calls this from several. The downscale is milliseconds; the
+# Document AI call that follows - the slow part - stays outside the lock and still overlaps.
+_FITZ_LOCK = __import__("threading").Lock()
+
+
 def _docai_safe_bytes(image_path: Path) -> tuple[bytes, str]:
+    with _FITZ_LOCK:
+        return _docai_safe_bytes_locked(image_path)
+
+
+def _docai_safe_bytes_locked(image_path: Path) -> tuple[bytes, str]:
     raw = image_path.read_bytes()
     try:
         import fitz  # PyMuPDF

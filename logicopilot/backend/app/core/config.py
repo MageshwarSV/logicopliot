@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     # to its own logicopilot-worker process).
     pipeline_threads_per_stage: int = 2
 
+    # Parallel OCR (app/core/parallel_ocr.py): how many pages of ONE file are OCR'd at once.
+    # 1 = one page at a time, exactly as before (the default everywhere until switched on).
+    # A large-job-lane mail uses Platform Settings' "parallel calls" instead, when this is > 1.
+    parallel_ocr_workers: int = 1
+    # Ceiling on Document AI calls running at once across the WHOLE process - several mails read
+    # side by side must not multiply into a burst Document AI throttles.
+    parallel_ocr_max_total: int = 12
+
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
     # Test keys (rzp_test_...) on SIT, live keys on production - never the same keys on both.

@@ -7826,16 +7826,15 @@ def _classify_and_place_files(
                 # cannot tell a column header from the value printed under it (see
                 # doc_sets.invoice_number_from_tokens); the geometry can.
                 raw_tokens: list[list[dict]] = []
-                for i in range(1, page_count + 1):
-                    try:
-                        got = ocr_page_image(fdir / "pages" / f"page_{i}.png")
-                        t = got.get("text", "")
-                        raw_tokens.append(got.get("tokens") or [])
-                    except Exception:  # noqa: BLE001 — OCR down; fall back to image classify
-                        logger.warning("OCR unavailable for %s page %s; classifying from image", name, i)
-                        t = ""
-                        raw_tokens.append([])
-                    raw_pages.append(t)
+                # Several pages at once when switched on (app/core/parallel_ocr.py); with
+                # parallel_ocr_workers=1 this is the old page-by-page loop. A failed page still
+                # comes back as empty text, classified from its image as before.
+                from app.core.parallel_ocr import ocr_pages, workers_for
+
+                for got in ocr_pages([fdir / "pages" / f"page_{i}.png" for i in range(1, page_count + 1)],
+                                     workers=workers_for(False), label=name, ocr=ocr_page_image):
+                    raw_pages.append(got.get("text", ""))
+                    raw_tokens.append(got.get("tokens") or [])
                 # Billed HERE, not when (or if) a page ends up in a real document - every page
                 # with real OCR text in this loop was just sent to Document AI, which costs the
                 # same whether it goes on to classify correctly, lands in Unclassified, or this
