@@ -760,6 +760,71 @@ def hold_emails(db: Session, items: list[dict], note: str) -> dict:
     return {"held": held, "left_alone": left}
 
 
+INTERRUPTED_NOTE = "Interrupted by a server restart - it will be read again automatically."
+# Only a claim touched this recently is handed back. A restart interrupts what was being read
+# minutes ago; a claim left from weeks ago (SIT had nine from August-October) is not something
+# to start reading now - that would turn months-old mail into new jobs, billed pages and AI cost.
+INTERRUPTED_WINDOW_HOURS = 24
+
+
+def release_interrupted_claims(db: Session) -> list[str]:
+    """At startup, hand back every mail the previous process was in the middle of reading.
+
+    A claim says "being read" (verdict "working") until the reading ends. A restart, deploy or
+    crash ends the process mid-read and leaves the claim saying so for ever. The 30-minute
+    takeover in _claim only helps if the mail is fetched again - and the routine poll fetches
+    only TODAY'S unread mail, so a mail cut off on an earlier day (or opened by someone since)
+    was never read again: it sat at "being read" with no job (the DHL / STANLEY mail of
+    2026-11-20).
+
+    Called once, before the first poll, in the one process that polls: nothing of THIS process
+    is reading yet, so every "working" claim belongs to a run that no longer exists. Each becomes
+    a held mail (FAILED_VERDICT) - the existing path then fetches it again by its own
+    Message-ID, whatever its date, and _claim lets it be read. Only claims touched within
+    INTERRUPTED_WINDOW_HOURS; older ones are left exactly as they are. Returns the subjects released."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=INTERRUPTED_WINDOW_HOURS)
+
+    def _touched(r: EmailSeen) -> datetime | None:
+        t = r.updated_at or r.created_at
+        # Stored as UTC without a timezone on SQLite (see _claim) - treat naive as UTC.
+        return t.replace(tzinfo=timezone.utc) if t is not None and t.tzinfo is None else t
+
+    rows = [r for r in db.query(EmailSeen).filter(EmailSeen.verdict == "working").all()
+            if (_touched(r) or now) >= cutoff]
+    if not rows:
+        return []
+    released: list[str] = []
+    for row in rows:
+        label = (row.subject or row.message_id)[:80]
+        job = db.get(Job, row.job_id) if row.job_id else None
+        # Judged by STATUS, not stage_override: "Document Classifying" is set part-way through,
+        # and the screen shows it from in-memory progress before then (SIT, 2026-11-21: a job
+        # cut off mid-read still had stage_override None and was wrongly taken as finished).
+        # A job still in "draft" has not got past reading; anything later has.
+        if job is not None and job.status != "draft":
+            # Its job got past reading before the restart (the cut came at the very end):
+            # the mail is done - reading it again would only make a second job.
+            row.verdict = "matched"
+            row.note = "Finished just before a server restart."
+            row.updated_at = now
+            db.commit()
+            continue
+        if job is not None:
+            # Cut off while reading: the half-made job (created the moment the mail arrived,
+            # see _process_one_message) goes, with any pages already billed to it, so the
+            # re-read makes ONE clean job instead of a second one beside a stuck shell.
+            _discard_pre_created_job(db, job, unbill=True)
+            row = db.query(EmailSeen).filter(EmailSeen.id == row.id).one()
+        row.verdict = FAILED_VERDICT
+        row.note = INTERRUPTED_NOTE
+        row.job_id = None
+        row.updated_at = now
+        db.commit()
+        released.append(label)
+    return released
+
+
 def failed_emails(db: Session) -> list[EmailSeen]:
     """Every mail currently held up because the AI service failed, oldest first."""
     return (db.query(EmailSeen).filter(EmailSeen.verdict == FAILED_VERDICT)
@@ -2018,6 +2083,11 @@ def _process_one_message(
             # transaction; the operator's own browser is polling through a completely
             # different connection, and a job it can never actually see yet is no better
             # than the delay this whole feature exists to remove.
+            # The claim learns its job NOW, not only at the end: if a restart cuts this read
+            # off, release_interrupted_claims must know which half-made job belongs to this
+            # mail - otherwise the re-read makes a second job beside it.
+            db.query(EmailSeen).filter(EmailSeen.message_id == mid).update(
+                {"job_id": job.id}, synchronize_session=False)
             db.commit()
 
         # Page count across every attachment, BEFORE any OCR runs - so the progress bar
