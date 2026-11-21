@@ -5182,7 +5182,22 @@ class PlaybackManager:
                 if branch is not None:
                     from app.core import branch_sessions
 
-                    res = branch_sessions.play_on_branch(branch, _play)
+                    def _waiting(n):
+                        # Shown on the Entry Browser while every slot of the branch is busy;
+                        # None = a slot was taken and the entry is starting.
+                        if n is None:
+                            state["status"] = "running"
+                            state["log"] = []
+                            return
+                        state["status"] = "waiting"
+                        state["log"] = [
+                            f"All {n} {branch['branch']} job slots are busy with running jobs. "
+                            "This job starts as soon as one of them finishes - it goes first, "
+                            "ahead of the queue."]
+
+                    # Pressed by a person, so it goes first: the next freed slot is its.
+                    res = branch_sessions.play_on_branch(branch, _play, priority=True,
+                                                         on_wait=_waiting)
                 else:
                     res = _play()
                 state["result"] = {k: v for k, v in res.items() if k != "screenshot"}

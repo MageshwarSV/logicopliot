@@ -105,25 +105,71 @@ def wait_live(bs_id: str, timeout: float = LIVE_WAIT_SECONDS) -> tuple[dict | No
         time.sleep(3)
 
 
+# A priority waiter (an Entry Browser run somebody pressed) keeps a marker file fresh while it
+# waits; queued jobs leave freed slots alone while one exists. Stale after this many seconds,
+# so a waiter that died never blocks the queue.
+_PRIORITY_FRESH_SECONDS = 6
+
+
+def _priority_waiting(bs_id: str) -> bool:
+    now = time.time()
+    for f in _dir().glob(f"branch_{bs_id}.prio.*"):
+        try:
+            if now - f.stat().st_mtime < _PRIORITY_FRESH_SECONDS:
+                return True
+            f.unlink(missing_ok=True)
+        except OSError:
+            continue
+    return False
+
+
 @contextmanager
-def tab_slot(bs_id: str, max_tabs: int, wait_seconds: float = SLOT_WAIT_SECONDS):
-    """Hold one of the branch's `max_tabs` run slots for the length of one entry."""
+def tab_slot(bs_id: str, max_tabs: int, wait_seconds: float = SLOT_WAIT_SECONDS, *,
+             priority: bool = False, on_wait=None):
+    """Hold one of the branch's `max_tabs` run slots for the length of one entry.
+
+    priority: this run goes first - the moment any slot frees it takes it, ahead of queued
+    jobs (which hold back while a priority run is waiting). on_wait(message) is called when the
+    branch turns out to be full, and on_wait(None) once a slot is taken."""
+    import uuid as _uuid
+
     from app.core.erp_session import _drop, _take
 
     n = max(1, int(max_tabs or 1))
     deadline = time.monotonic() + wait_seconds
+    marker = _dir() / f"branch_{bs_id}.prio.{_uuid.uuid4().hex[:10]}" if priority else None
+    told = False
     got = None
-    while got is None:
-        for k in range(n):
-            got = _take(str(_dir() / f"branch_{bs_id}.tab{k}.lock"), wait_seconds=0)
+    try:
+        while got is None:
+            if priority or not _priority_waiting(bs_id):
+                for k in range(n):
+                    got = _take(str(_dir() / f"branch_{bs_id}.tab{k}.lock"), wait_seconds=0)
+                    if got is not None:
+                        break
             if got is not None:
                 break
-        if got is None:
+            if marker is not None:
+                marker.touch()
+            if on_wait is not None and not told:
+                told = True
+                try:
+                    on_wait(n)
+                except Exception:  # noqa: BLE001
+                    pass
             if time.monotonic() >= deadline:
                 break
             time.sleep(1)
+    finally:
+        if marker is not None:
+            marker.unlink(missing_ok=True)
     if got is None:
         logger.warning("branch session %s: no free tab after %ss - running anyway", bs_id, wait_seconds)
+    if told and on_wait is not None:
+        try:
+            on_wait(None)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         yield
     finally:
@@ -166,14 +212,14 @@ def branch_for_job(db, script, values: dict) -> dict | None:
                        f"→ Branch logins (or correct the job's {field}), then press Retry."}
 
 
-def play_on_branch(bs: dict, run) -> dict:
+def play_on_branch(bs: dict, run, *, priority: bool = False, on_wait=None) -> dict:
     """Run one job on its branch's live login. `run(branch_session)` is the play_steps call.
 
     Takes a tab slot, waits for the login to be live, runs. A run that finds the login dead
     (session_lost) reports it, waits for the keeper's new login and runs again - twice at most,
     so an ERP that keeps refusing us ends as a failed job with a reason, not a loop."""
     res: dict = {}
-    with tab_slot(bs["id"], bs.get("max_tabs") or 1):
+    with tab_slot(bs["id"], bs.get("max_tabs") or 1, priority=priority, on_wait=on_wait):
         for _attempt in range(3):
             state, url = wait_live(bs["id"])
             if state is None:

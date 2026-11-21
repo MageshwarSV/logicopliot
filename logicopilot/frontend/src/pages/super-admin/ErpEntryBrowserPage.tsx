@@ -38,6 +38,8 @@ export function ErpEntryBrowserPage() {
   const [shot, setShot] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  // "waiting" while every slot of the job's branch is busy - it starts first when one frees.
+  const [pbStatus, setPbStatus] = useState<string>("");
   const [result, setResult] = useState<eb.PlaybackState["result"]>(null);
   const [erpUrl, setErpUrl] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -82,7 +84,7 @@ export function ErpEntryBrowserPage() {
   }
 
   async function startRerun(jobId: string) {
-    setError(null); setResult(null); setLog([]); setShot(null); setRunning(true);
+    setError(null); setResult(null); setLog([]); setShot(null); setRunning(true); setPbStatus("");
     try {
       const { session_id, erp_url } = await eb.ebRerunLive(jobId);
       setSid(session_id); setErpUrl(erp_url);
@@ -92,6 +94,7 @@ export function ErpEntryBrowserPage() {
           const st = await eb.ebPlayback(session_id);
           if (st.screenshot) setShot(st.screenshot);
           setLog(st.log ?? []);
+          setPbStatus(st.status ?? "");
           if (st.summary) setSummary(st.summary);
           if (st.done) {
             setRunning(false);
@@ -289,10 +292,17 @@ export function ErpEntryBrowserPage() {
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">Live browser</p>
                 {running ? (
                   <span className="flex items-center gap-2">
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-600">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-                      running…{summary?.steps_total ? ` step ${summary.steps_done}/${summary.steps_total}` : ""}
-                    </span>
+                    {pbStatus === "waiting" ? (
+                      <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400" title={log[0] ?? ""}>
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                        waiting — jobs are running; this one starts first when one finishes
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5 text-xs text-emerald-600">
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                        running…{summary?.steps_total ? ` step ${summary.steps_done}/${summary.steps_total}` : ""}
+                      </span>
+                    )}
                     {/* Stops at the end of the step it is on - never mid-action, which could
                         leave half a value typed into an ERP field. */}
                     <Button
@@ -318,6 +328,11 @@ export function ErpEntryBrowserPage() {
                   : result ? <span className={`text-xs font-medium ${result.status === "ok" ? "text-emerald-600" : "text-rose-600"}`}>{result.status === "ok" ? "✓ completed" : `✗ ${result.status}${result.reason ? " — " + result.reason : ""}`}</span>
                   : erpUrl ? <span className="truncate text-xs text-slate-400">{erpUrl}</span> : null}
               </div>
+              {running && pbStatus === "waiting" && (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                  {log[0] ?? "Jobs are already running. This job starts as soon as one finishes - it goes first."}
+                </div>
+              )}
               {shot ? (
                 <img src={`data:image/png;base64,${shot}`} alt="live browser" className="w-full rounded-lg border border-slate-300 dark:border-slate-700" style={{ aspectRatio: "1280 / 800" }} />
               ) : (
