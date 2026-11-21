@@ -3469,7 +3469,9 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     while True:
         # An Entry Browser run holds the ERP (one login per account) - wait it out before
         # logging in, still reading "AI - Preparing for ERP". See app/core/erp_priority.py.
-        erp_priority.wait_turn()
+        # Not on a branch login: those never log in, and the Entry Browser runs on them too.
+        if branch is None:
+            erp_priority.wait_turn()
         db.refresh(job)
         if job.gk2_status != "preparing_erp":
             # The Entry Browser run that held the ERP was THIS job, and wrote it up
@@ -3485,13 +3487,13 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
         db.commit()
         try:
             if branch is not None:
-                with erp_priority.queued_run(job.id):
-                    result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
-                        script.url, None, script.steps or [], values, headless=True, rows=rows,
-                        downloads_dir=dl_dir, uploads=up_map, progress=_live,
-                        checkpoint_index=script.checkpoint_index, branch_session=sess,
-                        cancel=erp_priority.manual_active,
-                    ))
+                # No pause: each job is its own copy of the branch login's step-7 page, so an
+                # Entry Browser run (also on the branch login) cannot disturb it.
+                result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                    script.url, None, script.steps or [], values, headless=True, rows=rows,
+                    downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                    checkpoint_index=script.checkpoint_index, branch_session=sess,
+                ))
             else:
                 # A script with no session to share has to take turns, however many workers
                 # are configured - see script_slot. One with a shared session does not.
@@ -6104,16 +6106,17 @@ def complete_job(
                 while True:
                     # Same rule as the queued GK2 run: an Entry Browser run goes first, and a
                     # run it interrupts starts again from step 0. See app/core/erp_priority.py.
-                    erp_priority.wait_turn()
+                    if branch is None:
+                        erp_priority.wait_turn()
                     if branch is not None:
                         # On the branch's always-on login - see app/core/branch_sessions.py.
-                        with erp_priority.queued_run(job.id):
-                            result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
-                                script.url, None, script.steps or [], values, headless=True,
-                                rows=rows, downloads_dir=dl_dir,
-                                checkpoint_index=script.checkpoint_index, branch_session=sess,
-                                uploads=up_map, progress=_live, cancel=erp_priority.manual_active,
-                            ))
+                        # Never paused for an Entry Browser run (that runs on the login too).
+                        result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                            script.url, None, script.steps or [], values, headless=True,
+                            rows=rows, downloads_dir=dl_dir,
+                            checkpoint_index=script.checkpoint_index, branch_session=sess,
+                            uploads=up_map, progress=_live,
+                        ))
                     else:
                         with erp_priority.queued_run(job.id), \
                                 script_slot(script.id, shared_login=ckpt is not None):
