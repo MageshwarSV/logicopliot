@@ -499,6 +499,12 @@ def _subject_without_hawbs(subject: str | None) -> str:
     return " ".join(text.split()).strip(" |-:").strip()
 
 
+def _one_line(text: str) -> str:
+    """A header value with no line breaks: a folded subject or attachment name ("...INDIA\\r\\n
+    MARKETING") is legal in the original mail but makes EmailMessage refuse the header."""
+    return " ".join((text or "").split())
+
+
 def split_message(msg: email.message.Message, subject: str, shipments: list[dict],
                   files: list[tuple[str, bytes]], placed: dict[str, list[int]]) -> list[bytes]:
     """One raw mail per shipment: the original's sender and recipients, a subject naming just
@@ -510,8 +516,8 @@ def split_message(msg: email.message.Message, subject: str, shipments: list[dict
         sub = EmailMessage()
         for header in ("From", "To", "Cc", "Date"):
             if msg.get(header):
-                sub[header] = str(msg.get(header))
-        sub["Subject"] = f"{prefix} //{shipment['hawb']}"
+                sub[header] = _one_line(str(msg.get(header)))
+        sub["Subject"] = _one_line(f"{prefix} //{shipment['hawb']}")
         sub["Message-ID"] = f"<{parent_id}.{norm(shipment['hawb'])}@cargora-split>"
         sub[SHIPMENT_HEADER] = base64.b64encode(
             json.dumps(shipment, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -520,7 +526,8 @@ def split_message(msg: email.message.Message, subject: str, shipments: list[dict
             name, blob = files[i]
             is_pdf = name.lower().endswith(".pdf")
             sub.add_attachment(blob, maintype="application" if is_pdf else "application",
-                               subtype="pdf" if is_pdf else "octet-stream", filename=name)
+                               subtype="pdf" if is_pdf else "octet-stream",
+                               filename=_one_line(name) or "attachment")
         out.append(sub.as_bytes())
     return out
 

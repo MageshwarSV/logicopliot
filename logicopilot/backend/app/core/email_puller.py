@@ -1430,6 +1430,7 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
         return [base], None
     if ai_wait_status()["waiting"]:
         return [base], None                          # the worker holds it; no model call here
+    claimed, mid = False, None
     try:
         from app.core import prealert_shipments as _ps
 
@@ -1462,7 +1463,11 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
     except Exception:  # noqa: BLE001 - then it is one job, as it always was
         logger.exception("could not split a pre-alert into shipment tasks")
         db.rollback()
-        return [base], None
+        # The claim taken above must go, or the worker finds the mail "being read now" and
+        # skips it - the mail then sat unread until the claim went stale (found 2026-11-22).
+        if claimed and mid:
+            _unclaim(db, mid)
+        return [{**base, "split_checked": True}], None
 
 
 def _settle_split_parent(db: Session, parent: dict) -> dict:
