@@ -109,10 +109,14 @@ def _resume_erp_runs(db) -> list[str]:
     return resumed
 
 
-def resume_interrupted_work() -> None:
+def resume_interrupted_work(kinds: tuple[str, ...] = ("extraction", "ERP")) -> None:
+    """kinds: which side to resume - both by default (one process does everything); a split
+    server passes only its own (app/core/process_role.py)."""
     from app.db.session import SessionLocal
 
     for name, fn in (("extraction", _resume_extractions), ("ERP", _resume_erp_runs)):
+        if name not in kinds:
+            continue
         db = SessionLocal()
         try:
             resumed = fn(db)

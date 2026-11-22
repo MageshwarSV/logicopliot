@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
 
+    # Which background work THIS process starts (app/core/process_role.py) - for running the app
+    # split over several servers. "all" (the default, and every box today) = one process does
+    # everything, exactly as before. "web" = website/API only; "worker" = mail, extraction
+    # resume, pipeline, large-job lane; "erp" = ERP queue, branch logins, parked browsers.
+    # A split (anything but "all") needs REDIS_URL, so ERP work queued by one process reaches another.
+    process_role: str = "all"
+
     # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
     # default and on every box that does not say otherwise - with it off nothing is queued and no
     # worker starts, so the app runs exactly as before. Needs REDIS_URL as well.
