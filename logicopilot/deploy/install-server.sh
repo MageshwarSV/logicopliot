@@ -105,6 +105,17 @@ fi
 cur="$(git -C "$DIR" rev-parse --abbrev-ref HEAD)"
 [ "$cur" = "$BRANCH" ] || { echo "     checkout is on '$cur', expected '$BRANCH' - stopping"; exit 1; }
 echo "     at $(git -C "$DIR" log --oneline -1)"
+# The database stores file paths RELATIVE to the backend folder ("uploads/jobs/..."), so the
+# backend's own uploads/ must BE the shared folder: a link, with UPLOADS_DIR left at "uploads"
+# exactly as on production. (UPLOADS_DIR=/srv/... would make every existing path "not found".)
+if [ -L "$BACKEND/uploads" ]; then
+  :
+elif [ -e "$BACKEND/uploads" ]; then
+  echo "     $BACKEND/uploads is a real folder - move its contents to $UPLOADS first"; exit 1
+else
+  ln -s "$UPLOADS" "$BACKEND/uploads"
+fi
+echo "     $BACKEND/uploads -> $(readlink "$BACKEND/uploads")"
 
 # ---------------------------------------------------------------- 5. python + browser
 say "5/7 python venv"
@@ -136,7 +147,7 @@ if [ ! -f "$ENVF" ]; then
   {
     echo "# $ROLE server - created by install-server.sh. Fill every CHANGE_ME before starting."
     echo "PROCESS_ROLE=$PROCESS_ROLE"
-    echo "UPLOADS_DIR=$UPLOADS"
+    echo "UPLOADS_DIR=uploads"
     echo "DATABASE_URL=postgresql://cargora:CHANGE_ME@10.50.0.1:5432/cargora"
     echo "REDIS_URL=redis://:CHANGE_ME@10.50.0.1:6379/0"
     echo "EMAIL_POLL_MINUTES=0"
@@ -157,6 +168,9 @@ for k in PROCESS_ROLE UPLOADS_DIR EMAIL_POLL_MINUTES ERP_SESSIONS_DIR; do
 done
 n="$(grep -c CHANGE_ME "$ENVF" || true)"
 [ "$n" -gt 0 ] && echo "     $n line(s) still say CHANGE_ME"
+if ! grep -qE "^UPLOADS_DIR=uploads$" "$ENVF"; then
+  echo "     !! UPLOADS_DIR must be 'uploads' (the link) - stored file paths are relative"
+fi
 if ! grep -qE "^PROCESS_ROLE=$PROCESS_ROLE$" "$ENVF"; then
   echo "     !! PROCESS_ROLE in .env is not '$PROCESS_ROLE' - fix before starting"
 fi
