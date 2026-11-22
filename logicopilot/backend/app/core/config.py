@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     # A split (anything but "all") needs REDIS_URL, so ERP work queued by one process reaches another.
     process_role: str = "all"
 
+    # Mail queue (app/core/mail_queue.py): the background poller only FINDS mail and queues it
+    # in Redis; mail workers read it. OFF by default (and everywhere today): the poller reads
+    # every mail inside its own cycle, exactly as before. Needs REDIS_URL.
+    mail_queue: bool = False
+
     # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
     # default and on every box that does not say otherwise - with it off nothing is queued and no
     # worker starts, so the app runs exactly as before. Needs REDIS_URL as well.

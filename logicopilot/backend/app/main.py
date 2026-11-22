@@ -213,6 +213,23 @@ def create_app() -> FastAPI:
             if _db is not None:
                 _db.close()
 
+        # MAIL_QUEUE on: the workers that read queued mail - before the first poll queues any,
+        # and after the interrupted claims are released (a mail put back by the queue's own
+        # restart recovery then claims again cleanly). No-op when off or without Redis.
+        try:
+            from app.core import mail_queue
+            from app.core.system_settings import get_email_poll_workers
+            from app.db.session import SessionLocal as _SL
+
+            if mail_queue.enabled():
+                _wdb = _SL()
+                try:
+                    mail_queue.start(get_email_poll_workers(_wdb))
+                finally:
+                    _wdb.close()
+        except Exception:  # noqa: BLE001 - must never stop mail polling from starting
+            logging.getLogger(__name__).exception("could not start the mail queue workers")
+
         start_scheduler()
         # The large-job lane (app/core/large_job_lane.py) - also picks up extractions queued on
         # it before a restart. Only where mail is polled at all: that is the only thing that
@@ -349,6 +366,9 @@ def create_app() -> FastAPI:
         from app.core.parked import MANAGER
 
         stop_erp_queue()
+        from app.core import mail_queue
+
+        mail_queue.stop()
         MANAGER.unpark_all()
 
     @app.get("/health")
