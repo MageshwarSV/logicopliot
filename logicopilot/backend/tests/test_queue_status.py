@@ -66,3 +66,14 @@ def test_endpoint_super_admin_only(client, db_session, monkeypatch):
     make_user(db_session, role="super_admin", email="sa-q@example.com")
     login(client, "sa-q@example.com")
     assert client.get("/api/v1/system-settings/queues").json()["redis"] is False
+
+
+def test_ai_unavailable_on_a_server_is_a_warning(monkeypatch):
+    r = R()
+    monkeypatch.setattr(qs, "_client", lambda: r)
+    r.set("proc:server.cargora-ai:worker", json.dumps(
+        {"host": "server.cargora-ai", "role": "worker", "at": time.time(), "mail_workers": 5,
+         "extract_workers": 6, "erp_workers": 0,
+         "ai_wait": {"waiting": True, "until": "2026-11-22T21:30:00+00:00", "reason": "insufficient_quota"}}))
+    w = qs.snapshot()["warnings"]
+    assert any("AI service unavailable" in x and "21:30" in x and "insufficient_quota" in x for x in w)

@@ -54,7 +54,20 @@ def _beat_payload() -> dict:
         "erp_workers": _workers_alive("erp-q"),
         "mail_polling": int(getattr(st, "email_poll_minutes", 0) or 0) > 0,
         "ocr_engine": getattr(st, "ocr_engine", "docai"),
+        # The mail process's "AI service unavailable" hold (email_puller.ai_wait_status) - held
+        # in THAT process's memory, so it travels here for the website to see.
+        "ai_wait": _ai_wait(),
     }
+
+
+def _ai_wait() -> dict | None:
+    try:
+        from app.core.email_puller import ai_wait_status
+
+        w = ai_wait_status()
+        return w if w.get("waiting") else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def beat_once() -> None:
@@ -140,5 +153,13 @@ def snapshot() -> dict:
     for q in queues:
         if q["waiting"] and servers and not any(s.get(worker_field[q["name"]]) for s in servers):
             warnings.append(f"{q['label']}: {q['waiting']} waiting but no server is running its workers")
+    for s in servers:
+        w = s.get("ai_wait")
+        if w:
+            until = str(w.get("until") or "")[11:16]
+            warnings.append("AI service unavailable - mail reading paused"
+                            + (f" until {until} UTC" if until else "")
+                            + (f" ({str(w.get('reason'))[:120]})" if w.get("reason") else "")
+                            + f" on {s.get('host')}")
     return {"redis": True, "queues": queues, "servers": servers, "warnings": warnings,
             "stale_after_seconds": STALE_AFTER_SECONDS}

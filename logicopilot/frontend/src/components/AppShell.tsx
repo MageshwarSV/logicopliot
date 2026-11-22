@@ -6,6 +6,7 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import * as duplicateEmailsApi from "../api/duplicateEmails";
 import { NotificationBell } from "./NotificationBell";
+import { SystemAlertBanner } from "./SystemAlertBanner";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 import { Avatar } from "./ui/Avatar";
 import {
@@ -550,6 +551,7 @@ export function AppShell({
             {actions}
           </div>
         </header>
+        {user?.role === "super_admin" && <SystemAlertBanner />}
         <main className="p-8">{children}</main>
       </div>
     </div>

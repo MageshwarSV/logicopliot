@@ -708,8 +708,13 @@ def ai_wait_status() -> dict:
 
 def _note_ai_down(reason: str) -> None:
     with _ai_down_lock:
+        already = _ai_down["until"] is not None and datetime.now(timezone.utc) < _ai_down["until"]
         _ai_down["until"] = datetime.now(timezone.utc) + timedelta(minutes=AI_DOWN_WAIT_MINUTES)
         _ai_down["reason"] = (reason or "")[:500]
+    if not already:
+        # Once per outage, not once per held mail: this is the line an alert can be keyed on.
+        logger.error("AI SERVICE UNAVAILABLE - mail reading paused for %d min: %s",
+                     AI_DOWN_WAIT_MINUTES, (reason or "")[:300])
 
 
 def clear_ai_wait() -> None:

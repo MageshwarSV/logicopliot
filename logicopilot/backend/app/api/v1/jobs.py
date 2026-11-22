@@ -878,6 +878,11 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
             continue
         if f["status"] in BLOCKING_VERIFICATION_STATUSES:
             return "Data Validation"  # a field's own reconciliation reported MISMATCH
+    from app.core import money_checks
+
+    for f in money_checks.findings(db, job):   # [] unless MONEY_CHECKS is on
+        if not f["accepted"] and f["status"] in BLOCKING_VERIFICATION_STATUSES:
+            return "Data Validation"  # the invoice's own numbers do not add up
     # Past validation - or nothing to validate at all. Either way a human must still look at
     # the extracted data at least once before it is ready for ERP entry; WHERE past that -
     # Dump Data, Manual Data Entry, ERP Submission - is something only the operator's own
@@ -4434,6 +4439,24 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
 
     # Passes when nothing genuinely disagrees. A "missing" row is informational — the value is
     # absent on the other document, not in conflict with it — so it does not withhold the pass.
+    # MONEY_CHECKS: the invoice's own arithmetic (app/core/money_checks.py) - a row only when a
+    # check FAILS, accepted the same way as any other flagged row. [] when the switch is off.
+    from app.core import money_checks
+
+    for f in money_checks.findings(db, job):
+        verifications.append(
+            VerificationRow(
+                link_id=f["id"],
+                field_label=f["label"],
+                source_document="Invoice",
+                source_value=f["source_value"],
+                target_document="Invoice",
+                target_value=f["target_value"],
+                status=f["status"],
+                accepted=f["accepted"],
+            )
+        )
+
     all_passed = len(verifications) > 0 and all(
         v.status not in BLOCKING_VERIFICATION_STATUSES or v.accepted for v in verifications
     )
