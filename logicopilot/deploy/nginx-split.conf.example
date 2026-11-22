@@ -15,10 +15,10 @@
 #                       /api/v1/jobs/{id}/stop           stop a running entry
 #   to this server      every other /api/ path, and the frontend
 #
-# The ERP server's port 30299 must accept connections from THIS server's IP only (firewall).
+# The ERP server's port 30299 must accept connections from 10.50.0.2 (this server, WireGuard) only.
 
 upstream cargora_web { server 127.0.0.1:30299; }
-upstream cargora_erp { server 163.128.113.89:30299; }   # cargora-erp
+upstream cargora_erp { server 10.50.0.4:30299; }   # cargora-erp over WireGuard (public 163.128.113.89)
 
 server {
     listen 80;
