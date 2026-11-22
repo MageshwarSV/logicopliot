@@ -1326,6 +1326,32 @@ def _hand_large_mail_to_lane(db: Session, tasks: list[dict], reexamine: bool, ru
     return keep
 
 
+def _image_fingerprint(page_images: list, pages: list[int]) -> str:
+    """OCR off only (OCR_ENGINE none/pdftext): a hash of the rendered pixels of a claim's pages,
+    for the in-mail duplicate check when there is no text to fingerprint. "" = cannot tell."""
+    from app.core.docai import ocr_off
+
+    if not ocr_off() or not pages:
+        return ""
+    try:
+        import hashlib
+
+        import fitz
+
+        by_n = {int(n): p for n, p in page_images}
+        h = hashlib.sha256()
+        for n in pages:
+            path = by_n.get(int(n))
+            if path is None or not Path(path).exists():
+                return ""
+            pix = fitz.Pixmap(str(path))
+            h.update(f"{pix.width}x{pix.height}:".encode())
+            h.update(pix.samples)
+        return "img:" + h.hexdigest()
+    except Exception:  # noqa: BLE001 - cannot tell is the safe answer
+        return ""
+
+
 def _large_mail(group, task: dict) -> tuple[str, str, int] | None:
     """(message id, subject, biggest zip bytes) when this mail is a large-job-lane mail: its
     template has the lane on and its biggest zip is over the template's large_zip_mb. None
@@ -2650,6 +2676,13 @@ def _process_one_message(
                 # for and must not lose. An empty fingerprint means "cannot tell" (too
                 # little readable text) and never counts as a match.
                 fingerprint = claim_fingerprint(item["text"] or "", claim.get("pages") or [])
+                if not fingerprint:
+                    # No text to compare (a scan, with OCR off): the same paper sent twice
+                    # renders to the same pixels, so those stand in. A re-scan differs and is
+                    # kept - "cannot tell" stays the safe answer. Production (Document AI on)
+                    # never gets here with OCR text missing on purpose: unchanged.
+                    fingerprint = _image_fingerprint(item.get("page_images") or [],
+                                                     claim.get("pages") or [])
                 already = placed_fingerprints.setdefault(key, set())
                 if fingerprint and fingerprint in already:
                     logger.info(
