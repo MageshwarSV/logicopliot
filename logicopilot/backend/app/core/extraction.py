@@ -315,11 +315,23 @@ DATE_DAY_FIRST_ISO = (
     "ANY DATE FIELD IS READ DAY FIRST, THEN MONTH, THEN YEAR, AND RETURNED AS YYYY-MM-DD. This "
     "applies whether the printed date uses a slash, a dash or a dot as its separator. TECHNIQUE "
     "ONLY, not real data: a date printed 6/12/2026 is the 6th of December 2026 - day 6, month "
-    "12 - and is returned as 2026-12-06, never as 2026-06-06 and never in any other format such "
-    "as '12-Jun-2026' or '06/12/2026'. When the first number is greater than 12 the order is "
-    "unambiguous either way - use it as printed. Always return the ISO form YYYY-MM-DD, never "
-    "the month name, never the original punctuation, whatever format the question's own wording "
-    "uses to describe the field."
+    "12 - and is returned as 2026-12-06, never as 2026-06-06. When the first number is greater "
+    "than 12 the order is unambiguous either way - use it as printed. Return the ISO form "
+    "YYYY-MM-DD, not the original punctuation."
+)
+
+# The shared rules above are DEFAULTS - how GPT-5-mini effectively treated them: where a field
+# carried its own instruction (Invoice Date "Write the date as DD-Mmm-YYYY"), it followed the
+# field. gpt-6-luna does exactly what the shared text says, and the date rule used to say
+# "whatever format the question's own wording uses" - so it returned 2026-11-18 for a field set
+# to 18-Nov-2026 (JOB-5B0B6D). Said once, for every rule, in every extraction prompt.
+FIELD_INSTRUCTIONS_WIN = (
+    "\n\nTHE RULES ABOVE ARE GENERAL DEFAULTS FOR EVERY FIELD. Each field below can carry its "
+    "own instruction (what to return, where to look, how to write it - a date format, a code "
+    "format, upper case, a list of allowed values). Follow BOTH. Where a field's own "
+    "instruction says something different from a general rule above, the FIELD'S OWN "
+    "INSTRUCTION WINS for that field - e.g. a date field told 'write the date as DD-Mmm-YYYY' is "
+    "returned like 25-Jun-2026, not in the default YYYY-MM-DD."
 )
 
 # JOB-5B0B6D, a Danish invoice printing '1.450 PC   2,83 USD   4.103,50' (1450 pieces at 2.83 =
@@ -631,12 +643,12 @@ def extract_document_fields(
                         + ONLY_THE_VALUE
                         + LETTERS_ARE_NOT_DIGITS
                         + DATE_DAY_FIRST_ISO
-                    + NUMBERS_IN_STANDARD_FORM
                         + NUMBERS_IN_STANDARD_FORM
                         + TWIN_BLOCKS_STAY_WHOLE
                         + SEPARATED_LABELS_AND_VALUES
                         + UNIT_LABELS_PAIR_BY_POSITION
                         + CHECKLIST_SUBSTITUTE_DOCUMENT
+                        + FIELD_INSTRUCTIONS_WIN
                     ),
                 },
                 {
@@ -906,10 +918,10 @@ def extract_document_rows(
                         "invent rows. If the document has no repeating table, return an empty list."
                         + LETTERS_ARE_NOT_DIGITS
                         + DATE_DAY_FIRST_ISO
-                    + NUMBERS_IN_STANDARD_FORM
                         + NUMBERS_IN_STANDARD_FORM
                         + TWIN_BLOCKS_STAY_WHOLE
                         + CHECKLIST_SUBSTITUTE_DOCUMENT
+                        + FIELD_INSTRUCTIONS_WIN
                     ),
                 },
                 {
@@ -1040,6 +1052,7 @@ def extract_document_fields_from_images(
                     + NUMBERS_IN_STANDARD_FORM
                     + TWIN_BLOCKS_STAY_WHOLE
                     + CHECKLIST_SUBSTITUTE_DOCUMENT
+                    + FIELD_INSTRUCTIONS_WIN
                     + "\n\nFields:\n"
                     + "\n".join(_field_lines(fields))
                     + "\n\nReturn a JSON object keyed by exactly these field names: "
@@ -1133,6 +1146,7 @@ def extract_document_rows_from_images(
                     + NUMBERS_IN_STANDARD_FORM
                     + TWIN_BLOCKS_STAY_WHOLE
                     + CHECKLIST_SUBSTITUTE_DOCUMENT
+                    + FIELD_INSTRUCTIONS_WIN
                     + "\n\nFields to read from each row:\n"
                     + "\n".join(_field_lines(fields))
                     + "\n\nEach row object uses exactly these keys: "
