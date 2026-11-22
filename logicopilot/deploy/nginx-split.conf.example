@@ -19,6 +19,9 @@
 #                       /api/v1/jobs/{id}/pull-progress   mail reading progress
 #                       /api/v1/jobs/{id}/extraction-progress
 #                       /api/v1/system-settings/pipeline...
+#                       /api/v1/jobs/{id}/smart-upload            OCR + AI page sorting
+#                       /api/v1/jobs/{id}/reclassify-documents    same, for existing files
+#                       /api/v1/jobs/{id}/documents/{slot}/upload page render + OCR + Word/Excel
 #                       (all read or start work that lives in the worker process's memory)
 #   to this server      every other /api/ path, and the frontend
 #
@@ -63,7 +66,7 @@ server {
         proxy_pass http://cargora_ai;
         include /etc/nginx/cargora_proxy_params;
     }
-    location ~ ^/api/v1/jobs/[^/]+/(held/unlock|pull-progress|extraction-progress)$ {
+    location ~ ^/api/v1/jobs/[^/]+/(held/unlock|pull-progress|extraction-progress|smart-upload|reclassify-documents|documents/[^/]+/upload)$ {
         proxy_pass http://cargora_ai;
         include /etc/nginx/cargora_proxy_params;
     }
