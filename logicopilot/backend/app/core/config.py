@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     docai_location: str = "us"
     docai_processor_id: str = ""
     google_application_credentials: str = "google-credentials.json"
+    # Page OCR at intake (app/core/docai.py). "docai" = Google Document AI, as everywhere today.
+    # "none" = no OCR call at all: every page reads as "no text", the path every caller already
+    # handles (classification and extraction from the page images). For testing on dev whether
+    # Document AI can be dropped - nothing is written to the OCR caches while it is "none".
+    ocr_engine: str = "docai"
     uploads_dir: str = "uploads"
     # Logged-in ERP browser state and the ERP login/tab lock files (see erp_sessions_dir()).
     # Empty = uploads_dir/erp_sessions, as before. On a split setup the ERP server sets a LOCAL

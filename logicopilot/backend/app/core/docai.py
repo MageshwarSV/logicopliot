@@ -281,7 +281,21 @@ def _content_cache_path(image_bytes: bytes) -> Path:
     return root / digest[:2] / f"{digest}.json"
 
 
+def ocr_off() -> bool:
+    """OCR_ENGINE=none: no Document AI call, no cache read or write (see config.ocr_engine)."""
+    return (getattr(get_settings(), "ocr_engine", "docai") or "docai").strip().lower() == "none"
+
+
+def _no_ocr_result() -> dict:
+    """The shape ocr_page_image returns, with nothing read - every caller treats empty text and
+    no tokens as "no OCR for this page"."""
+    return {"text": "", "tokens": [], "layout_text": "", "table_row_counts": [],
+            "structured_text": None, "debug_blocks": []}
+
+
 def ocr_page_image(image_path: Path) -> dict:
+    if ocr_off():
+        return _no_ocr_result()
     from google.cloud import documentai
 
     image_bytes = image_path.read_bytes()
@@ -422,6 +436,8 @@ def locate_value_bbox(
 
 
 def get_page_ocr(document_dir: Path, page_number: int) -> dict:
+    if ocr_off():
+        return _no_ocr_result()
     cache_file = document_dir / "ocr" / f"page_{page_number}.json"
     if cache_file.exists():
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
