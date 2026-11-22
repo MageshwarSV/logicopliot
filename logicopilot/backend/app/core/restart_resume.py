@@ -52,10 +52,13 @@ def _resume_extractions(db) -> list[str]:
     resumed = []
     for j in jobs:
         notes = j.attachment_notes if isinstance(j.attachment_notes, dict) else {}
-        _start_extraction_background(
+        started = _start_extraction_background(
             j.id, only_job_document_id=notes.get("extract_doc") or None,
             is_rerun=bool(j.extraction_is_rerun))
-        resumed.append(j.reference or j.id)
+        # False = already on the extraction queue (put back by its own restart recovery):
+        # not queued again, so not reported as re-queued either.
+        if started is not False:
+            resumed.append(j.reference or j.id)
     return resumed
 
 

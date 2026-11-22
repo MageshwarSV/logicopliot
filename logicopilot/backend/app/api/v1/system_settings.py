@@ -760,6 +760,16 @@ def get_erp_queue_status(
     return depth
 
 
+@router.get("/queues")
+def get_queues_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Every queue (mail, large mail, extraction, ERP): waiting, running, how long the oldest
+    item has waited - and which servers are working them (their heartbeats). Read-only.
+    See app/core/queue_status.py."""
+    from app.core.queue_status import snapshot
+
+    return snapshot()
+
+
 @router.post("/extraction-engine")
 def set_extraction_engine_endpoint(
     payload: ExtractionEngineIn,

@@ -11,6 +11,7 @@ import type { Tenant } from "../../types/tenant";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
 import { LargeJobLaneSection } from "./LargeJobLaneSection";
+import { QueuesSection } from "./QueuesSection";
 
 /** Two live kill switches for AI-dependent work - NOT a backend shutdown. Everything else
  *  keeps running: viewing jobs, correcting values already extracted, ERP submission for
@@ -722,6 +723,7 @@ export function SettingsPage() {
           </div>
         )}
 
+        <QueuesSection />
         {settings && <LargeJobLaneSection settings={settings} />}
 
         {settings && (

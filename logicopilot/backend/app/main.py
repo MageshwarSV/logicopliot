@@ -367,6 +367,17 @@ def create_app() -> FastAPI:
 
         threading.Thread(target=_go, name="pipeline-start", daemon=True).start()
 
+    @app.on_event("startup")
+    def _start_queue_heartbeat() -> None:
+        """Each process tells Platform Settings' queue panel which server it is and how many
+        workers it runs (app/core/queue_status.py). No-op without Redis."""
+        try:
+            from app.core.queue_status import start_heartbeat
+
+            start_heartbeat()
+        except Exception:  # noqa: BLE001 - visibility must never stop the app starting
+            logging.getLogger(__name__).exception("could not start the queue heartbeat")
+
     @app.on_event("shutdown")
     def _stop_parked_sessions() -> None:
         """Close parked browsers on the way down, so a restart cannot leak a Chromium."""

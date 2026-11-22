@@ -1146,7 +1146,7 @@ def _run_extraction_job(job_id: str, only_job_document_id: str | None = None, *,
 
 def _start_extraction_background(
     job_id: str, only_job_document_id: str | None = None, *, is_rerun: bool = False,
-) -> None:
+) -> bool:
     """Run extraction off the request thread, so an upload or the Extract button returns at
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
     session resume in main.py: the request's session closes when the endpoint returns, long
@@ -1170,17 +1170,18 @@ def _start_extraction_background(
         try:
             if not extract_queue.enqueue(job_id, only_job_document_id, is_rerun):
                 logger.info("job %s is already on the extraction queue - not queued twice", job_id)
-            return
+                return False
+            return True
         except Exception:  # noqa: BLE001 - never lose a run: fall back to the old path
             logger.exception("job %s: could not queue the extraction - running it the old way", job_id)
     if extraction_dispatch.hand_off(job_id, only_job_document_id, is_rerun):
-        return
+        return True
     # Only a split worker de-duplicates: there a doorbell message and the startup resume can
     # name the same job. One process doing everything ("all") behaves exactly as before.
     dedupe = is_split()
     if dedupe and not extraction_dispatch.claim(job_id):
         logger.info("job %s is already being read in this process - not starting it twice", job_id)
-        return
+        return False
 
     def _go() -> None:
         try:
@@ -1190,6 +1191,7 @@ def _start_extraction_background(
                 extraction_dispatch.release(job_id)
 
     submit_extraction(_go)
+    return True
 
 
 def _mark_review_started(job: Job) -> None:

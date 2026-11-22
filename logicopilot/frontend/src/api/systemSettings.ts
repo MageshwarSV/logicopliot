@@ -170,6 +170,40 @@ export interface ErpQueueStatus {
   max_workers: number;
 }
 
+/** Every queue and the servers working them - see app/core/queue_status.py. */
+export interface QueueRow {
+  name: "mail" | "mail_large" | "extract" | "erp";
+  label: string;
+  waiting: number;
+  running: number;
+  oldest_wait_seconds: number | null;
+  stale: boolean;
+}
+export interface QueueServer {
+  host: string;
+  role: string;
+  seen_seconds_ago: number;
+  mail_workers: number;
+  extract_workers: number;
+  erp_workers: number;
+  mail_queue_on: boolean;
+  extract_queue_on: boolean;
+  mail_polling: boolean;
+  ocr_engine: string;
+}
+export interface QueuesStatus {
+  redis: boolean;
+  queues: QueueRow[];
+  servers: QueueServer[];
+  warnings: string[];
+  stale_after_seconds?: number;
+}
+
+export async function getQueuesStatus(): Promise<QueuesStatus> {
+  const { data } = await apiClient.get<QueuesStatus>("/system-settings/queues");
+  return data;
+}
+
 export async function getErpQueueStatus(): Promise<ErpQueueStatus> {
   const { data } = await apiClient.get<ErpQueueStatus>("/system-settings/erp-queue");
   return data;
