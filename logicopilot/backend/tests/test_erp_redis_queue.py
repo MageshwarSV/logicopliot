@@ -38,6 +38,23 @@ class FakeRedis:
         self.lists.setdefault(key, []).append(value)
         return len(self.lists[key])
 
+    def lpush(self, key, value):
+        self._check("lpush")
+        self.lists.setdefault(key, []).insert(0, value)
+        return len(self.lists[key])
+
+    def eval(self, script, numkeys, *keys):
+        """Only the one script the queue runs: LPOP KEYS[1] -> RPUSH KEYS[2], atomically."""
+        self._check("eval")
+        assert "LPOP" in script and "RPUSH" in script and numkeys == 2
+        src, dst = keys
+        items = self.lists.get(src) or []
+        if not items:
+            return None
+        raw = items.pop(0)
+        self.lists.setdefault(dst, []).append(raw)
+        return raw
+
     def llen(self, key):
         self._check("llen")
         return len(self.lists.get(key, []))
@@ -110,7 +127,7 @@ def test_with_no_redis_it_falls_back_and_still_runs_the_job():
 
 
 def test_a_redis_that_fails_mid_write_falls_back_rather_than_losing_the_job():
-    _use(FakeRedis(fail_on={"rpush"}))
+    _use(FakeRedis(fail_on={"lpush"}))
     called = {}
     with patch("app.core.erp_queue.submit_erp_run",
                side_effect=lambda w, fn: called.update(ran=True)):
@@ -269,3 +286,43 @@ def test_the_client_is_built_with_that_margin():
 
     assert captured.get("socket_timeout", 0) > q._POP_TIMEOUT, captured
     assert captured.get("socket_connect_timeout"), "a dead host must not hang the enqueue"
+
+
+def _ids(raws):
+    return [json.loads(r)["job_id"] for r in raws]
+
+
+def _drain(fake):
+    """The order workers would pick jobs in (BRPOPLPUSH takes from the right)."""
+    out = []
+    while True:
+        raw = fake.brpoplpush(q.QUEUE_KEY, q.PROCESSING_KEY)
+        if raw is None:
+            return out
+        out.append(json.loads(raw)["job_id"])
+
+
+def test_oldest_approved_job_is_picked_first():
+    """FIFO: it used to be the newest first, so an early job kept being pushed back."""
+    fake = FakeRedis()
+    _use(fake)
+    with patch.object(q, "_ensure_workers"):
+        for j in ("job-1", "job-2", "job-3"):
+            q.enqueue(j, is_excel_entry=False, desired_workers=1)
+    assert _drain(fake) == ["job-1", "job-2", "job-3"]
+
+
+def test_runs_interrupted_by_a_restart_go_first_oldest_first():
+    fake = FakeRedis()
+    _use(fake)
+    with patch.object(q, "_ensure_workers"):
+        for j in ("old-a", "old-b", "old-c"):
+            q.enqueue(j, is_excel_entry=False, desired_workers=1)
+    # two workers reserved old-a then old-b, then the process died mid-run
+    fake.brpoplpush(q.QUEUE_KEY, q.PROCESSING_KEY)
+    fake.brpoplpush(q.QUEUE_KEY, q.PROCESSING_KEY)
+    with patch.object(q, "_ensure_workers"):
+        q.enqueue("new-d", is_excel_entry=False, desired_workers=1)   # approved after
+    assert q.requeue_orphans() == 2
+    assert fake.lists[q.PROCESSING_KEY] == []
+    assert _drain(fake) == ["old-a", "old-b", "old-c", "new-d"]

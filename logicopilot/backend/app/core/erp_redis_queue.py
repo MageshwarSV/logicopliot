@@ -35,6 +35,21 @@ logger = logging.getLogger(__name__)
 QUEUE_KEY = "erp:queue"
 PROCESSING_KEY = "erp:processing"
 
+# ORDER - oldest first. New jobs go on the LEFT (LPUSH); workers take from the RIGHT
+# (BRPOPLPUSH), so the job that has waited longest runs next. It used to be RPUSH, i.e. the
+# newest job first: in a busy hour an early job kept getting pushed back by later ones.
+# A run interrupted by a restart goes back on the RIGHT end - ahead of everything waiting, and
+# among themselves oldest first (see requeue_orphans).
+#
+# One atomic step per interrupted run: take the most recently reserved off erp:processing and
+# put it on the right end of the queue. Done newest-reserved first, so the oldest ends up
+# right-most = picked first. Plain LPOP/RPUSH in Lua, so it also works on Redis 6.0 (no LMOVE).
+_REQUEUE_ONE = """
+local v = redis.call('LPOP', KEYS[1])
+if v then redis.call('RPUSH', KEYS[2], v) end
+return v
+"""
+
 # How long a worker blocks on the queue before looping. Not a timeout on the work - it only
 # decides how quickly a worker notices it has been told to stop.
 _POP_TIMEOUT = 5
@@ -115,7 +130,7 @@ def enqueue(job_id: str, *, is_excel_entry: bool, desired_workers: int) -> str:
     client = _redis()
     if client is not None:
         try:
-            client.rpush(QUEUE_KEY, json.dumps(
+            client.lpush(QUEUE_KEY, json.dumps(
                 {"job_id": job_id, "is_excel_entry": bool(is_excel_entry),
                  "queued_at": time.time()}))
             _ensure_workers(desired_workers)
@@ -206,7 +221,7 @@ def requeue_orphans() -> int:
     moved = 0
     try:
         while True:
-            raw = client.rpoplpush(PROCESSING_KEY, QUEUE_KEY)
+            raw = client.eval(_REQUEUE_ONE, 2, PROCESSING_KEY, QUEUE_KEY)
             if raw is None:
                 break
             moved += 1
