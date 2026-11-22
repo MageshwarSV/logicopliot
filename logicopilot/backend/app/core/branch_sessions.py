@@ -55,11 +55,9 @@ _stop = threading.Event()
 # ---------------------------------------------------------------------------------------------
 
 def _dir() -> Path:
-    from app.core.config import get_settings
+    from app.core.config import erp_sessions_dir
 
-    d = Path(get_settings().uploads_dir) / "erp_sessions"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return erp_sessions_dir()
 
 
 def session_file(bs_id: str) -> Path:

@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     docai_processor_id: str = ""
     google_application_credentials: str = "google-credentials.json"
     uploads_dir: str = "uploads"
+    # Logged-in ERP browser state and the ERP login/tab lock files (see erp_sessions_dir()).
+    # Empty = uploads_dir/erp_sessions, as before. On a split setup the ERP server sets a LOCAL
+    # path: uploads_dir is then a shared NFS folder, and these are cookies + flock files that only
+    # the ERP server uses - kept off the share (no stale NFS locks, no cookies on other servers).
+    erp_sessions_dir: str = ""
     # Verified live against real jobs (Cisco commercial invoice Seller/Ship-From splice, and
     # JOB-92F564's Bill of Lading Shipper-vs-carrier-letterhead splice) before enabling: 22/22
     # fields correct afterward vs 19/22 before, zero regressions found. On: run_extraction and
@@ -159,3 +164,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def erp_sessions_dir():
+    """Where ERP session files and their lock files live (created if missing)."""
+    from pathlib import Path
+
+    st = get_settings()
+    d = Path(st.erp_sessions_dir) if (st.erp_sessions_dir or "").strip() else Path(st.uploads_dir) / "erp_sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

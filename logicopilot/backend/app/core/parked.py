@@ -284,7 +284,7 @@ def resume_all(db_factory) -> list[dict]:
     try:
         from pathlib import Path
 
-        from app.core.config import get_settings
+        from app.core.config import erp_sessions_dir, get_settings
         from app.models.erp_script import ErpScript
 
         db = db_factory()
@@ -307,7 +307,7 @@ def resume_all(db_factory) -> list[dict]:
                     "checkpoint_index": s.checkpoint_index,
                     "login": ({"username": s.login_username or "", "password": s.login_password or ""}
                               if s.has_login else None),
-                    "session_file": uploads / "erp_sessions" / f"{s.id}.json",
+                    "session_file": erp_sessions_dir() / f"{s.id}.json",
                 }))
         finally:
             db.close()

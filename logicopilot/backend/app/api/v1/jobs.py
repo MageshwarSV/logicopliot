@@ -16,7 +16,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.billing import record_billable_pages
-from app.core.config import get_settings
+from app.core.config import erp_sessions_dir, get_settings
 # The function, not the module: `def job_history(...)` in this file shadows a module of
 # that name at module level, so `job_history.describe` resolved to the ROUTE and raised
 # AttributeError on every request. Legal Python - it imported cleanly and 500'd live.
@@ -3493,7 +3493,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     sess_file = None
     ckpt = script.checkpoint_index if script.stay_open else None
     if ckpt is not None:
-        sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+        sess_file = erp_sessions_dir() / f"{script.id}.json"
 
     from app.core import branch_sessions, erp_priority
     from app.core.erp_session import script_slot
@@ -5993,7 +5993,7 @@ def complete_job(
             ckpt = script.checkpoint_index if script.stay_open else None
             if ckpt is not None:
                 sess_file = (
-                    Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+                    erp_sessions_dir() / f"{script.id}.json"
                 )
             result = None
             # A parked session cannot carry an attachment: parked.py calls play_steps without

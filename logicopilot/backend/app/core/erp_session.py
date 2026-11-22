@@ -191,9 +191,9 @@ def _login_lock_path(session_file) -> str:
 def _run_lock_path(script_id) -> str:
     """Who is allowed to be RUNNING this script right now - only used by scripts that cannot
     share a login, where one run at a time is the only safe answer."""
-    from app.core.config import get_settings
+    from app.core.config import erp_sessions_dir
 
-    return str(Path(get_settings().uploads_dir) / "erp_sessions" / f"{script_id}.run.lock")
+    return str(erp_sessions_dir() / f"{script_id}.run.lock")
 
 
 def _take(lock_path: str, *, wait_seconds: float = 0.0):
