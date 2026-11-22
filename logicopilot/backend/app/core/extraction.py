@@ -326,12 +326,18 @@ DATE_DAY_FIRST_ISO = (
 # "whatever format the question's own wording uses" - so it returned 2026-11-18 for a field set
 # to 18-Nov-2026 (JOB-5B0B6D). Said once, for every rule, in every extraction prompt.
 FIELD_INSTRUCTIONS_WIN = (
-    "\n\nTHE RULES ABOVE ARE GENERAL DEFAULTS FOR EVERY FIELD. Each field below can carry its "
-    "own instruction (what to return, where to look, how to write it - a date format, a code "
-    "format, upper case, a list of allowed values). Follow BOTH. Where a field's own "
-    "instruction says something different from a general rule above, the FIELD'S OWN "
-    "INSTRUCTION WINS for that field - e.g. a date field told 'write the date as DD-Mmm-YYYY' is "
-    "returned like 25-Jun-2026, not in the default YYYY-MM-DD."
+    "\n\nTHE RULES ABOVE ARE GENERAL DEFAULTS FOR EVERY FIELD - THEY ARE NOT THE LAST WORD. "
+    "Each field below can carry its own instruction: what to return, where on the document to "
+    "look, which of several candidates to pick, and how to write the answer. Follow BOTH the "
+    "general rules and the field's own instruction. Whenever the two say different things - "
+    "about ANY of these, not only formats - the FIELD'S OWN INSTRUCTION WINS for that field, "
+    "because it was written for that exact field and the general rule was not. TECHNIQUE ONLY, "
+    "not real data: a field told 'write the date as DD-Mmm-YYYY' returns 25-Jun-2026, not the "
+    "default YYYY-MM-DD; a field told 'return the name in uppercase' returns ACME LTD; a field "
+    "told 'return the code only, without the country prefix' returns SHA, not CNSHA; a field "
+    "told 'keep the thousands separators as printed' keeps them; a field told 'return N/A when "
+    "it is not shown' returns N/A rather than null. A general rule applies to a field only where "
+    "that field's own instruction says nothing about the same point."
 )
 
 # JOB-5B0B6D, a Danish invoice printing '1.450 PC   2,83 USD   4.103,50' (1450 pieces at 2.83 =
