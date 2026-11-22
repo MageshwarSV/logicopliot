@@ -259,19 +259,27 @@ def create_app() -> FastAPI:
         flight stays the configured worker count rather than that many PER process.
 
         Split servers (PROCESS_ROLE): the ERP server starts the queue and branch logins and
-        resumes ERP runs; the worker server only resumes interrupted extractions.
+        resumes ERP runs; the worker server resumes interrupted extractions and then reads the
+        ones the website hands it (app/core/extraction_dispatch.py).
         """
-        from app.core.process_role import runs
+        from app.core.process_role import is_split, runs
         from app.core.worker_lock import am_i_the_singleton_worker
 
-        kinds = tuple(k for k, part in (("extraction", "extraction_resume"), ("ERP", "erp"))
+        kinds = tuple(k for k, part in (("extraction", "extraction"), ("ERP", "erp"))
                       if runs(part))
         if not kinds or not am_i_the_singleton_worker():
             return
+        doorbell = is_split() and "extraction" in kinds
         import threading
 
         def _go() -> None:
             from app.core.restart_resume import resume_interrupted_work
+
+            if doorbell:
+                from app.core import extraction_dispatch
+
+                # Everything waiting is `extracting` in the database: the resume below reads it.
+                extraction_dispatch.clear_queue()
 
             if "ERP" in kinds:
                 from app.core.erp_redis_queue import start
@@ -297,6 +305,8 @@ def create_app() -> FastAPI:
             # runs - back in its queue, oldest first. After start(), so Redis has already put
             # back its own reserved items and nothing is queued twice.
             resume_interrupted_work(kinds)
+            if doorbell:
+                extraction_dispatch.start()
 
         # Off the startup path: a Redis that is slow to answer must not hold up the app.
         threading.Thread(target=_go, name="erp-queue-start", daemon=True).start()

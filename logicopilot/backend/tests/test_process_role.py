@@ -14,12 +14,12 @@ def _set(monkeypatch, value, redis_url=""):
 
 
 @pytest.mark.parametrize("value,expected", [
-    ("all", {"mail", "pipeline", "extraction_resume", "erp"}),
+    ("all", {"mail", "pipeline", "extraction", "erp"}),
     ("web", set()),
-    ("worker", {"mail", "pipeline", "extraction_resume"}),
+    ("worker", {"mail", "pipeline", "extraction"}),
     ("erp", {"erp"}),
     (" ERP ", {"erp"}),          # spaces / case from a hand-edited .env
-    ("", {"mail", "pipeline", "extraction_resume", "erp"}),   # unset = all
+    ("", {"mail", "pipeline", "extraction", "erp"}),   # unset = all
     ("wroker", set()),           # typo: nothing, never a second mail reader
 ])
 def test_parts_per_role(monkeypatch, value, expected):

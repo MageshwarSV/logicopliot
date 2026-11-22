@@ -1130,9 +1130,23 @@ def _start_extraction_background(
     quick, but the transaction stays open across every OpenAI call - so one thread per job
     meant one CONNECTION per job, and nothing capped how many jobs that was. See
     extraction_queue for the day that took the site down.
+
+    Split servers (PROCESS_ROLE web/erp): handed to the worker server instead, through Redis
+    (app/core/extraction_dispatch.py). With "all" - every server today - nothing changes.
     """
+    from app.core import extraction_dispatch
     from app.core.extraction_queue import submit_extraction
+    from app.core.process_role import is_split
     from app.db.session import SessionLocal
+
+    if extraction_dispatch.hand_off(job_id, only_job_document_id, is_rerun):
+        return
+    # Only a split worker de-duplicates: there a doorbell message and the startup resume can
+    # name the same job. One process doing everything ("all") behaves exactly as before.
+    dedupe = is_split()
+    if dedupe and not extraction_dispatch.claim(job_id):
+        logger.info("job %s is already being read in this process - not starting it twice", job_id)
+        return
 
     def _go() -> None:
         db2 = SessionLocal()
@@ -1152,6 +1166,8 @@ def _start_extraction_background(
                 db2.commit()
         finally:
             db2.close()
+            if dedupe:
+                extraction_dispatch.release(job_id)
 
     submit_extraction(_go)
 

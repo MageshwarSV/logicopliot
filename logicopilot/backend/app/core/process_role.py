@@ -4,7 +4,8 @@
 PROCESS_ROLE in .env:
     all     everything in one process - the default, and exactly how every server ran before
     web     the website and API only; no background work at all
-    worker  mail polling (+ the large-job lane), resuming interrupted extractions, the pipeline
+    worker  mail polling (+ the large-job lane), extractions started from the website (handed
+            over through Redis) and resuming interrupted ones, the pipeline
     erp     the ERP queue, branch logins, parked browsers, resuming interrupted ERP runs, and
             failing any direct ERP entry the previous ERP process left half-done
 
@@ -24,7 +25,7 @@ ROLES = ("all", "web", "worker", "erp")
 PART_OWNER = {
     "mail": "worker",               # IMAP poller, interrupted mail claims, large-job lane
     "pipeline": "worker",           # Phase 2 stage workers
-    "extraction_resume": "worker",  # extractions a restart interrupted
+    "extraction": "worker",        # website Run / Re-run extraction (via Redis) + restart resume
     "erp": "erp",                   # ERP queue, branch logins, parked browsers, ERP resume
 }
 
