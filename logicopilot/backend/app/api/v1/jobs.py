@@ -9766,6 +9766,42 @@ def run_extraction(
     _pf_fields_img = _pf.wrap("fields_img", extract_document_fields_from_images)
     _pf_rows = _pf.wrap("rows", extract_document_rows)
     _pf_rows_img = _pf.wrap("rows_img", extract_document_rows_from_images)
+
+    # FOLD_AI_FIELDS (Option E): an AI computed field that reads ONE document - and that
+    # document is ONE file on this job - is asked in that document's own extraction call
+    # (same images, its own instruction) instead of a separate call afterwards that read the
+    # OCR text. Fields over several documents or several files keep their own call (given the
+    # page images when there is no OCR text). Off = exactly as before.
+    folded_by_tdoc: dict[str, list] = {}
+    folded_values: dict[str, str] = {}
+    fold_on = bool(getattr(get_settings(), "fold_ai_fields", False))
+    if fold_on:
+        from app.models.custom_field import CustomField as _FoldCF
+
+        _mark_labels = {t.id: {m.label_name for m in t.marks} for t in group.documents}
+        for _cf in db.query(_FoldCF).filter(_FoldCF.group_id == group.id, _FoldCF.kind == "ai").all():
+            _src = _cf.source_document_ids or []
+            if (len(_src) != 1 or getattr(_cf, "per_row", False)
+                    or getattr(_cf, "multi_value_from_document", False)
+                    or getattr(_cf, "lookup_key_label", None)):
+                continue
+            _tid = _src[0]
+            _t_obj = next((t for t in group.documents if t.id == _tid), None)
+            _files = [d for d in docs_by_tdoc.get(_tid, []) if d.file_path]
+            if (_t_obj is None or not _t_obj.marks or len(_files) != 1
+                    or _cf.label_name in _mark_labels.get(_tid, set())
+                    or (only_job_document_id and _files[0].id != only_job_document_id)):
+                continue
+            folded_by_tdoc.setdefault(_tid, []).append(_cf)
+        if folded_by_tdoc:
+            logger.info("job %s: %d AI computed field(s) asked inside their document's extraction",
+                        job.reference, sum(len(v) for v in folded_by_tdoc.values()))
+
+    def _fold(tdoc_id: str, fields_in: list[dict]) -> list[dict]:
+        extra = folded_by_tdoc.get(tdoc_id) or []
+        return fields_in + [{"label": c.label_name, "prompt": c.ai_prompt or "", "variations": []}
+                            for c in extra]
+
     if _pf.on:
         _todo = [(t, d) for t in group.documents for d in docs_by_tdoc.get(t.id, [])
                  if d.file_path is not None and t.marks
@@ -9781,7 +9817,7 @@ def run_extraction(
             _text = text_for_doc(_d)
             _single = [m for m in _t.marks if not m.is_multi_value]
             _multi = [m for m in _t.marks if m.is_multi_value]
-            _fields = [field_spec(m, inline_format=True) for m in _single]
+            _fields = _fold(_t.id, [field_spec(m, inline_format=True) for m in _single])
             _excel = getattr(_d, "source_kind", "pdf") == "excel"
             _force = extraction_engine == "gpt5_mini_vision" and not _excel
             _vision = _force or (not _text.strip() and not _excel)
@@ -9843,7 +9879,7 @@ def run_extraction(
         # in one pass so their rows stay aligned; the rest are read as single values.
         single_marks = [m for m in tdoc.marks if not m.is_multi_value]
         all_multi_marks = [m for m in tdoc.marks if m.is_multi_value]
-        fields = [_spec(m) for m in single_marks]
+        fields = _fold(tdoc.id, [_spec(m) for m in single_marks])
 
         # The vision engine reads every document's image directly, by deliberate Settings
         # choice - a completely different reason to skip OCR text than the pre-existing
@@ -9910,6 +9946,9 @@ def run_extraction(
                     image_paths, fields, model=model_override, tenant_id=job.tenant_id)
             if any((retried.get(m.label_name) or "").strip() for m in single_marks):
                 extracted = retried
+
+        for _c in folded_by_tdoc.get(tdoc.id) or []:
+            folded_values[_c.id] = str(extracted.get(_c.label_name) or "").strip()
 
         for mark in single_marks:
             val = extracted.get(mark.label_name)
@@ -10351,6 +10390,26 @@ def run_extraction(
     # Custom fields: hardcoded values, or AI-computed from the selected documents.
     from app.models.custom_field import CustomField
 
+    def _cf_images(src_ids: list[str], docs_text: str) -> list | None:
+        """FOLD_AI_FIELDS on and no OCR text behind these documents: their page images (first
+        pages of every file first), so a field that still needs its own call reads the paper
+        rather than an empty string. None otherwise - the call is exactly as before."""
+        if not fold_on:
+            return None
+        body = "\n".join(ln for ln in docs_text.splitlines()
+                         if not (ln.startswith("=== ") and ln.endswith(" ===")))
+        if body.strip():
+            return None
+        files = [d for did in src_ids for d in docs_by_tdoc.get(did, []) if d.file_path]
+        pages: list = []
+        for p in range(1, 1 + max([d.page_count or 0 for d in files] or [0])):
+            for d in files:
+                if p <= (d.page_count or 0):
+                    img = _job_doc_dir(d.id) / "pages" / f"page_{p}.png"
+                    if img.exists():
+                        pages.append(img)
+        return pages or None
+
     custom_fields = db.query(CustomField).filter(CustomField.group_id == group.id).all()
     # A field with lookup_key_label reads ANOTHER field's value on this SAME job (see
     # _resolve_target_value) - it must be computed AFTER whatever it depends on, or it reads
@@ -10594,7 +10653,7 @@ def run_extraction(
                 ]
                 answers = compute_custom_field_per_row(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
-                    field_label=cf.label_name,
+                    field_label=cf.label_name, images=_cf_images(src_ids, docs_text),
                 )
                 # zip() stops at the shorter side, so a model that returns nine answers for
                 # eleven lines loses the last two WITHOUT A WORD - the rows are still written
@@ -10735,8 +10794,12 @@ def run_extraction(
 
             from app.core.llm import compute_custom_field
 
-            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
-                                         field_label=cf.label_name)
+            if cf.id in folded_values:
+                value = folded_values[cf.id]
+            else:
+                value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
+                                             field_label=cf.label_name,
+                                             images=_cf_images(src_ids, docs_text))
             value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)

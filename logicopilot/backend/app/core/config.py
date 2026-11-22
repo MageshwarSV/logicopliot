@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # handles (classification and extraction from the page images). For testing on dev whether
     # Document AI can be dropped - nothing is written to the OCR caches while it is "none".
     ocr_engine: str = "docai"
+    # Option E: AI computed fields that read ONE document (one file on the job) are asked inside
+    # that document's extraction call; the rest get page images when there is no OCR text.
+    # OFF by default (and everywhere today): computed fields work exactly as before.
+    fold_ai_fields: bool = False
     uploads_dir: str = "uploads"
     # Logged-in ERP browser state and the ERP login/tab lock files (see erp_sessions_dir()).
     # Empty = uploads_dir/erp_sessions, as before. On a split setup the ERP server sets a LOCAL

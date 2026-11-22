@@ -426,9 +426,31 @@ def _instruction(prompt: str, field_label: str | None) -> str:
     return f"Instruction: {prompt}\n\n"
 
 
+MAX_FIELD_IMAGES = 8
+
+
+def _user_content(text: str, images: list | None):
+    """The user message: plain text, or - when page images are given (no OCR text to read,
+    see FOLD_AI_FIELDS) - the text plus the images themselves, so the model reads the paper."""
+    if not images:
+        return text
+    import base64
+
+    parts: list[dict] = [{"type": "text", "text": text + (
+        "\n\nThe attached page images ARE the documents - read the answer from them; the raw "
+        "text above may be empty.")}]
+    for path in images[:MAX_FIELD_IMAGES]:
+        try:
+            b64 = base64.b64encode(path.read_bytes()).decode()
+        except OSError:
+            continue
+        parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+    return parts
+
+
 def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str] | None = None,
                          records: list[dict] | None = None, tenant_id: str | None = None,
-                         field_label: str | None = None) -> str:
+                         field_label: str | None = None, images: list | None = None) -> str:
     """Compute a custom field's value from the selected documents, following the Super Admin's
     instruction (e.g. a calculation across documents).
 
@@ -480,15 +502,14 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
                 },
                 {
                     "role": "user",
-                    "content": (
+                    "content": _user_content(
                         _instruction(prompt, field_label)
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
                         + (f"Already-extracted values: {json.dumps(values, ensure_ascii=False)}\n\n"
                            if values and not records else "")
                         + f"Raw document text (supporting evidence, may be shortened):\n"
-                        + documents_text[:48000]
-                    ),
+                        + documents_text[:48000], images),
                 },
             ],
         )
@@ -776,7 +797,8 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
 def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: list[dict],
                                   records: list[dict] | None = None,
                                   tenant_id: str | None = None,
-                                  field_label: str | None = None) -> list[str]:
+                                  field_label: str | None = None,
+                                  images: list | None = None) -> list[str]:
     """Like compute_custom_field_rows, but for a per-row field whose ROWS are already known -
     this job's own product lines, each already carrying whatever OTHER per-row fields (a part
     code, a description, a quantity) extraction already found for it. Returns exactly
@@ -814,7 +836,7 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
         for i in range(0, len(row_context), PER_ROW_BATCH):
             out.extend(compute_custom_field_per_row(
                 prompt, documents_text, row_context[i: i + PER_ROW_BATCH],
-                records=records, tenant_id=tenant_id, field_label=field_label,
+                records=records, tenant_id=tenant_id, field_label=field_label, images=images,
             ))
         return out
     if not settings.openai_api_key:
@@ -871,15 +893,14 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
                 },
                 {
                     "role": "user",
-                    "content": (
+                    "content": _user_content(
                         _instruction(prompt, field_label)
                         + f"Product lines to answer for, in order ({len(row_context)} line(s)):\n"
                         f"{json.dumps(row_context, ensure_ascii=False)}\n\n"
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
                         + f"Raw document text (supporting evidence, may be shortened):\n"
-                        + documents_text[:40000]
-                    ),
+                        + documents_text[:40000], images),
                 },
             ],
         )
