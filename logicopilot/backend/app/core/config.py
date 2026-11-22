@@ -39,14 +39,15 @@ class Settings(BaseSettings):
 
     # Document-extraction stack (onboarding wizard: OCR + prompt generation).
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    # GPT-6 Luna everywhere (2026-11-22, cost + accuracy on the 4-server dev setup).
+    openai_model: str = "gpt-6-luna"
     # The model production document classification/extraction use when a Super Admin flips
     # the "extraction_engine" Settings toggle to "gpt5_mini_vision" (see
     # app/models/system_setting.py) - kept as its own env-overridable setting, not shared
     # with openai_model above, so it can be pointed at a different model without a code
     # change if this one ever needs more plumbing than expected. Never read by the Template
     # Wizard's own training flow, which always uses openai_model.
-    vision_engine_model: str = "gpt-5-mini"
+    vision_engine_model: str = "gpt-6-luna"
     # Minimum confidence (0-1) Smart Upload's per-page vision classifier requires before
     # trusting a page to a slot - see classify_pages_from_images in app/core/classifier.py.
     # Below this, the page is left unclassified (same Unclassified Pages tray as a page

@@ -115,8 +115,20 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, tenan
         # they accept this parameter at all, and this codebase has already been burned once by
         # assuming a plain parameter carries over to that family unchanged (see
         # reasoning_safe_chat_params below).
-        if "seed" not in kwargs and not is_reasoning_model(str(kwargs.get("model") or "")):
+        _model = str(kwargs.get("model") or "")
+        # gpt-6* accepts the seed (confirmed live on gpt-6-luna); the gpt-5 family stays as is.
+        if "seed" not in kwargs and (not is_reasoning_model(_model) or _model.startswith("gpt-6")):
             kwargs["seed"] = 7
+        # Every call site written for gpt-4o-mini passes temperature=0 / max_tokens literally,
+        # and a reasoning-family model 400s on both (confirmed live on gpt-5-mini and every
+        # gpt-6 model). Translated here, once, for every caller - so the model is a setting
+        # (OPENAI_MODEL / VISION_ENGINE_MODEL), not a code change at a dozen call sites.
+        if is_reasoning_model(_model):
+            if "max_tokens" in kwargs:
+                _mt = kwargs.pop("max_tokens")
+                kwargs.setdefault("max_completion_tokens", _mt * _REASONING_TOKEN_BUDGET_MULTIPLIER)
+            if kwargs.get("temperature") not in (None, 1):
+                kwargs.pop("temperature")
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             try:
                 started = time.monotonic()
@@ -150,7 +162,9 @@ def create_chat_completion_with_retry(client=None, *, timeout: float = 30, tenan
 # default (1) value is supported", and separately "max_tokens" 400s with "use
 # max_completion_tokens instead" - a plain model-name swap into an existing gpt-4o-mini call
 # site is not safe without also fixing these two parameters.
-_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+# gpt-6* (gpt-6-luna, gpt-6.1-terra, gpt-6.2-sol, ...) behave the same way - confirmed live:
+# "max_tokens is not supported, use max_completion_tokens" and "temperature does not support 0".
+_REASONING_MODEL_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
 
 def is_reasoning_model(model: str) -> bool:

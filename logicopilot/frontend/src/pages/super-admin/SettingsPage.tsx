@@ -731,10 +731,9 @@ export function SettingsPage() {
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Extraction engine</h3>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Which engine production document classification and field extraction use.
-              "Document OCR + GPT-4o-mini" is today's pipeline. "GPT-5-mini Vision" reads the
-              page image directly instead of OCR text for both steps. Takes effect on the
-              very next job, no restart. Never affects the Template Wizard's own training
-              flow, which always stays on OCR text + GPT-4o-mini either way.
+              Every AI step runs on GPT-6 Luna. "GPT-6 Luna Vision" reads the page image
+              directly for both steps; "Document OCR + GPT-6 Luna" reads Document AI's OCR
+              text instead. Takes effect on the very next job, no restart.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="flex-1 sm:max-w-xs">

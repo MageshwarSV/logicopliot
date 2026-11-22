@@ -46,8 +46,8 @@ export interface SystemSettings {
 }
 
 export const EXTRACTION_ENGINE_OPTIONS: { value: SystemSettings["extraction_engine"]; label: string }[] = [
-  { value: "ocr_gpt4o_mini", label: "Document OCR + GPT-4o-mini" },
-  { value: "gpt5_mini_vision", label: "GPT-5-mini Vision" },
+  { value: "ocr_gpt4o_mini", label: "Document OCR + GPT-6 Luna" },
+  { value: "gpt5_mini_vision", label: "GPT-6 Luna Vision" },
 ];
 
 export async function getSystemSettings(): Promise<SystemSettings> {
