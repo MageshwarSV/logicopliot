@@ -10,8 +10,8 @@
 # fast-forward / pip / restart / health check as SIT and production). What differs per server
 # lives in that server's gitignored deploy.env:
 #   cargora-app  (nothing - runs migrations and builds the frontend, like a single server)
-#   cargora-ai   RUN_MIGRATIONS=0  BUILD_FRONTEND=0
-#   cargora-erp  RUN_MIGRATIONS=0  BUILD_FRONTEND=0
+#   cargora-ai   RUN_MIGRATIONS=0  BUILD_FRONTEND=0  BACKEND_HOST=10.50.0.3
+#   cargora-erp  RUN_MIGRATIONS=0  BUILD_FRONTEND=0  BACKEND_HOST=10.50.0.4
 # and PROCESS_ROLE (web / worker / erp) lives in each server's backend .env.
 #
 # Order: every server is CHECKED first and nothing is deployed if any one has server-side edits

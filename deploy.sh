@@ -23,6 +23,7 @@
 # Split over several servers (logicopilot/deploy/deploy-4.sh runs this on each), a server's own
 # deploy.env can switch two steps off - both default ON, so a single-server box is unchanged:
 #   RUN_MIGRATIONS=0   this server does not run alembic (only ONE server of a split should)
+#   BACKEND_HOST=...   the backend listens on this IP, not 127.0.0.1 (health check)
 #   BUILD_FRONTEND=0   this server serves no website (no frontend build, no frontend pm2 app)
 #
 set -euo pipefail
@@ -53,6 +54,9 @@ fi
 BACKEND_PORT="${BACKEND_PORT:-30299}"
 FRONTEND_PORT="${FRONTEND_PORT:-30300}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+# Where the backend listens, for the health check. 127.0.0.1 everywhere except a split server
+# whose backend listens on its private (WireGuard) IP, e.g. BACKEND_HOST=10.50.0.3 in deploy.env.
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 
 # Which pm2 apps THIS checkout owns. Derived from the checkout's own directory name, not
@@ -193,8 +197,8 @@ pm2 list --no-color | grep -E "logicopilot|name" | sed 's/^/     /'
 
 say "checking it answers"
 for i in $(seq 1 15); do
-  if curl -fsS -m 3 "http://127.0.0.1:$BACKEND_PORT/docs" >/dev/null 2>&1; then
-    echo "     backend OK on :$BACKEND_PORT"; break
+  if curl -fsS -m 3 "http://$BACKEND_HOST:$BACKEND_PORT/docs" >/dev/null 2>&1; then
+    echo "     backend OK on $BACKEND_HOST:$BACKEND_PORT"; break
   fi
   [ "$i" = 15 ] && { echo "     *** backend NOT answering - check: pm2 logs $BACKEND_APP"; exit 1; }
   sleep 2

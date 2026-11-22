@@ -135,8 +135,8 @@ if [ "$ROLE" = app ]; then
   rm -f "$DIR/deploy.env"
   echo "     none - this server runs the migrations and builds the frontend"
 else
-  printf 'RUN_MIGRATIONS=0\nBUILD_FRONTEND=0\n' > "$DIR/deploy.env"
-  echo "     RUN_MIGRATIONS=0 BUILD_FRONTEND=0"
+  printf 'RUN_MIGRATIONS=0\nBUILD_FRONTEND=0\nBACKEND_HOST=%s\n' "$WG_IP" > "$DIR/deploy.env"
+  echo "     RUN_MIGRATIONS=0 BUILD_FRONTEND=0 BACKEND_HOST=$WG_IP"
 fi
 
 # ---------------------------------------------------------------- 7. backend .env
