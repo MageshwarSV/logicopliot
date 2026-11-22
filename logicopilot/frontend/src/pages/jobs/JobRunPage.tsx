@@ -939,6 +939,8 @@ export function JobRunPage() {
   // document has landed in a slot - see jobPullProgress. null once there is nothing left to
   // report (classification has started, or the job already has a real file in some slot).
   const [pullProgress, setPullProgress] = useState<jobsApi.PullProgress | null>(null);
+  // Live progress of a running extraction - see jobsApi.jobExtractionProgress.
+  const [extractProgress, setExtractProgress] = useState<jobsApi.ExtractionProgress | null>(null);
   // Pressing Submit with something unfilled used to paint a red banner naming the fields and
   // leave the operator to find them. On a fourteen-line invoice that is a hunt. Instead the
   // fields are asked for one at a time, in a popup, with a count of how many are left.
@@ -1257,6 +1259,32 @@ export function JobRunPage() {
       clearTimeout(timer);
     };
   }, [job?.id, job?.status, hasAnyUploadedDoc]);
+
+  // While extracting: which phase it is in and how far, every 2 s (jobsApi.jobExtractionProgress).
+  useEffect(() => {
+    if (!job || job.status !== "extracting") {
+      setExtractProgress(null);
+      return;
+    }
+    const watchedJobId = job.id;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function tick() {
+      try {
+        const p = await jobsApi.jobExtractionProgress(watchedJobId);
+        if (stop) return;
+        setExtractProgress(p.active ? p : null);
+      } catch {
+        /* a missed frame is not worth an error; the next one will do */
+      }
+      if (!stop) timer = setTimeout(tick, 2000);
+    }
+    tick();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [job?.id, job?.status]);
 
   // Extraction now starts on its own — the moment every slot is filled, or on a manual
   // (Re-run) press — and runs in the background, so there is nothing here to watch a live
@@ -2895,7 +2923,47 @@ export function JobRunPage() {
           and looking at Required Details Review while it ran showed only blank CTH/RITC
           fields with nothing anywhere saying why - indistinguishable from the data simply
           being gone for good. */}
-      {job.status === "extracting" && (
+      {job.status === "extracting" && extractProgress?.active && (() => {
+        const p = extractProgress;
+        const steps = ["text", "ai", "docs", "finishing"] as const;
+        const label =
+          p.phase === "text" ? `Reading page text — ${p.done ?? 0} of ${p.total ?? 0} page(s)`
+          : p.phase === "ai" ? `AI is reading the documents — ${p.done ?? 0} of ${p.total ?? 0} read(s)`
+          : p.phase === "docs" ? `Checking the values — document ${p.done ?? 0} of ${p.total ?? 0}`
+          : "Finishing — CTH codes, computed fields and saving";
+        const pct = p.phase === "finishing" ? 100
+          : Math.round(((p.done ?? 0) / Math.max(p.total ?? 1, 1)) * 100);
+        return (
+          <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm font-medium text-sky-800 dark:text-sky-200">
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+                {label}
+              </span>
+              <span className="shrink-0 text-xs text-sky-600 dark:text-sky-300">
+                {p.eta_seconds != null ? `~${formatEtaSeconds(p.eta_seconds)} remaining · ` : ""}
+                {p.elapsed_seconds != null ? `${formatEtaSeconds(p.elapsed_seconds)} so far` : ""}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sky-100 dark:bg-sky-500/20">
+              <div className={`h-full rounded-full bg-sky-500 transition-all ${p.phase === "finishing" ? "animate-pulse" : ""}`}
+                style={{ width: `${pct}%` }} />
+            </div>
+            <div className="mt-2 flex gap-3 text-[11px] text-sky-600/80 dark:text-sky-300/70">
+              {steps.map((s, i) => {
+                const at = steps.indexOf((p.phase ?? "text") as (typeof steps)[number]);
+                const names = { text: "Page text", ai: "AI reading", docs: "Checking values", finishing: "Finishing" };
+                return (
+                  <span key={s} className={i < at ? "line-through opacity-60" : i === at ? "font-semibold text-sky-800 dark:text-sky-200" : ""}>
+                    {i + 1}. {names[s]}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+      {job.status === "extracting" && !extractProgress?.active && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
           <span>AI is reading this job's documents right now — fields will fill in as soon as it finishes. This can take a minute or two.</span>

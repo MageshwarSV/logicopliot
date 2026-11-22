@@ -28,7 +28,7 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
@@ -117,9 +117,10 @@ class Prefetch:
         if self.on:
             self.planned.append((name, args, kwargs))
 
-    def run(self) -> None:
+    def run(self, on_done: Callable[[int, int], None] | None = None) -> None:
         """Make every planned call, `workers` at a time; keep the answers. A failed call keeps
-        nothing - the loop then makes it itself, with today's error handling."""
+        nothing - the loop then makes it itself, with today's error handling. `on_done(done,
+        total)` after each call (a progress bar), never from two threads at once."""
         if not self.on or not self.planned:
             return
         seen: set[str] = set()
@@ -143,14 +144,26 @@ class Prefetch:
 
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=min(self.workers, len(todo)), thread_name_prefix="xpf") as pool:
-            for fut in [pool.submit(_one, *t) for t in todo]:
+            futures = [pool.submit(_one, *t) for t in todo]
+            # Collected here, as each finishes: the progress callback runs in this thread only.
+            for n, fut in enumerate(as_completed(futures), start=1):
                 fut.result()
+                _report(on_done, n, len(todo))
         logger.info("parallel extraction: %d AI call(s) prefetched, %d at once, %.1fs",
                     len(todo), min(self.workers, len(todo)), time.monotonic() - started)
 
 
+def _report(on_done: Callable[[int, int], None] | None, done: int, total: int) -> None:
+    if on_done is not None:
+        try:
+            on_done(done, total)
+        except Exception:  # noqa: BLE001 - a progress bar must never stop extraction
+            logger.debug("progress callback failed", exc_info=True)
+
+
 def prefetch_page_ocr(pages: list[tuple[Path, int]], workers: int,
-                      get_page_ocr: Callable[[Path, int], dict] | None = None) -> None:
+                      get_page_ocr: Callable[[Path, int], dict] | None = None,
+                      on_done: Callable[[int, int], None] | None = None) -> None:
     """Fill the per-page OCR cache files side by side, so assembling each document's text
     afterwards reads files instead of waiting on Document AI page after page. No database.
     A page that fails is left alone - text_for_doc then reads it itself and reports it as today."""
@@ -169,7 +182,9 @@ def prefetch_page_ocr(pages: list[tuple[Path, int]], workers: int,
 
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=min(workers, len(pages)), thread_name_prefix="xocr") as pool:
-        for fut in [pool.submit(_one, d, p) for d, p in pages]:
+        futures = [pool.submit(_one, d, p) for d, p in pages]
+        for n, fut in enumerate(as_completed(futures), start=1):
             fut.result()
+            _report(on_done, n, len(pages))
     logger.info("parallel extraction: %d page(s) of text prefetched, %d at once, %.1fs",
                 len(pages), min(workers, len(pages)), time.monotonic() - started)
