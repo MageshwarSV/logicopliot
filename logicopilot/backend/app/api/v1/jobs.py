@@ -144,6 +144,27 @@ def _job_doc_dir(job_document_id: str) -> Path:
     return Path(get_settings().uploads_dir) / "jobs" / job_document_id
 
 
+def _custom_field_page_images(docs_by_tdoc: dict, src_ids: list[str], docs_text: str) -> list | None:
+    """The page images an AI computed field reads when there is NO OCR text behind its
+    documents (OCR_ENGINE=none, or Document AI returned nothing): first pages of every file
+    first, so a field over several documents sees each one's front page. None when there is
+    text - the call is then exactly as before. Without this the field was asked about an
+    empty string and came back blank or guessed (JOB-5B0B6D: Quotation Name, Consignee)."""
+    body = "\n".join(ln for ln in docs_text.splitlines()
+                     if not (ln.startswith("=== ") and ln.endswith(" ===")))
+    if body.strip():
+        return None
+    files = [d for did in src_ids for d in docs_by_tdoc.get(did, []) if d.file_path]
+    pages: list = []
+    for p in range(1, 1 + max([d.page_count or 0 for d in files] or [0])):
+        for d in files:
+            if p <= (d.page_count or 0):
+                img = _job_doc_dir(d.id) / "pages" / f"page_{p}.png"
+                if img.exists():
+                    pages.append(img)
+    return pages or None
+
+
 def generate_job_no() -> str:
     """A short random, human-readable job number, e.g. JOB-7F3A9C."""
     import uuid
@@ -10393,24 +10414,10 @@ def run_extraction(
     from app.models.custom_field import CustomField
 
     def _cf_images(src_ids: list[str], docs_text: str) -> list | None:
-        """FOLD_AI_FIELDS on and no OCR text behind these documents: their page images (first
-        pages of every file first), so a field that still needs its own call reads the paper
-        rather than an empty string. None otherwise - the call is exactly as before."""
-        if not fold_on:
-            return None
-        body = "\n".join(ln for ln in docs_text.splitlines()
-                         if not (ln.startswith("=== ") and ln.endswith(" ===")))
-        if body.strip():
-            return None
-        files = [d for did in src_ids for d in docs_by_tdoc.get(did, []) if d.file_path]
-        pages: list = []
-        for p in range(1, 1 + max([d.page_count or 0 for d in files] or [0])):
-            for d in files:
-                if p <= (d.page_count or 0):
-                    img = _job_doc_dir(d.id) / "pages" / f"page_{p}.png"
-                    if img.exists():
-                        pages.append(img)
-        return pages or None
+        """No OCR text behind these documents: their page images, so the field reads the
+        paper rather than an empty string (with or without FOLD_AI_FIELDS - a field that is
+        not folded still has its own call). None when there is text: exactly as before."""
+        return _custom_field_page_images(docs_by_tdoc, src_ids, docs_text)
 
     custom_fields = db.query(CustomField).filter(CustomField.group_id == group.id).all()
     # A field with lookup_key_label reads ANOTHER field's value on this SAME job (see
@@ -10795,7 +10802,8 @@ def run_extraction(
                 from app.core.llm import compute_custom_field_rows
 
                 rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records,
-                                                 field_label=cf.label_name)
+                                                 field_label=cf.label_name,
+                                                 images=_cf_images(src_ids, docs_text))
                 logger.info("%r on job %s: %d row(s) read directly from its own document(s)",
                             cf.label_name, job.reference, len(rows))
                 # Idempotent on the same reasoning as every other write loop in this function -
@@ -11782,8 +11790,10 @@ def _recompute_per_row_custom_field(
             }
             for i, key in enumerate(line_keys)
         ]
-        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context,
-                                               records=records, field_label=cf.label_name)
+        answers = compute_custom_field_per_row(
+            cf.ai_prompt or "", docs_text, row_context, records=records,
+            field_label=cf.label_name,
+            images=_custom_field_page_images(docs_by_tdoc, src_ids, docs_text))
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
         if composite_pieces_override is not None:
@@ -11963,8 +11973,9 @@ def recompute_custom_field(
 
         from app.core.llm import compute_custom_field
 
-        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
-                                     field_label=cf.label_name)
+        value = compute_custom_field(
+            cf.ai_prompt or "", docs_text, records=records, field_label=cf.label_name,
+            images=_custom_field_page_images(docs_by_tdoc, src_ids, docs_text))
         value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)

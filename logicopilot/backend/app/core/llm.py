@@ -448,6 +448,20 @@ def _user_content(text: str, images: list | None):
     return parts
 
 
+def _ai_field_model(images: list | None, *, max_tokens: int) -> dict:
+    """Model + token kwargs for one AI computed-field call. Reading page images (no OCR text
+    behind the documents - OCR_ENGINE=none) goes to the vision model (gpt-5-mini by default),
+    the same one that reads every document's own fields, not the text model: gpt-4o-mini
+    reading the images was where Quotation Name came back as the shipper. With OCR text the
+    call is exactly as before."""
+    settings = get_settings()
+    if images:
+        model = settings.vision_engine_model
+        return {"model": model,
+                **reasoning_safe_chat_params(model, temperature=0, max_tokens=max_tokens)}
+    return {"model": settings.openai_model, "temperature": 0, "max_tokens": max_tokens}
+
+
 def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str] | None = None,
                          records: list[dict] | None = None, tenant_id: str | None = None,
                          field_label: str | None = None, images: list | None = None) -> str:
@@ -474,14 +488,14 @@ def compute_custom_field(prompt: str, documents_text: str, values: dict[str, str
         return ""
     try:
         resp = create_chat_completion_with_retry(
-            timeout=45,
+            # Reading page images with the reasoning model takes longer than reading text.
+            timeout=120 if images else 45,
             tenant_id=tenant_id,
-            model=settings.openai_model,
             # Pinned: these are transcription tasks, not creative ones. At the API default
             # (1.0) the same document yielded CH20261122 as "CH20231182" and 6/12/2026 as
             # "2026-12-12", and repeat runs scored differently on identical input.
-            temperature=0,
-            max_tokens=300,
+            # (temperature=0 / max_tokens=300 - translated for gpt-5-mini when reading images)
+            **_ai_field_model(images, max_tokens=300),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -738,7 +752,8 @@ PER_ROW_BATCH = 20
 def compute_custom_field_rows(prompt: str, documents_text: str,
                                records: list[dict] | None = None,
                                tenant_id: str | None = None,
-                               field_label: str | None = None) -> list[str]:
+                               field_label: str | None = None,
+                               images: list | None = None) -> list[str]:
     """Like compute_custom_field, but for a field ticked "multiple values from document" —
     the instruction describes ONE item (a container number, a line on a packing list with no
     mark of its own) and this returns every instance actually found, instead of one value for
@@ -749,14 +764,13 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
         return []
     try:
         resp = create_chat_completion_with_retry(
-            timeout=45,
+            timeout=180 if images else 45,
             tenant_id=tenant_id,
-            model=settings.openai_model,
-            temperature=0,
             # Up to CUSTOM_FIELD_ROWS_LIMIT values can come back here, and the same cut-off
             # reply reads as "found nothing" rather than as a failure - see
             # compute_custom_field_per_row, where that cost a whole invoice its CTH column.
-            max_tokens=8000,
+            # (temperature=0 / max_tokens=8000 - gpt-5-mini when reading page images)
+            **_ai_field_model(images, max_tokens=8000),
             response_format={"type": "json_object"},
             messages=[
                 {
@@ -775,13 +789,12 @@ def compute_custom_field_rows(prompt: str, documents_text: str,
                 },
                 {
                     "role": "user",
-                    "content": (
+                    "content": _user_content(
                         _instruction(prompt, field_label)
                         + (f"Documents on this job ({len(records)} record(s), all of them):\n"
                            f"{json.dumps(records, ensure_ascii=False)}\n\n" if records else "")
                         + f"Raw document text (supporting evidence, may be shortened):\n"
-                        + documents_text[:48000]
-                    ),
+                        + documents_text[:48000], images),
                 },
             ],
         )
@@ -850,14 +863,13 @@ def compute_custom_field_per_row(prompt: str, documents_text: str, row_context: 
             # the batch: 100 product lines reading "no CTH printed on this document" against an
             # invoice with an HTS CODE column on every page, with nothing on screen to say a
             # call had failed at all.
-            timeout=180,
+            timeout=300 if images else 180,
             tenant_id=tenant_id,
-            model=settings.openai_model,
-            temperature=0,
             # Scaled to the batch actually being asked for, with room to spare. A reply that
             # hits this cap is cut off mid-JSON and becomes a blank answer for every line in
             # the batch, so the margin is deliberately generous rather than tight.
-            max_tokens=max(1500, min(12000, 80 * len(row_context) + 500)),
+            # (temperature=0 - gpt-5-mini, with its larger reasoning budget, when reading images)
+            **_ai_field_model(images, max_tokens=max(1500, min(12000, 80 * len(row_context) + 500))),
             response_format={"type": "json_object"},
             messages=[
                 {
