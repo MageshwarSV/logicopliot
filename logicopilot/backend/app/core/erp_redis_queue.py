@@ -112,18 +112,27 @@ def enqueue(job_id: str, *, is_excel_entry: bool, desired_workers: int) -> str:
     The in-process fallback runs the identical work through the identical function, so the
     only difference between the two is whether the backlog survives this process.
     """
+    from app.core.process_role import runs
+
     client = _redis()
     if client is not None:
         try:
             client.rpush(QUEUE_KEY, json.dumps(
                 {"job_id": job_id, "is_excel_entry": bool(is_excel_entry),
                  "queued_at": time.time()}))
-            _ensure_workers(desired_workers)
+            # Only where ERP entries run (PROCESS_ROLE all / erp). On a split web server Final
+            # Approve is pressed here, but the entry must run on the ERP server - starting
+            # workers here would quietly make the web server drive Chrome too.
+            if runs("erp"):
+                _ensure_workers(desired_workers)
             return "redis"
         except Exception:  # noqa: BLE001 - fall through rather than lose the job
             logger.warning("could not queue job %s in Redis - running it in-process instead",
                            job_id, exc_info=True)
 
+    if not runs("erp"):
+        logger.error("job %s: ERP entry should go to the ERP server but Redis is not available "
+                     "- running it in THIS process instead", job_id)
     from app.core.erp_queue import submit_erp_run
 
     submit_erp_run(desired_workers, lambda: run_one(job_id, bool(is_excel_entry)))

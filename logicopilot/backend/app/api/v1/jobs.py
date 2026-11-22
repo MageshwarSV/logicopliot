@@ -5916,9 +5916,16 @@ def complete_job(
     """Submit Entry: replay the template's ERP script into the real ERP with this job's
     extracted values, then mark the job completed on success."""
     from app.core.browser import play_steps
+    from app.core.process_role import runs
     from app.models.erp_script import ErpScript
 
     job = _load_job(db, job_id, scope, user)
+    # Split servers: this endpoint drives Chrome INSIDE the request, so it can only run where ERP
+    # entries run. The screen has not called it since early Nov 2026 (every entry goes through
+    # Final Approve -> the ERP queue); refuse plainly rather than run a browser on the web server.
+    if not runs("erp"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Use Final Submit - the entry is made by the ERP server.")
     if job.status != "extracted":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run extraction before submitting the entry.")
     # Fields the Super Admin ticked as "ask the operator" must be answered on THIS job

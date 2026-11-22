@@ -1,0 +1,65 @@
+# nginx on cargora-app for the 4-server setup (Step 1.3 of the 4-server plan).
+# Example only - nothing reads this file. Copy to /etc/nginx/sites-available/cargora on the
+# App server during step 2 and adjust.
+#
+# Same as today's single-server config, except: the interactive ERP screens go to the ERP
+# server's backend (PROCESS_ROLE=erp, same code, same database), because they hold a live
+# Chrome in that process's memory and every click / type / screenshot / live frame must reach
+# the SAME process. That also keeps the Entry Browser's "goes first" priority and the live ERP
+# view working unchanged - all ERP browsers are in one process on one server.
+#
+#   to the ERP server   /api/v1/entry-browser/...        Entry Browser
+#                       /api/v1/erp-scripts/...          recorder, play, parked, session
+#                       /api/v1/erp-branch-sessions/...  branch logins, Check now
+#                       /api/v1/jobs/{id}/live           live ERP view of a running entry
+#                       /api/v1/jobs/{id}/stop           stop a running entry
+#   to this server      every other /api/ path, and the frontend
+#
+# The ERP server's port 30299 must accept connections from THIS server's IP only (firewall).
+
+upstream cargora_web { server 127.0.0.1:30299; }
+upstream cargora_erp { server 163.128.113.89:30299; }   # cargora-erp
+
+server {
+    listen 80;
+    server_name cargora.axioralabs.ai;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name cargora.axioralabs.ai;
+
+    ssl_certificate     /etc/letsencrypt/live/cargora.axioralabs.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/cargora.axioralabs.ai/privkey.pem;
+
+    client_max_body_size 50M;
+
+    # Interactive ERP screens -> ERP server. Regex locations win over the /api/ prefix below.
+    location ~ ^/api/v1/(entry-browser|erp-scripts|erp-branch-sessions)(/|$) {
+        proxy_pass http://cargora_erp;
+        include /etc/nginx/cargora_proxy_params;
+    }
+    location ~ ^/api/v1/jobs/[^/]+/(live|stop)$ {
+        proxy_pass http://cargora_erp;
+        include /etc/nginx/cargora_proxy_params;
+    }
+
+    location /api/ {
+        proxy_pass http://cargora_web;
+        include /etc/nginx/cargora_proxy_params;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:30300;
+        proxy_set_header Host $host;
+    }
+}
+
+# /etc/nginx/cargora_proxy_params (the same headers / timeout as today's /api/ block):
+#   proxy_set_header Host $host;
+#   proxy_set_header X-Real-IP $remote_addr;
+#   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#   proxy_set_header X-Forwarded-Proto $scheme;
+#   proxy_read_timeout 600s;
+#   proxy_send_timeout 600s;

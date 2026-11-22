@@ -14,6 +14,11 @@
 /logicopilot/*
 !/logicopilot/backend/
 !/logicopilot/frontend/
+# Multi-server setup files (nginx routing, deploy for the 4 servers): text configs and
+# examples only - never secrets or .env files.
+!/logicopilot/deploy/
+/logicopilot/deploy/*.env
+/logicopilot/deploy/*.pem
 
 # --- backend: source only ---
 /logicopilot/backend/*
