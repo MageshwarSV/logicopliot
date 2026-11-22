@@ -15,6 +15,7 @@ import datetime as _dt
 import functools
 import json
 import logging
+import math
 import re
 from pathlib import Path
 
@@ -321,6 +322,91 @@ DATE_DAY_FIRST_ISO = (
     "uses to describe the field."
 )
 
+# JOB-5B0B6D, a Danish invoice printing '1.450 PC   2,83 USD   4.103,50' (1450 pieces at 2.83 =
+# 4103.50): read three times by the same model it came back '2,83' / '4.103,50' / '1.450' in
+# one run and '2.83' / '4103.50' / '1450' in the next - nothing said which convention to
+# return, and '2,83' was later read as 283. A shared rule, like the date one above; the
+# arithmetic check after the rows are read (reconcile_row_numbers) settles what is still ambiguous.
+NUMBERS_IN_STANDARD_FORM = (
+    " EVERY QUANTITY, PRICE, AMOUNT, VALUE OR WEIGHT IS RETURNED IN STANDARD FORM: DIGITS, A DOT "
+    "AS THE DECIMAL POINT, NO THOUSANDS SEPARATORS, NO COMMA ANYWHERE IN THE NUMBER. Many "
+    "European documents print numbers the other way round - a dot (or a space) between the "
+    "thousands and a COMMA as the decimal point. Work out the document's own convention from "
+    "the document as a whole (amounts ending ',00' or ',50' use the comma as the decimal point) "
+    "and convert. TECHNIQUE ONLY, not real data: on such a document '4.103,50' is returned "
+    "4103.50, '2,83' is 2.83, '89,00' is 89.00, and a quantity printed '1.450' is 1450 - one "
+    "thousand four hundred and fifty, never 1.45. On a document using the usual convention "
+    "'1,450.00' is 1450.00. This is ONLY for quantities and money/weight values: a code, a part "
+    "number, an HS/tariff code or a reference number keeps exactly the dots and digits printed."
+)
+
+
+_STD_NUMBER = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+_EU_NUMBER = re.compile(r"-?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?")
+
+
+def number_readings(raw) -> list[str]:
+    """Every standard-form reading ('4103.50') of one printed number. Usually one: '2,83' can
+    only be European (a thousands comma is followed by three digits), '2.83' only standard,
+    '4.103,50' only European. Two for '1.450' / '1,450' - 1450 or 1.45 - which only the
+    arithmetic around it can settle. [] for anything that is not a plain number (a code, text)."""
+    s = re.sub(r"[\s ]", "", str(raw or ""))
+    out: list[str] = []
+    if _STD_NUMBER.fullmatch(s):
+        out.append(s.replace(",", ""))
+    if _EU_NUMBER.fullmatch(s):
+        eu = s.replace(".", "").replace(",", ".")
+        if eu not in out:
+            out.append(eu)
+    return out
+
+
+def _close(a: float, b: float) -> bool:
+    # Line amounts are rounded to the cent and unit prices often to fewer places than the true
+    # quotient - 1% (and two cents) absorbs that, never a factor-of-10/1000 misreading.
+    return math.isclose(a, b, rel_tol=0.01, abs_tol=0.02)
+
+
+def reconcile_row_numbers(rows: list[dict], qty: str = "item_quantity",
+                          price: str = "item_unit_price", amount: str = "product_amount") -> list[str]:
+    """Settle each line's quantity / unit price / amount so that quantity x price = amount, in
+    place. Every value is put in standard form when it can only be read one way ('2,83' ->
+    2.83); a value that can be read two ways ('1.450') takes the reading whose arithmetic adds
+    up. A line whose numbers fit no reading, or more than one, keeps its ambiguous values as
+    read. Returns one note per line changed (for the log)."""
+    import itertools
+
+    notes: list[str] = []
+    for i, row in enumerate(rows, start=1):
+        labels = [lab for lab in (qty, price, amount) if row.get(lab) not in (None, "")]
+        readings = {lab: number_readings(row.get(lab)) for lab in labels}
+        new = {lab: r[0] for lab, r in readings.items() if len(r) == 1}
+        if len(labels) == 3 and all(readings[lab] for lab in labels):
+            fits = {(q, p, a) for q, p, a in itertools.product(*(readings[lab] for lab in labels))
+                    if _close(float(q) * float(p), float(a))}
+            if len(fits) == 1:
+                new.update(zip(labels, next(iter(fits))))
+        changed = {lab: v for lab, v in new.items() if v != str(row.get(lab)).strip()}
+        if changed:
+            notes.append(f"line {i}: " + ", ".join(f"{lab} {row.get(lab)!r} -> {v}"
+                                                   for lab, v in changed.items()))
+            row.update(changed)
+    return notes
+
+
+def reconcile_total(raw, target: float | None) -> str | None:
+    """The standard-form reading of one total (a total quantity, an invoice value) - the only
+    one, or the one equal to `target` (the lines' own sum) when it can be read two ways. None
+    = leave the value as it is (not a plain number, or nothing settles it)."""
+    readings = number_readings(raw)
+    if len(readings) == 1:
+        return readings[0]
+    if target is not None:
+        hits = [r for r in readings if _close(float(r), target)]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
 # An invoice printed 'SELLER  Cisco Systems, Inc. / 170 W Tasman Dr / San Jose CA 95134 /
 # United States' beside 'SHIP FROM  Schenker Singapore Pte Ltd / 20 Alps Avenue, Level 4 /
 # Singapore 498747' - two side-by-side address blocks. The FIRST fix for this (treat the two
@@ -545,6 +631,8 @@ def extract_document_fields(
                         + ONLY_THE_VALUE
                         + LETTERS_ARE_NOT_DIGITS
                         + DATE_DAY_FIRST_ISO
+                    + NUMBERS_IN_STANDARD_FORM
+                        + NUMBERS_IN_STANDARD_FORM
                         + TWIN_BLOCKS_STAY_WHOLE
                         + SEPARATED_LABELS_AND_VALUES
                         + UNIT_LABELS_PAIR_BY_POSITION
@@ -818,6 +906,8 @@ def extract_document_rows(
                         "invent rows. If the document has no repeating table, return an empty list."
                         + LETTERS_ARE_NOT_DIGITS
                         + DATE_DAY_FIRST_ISO
+                    + NUMBERS_IN_STANDARD_FORM
+                        + NUMBERS_IN_STANDARD_FORM
                         + TWIN_BLOCKS_STAY_WHOLE
                         + CHECKLIST_SUBSTITUTE_DOCUMENT
                     ),
@@ -947,6 +1037,7 @@ def extract_document_fields_from_images(
                     + ONLY_THE_VALUE
                     + LETTERS_ARE_NOT_DIGITS
                     + DATE_DAY_FIRST_ISO
+                    + NUMBERS_IN_STANDARD_FORM
                     + TWIN_BLOCKS_STAY_WHOLE
                     + CHECKLIST_SUBSTITUTE_DOCUMENT
                     + "\n\nFields:\n"
@@ -1039,6 +1130,7 @@ def extract_document_rows_from_images(
                     "row. Do NOT merge rows. Do NOT invent rows."
                     + LETTERS_ARE_NOT_DIGITS
                     + DATE_DAY_FIRST_ISO
+                    + NUMBERS_IN_STANDARD_FORM
                     + TWIN_BLOCKS_STAY_WHOLE
                     + CHECKLIST_SUBSTITUTE_DOCUMENT
                     + "\n\nFields to read from each row:\n"

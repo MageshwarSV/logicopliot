@@ -52,6 +52,8 @@ from app.core.extraction import (
     extract_document_rows_from_images,
     is_party_field,
     numeric_total,
+    reconcile_row_numbers,
+    reconcile_total,
 )
 from app.models.cross_doc_link import CrossDocLink
 from app.models.field_mark import FieldMark
@@ -10304,6 +10306,11 @@ def run_extraction(
                 "multi-value on %s: %d row(s) from %s",
                 tdoc.name, len(rows), "page images" if used_vision else "OCR text",
             )
+            # Numbers in standard form, settled by quantity x unit price = amount: a European
+            # invoice's '1.450' / '2,83' / '4.103,50' came back as printed in one run and
+            # converted in the next (JOB-5B0B6D) - see extraction.reconcile_row_numbers.
+            for _note in reconcile_row_numbers(rows):
+                logger.warning("job %s, %s: numbers settled - %s", job.reference, tdoc.name, _note)
             for i, row in enumerate(rows, start=1):
                 for mark in multi_marks:
                     value = row.get(mark.label_name)
@@ -10341,6 +10348,39 @@ def run_extraction(
                 first = (rows[0].get(mark.label_name) if rows else None) or ""
                 if first or mark.label_name not in all_values:
                     all_values[mark.label_name] = first
+
+        # This document's quantity / value totals in standard form, a two-way reading ('1.450')
+        # settled by the sum of its own lines (JOB-5B0B6D: total_quantity '1.450' = 1450 pieces).
+        _sums: dict[str, float | None] = {}
+        for _lab in ("item_quantity", "product_amount"):
+            try:
+                _vals = [float(f.extracted_value) for f in written
+                         if f.job_document_id == jd.id and f.row_index is not None
+                         and f.label_name == _lab and (f.extracted_value or "").strip()]
+                _sums[_lab] = sum(_vals) if _vals else None
+            except ValueError:
+                _sums[_lab] = None
+        _single_ids = {m.id for m in single_marks}
+        for f in written:
+            if (f.job_document_id != jd.id or f.row_index is not None
+                    or f.mark_id not in _single_ids or not (f.extracted_value or "").strip()):
+                continue
+            _lab = f.label_name.lower()
+            if "quantity" in _lab:
+                _target = _sums["item_quantity"]
+            elif "value" in _lab or "amount" in _lab:
+                _target = (_sums["product_amount"]
+                           if any(k in _lab for k in ("product", "invoice", "total")) else None)
+            else:
+                continue
+            _std = reconcile_total(f.extracted_value, _target)
+            if _std is not None and _std != f.extracted_value.strip():
+                logger.warning("job %s, %s: %s %r -> %s (standard form%s)", job.reference,
+                               tdoc.name, f.label_name, f.extracted_value, _std,
+                               ", matches the lines' sum" if _target is not None else "")
+                if all_values.get(f.label_name) == f.extracted_value:
+                    all_values[f.label_name] = _std
+                f.extracted_value = _std
 
     # ---- pair each invoice with its own packing list ---------------------------------------
     # Only possible now: the pairing is made on the invoice numbers, and those had to be read
