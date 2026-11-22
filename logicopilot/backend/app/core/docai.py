@@ -281,9 +281,55 @@ def _content_cache_path(image_bytes: bytes) -> Path:
     return root / digest[:2] / f"{digest}.json"
 
 
+def ocr_engine() -> str:
+    return (getattr(get_settings(), "ocr_engine", "docai") or "docai").strip().lower()
+
+
 def ocr_off() -> bool:
-    """OCR_ENGINE=none: no Document AI call, no cache read or write (see config.ocr_engine)."""
-    return (getattr(get_settings(), "ocr_engine", "docai") or "docai").strip().lower() == "none"
+    """No Document AI call, no OCR cache read or write: OCR_ENGINE=none, or =pdftext (which reads
+    the PDF's own text layer instead - see text_layer_path)."""
+    return ocr_engine() in ("none", "pdftext")
+
+
+TEXT_LAYER_SUFFIX = ".textlayer.json"
+
+
+def text_layer_path(image_path: Path) -> Path:
+    return image_path.with_name(image_path.stem + TEXT_LAYER_SUFFIX)
+
+
+def save_text_layer(page, image_path: Path) -> None:
+    """OCR_ENGINE=pdftext only: the page's OWN text and word positions (a digital PDF carries
+    them; a scan has none), read locally by PyMuPDF, saved next to its rendered image in the
+    shape ocr_page_image returns. Free and exact for digital PDFs; a scanned page saves an empty
+    result and is read from its image as with OCR_ENGINE=none. No-op on any other engine."""
+    if ocr_engine() != "pdftext":
+        return
+    try:
+        w, h = float(page.rect.width) or 1.0, float(page.rect.height) or 1.0
+        words = page.get_text("words") or []
+        tokens = [{"text": str(t[4]), "x0": t[0] / w, "y0": t[1] / h, "x1": t[2] / w, "y1": t[3] / h}
+                  for t in words if str(t[4]).strip()]
+        text = page.get_text("text") or ""
+        data = {"text": text, "tokens": tokens, "layout_text": text, "table_row_counts": [],
+                "structured_text": None, "debug_blocks": [], "source": "pdf_text_layer"}
+        tmp = text_layer_path(image_path).with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(text_layer_path(image_path))
+    except Exception:  # noqa: BLE001 - no text layer is the same as a scan: read the image
+        logger.warning("could not read the text layer of %s", image_path.name, exc_info=True)
+
+
+def _text_layer_result(image_path: Path) -> dict:
+    p = text_layer_path(image_path)
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if (data.get("text") or "").strip():
+                return data
+        except (OSError, ValueError):
+            pass
+    return _no_ocr_result()
 
 
 def _no_ocr_result() -> dict:
@@ -295,7 +341,7 @@ def _no_ocr_result() -> dict:
 
 def ocr_page_image(image_path: Path) -> dict:
     if ocr_off():
-        return _no_ocr_result()
+        return _text_layer_result(image_path) if ocr_engine() == "pdftext" else _no_ocr_result()
     from google.cloud import documentai
 
     image_bytes = image_path.read_bytes()
@@ -437,6 +483,8 @@ def locate_value_bbox(
 
 def get_page_ocr(document_dir: Path, page_number: int) -> dict:
     if ocr_off():
+        if ocr_engine() == "pdftext":
+            return _text_layer_result(document_dir / "pages" / f"page_{page_number}.png")
         return _no_ocr_result()
     cache_file = document_dir / "ocr" / f"page_{page_number}.json"
     if cache_file.exists():

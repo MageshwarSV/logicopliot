@@ -225,6 +225,9 @@ def _render_pages(original: Path, pages_dir: Path, skip: list[int] | None = None
                 continue
             kept += 1
             page.get_pixmap(dpi=RENDER_DPI).save(pages_dir / f"page_{kept}.png")
+            from app.core.docai import save_text_layer
+
+            save_text_layer(page, pages_dir / f"page_{kept}.png")   # OCR_ENGINE=pdftext only
     # A previous render of the same document may have left higher-numbered pages behind.
     for leftover in pages_dir.glob("page_*.png"):
         try:
@@ -7879,6 +7882,9 @@ def _classify_and_place_files(
                 png = item["fdir"] / "pages" / f"page_{i}.png"
                 if not png.exists():
                     doc[i - 1].get_pixmap(dpi=150).save(png)
+                    from app.core.docai import save_text_layer
+
+                    save_text_layer(doc[i - 1], png)   # OCR_ENGINE=pdftext only
                 try:
                     got = ocr_page_image(png)
                     extra_raw.append(got.get("text", ""))
@@ -7933,6 +7939,9 @@ def _classify_and_place_files(
                         # past a cap to reach.
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
+                        from app.core.docai import save_text_layer
+
+                        save_text_layer(page, png)   # OCR_ENGINE=pdftext only
                         if i == 1:
                             img_path = png
                         page_count = i

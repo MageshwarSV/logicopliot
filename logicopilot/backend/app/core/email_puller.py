@@ -1810,7 +1810,7 @@ def _process_one_message(
     from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
     from app.core.classifier_common import AIServiceUnavailable, classifier_module, identify_customer
     from app.core.custom_page_filter import filter_pages_with_custom
-    from app.core.docai import ocr_page_image
+    from app.core.docai import ocr_page_image, save_text_layer
     from app.core import doc_sets
     from app.core.page_filter import (
         claim_covers_file, claim_fingerprint, extract_pdf_pages,
@@ -2191,6 +2191,7 @@ def _process_one_message(
                         # Every page, however many - no page limit (see page_filter).
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
+                        save_text_layer(page, png)   # OCR_ENGINE=pdftext only
                         if i == 1:
                             first_png = png
                         pages = i
