@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     # in Redis; mail workers read it. OFF by default (and everywhere today): the poller reads
     # every mail inside its own cycle, exactly as before. Needs REDIS_URL.
     mail_queue: bool = False
+    # Extraction queue (app/core/extract_queue.py): every extraction (auto after a mail, Extract,
+    # Re-run, one-document re-read, restart resume) is a Redis queue item, run by the extracting
+    # process through the same shared pool. OFF by default (and everywhere today). Needs REDIS_URL.
+    extract_queue: bool = False
 
     # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
     # default and on every box that does not say otherwise - with it off nothing is queued and no

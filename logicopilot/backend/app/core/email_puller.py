@@ -2849,7 +2849,23 @@ def _process_one_message(
             logger.info("email %s: auto-extract is off for %s - documents placed, extraction waits",
                         mid[:60], group.name)
         else:
-            run_extraction(db, job)
+            from app.core import extract_queue
+
+            queued = False
+            if extract_queue.enabled() and not in_lane():
+                # EXTRACT_QUEUE on: this mail's work ends at placement; its extraction goes on
+                # the extraction queue like every other one (app/core/extract_queue.py). Marked
+                # "extracting" first - that is what the queue's worker checks before running.
+                job.status = "extracting"
+                job.extraction_is_rerun = False
+                db.commit()
+                try:
+                    queued = extract_queue.enqueue(job.id) or True
+                except Exception:  # noqa: BLE001 - never lose it: extract here instead
+                    logger.exception("email %s: could not queue the extraction - extracting here",
+                                     mid[:60])
+            if not queued:
+                run_extraction(db, job)
     except Exception:  # noqa: BLE001
         # Confirmed root cause of jobs sitting silently in "draft" forever with their pulled
         # email marked "matched" below as if nothing went wrong: logging and moving on left

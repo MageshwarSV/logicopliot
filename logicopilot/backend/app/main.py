@@ -293,7 +293,11 @@ def create_app() -> FastAPI:
                       if runs(part))
         if not kinds or not am_i_the_singleton_worker():
             return
-        doorbell = is_split() and "extraction" in kinds
+        from app.core import extract_queue
+
+        # The extraction queue, when on, replaces the split doorbell (one mechanism everywhere).
+        use_xq = "extraction" in kinds and extract_queue.enabled()
+        doorbell = is_split() and "extraction" in kinds and not use_xq
         import threading
 
         def _go() -> None:
@@ -304,6 +308,10 @@ def create_app() -> FastAPI:
 
                 # Everything waiting is `extracting` in the database: the resume below reads it.
                 extraction_dispatch.clear_queue()
+            if use_xq:
+                # Interrupted runs back first, BEFORE the resume below - which then finds them
+                # already queued and does not queue them twice.
+                extract_queue.start()
 
             if "ERP" in kinds:
                 from app.core.erp_redis_queue import start
@@ -369,6 +377,9 @@ def create_app() -> FastAPI:
         from app.core import mail_queue
 
         mail_queue.stop()
+        from app.core import extract_queue
+
+        extract_queue.stop()
         MANAGER.unpark_all()
 
     @app.get("/health")

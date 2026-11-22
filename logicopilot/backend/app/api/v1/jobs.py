@@ -1118,6 +1118,32 @@ def _job_category(job: Job) -> str:
     return "new"
 
 
+def _run_extraction_job(job_id: str, only_job_document_id: str | None = None, *,
+                        is_rerun: bool = False) -> None:
+    """One job's extraction with its own DB session - the body every background path runs
+    (the in-process pool below and the Redis extraction queue, app/core/extract_queue.py).
+    A crash leaves the job re-runnable ("draft") rather than stuck on AI Processing."""
+    from app.db.session import SessionLocal
+
+    db2 = SessionLocal()
+    try:
+        job2 = db2.get(Job, job_id)
+        if job2 is None:
+            return
+        run_extraction(db2, job2, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
+    except Exception:  # noqa: BLE001
+        logger.exception("background extraction failed for job %s", job_id)
+        db2.rollback()
+        job2 = db2.get(Job, job_id)
+        # Let the operator try again rather than leave the job stuck reading "AI
+        # Processing" forever with nothing actually running.
+        if job2 is not None and job2.status == "extracting":
+            job2.status = "draft"
+            db2.commit()
+    finally:
+        db2.close()
+
+
 def _start_extraction_background(
     job_id: str, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -1131,14 +1157,22 @@ def _start_extraction_background(
     meant one CONNECTION per job, and nothing capped how many jobs that was. See
     extraction_queue for the day that took the site down.
 
-    Split servers (PROCESS_ROLE web/erp): handed to the worker server instead, through Redis
-    (app/core/extraction_dispatch.py). With "all" - every server today - nothing changes.
+    EXTRACT_QUEUE on: put on the Redis extraction queue instead (app/core/extract_queue.py) -
+    it survives restarts and reaches the worker server on a split setup.
+    Split servers without it (PROCESS_ROLE web/erp): handed to the worker server through Redis
+    (app/core/extraction_dispatch.py). With neither - every server today - nothing changes.
     """
-    from app.core import extraction_dispatch
+    from app.core import extract_queue, extraction_dispatch
     from app.core.extraction_queue import submit_extraction
     from app.core.process_role import is_split
-    from app.db.session import SessionLocal
 
+    if extract_queue.enabled():
+        try:
+            if not extract_queue.enqueue(job_id, only_job_document_id, is_rerun):
+                logger.info("job %s is already on the extraction queue - not queued twice", job_id)
+            return
+        except Exception:  # noqa: BLE001 - never lose a run: fall back to the old path
+            logger.exception("job %s: could not queue the extraction - running it the old way", job_id)
     if extraction_dispatch.hand_off(job_id, only_job_document_id, is_rerun):
         return
     # Only a split worker de-duplicates: there a doorbell message and the startup resume can
@@ -1149,23 +1183,9 @@ def _start_extraction_background(
         return
 
     def _go() -> None:
-        db2 = SessionLocal()
         try:
-            job2 = db2.get(Job, job_id)
-            if job2 is None:
-                return
-            run_extraction(db2, job2, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
-        except Exception:  # noqa: BLE001
-            logger.exception("background extraction failed for job %s", job_id)
-            db2.rollback()
-            job2 = db2.get(Job, job_id)
-            # Let the operator try again rather than leave the job stuck reading "AI
-            # Processing" forever with nothing actually running.
-            if job2 is not None and job2.status == "extracting":
-                job2.status = "draft"
-                db2.commit()
+            _run_extraction_job(job_id, only_job_document_id, is_rerun=is_rerun)
         finally:
-            db2.close()
             if dedupe:
                 extraction_dispatch.release(job_id)
 
