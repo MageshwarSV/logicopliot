@@ -7,6 +7,8 @@ import { BUCKETS, GROUP_LABELS } from "../../components/JobsOverview";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { DataTable, type Column } from "../../components/ui/DataTable";
+import { Pagination } from "../../components/ui/Pagination";
+import { CalendarIcon, SearchIcon } from "../../components/ui/icons";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Input";
 import { Alert } from "../../components/ui/Alert";
@@ -14,6 +16,7 @@ import * as jobsApi from "../../api/jobs";
 import * as emailApi from "../../api/email";
 import * as tenantsApi from "../../api/tenants";
 import { displayStatusLabel } from "../../utils/statusDisplay";
+import { formatDate, formatDateTime, formatTime } from "../../utils/dateTime";
 import * as usersApi from "../../api/users";
 import type { Job, JobEvent } from "../../types/jobs";
 import type { Tenant } from "../../types/tenant";
@@ -194,7 +197,14 @@ export function JobsPage() {
   // already loaded at login — no extra request). "All" plus one tab per assigned mode.
   // Applied client-side to whatever has loaded so far, same as before pagination existed.
   const assignedModes = user?.modes ?? [];
-  const showModeTabs = (user?.role === "operator" || user?.role === "gk2") && assignedModes.length > 0;
+  // A Tenant Admin has no personal mode assignment, so the tabs never showed on their jobs
+  // workspace (the one their "Jobs" link opens). They oversee every shipment type, so they get
+  // all four - the same tab row an operator sees.
+  const modeTabModes =
+    user?.role === "tenant_admin" ? ["Air Export", "Air Import", "Sea Export", "Sea Import"] : assignedModes;
+  const showModeTabs =
+    user?.role === "tenant_admin" ||
+    ((user?.role === "operator" || user?.role === "gk2") && assignedModes.length > 0);
   const [activeModeTab, setActiveModeTab] = useState<string>("All");
   const [savingEtaId, setSavingEtaId] = useState<string | null>(null);
   const canEditEta = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
@@ -232,6 +242,12 @@ export function JobsPage() {
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
   const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
+  // Search by Job No or BL / Air Waybill No (the "BL No" column - the HAWB on an air job).
+  // Compared on letters and digits only, so "45T 0523984" and "45t-0523984" both find
+  // 45T0523984. While it has text, the other filters are paused - a number typed in should
+  // find its job even outside "Last 7 days" or someone else's queue.
+  const [jobSearch, setJobSearch] = useState("");
+  const searchKey = jobSearch.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   useEffect(() => {
     // EVERY client-side refinement (quick date range, customer, status, assignee, shipment
     // type) used to be stored in ONE set shared by all five screens, with no idea which it
@@ -419,9 +435,11 @@ export function JobsPage() {
   // The assign dropdown's candidate list — every operator in the tenant, filtered per-row to
   // whichever ones are scoped to that job's own mode. Fetched once; nothing about it changes
   // per row so there is no reason to re-fetch it.
+  // Also loaded for everyone else who sees the "Assigned To" filter (Tenant Admin, GK2,
+  // Manager): without it a Tenant Admin's filter offered "All assignees" and nothing else.
   useEffect(() => {
-    if (canAssign) usersApi.listUsers().then(setOperators).catch(() => {});
-  }, [canAssign]);
+    if (user) usersApi.listUsers().then(setOperators).catch(() => {});
+  }, [user]);
 
   useEffect(() => {
     loadFirstPage();
@@ -547,6 +565,7 @@ export function JobsPage() {
     stage?: string | null,
     missingDocuments?: string[] | null,
     completedAt?: string | null,
+    failedAt?: string | null,
   ) {
     const s = stage ?? "Document Capture";
     // The two words that mean the job is finished - the same pair the emerald styling below
@@ -607,6 +626,15 @@ export function JobsPage() {
             {when(completedAt)}
           </span>
         )}
+        {/* Likewise WHEN the ERP entry failed, under the badge that says it did. */}
+        {s === "Failed" && failedAt && (
+          <span
+            className="text-[11px] text-rose-700 dark:text-rose-400"
+            title="When the ERP entry failed"
+          >
+            {when(failedAt)}
+          </span>
+        )}
       </div>
     );
   }
@@ -615,10 +643,7 @@ export function JobsPage() {
     if (!iso) return "—";
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleString(undefined, {
-      day: "2-digit", month: "short",
-      ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}),
-    });
+    return withTime ? formatDateTime(d) : formatDate(d);
   }
 
   function fmtDuration(minutes?: number | null) {
@@ -639,7 +664,7 @@ export function JobsPage() {
     if (!iso) return "";
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return formatTime(d);
   }
 
   const customers = useMemo(() => {
@@ -672,27 +697,29 @@ export function JobsPage() {
   // from, else nothing) when filtering - never a raw operator id, which the operator picking
   // from the dropdown below would have no way to recognise or match.
   const assignedToLabel = (j: Job) => j.operator_name ?? j.pulled_from_sender ?? "";
-  // The dropdown's own options: every real user of this tenant (operators already fetches
-  // this - see the effect above) who shares the CURRENT user's own User Type and Shipment
-  // Modes - never derived from whichever jobs happen to be loaded right now, and never
-  // restricted by existing job assignments (a brand new user must show up here the moment
-  // they're created, without needing a job of theirs to exist first) - only by this
-  // type/modes match. null/undefined on either side means "no custom type"/"no modes
-  // assigned" and is treated as its own value, not a wildcard.
-  const sameModeSet = (a?: string[] | null, b?: string[] | null) => {
-    const as = new Set(a ?? []);
-    const bs = new Set(b ?? []);
-    return as.size === bs.size && [...as].every((m) => bs.has(m));
-  };
+  // The dropdown's own options: real users of this tenant (operators - see the effect above),
+  // never derived from whichever jobs happen to be loaded, so a brand new user shows up the
+  // moment they are created.
+  // By request (2026-11-20): every operator of the tenant on the "All" tab, and on a shipment
+  // tab every operator who handles that shipment type (or has no type restriction). The old
+  // rule - same user type AND exactly the same set of modes as the viewer - left a GK1 with
+  // several shipment types, and a Tenant Admin (no modes of their own), with an empty list.
+  // By request (2026-11-21): a viewer limited to certain streams (e.g. a GK1 with only Sea
+  // Import) sees only the users of THOSE streams - someone with no stream set, or only other
+  // streams, is not theirs to filter by. A viewer with no stream limit (Tenant Admin) keeps the
+  // rule above.
   const assignees = useMemo(() => {
-    const matching = operators.filter(
-      (o) =>
-        (o.user_type_id ?? null) === (user?.user_type_id ?? null) &&
-        sameModeSet(o.modes, user?.modes),
-    );
+    const tab = showModeTabs && activeModeTab !== "All" ? activeModeTab : null;
+    const viewerModes = assignedModes;
+    const scope = tab ? [tab] : viewerModes;
+    const matching = operators.filter((o) => {
+      if (o.role !== "operator" && o.role !== "gk2") return false;
+      const modes = o.modes ?? [];
+      if (viewerModes.length) return modes.some((m) => scope.includes(m));
+      return !tab || !modes.length || modes.includes(tab);
+    });
     return [...new Set(matching.map((o) => o.full_name).filter(Boolean))].sort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operators, user?.user_type_id, user?.modes]);
+  }, [operators, showModeTabs, activeModeTab, assignedModes]);
 
   // The calendar day a Date falls on in the OPERATOR'S OWN clock, not UTC. toISOString() always
   // converts to UTC first - for anyone east of Greenwich (India included, UTC+5:30) that silently
@@ -798,17 +825,29 @@ export function JobsPage() {
   // still being skipped are the newest ones, and older pages may yet fall inside the window),
   // so it is deliberately left to page normally.
   const pastDateWindow = useMemo(() => {
+    // A search looks through every job in this menu, so keep loading older pages.
+    if (searchKey) return false;
     if (!quickRange.from || jobs.length === 0) return false;
     // The same date the filter uses, or this shortcut decides the search has gone far enough
     // back by one measure while the filter is still looking by another.
     const last = jobs[jobs.length - 1];
     const oldest = last ? dayKey(rowDate(last)) : "";
     return oldest !== "" && oldest < quickRange.from;
-  }, [jobs, quickRange.from, category]);
+  }, [jobs, quickRange.from, category, searchKey]);
 
+  // Display order only: earliest ETA first; jobs with no ETA at the bottom, newest created first.
+  // Same ETA: newest created first. eta_date is always "YYYY-MM-DD", so string order is date
+  // order. Sorts a copy of the filtered list - `jobs` keeps the server's created_at-desc order
+  // that the background paging and pastDateWindow above rely on. Saving an ETA refreshes
+  // `jobs`, which re-sorts the row into its new place.
   const visibleJobs = useMemo(() => {
+    const createdMs = (j: Job) => (j.created_at ? Date.parse(j.created_at) || 0 : 0);
     return jobs.filter((j) => {
       if (showModeTabs && activeModeTab !== "All" && j.mode !== activeModeTab) return false;
+      if (searchKey) {
+        const key = (v: string | null | undefined) => (v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        return key(j.reference).includes(searchKey) || key(j.hbl_no).includes(searchKey);
+      }
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
       if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
       if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
@@ -817,10 +856,55 @@ export function JobsPage() {
       if (quickRange.from && d && d < quickRange.from) return false;
       if (quickRange.to && d && d > quickRange.to) return false;
       return true;
+    }).sort((a, b) => {
+      // ERP Failed Jobs: the most recent failure first; jobs with no failure time at the bottom.
+      if (category === "failed") {
+        const fa = a.erp_failed_at ? Date.parse(a.erp_failed_at) || 0 : 0;
+        const fb = b.erp_failed_at ? Date.parse(b.erp_failed_at) || 0 : 0;
+        if (fa !== fb) return fb - fa;
+        return createdMs(b) - createdMs(a);
+      }
+      // ERP Submitted Jobs: the most recent submission first (the green time under the badge).
+      if (category === "submitted" || category === "completed") {
+        const sa = a.completed_at ? Date.parse(a.completed_at) || 0 : 0;
+        const sb = b.completed_at ? Date.parse(b.completed_at) || 0 : 0;
+        if (sa !== sb) return sb - sa;
+        return createdMs(b) - createdMs(a);
+      }
+      const ea = a.eta_date || "";
+      const eb = b.eta_date || "";
+      if (ea && !eb) return -1;
+      if (!ea && eb) return 1;
+      if (ea !== eb) return ea < eb ? -1 : 1;
+      return createdMs(b) - createdMs(a);
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category]);
+  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category, searchKey]);
+
+  // Page-by-page display over the filtered list. Every job is still loaded in the background
+  // (see the auto-continue effect) and filtered client-side above, so this only decides which
+  // slice is on screen - the batch loading and live refresh underneath are untouched. Back to
+  // page 1 whenever WHAT is listed changes (menu, tab, any filter, rows per page), but not
+  // when a background batch simply adds more rows to the same list.
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(20);
+  useEffect(() => {
+    setListPage(1);
+  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket, searchKey]);
+  // A search belongs to the menu it was typed on.
+  useEffect(() => {
+    setJobSearch("");
+  }, [category, group]);
+  const listLastPage = Math.max(1, Math.ceil(visibleJobs.length / listPageSize));
+  const currentListPage = Math.min(listPage, listLastPage);
+  const pageJobs = visibleJobs.slice((currentListPage - 1) * listPageSize, currentListPage * listPageSize);
+  // S.No counts across pages (page 2 of 20-per-page starts at 21), in the list's own order.
+  const slNoById = useMemo(() => new Map(visibleJobs.map((j, i) => [j.id, i + 1])), [visibleJobs]);
 
   const columns: Column<Job>[] = [
+    {
+      header: "S.No",
+      render: (j) => <span className="tabular-nums text-slate-500 dark:text-slate-400">{slNoById.get(j.id)}</span>,
+    },
     {
       // A placeholder button only, for now — opens a blank tab of its own so a real E-docket
       // feature has somewhere to land later without this column having to change again.
@@ -840,20 +924,30 @@ export function JobsPage() {
       ),
     },
     {
-      header: "Date",
+      // Created date and ETA in one column: the created date/time on top (click for the status
+      // history, as before), the ETA under it with a calendar icon that opens the date picker.
+      header: "Date / ETA",
       render: (j) => (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            openHistory(j);
-          }}
-          title="View full status history"
-          className="text-left text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
-        >
-          <span className="block underline decoration-dotted underline-offset-2">{when(j.created_at, false)}</span>
-          <span className="block text-[11px] text-slate-400 dark:text-slate-500">{timeOnly(j.created_at)}</span>
-        </button>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openHistory(j);
+            }}
+            title="View full status history"
+            className="text-left text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
+          >
+            <span className="font-medium underline decoration-dotted underline-offset-2">{when(j.created_at, false)}</span>
+            <span className="text-slate-500 dark:text-slate-400">, {timeOnly(j.created_at)}</span>
+          </button>
+          <EtaCell
+            etaDate={j.eta_date ?? ""}
+            canEdit={canEditEta}
+            saving={savingEtaId === j.id}
+            onChange={(v) => handleEtaChange(j, v)}
+          />
+        </div>
       ),
     },
     {
@@ -869,21 +963,8 @@ export function JobsPage() {
       ),
     },
     {
-      header: "ETA",
-      render: (j) => (
-        <input
-          type="date"
-          value={j.eta_date ?? ""}
-          disabled={!canEditEta || savingEtaId === j.id}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => handleEtaChange(j, e.target.value)}
-          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-400 disabled:cursor-default disabled:border-transparent disabled:bg-transparent disabled:px-0 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-        />
-      ),
-    },
-    {
       header: "Status",
-      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at),
+      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at, j.erp_failed_at),
     },
     // Who this job is assigned to. Editable for operator/super_admin/admin — the candidate
     // list is narrowed to operators scoped to THIS job's own mode (a Sea Import job only
@@ -1088,7 +1169,30 @@ export function JobsPage() {
       )}
 
       <Card className="mb-4 p-5">
-        <div className="flex flex-wrap items-end gap-4">
+        <div className="mb-4">
+          <label htmlFor="job-search" className="mb-1 block text-xs font-medium text-slate-500">
+            Search
+          </label>
+          <div className="relative max-w-xl">
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              id="job-search"
+              type="search"
+              value={jobSearch}
+              onChange={(e) => setJobSearch(e.target.value)}
+              placeholder="Search by Job No, BL No or Air Waybill No..."
+              className={`${quickField} w-full pl-9`}
+              autoComplete="off"
+            />
+          </div>
+          {searchKey && (
+            <p className="mt-1.5 text-xs text-indigo-700 dark:text-indigo-300">
+              Searching every job in this menu - the date, customer, status and assignee filters
+              below are paused while there is text here.
+            </p>
+          )}
+        </div>
+        <div className={`flex flex-wrap items-end gap-4 ${searchKey ? "opacity-50" : ""}`}>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">Quick filter</label>
             <select
@@ -1217,7 +1321,7 @@ export function JobsPage() {
 
       {showModeTabs && (
         <div className="mb-4 flex gap-1.5 overflow-x-auto">
-          {["All", ...assignedModes].map((mode) => (
+          {["All", ...modeTabModes].map((mode) => (
             <button
               key={mode}
               type="button"
@@ -1248,7 +1352,7 @@ export function JobsPage() {
               `/jobs/${j.id}${category ? `?from=${category}` : ""}`, "_blank", "noopener",
             )}
             columns={columns}
-            rows={visibleJobs}
+            rows={pageJobs}
             keyFor={(j) => j.id}
             emptyMessage={
               filterLabel
@@ -1260,6 +1364,29 @@ export function JobsPage() {
                     : "No jobs yet — create one to process a transaction."
             }
           />
+        )}
+        {!loading && visibleJobs.length > 0 && (
+          <div className="px-5 pb-4">
+            <Pagination
+              page={currentListPage}
+              pageSize={listPageSize}
+              total={visibleJobs.length}
+              onPageChange={setListPage}
+              noun="jobs"
+              extra={
+                <label className="mr-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  Rows per page
+                  <select
+                    value={listPageSize}
+                    onChange={(e) => setListPageSize(Number(e.target.value))}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              }
+            />
+          </div>
         )}
       </Card>
       {/* The next batch loads itself in the background (see the auto-continue effect) - this
@@ -1317,5 +1444,74 @@ export function JobsPage() {
         )}
       </Modal>
     </AppShell>
+  );
+}
+
+
+/** "14 Oct, 2026" from the stored "2026-10-14" - parsed as a local calendar date, never through
+ *  Date's UTC parsing, which would show the previous day west of UTC. */
+function formatEta(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(y, m - 1, d);
+  return `${dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}, ${y}`;
+}
+
+/** The ETA line under a job's created date. The calendar icon opens the browser's own date
+ *  picker on a hidden <input type="date">, so changing it saves exactly as the old ETA column
+ *  did; without edit rights it is plain text. Every click stops here so it never also opens
+ *  the job (the whole row is a link). */
+function EtaCell({
+  etaDate, canEdit, saving, onChange,
+}: {
+  etaDate: string;
+  canEdit: boolean;
+  saving: boolean;
+  onChange: (value: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const label = etaDate ? `ETA: ${formatEta(etaDate)}` : "ETA: Not set";
+
+  function openPicker(e: React.MouseEvent) {
+    e.stopPropagation();
+    const input = inputRef.current;
+    if (!input || !canEdit || saving) return;
+    try {
+      input.showPicker();
+    } catch {
+      input.focus();
+      input.click();
+    }
+  }
+
+  return (
+    <div className="relative flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400" onClick={(e) => e.stopPropagation()}>
+      {canEdit ? (
+        <button
+          type="button"
+          onClick={openPicker}
+          disabled={saving}
+          title={etaDate ? "Change ETA" : "Set ETA"}
+          aria-label={etaDate ? "Change ETA" : "Set ETA"}
+          className="rounded p-0.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 disabled:opacity-50 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-400"
+        >
+          <CalendarIcon className="h-3.5 w-3.5" />
+        </button>
+      ) : (
+        <CalendarIcon className="h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
+      )}
+      <span className={etaDate ? "" : "italic text-slate-400"}>{saving ? "Saving…" : label}</span>
+      {canEdit && (
+        <input
+          ref={inputRef}
+          type="date"
+          value={etaDate}
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => onChange(e.target.value)}
+          className="pointer-events-none absolute left-0 top-full h-0 w-0 opacity-0"
+        />
+      )}
+    </div>
   );
 }

@@ -54,3 +54,11 @@ class EmailSeen(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # What the documents said about themselves, so a human can see what it was working from
     # without re-running the OCR. Short - a few names and numbers, not the page text.
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The Bill of Lading this message's SUBJECT announced, normalised (see
+    # app/core/email_bl.py). Kept here because it is what makes the duplicate check cheap:
+    # recognising a repeated pre-alert is one indexed lookup on (bl_number, sender) against
+    # this table, which costs nothing, instead of opening the attachments to find out what
+    # the mail is about. NULL for every message whose subject names no BL, which is most of
+    # them - those simply never take part in the check.
+    bl_number: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

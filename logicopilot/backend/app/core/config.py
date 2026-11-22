@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Minutes between automatic inbox polls. 0 disables the background poller
     # (documents are then only pulled when someone clicks "Pull email now").
     email_poll_minutes: int = 0
+    # Practice AI (app/core/ai_practice.py) - free testing. Only a server whose .env sets
+    # PRACTICE_AI_ALLOWED=1 (SIT) can switch it on; production never sets it.
+    practice_ai_allowed: bool = False
+    practice_ai_miss_seconds: float = 30.0
     # How many mailboxes are read AT ONCE is a live, database-backed Super Admin setting now
     # (see app.core.system_settings.get_email_poll_workers / SettingsPage), not an env value -
     # changing it should not need a restart. See that module for why: reading a message is
@@ -102,6 +106,43 @@ class Settings(BaseSettings):
     # logical DB of its OWN - .28 already runs another app on db0 - e.g.
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
+
+    # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
+    # default and on every box that does not say otherwise - with it off nothing is queued and no
+    # worker starts, so the app runs exactly as before. Needs REDIS_URL as well.
+    pipeline_v2: bool = False
+    # Worker threads per stage when the pipeline runs inside the backend process (until it moves
+    # to its own logicopilot-worker process).
+    pipeline_threads_per_stage: int = 2
+
+    # Parallel OCR (app/core/parallel_ocr.py): how many pages of ONE file are OCR'd at once.
+    # 1 = one page at a time, exactly as before (the default everywhere until switched on).
+    # A large-job-lane mail uses Platform Settings' "parallel calls" instead, when this is > 1.
+    parallel_ocr_workers: int = 1
+    # Ceiling on Document AI calls running at once across the WHOLE process - several mails read
+    # side by side must not multiply into a burst Document AI throttles.
+    parallel_ocr_max_total: int = 12
+
+    # Parallel extraction (app/core/parallel_extract.py): how many of ONE job's AI extraction
+    # calls run at once (prefetched before the per-document loop). 1 = one at a time, exactly as
+    # before. A large-job-lane job uses Platform Settings' "parallel calls" when this is > 1.
+    parallel_extract_workers: int = 1
+    # Ceiling on prefetched AI calls in flight across the whole process.
+    parallel_extract_max_total: int = 12
+
+    # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
+    # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
+    # Test keys (rzp_test_...) on SIT, live keys on production - never the same keys on both.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    # The secret typed into the dashboard's webhook form; Razorpay signs every webhook with it.
+    razorpay_webhook_secret: str = ""
+    # Gateway charge passed on to the tenant, as a % of the invoice total, plus GST on that
+    # charge. 0 = the tenant pays exactly the invoice amount. Set it to the rate agreed with
+    # IDFC/Razorpay (a convenience fee must be approved by them first).
+    razorpay_fee_percent: float = 0.0
+    razorpay_fee_gst_percent: float = 18.0
+    razorpay_api_base: str = "https://api.razorpay.com/v1"
 
     @property
     def cors_origins_list(self) -> list[str]:

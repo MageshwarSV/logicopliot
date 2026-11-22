@@ -6,6 +6,7 @@ import { Button } from "./ui/Button";
 import { Alert } from "./ui/Alert";
 import * as authApi from "../api/auth";
 import { useAuth } from "../auth/useAuth";
+import { EyeIcon, EyeSlashIcon } from "./ui/icons";
 
 /** Shared by two callers: ProtectedRoute's forced popup (an admin-chosen password still on the
  * account - see User.must_change_password) and a voluntary change from Settings. Both are the
@@ -28,12 +29,26 @@ export function ChangePasswordModal({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shown, setShown] = useState({ current: false, next: false, confirm: false });
+  const reveal = (key: keyof typeof shown) => (
+    <button
+      type="button"
+      onClick={() => setShown((s) => ({ ...s, [key]: !s[key] }))}
+      tabIndex={-1}
+      title={shown[key] ? "Hide password" : "Show password"}
+      aria-label={shown[key] ? "Hide password" : "Show password"}
+      className="flex items-center rounded p-0.5 text-slate-400 transition-colors hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+    >
+      {shown[key] ? <EyeSlashIcon className="h-5 w-5" /> : <EyeIcon className="h-5 w-5" />}
+    </button>
+  );
 
   const reset = () => {
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
     setError(null);
+    setShown({ current: false, next: false, confirm: false });
   };
 
   async function handleSubmit(e: FormEvent) {
@@ -81,7 +96,8 @@ export function ChangePasswordModal({
         )}
         <Input
           label={forced ? "Temporary password" : "Current password"}
-          type="password"
+          type={shown.current ? "text" : "password"}
+          trailingAdornment={reveal("current")}
           value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)}
           autoComplete="current-password"
@@ -89,7 +105,8 @@ export function ChangePasswordModal({
         />
         <Input
           label="New password"
-          type="password"
+          type={shown.next ? "text" : "password"}
+          trailingAdornment={reveal("next")}
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           placeholder="At least 8 characters"
@@ -99,7 +116,8 @@ export function ChangePasswordModal({
         />
         <Input
           label="Confirm new password"
-          type="password"
+          type={shown.confirm ? "text" : "password"}
+          trailingAdornment={reveal("confirm")}
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
           autoComplete="new-password"

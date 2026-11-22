@@ -17,6 +17,9 @@ class UserOut(BaseModel):
     full_name: str
     role: str
     tenant_id: str | None
+    phone: str | None = None
+    # Set from User.avatar_url (a property); None when no photo has been uploaded.
+    avatar_url: str | None = None
     is_active: bool
     last_login_at: datetime | None
     # True until this account sets its OWN password via the self-service change-password

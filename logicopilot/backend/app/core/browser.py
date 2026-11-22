@@ -1217,6 +1217,108 @@ def _text_selector(page, frames: list | None, text: str) -> str | None:
     return None
 
 
+_EXACT_TEXT_JS = """(t) => {
+  t = (t || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+  if (!t) return false;
+  for (const e of document.querySelectorAll('body *')) {
+    const isOpt = e.tagName === 'OPTION';
+    // Only the element that OWNS the words: a container holding "Chennai FTWZ" and more is
+    // not a match for "Chennai", and neither is "Chennai FTWZ" itself.
+    if (!isOpt && e.children.length) continue;
+    const s = (e.innerText || e.textContent || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+    if (s !== t) continue;
+    if (isOpt) return true;
+    const r = e.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return true;
+  }
+  return false;
+}"""
+
+
+def _exact_text_selector(page, frames: list | None, text: str) -> str | None:
+    """Last resort for Search & Click: ANY visible element whose own text is exactly `text`.
+
+    _text_selector only looks at links and buttons. A plain list - the Change Branch popup's
+    branch names - is rows of text with a click handler on the row, so it found nothing and
+    the step fell through to the AI, which pressed "Close" instead. Exact text only, so a
+    value never lands on a longer label that merely contains it ("Chennai" vs "Chennai FTWZ")."""
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return None
+    esc = t.replace("\\", "\\\\").replace('"', '\\"')
+    scope = page
+    for f in frames or []:
+        scope = scope.frame_locator(f)
+    for cand in (f'option:text-is("{esc}")', f'li:text-is("{esc}")', f'td:text-is("{esc}")',
+                 f'*:text-is("{esc}")'):
+        try:
+            loc = scope.locator(cand)
+            n = min(loc.count(), 5)
+        except Exception:  # noqa: BLE001
+            continue
+        for k in range(n):
+            try:
+                if cand.startswith("option") or loc.nth(k).is_visible():
+                    return f"{cand} >> nth={k}"
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def _text_on_screen(page, text: str) -> bool:
+    """Is there something on screen - in ANY frame - whose own text is exactly `text`?
+
+    Exact, not "contains": the Change Branch list holds "Chennai FTWZ" but not "Chennai" when
+    Chennai is the branch already in use, and a contains-match would call that found.
+    Every frame is searched, so the condition needs no recorded iframe chain."""
+    for fr in list(page.frames):
+        try:
+            if fr.evaluate(_EXACT_TEXT_JS, text):
+                return True
+        except Exception:  # noqa: BLE001 - a frame mid-navigation or cross-origin
+            continue
+    return False
+
+
+def _if_condition_met(page, step: dict, val: str, timeout_s: float | None = None) -> tuple[bool, str]:
+    """The test an `if_else` step makes. Two kinds (step["cond"]):
+
+      "text"    (default) - the step's value - a data field ([[label]]) or fixed text - is
+                on screen as the exact text of something;
+      "element" - the step's selector is on screen.
+
+    Polled for a few seconds (step["timeout"], default 5): the screen the test is about is
+    often still drawing - a popup that has just been opened by the step before.
+    Returns (met, a sentence for the log)."""
+    import time as _t
+
+    secs = float(timeout_s if timeout_s is not None else (step.get("timeout") or 5))
+    deadline = _t.monotonic() + max(0.5, secs)
+    if (step.get("cond") or "text") == "element":
+        sel = step.get("selector")
+        if not sel:
+            return False, "no element was recorded for the test"
+        while True:
+            if _present(page, sel, step.get("frames") or [], timeout=1000):
+                return True, f"{sel!r} is on screen"
+            if _t.monotonic() >= deadline:
+                return False, f"{sel!r} is not on screen"
+            page.wait_for_timeout(400)
+    want = (val or "").strip()
+    if not want:
+        return False, "the value to look for is empty"
+    # With an iframe chain recorded, look ONLY inside it. The Change Branch test must ask "is
+    # Chennai in the popup's list?", not "is Chennai anywhere" - the page header names the
+    # branch in use, and a whole-page search would find it there and call the test passed.
+    frames = step.get("frames") or []
+    while True:
+        if (_exact_text_selector(page, frames, want) is not None) if frames else _text_on_screen(page, want):
+            return True, f"{want!r} is on screen"
+        if _t.monotonic() >= deadline:
+            return False, f"{want!r} is not on screen"
+        page.wait_for_timeout(400)
+
+
 def _reveal(page, frames, opener: dict | None, sel: str,
             timeout: int = 2500) -> dict | None:
     """Bring back a menu item whose menu has closed, by HOVERING what opened it.
@@ -1944,38 +2046,106 @@ def _read_text(loc, kind: str | None = None) -> str:
         return ""
 
 
+# Is this suggestion the one the widget currently has HIGHLIGHTED (the one Enter would take)?
+# Every library marks it its own way - react-select "...__option--is-focused", select2
+# "...--highlighted", jQuery UI "ui-state-active" (on the item or the wrapper inside it), MUI
+# "Mui-focused", Ant "...-option-active", typeahead.js "tt-cursor", Angular Material
+# "mat-active", Bootstrap "active" - or with a data- attribute. Deliberately NOT aria-selected:
+# several libraries use that for the option that is the field's current VALUE, not the highlight.
+_HIGHLIGHTED_JS = r"""
+(el) => {
+  const re = /(--is-focused|--highlighted|--active|ui-state-active|ui-state-focus|Mui-focused|Mui-focusVisible|-option-active|tt-cursor|mat-active|mat-mdc-option-active|p-focus|is-highlighted|(^|\s)(active|highlighted|focused|hover)(\s|$))/;
+  const marked = (n) => {
+    if (!n || !n.getAttribute) return false;
+    if (re.test(String(n.getAttribute('class') || ''))) return true;
+    for (const a of ['data-focus', 'data-focused', 'data-highlighted', 'data-active', 'data-active-item']) {
+      const v = n.getAttribute(a);
+      if (v !== null && v !== 'false') return true;
+    }
+    return false;
+  };
+  if (marked(el)) return true;
+  for (const c of el.querySelectorAll('*')) if (marked(c)) return true;
+  return false;
+}
+"""
+
+
+def _highlighted_index(cands) -> int | None:
+    """Which of these suggestions the widget has highlighted right now, or None when none is
+    (or when this widget does not show its highlight in any way we can read)."""
+    for i, (_text, el) in enumerate(cands):
+        try:
+            if el.evaluate(_HIGHLIGHTED_JS):
+                return i
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _same_option(a: str | None, b: str | None) -> bool:
+    def norm(x):
+        return re.sub(r"\s+", " ", str(x or "").strip().lower())
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
 def _commit_typeahead(page, scope, loc, value: str, strict: bool = False) -> bool:
-    """Select the best-matching suggestion. KEYBOARD first (ArrowDown to the fuzzy-best item
-    then Enter — fires the widget's real select handler; 'only-selected' fields ignore a plain
+    """Select the best-matching suggestion. KEYBOARD first (arrow to the fuzzy-best item then
+    Enter — fires the widget's real select handler; 'only-selected' fields ignore a plain
     click), then click that item. With strict=True, if NO real widget list is visible it does
-    nothing (never blindly presses Enter on a plain field — that could submit the form)."""
+    nothing (never blindly presses Enter on a plain field — that could submit the form).
+
+    The option taken must be the one that was matched - not its neighbour. This used to press
+    ArrowDown (position + 1) times, right for a list that highlights nothing until a key is
+    pressed (jQuery UI) and one too many for a list that already highlights its first option
+    when it opens (react-select, select2). On the ERP's branch box the list read "Chennai",
+    "Chennai FTWZ", the job said Chennai, and the run logged in as Chennai FTWZ. So:
+      1. arrows are counted from where the highlight actually IS;
+      2. Enter is pressed only once the highlight is seen on the matched option - when it is
+         seen on another one, the matched option is clicked instead;
+      3. whatever the widget then shows is checked: if it shows a DIFFERENT option from the
+         list, the list is opened again and the matched option clicked.
+    """
     cands = _typeahead_candidates(page, scope, strict=strict)
     if cands:
         texts = [t for t, _ in cands]
         match = _fuzzy_pick(value, texts)
         idx = texts.index(match) if match in texts else 0
+        wanted = texts[idx]
+        others = [t for t in texts if not _same_option(t, wanted)]
         # What the control shows now, so we can tell whether the keyboard actually committed
         # anything. Pressing keys at a widget that ignores them raises nothing at all, so
         # "no exception" is not evidence the option was chosen — and reporting success with
         # the field still empty is worse than failing.
         before = _control_state(loc)
+        committed = False
         try:
-            for _ in range(idx + 1):
-                loc.press("ArrowDown")
+            start = _highlighted_index(cands)
+            moves = idx + 1 if start is None else idx - start
+            for _ in range(abs(moves)):
+                loc.press("ArrowDown" if moves > 0 else "ArrowUp")
                 page.wait_for_timeout(80)
-            loc.press("Enter")
-            page.wait_for_timeout(250)
-            if _control_state(loc) != before:
-                return True
+            landed = _highlighted_index(cands)
+            if landed is None or landed == idx:
+                loc.press("Enter")
+                page.wait_for_timeout(250)
+                committed = _control_state(loc) != before
         except Exception:  # noqa: BLE001
             pass
-        try:
-            # The keyboard did nothing — a click-only suggestion list (a plain <div> menu, or
-            # a react-select rendered outside the input). Click the matched item instead.
-            cands[idx][1].click(timeout=3000)
+        if not committed:
+            try:
+                # The keyboard did nothing, or was on the wrong option — click the matched one.
+                cands[idx][1].click(timeout=3000)
+                page.wait_for_timeout(250)
+                committed = True
+            except Exception:  # noqa: BLE001
+                pass
+        if committed:
+            # 3 - the neighbour was taken after all (a highlight we could not read).
+            shown = _control_state(loc)
+            if any(_same_option(shown, t) for t in others):
+                _repick_option(page, scope, loc, value, wanted, strict)
             return True
-        except Exception:  # noqa: BLE001
-            pass
     if strict:
         return False   # plain field, no widget list → don't risk an Enter/submit
     try:
@@ -1984,6 +2154,38 @@ def _commit_typeahead(page, scope, loc, value: str, strict: bool = False) -> boo
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _repick_option(page, scope, loc, value: str, wanted: str, strict: bool) -> bool:
+    """The widget ended up showing a different option from the one matched: open its list
+    again and CLICK the matched one. Best effort - never raises."""
+    try:
+        loc.click(timeout=4000)
+        typer = loc
+        try:
+            if not loc.first.evaluate(
+                "e => ['INPUT','TEXTAREA'].includes(e.tagName) || e.isContentEditable"
+            ):
+                inner = loc.locator(
+                    "input:not([type=hidden]):not([type=checkbox]):not([type=radio])")
+                if inner.count() > 0:
+                    typer = inner.first
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            typer.fill("")
+        except Exception:  # noqa: BLE001
+            pass
+        typer.type(value, delay=25, timeout=8000)
+        page.wait_for_timeout(600)
+        for text, el in _typeahead_candidates(page, scope, strict=strict):
+            if _same_option(text, wanted):
+                el.click(timeout=3000)
+                page.wait_for_timeout(250)
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 # Wait until a document stops changing. Resolves once `ms` passes with no mutation, or at the
@@ -2981,6 +3183,29 @@ def _click_spot(loc, step: dict) -> dict:
         return {}
 
 
+def _pick_select_value(page, frames, sel, candidates) -> str | None:
+    """The first candidate value that one of this <select>'s options actually holds (by its
+    visible text or its value, spaces/case ignored); else the first non-empty candidate; None
+    when there is none. Waits for the dropdown up to 20s - the same allowance a step's element
+    gets - and never raises: a dropdown it cannot read leaves the step to its ordinary path."""
+    cands = [str(c).strip() for c in candidates if c and str(c).strip()]
+    if not cands:
+        return None
+    norm = lambda s: " ".join(str(s or "").split()).upper()  # noqa: E731
+    try:
+        loc = _scoped(page, frames, sel).first
+        loc.wait_for(state="attached", timeout=20000)
+        opts = loc.evaluate(
+            "el => Array.from(el.options || []).map(o => [o.text || '', o.value || ''])")
+    except Exception:  # noqa: BLE001
+        return cands[0]
+    have = {norm(x) for pair in (opts or []) for x in pair if x}
+    for c in cands:
+        if norm(c) in have:
+            return c
+    return cands[0]
+
+
 def _perform_step(page, step: dict, val: str) -> None:
     """Execute one element-bound step (element assumed present)."""
     action = step.get("action")
@@ -3310,7 +3535,11 @@ def _detect_block(page) -> dict | None:
 
 
 class RecorderSession:
-    def __init__(self, url: str, login: dict | None = None, headless: bool | None = None):
+    def __init__(self, url: str, login: dict | None = None, headless: bool | None = None,
+                 storage_state: dict | None = None):
+        # storage_state: start already logged in (a branch login's saved session, see
+        # app/core/branch_sessions.py) - `url` is then the page that login stood on.
+        self._storage_state = storage_state
         self._q: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self._error: str | None = None
@@ -3356,7 +3585,8 @@ class RecorderSession:
                     args=["--disable-blink-features=AutomationControlled",
                           "--start-maximized", *BROWSER_ARGS],
                 )
-                ctx = browser.new_context(viewport=VIEWPORT, user_agent=_UA, ignore_https_errors=True)
+                ctx = browser.new_context(viewport=VIEWPORT, user_agent=_UA, ignore_https_errors=True,
+                                          storage_state=self._storage_state or None)
                 page = ctx.new_page()
 
                 def _remember_dialog(d):
@@ -3714,6 +3944,11 @@ class RecorderSession:
             # down - including the _resolve_val call above, before any such assignment has
             # run - and raise UnboundLocalError on every single call, matched or not.
             run_step = step
+            if (step.get("action") or "") == "if_else":
+                # Recording an IF / ELSE: only TEST the screen - nothing is clicked. The answer
+                # tells the Super Admin which branch the screen in front of them belongs to.
+                met, why = _if_condition_met(p, step, val, timeout_s=2)
+                return ("IF" if met else "ELSE") + f": {why}"
             # Same reason as play_steps's and _replay_span's own copies of this: a "search &
             # select" style step's recorded position is never trustworthy, even while still
             # sitting on the very screen it was just recorded on - the point of arming this in
@@ -3722,7 +3957,7 @@ class RecorderSession:
             # one a real run will make later.
             if (step.get("action") or "") in ("click", "double_click") and step.get("field_label") and val:
                 is_dbl = step.get("action") == "double_click"
-                found = _row_selector(p, frames, val) if is_dbl else _text_selector(p, frames, val)
+                found = _row_selector(p, frames, val) if is_dbl else (_text_selector(p, frames, val) or _exact_text_selector(p, frames, val))
                 if found:
                     run_step = {**step, "selector": found}
                     # A matched ROW's own centre is not safe to click blind - see
@@ -3828,7 +4063,7 @@ class RecorderSession:
 
     def _replay_span(self, p, steps: list, values: dict, start: int, end: int, log: list,
                      uploads: dict | None = None,
-                     keep_going: bool = False) -> int:
+                     keep_going: bool = False, _nested: bool = False) -> int:
         """Run steps[start:end] in the live page. Returns the new cursor — the number of steps
         now applied. Stops at the first failure: carrying on would compound the drift.
 
@@ -3847,8 +4082,12 @@ class RecorderSession:
         """
         steps = steps or []
         end = min(end, len(steps))
+        if not _nested and start == 0:
+            self._if_jumps = {}     # IF / ELSE loop guard - counted per replay from the top
         # "If this alert comes" steps cover the whole replay, wherever they sit in the list.
-        if self._ctx is not None:
+        # Not for an IF / ELSE branch run from inside it: that would replace the script's own
+        # rules with the branch's few for the rest of the replay.
+        if self._ctx is not None and not _nested:
             set_dialog_rules(self._ctx, steps)
         i = start
         # The page can CHANGE mid-replay: a switch_tab step moves the recorder to another tab
@@ -3881,6 +4120,44 @@ class RecorderSession:
             act = st.get("action") or ""
             frames = st.get("frames") or []
             try:
+                if act == "if_else":
+                    # Test the screen, run the chosen branch's own steps right here, then go on
+                    # from "continue at step N" (or the next step). See _if_condition_met.
+                    _settle(page)
+                    met, why = _if_condition_met(page, st, _resolve_val(st, values or {}))
+                    branch = list((st.get("then_steps") if met else st.get("else_steps")) or [])
+                    goto = st.get("then_goto") if met else st.get("else_goto")
+                    log.append(f"{i + 1}. if: {why} - running the {'IF' if met else 'ELSE'} "
+                               f"steps ({len(branch)})")
+                    if branch:
+                        done_n = self._replay_span(page, branch, values, 0, len(branch), log,
+                                                   uploads=uploads, keep_going=keep_going,
+                                                   _nested=True)
+                        page = getattr(self, "_page", None) or page
+                        if done_n < len(branch) and not keep_going:
+                            raise RuntimeError(
+                                f"{'IF' if met else 'ELSE'} step {done_n + 1} of {len(branch)} failed")
+                    jumps = getattr(self, "_if_jumps", None)
+                    if jumps is None:
+                        jumps = self._if_jumps = {}
+                    if goto:
+                        target = int(goto)
+                        if not (1 <= target <= len(steps)):
+                            raise RuntimeError(f"'continue at step {target}' - the script has "
+                                               f"only {len(steps)} steps")
+                        jumps[target] = jumps.get(target, 0) + 1
+                        if jumps[target] > 3:
+                            raise RuntimeError(f"jumped to step {target} more than 3 times - the "
+                                               "IF / ELSE steps are going round in a loop")
+                        log.append(f"{i + 1}. continuing at step {target}")
+                        i = target - 1
+                        if i < start or i >= end:
+                            # Outside the span asked for (a single Next, a Run-to): just move
+                            # the cursor there; the next press carries on from it.
+                            return i
+                    else:
+                        i += 1
+                    continue
                 if act == "navigate":
                     page.goto(st.get("value") or self.url, wait_until="domcontentloaded", timeout=45000)
                     _settle(page)
@@ -3983,7 +4260,7 @@ class RecorderSession:
                         step_val = _resolve_val(st, values)
                         if step_val:
                             is_dbl = act == "double_click"
-                            found = _row_selector(page, frames, step_val) if is_dbl else _text_selector(page, frames, step_val)
+                            found = _row_selector(page, frames, step_val) if is_dbl else (_text_selector(page, frames, step_val) or _exact_text_selector(page, frames, step_val))
                             if found:
                                 use = {**st, "selector": found}
                                 # A matched ROW's own centre is not safe to click blind - see
@@ -4163,7 +4440,7 @@ class RecorderSession:
                 # the rails and carrying on would file an empty entry.
                 log.append(f"{i + 1}. skipped and carrying on (keep going is on)")
             i += 1
-        return end
+        return max(i, end)
 
     @staticmethod
     def _step_label(steps: list, idx: int) -> str:
@@ -4524,6 +4801,30 @@ class RecorderSession:
 
             step = steps[self._idx]
             action = step.get("action")
+            if action == "if_else":
+                # One press: test the screen, run the chosen branch, move on to "continue at
+                # step N" (or the next step).
+                _settle(p)
+                met, why = _if_condition_met(p, step, _resolve_val(step, values))
+                branch = list((step.get("then_steps") if met else step.get("else_steps")) or [])
+                goto = step.get("then_goto") if met else step.get("else_goto")
+                sub_log: list = []
+                if branch:
+                    n = self._replay_span(getattr(self, "_page", None) or p, branch, values, 0,
+                                          len(branch), sub_log,
+                                          uploads=getattr(self, "_uploads", None), _nested=True)
+                    if n < len(branch):
+                        return {"ok": False, "status": "error", "action": "if_else",
+                                "note": f"{why}; {'IF' if met else 'ELSE'} step {n + 1} failed: "
+                                        + (str(sub_log[-1]) if sub_log else ""),
+                                "ran": [str(x) for x in sub_log]}
+                self._done_set.add(self._idx)
+                self._idx = (int(goto) - 1) if goto and 1 <= int(goto) <= len(steps) else self._idx + 1
+                self._done_components += 1
+                return {"ok": True, "status": "ok", "action": "if_else",
+                        "description": f"If: {why} - ran the {'IF' if met else 'ELSE'} steps"
+                                       + (f", continuing at step {int(goto)}" if goto else ""),
+                        "ran": [str(x) for x in sub_log]}
             # A navigate / wait is its own page-load step.
             if action == "navigate":
                 p.goto(step.get("value") or p.url, wait_until="domcontentloaded", timeout=45000)
@@ -4765,9 +5066,10 @@ class SessionManager:
         self._lock = threading.Lock()
         self._sweeper: threading.Thread | None = None
 
-    def start(self, url: str, login: dict | None = None, headless: bool | None = None) -> str:
+    def start(self, url: str, login: dict | None = None, headless: bool | None = None,
+              storage_state: dict | None = None) -> str:
         sid = uuid.uuid4().hex
-        session = RecorderSession(url, login, headless=headless)
+        session = RecorderSession(url, login, headless=headless, storage_state=storage_state)
         with self._lock:
             self._sessions[sid] = session
             self._touched[sid] = _time.monotonic()
@@ -4780,6 +5082,10 @@ class SessionManager:
             # Every poll for a screenshot comes through here, so this is a true liveness signal.
             self._touched[sid] = _time.monotonic()
         return s
+
+    def has(self, sid: str) -> bool:
+        """Is this browser still open - without counting as a touch the way get() does."""
+        return sid in self._sessions
 
     def stop(self, sid: str) -> None:
         with self._lock:
@@ -4835,7 +5141,11 @@ class PlaybackManager:
               # run must not be harder than running it.
               time_budget: int = 300, stall_after: int = STALL_SECONDS,
               rows: dict | None = None, uploads: dict | None = None,
-              downloads_dir=None, on_done=None) -> str:
+              downloads_dir=None, on_done=None, before=None,
+              branch: dict | None = None, checkpoint_index: int | None = None) -> str:
+        """`branch`: run on that branch's always-on login from after `checkpoint_index`, the way
+        a queued job does (branch_sessions.play_on_branch) - no login of its own, so it cannot
+        log out the jobs already running on that branch."""
         sid = uuid.uuid4().hex
         state = {"screenshot": None, "log": [], "done": False, "status": "running",
                  "result": None, "cancel": False, "total": len(steps or []), "debug": None}
@@ -4850,17 +5160,46 @@ class PlaybackManager:
 
         def _run():
             try:
+                if before is not None:
+                    # e.g. wait for a queued ERP run to close its browser before this one logs
+                    # in (app/core/erp_priority.py) - on this thread, never the request's.
+                    before(state)
                 # Live rerun: headless + streamed, and fail FAST (short budget, fewer AI
                 # retries) so a stuck run returns quickly instead of hanging.
-                res = play_steps(
-                    url, login, steps, values,
-                    progress=_progress, headless=True, time_budget=time_budget,
-                    ai_attempts=2, cancel=lambda: state["cancel"], stall_after=stall_after,
-                    # A replay without the job's files or its line-item rows is not a replay of
-                    # that job: the upload step has nothing to attach and every product line
-                    # gets the same value.
-                    rows=rows, uploads=uploads, downloads_dir=downloads_dir,
-                )
+                def _play(branch_session=None):
+                    return play_steps(
+                        url, None if branch_session is not None else login, steps, values,
+                        progress=_progress, headless=True, time_budget=time_budget,
+                        ai_attempts=2, cancel=lambda: state["cancel"], stall_after=stall_after,
+                        # A replay without the job's files or its line-item rows is not a replay
+                        # of that job: the upload step has nothing to attach and every product
+                        # line gets the same value.
+                        rows=rows, uploads=uploads, downloads_dir=downloads_dir,
+                        checkpoint_index=checkpoint_index if branch_session is not None else None,
+                        branch_session=branch_session,
+                    )
+
+                if branch is not None:
+                    from app.core import branch_sessions
+
+                    def _waiting(n):
+                        # Shown on the Entry Browser while every slot of the branch is busy;
+                        # None = a slot was taken and the entry is starting.
+                        if n is None:
+                            state["status"] = "running"
+                            state["log"] = []
+                            return
+                        state["status"] = "waiting"
+                        state["log"] = [
+                            f"All {n} {branch['branch']} job slots are busy with running jobs. "
+                            "This job starts as soon as one of them finishes - it goes first, "
+                            "ahead of the queue."]
+
+                    # Pressed by a person, so it goes first: the next freed slot is its.
+                    res = branch_sessions.play_on_branch(branch, _play, priority=True,
+                                                         on_wait=_waiting)
+                else:
+                    res = _play()
                 state["result"] = {k: v for k, v in res.items() if k != "screenshot"}
                 state["status"] = res.get("status", "ok")
                 if res.get("screenshot"):
@@ -5112,6 +5451,7 @@ def _play_steps(
     job_gate=None,        # JobGate — park at the checkpoint and wait for a job (see parked.py)
     cancel=None,          # callable() -> True when somebody has pressed Stop
     stall_after: int = STALL_SECONDS,   # give up on ONE step that never moves on
+    branch_session: dict | None = None,  # {"state", "url"} of a live branch login - see below
     _unscripted_alerts: list | None = None,   # filled by play_steps' own wrapper - see there
 ) -> dict:
     """Replay a saved step sequence. `values` maps field_label -> value; a step's value
@@ -5255,7 +5595,12 @@ def _play_steps(
             # last run. Reuse it and skip straight past the login/setup steps. No checkpoint
             # (or no saved session) => this is all None and the run behaves exactly as before.
             sess_state, sess_url = (None, None)
-            if checkpoint_index is not None:
+            if branch_session is not None:
+                # An always-on BRANCH login (app/core/branch_sessions.py) kept by its own
+                # keeper. Start on it after the checkpoint and never log in here: a login
+                # from this run would log the branch's user out of every other job on it.
+                sess_state, sess_url = branch_session.get("state"), branch_session.get("url")
+            elif checkpoint_index is not None:
                 # Not a plain read of the file. With erp_script_workers > 1 several jobs start
                 # together; the one that finds no session logs in while the others WAIT for
                 # it, instead of every job opening its own login against the same ERP account
@@ -5583,7 +5928,15 @@ def _play_steps(
 
             # Resuming means the setup steps (login, navigation) are already done - the saved
             # session put us where they would have. Start at the first step AFTER the checkpoint.
-            i = (checkpoint_index + 1) if resumed else 0
+            i = (checkpoint_index + 1) if (resumed and checkpoint_index is not None) else 0
+            # IF / ELSE steps swap the chosen branch into `steps` as the run goes, so a step's
+            # POSITION stops being its number. orig_no[k] is the recorded step number (1-based)
+            # of whatever now sits at position k - None for a branch's own steps - which is
+            # what "continue at step N" means to the Super Admin who typed it.
+            orig_steps = list(steps)
+            orig_no: list[int | None] = list(range(1, len(steps) + 1))
+            orig_ckpt = checkpoint_index
+            jump_counts: dict[int, int] = {}
             safety = 0
             aborted = False
             checkpoint_saved = False
@@ -5651,11 +6004,23 @@ def _play_steps(
                 # exactly where they would have. Record them as executed, or the end-of-run checks
                 # read a resumed run as one that skipped half its steps: it would name the login
                 # steps as "failed steps" and spend a vision call diagnosing a perfectly good run.
-                executed.update(range(0, checkpoint_index + 1))
+                if checkpoint_index is not None:
+                    executed.update(range(0, checkpoint_index + 1))
                 # The cookie may be live while the ERP has still logged us out, or the entry
                 # screen may have moved. Probe the first recorded element after the checkpoint;
                 # if it is not there, throw the session away and replay the whole script.
                 probe = next((s for s in steps[i:] if s.get("selector")), None)
+                if (branch_session is not None and probe is not None
+                        and not present(probe.get("selector"), probe.get("frames") or [], timeout=8000)):
+                    # Not ours to repair: the branch keeper logs in again, and the caller puts
+                    # this job back on the login once it is live (branch_sessions.play_on_branch).
+                    log.append("the branch login no longer reaches the entry screen - handing "
+                               "it back to its keeper to log in again")
+                    return {"status": "failed", "session_lost": True, "stopped": False,
+                            "log": log, "final_url": page_url_safe(),
+                            "reason": "The branch's ERP login had dropped before this entry started.",
+                            "steps_done": 0, "steps_total": len(steps), "captured": {},
+                            "resumed": True, "checkpoint_saved": False}
                 if probe is not None and not present(probe.get("selector"), probe.get("frames") or [], timeout=8000):
                     log.append(
                         "the saved session no longer reaches the entry screen - discarding it "
@@ -5752,7 +6117,69 @@ def _play_steps(
                     val = resolve_ai_value(step["prompt"], values, step.get("options"))
                 else:
                     val = resolve(step.get("value") or (f"[[{step['field_label']}]]" if step.get("field_label") else None))
+                if action == "select" and step.get("value_fields") and not step.get("prompt"):
+                    # Several job fields that may hold this dropdown's answer, tried in order -
+                    # the first whose value is really one of the options on screen wins.
+                    # Built for the ERP's organisation Address dropdown: a forwarder's addresses
+                    # are named after OUR branches ("CHENNAI" = Destination), a customer's after
+                    # its own ("3 (3)" = ERP Quotation Branch), and one fixed field could only
+                    # ever fit one of the two (ALLISON / FLEXTRONICS runs stuck here).
+                    cands = [resolve(f"[[{f}]]") for f in step["value_fields"]]
+                    if val:
+                        cands.append(val)
+                    picked = _pick_select_value(page, frames, sel, cands)
+                    if picked:
+                        if picked != val:
+                            log.append(f"step {i + 1} select: using {picked!r} - the first of "
+                                       f"{[c for c in cands if c]} the dropdown actually offers")
+                        val = picked
                 try:
+                    if action == "if_else":
+                        # Test the screen, then put the chosen branch's steps where this step
+                        # was - followed, when one was set, by a jump to "continue at step N".
+                        _settle(page)
+                        met, why = _if_condition_met(page, step, val)
+                        branch = list((step.get("then_steps") if met else step.get("else_steps")) or [])
+                        goto = step.get("then_goto") if met else step.get("else_goto")
+                        new = branch + ([{"action": "_goto", "value": str(int(goto)),
+                                          "description": f"continue at step {int(goto)}"}]
+                                        if goto else [])
+                        log.append(f"step {i + 1} if: {why} - running the "
+                                   f"{'IF' if met else 'ELSE'} steps ({len(branch)})"
+                                   + (f", then continuing at step {int(goto)}" if goto else ""))
+                        delta = len(new) - 1
+                        steps = steps[:i] + new + steps[i + 1:]
+                        orig_no = orig_no[:i] + [None] * len(new) + orig_no[i + 1:]
+                        _shifted = {k if k < i else k + delta for k in executed if k != i}
+                        executed.clear()
+                        executed.update(_shifted)
+                        if checkpoint_index is not None and checkpoint_index > i:
+                            checkpoint_index += delta
+                        continue        # position i now holds the branch's first step
+                    if action == "_goto":
+                        target = int(step.get("value") or 0)
+                        jump_counts[target] = jump_counts.get(target, 0) + 1
+                        if not (1 <= target <= len(orig_steps)):
+                            log.append(f"step {i + 1}: 'continue at step {target}' - the script "
+                                       f"has only {len(orig_steps)} steps; stopping")
+                            aborted = True
+                            break
+                        if jump_counts[target] > 3:
+                            log.append(f"ABORTED: jumped back to step {target} more than 3 times "
+                                       "- the IF / ELSE steps are going round in a loop")
+                            aborted = True
+                            break
+                        # The rest of the run is the recorded script from step `target` on.
+                        steps = steps[:i] + orig_steps[target - 1:]
+                        orig_no = orig_no[:i] + list(range(target, len(orig_steps) + 1))
+                        _kept = {k for k in executed if k < i}
+                        executed.clear()
+                        executed.update(_kept)
+                        if checkpoint_index is not None and not checkpoint_saved and orig_ckpt is not None:
+                            checkpoint_index = (i + (orig_ckpt + 1 - target)
+                                                if orig_ckpt + 1 >= target else None)
+                        log.append(f"continuing at step {target}")
+                        continue
                     if action == "navigate":
                         page.goto(step.get("value") or url, wait_until="domcontentloaded", timeout=45000)
                         _settle(page)
@@ -6007,7 +6434,7 @@ def _play_steps(
                     # that same recorded spot.
                     if action in ("click", "double_click") and step.get("field_label") and val:
                         is_dbl = action == "double_click"
-                        found = _row_selector(page, frames, val) if is_dbl else _text_selector(page, frames, val)
+                        found = _row_selector(page, frames, val) if is_dbl else (_text_selector(page, frames, val) or _exact_text_selector(page, frames, val))
                         if found:
                             step = {**step, "selector": found}
                             # A matched ROW's own centre is not safe to click blind - see
@@ -6610,6 +7037,24 @@ def _play_steps(
                 else:
                     reason = ("Could not complete the ERP entry — a required step could not be "
                               "done, even with AI assistance.")
+                if branch_session is not None and not stopped:
+                    # On a branch login, a run that ends on the ERP's login page did not fail on
+                    # its own account: the login dropped under it (expired, or someone else
+                    # logged in as the branch's user). Say so, and the caller hands the login
+                    # back to its keeper and runs this job again once it is live
+                    # (branch_sessions.play_on_branch) instead of reporting a failed entry.
+                    try:
+                        on_login = any("/login" in (pg.url or "").lower() for pg in ctx.pages)
+                    except Exception:  # noqa: BLE001
+                        on_login = False
+                    if on_login:
+                        log.append("the branch login dropped during the entry - it will run again "
+                                   "once the login is back")
+                        return {"status": "failed", "session_lost": True, "stopped": False,
+                                "log": log, "final_url": final_url, "screenshot": shot,
+                                "reason": "The branch's ERP login dropped during the entry.",
+                                "steps_done": len(executed), "steps_total": len(steps),
+                                "captured": captured, "resumed": resumed, "checkpoint_saved": False}
                 failed_steps = [
                     (success_check_failed.get("description") or success_check_failed.get("field_label")
                      or success_check_failed.get("capture_as") or "success check")

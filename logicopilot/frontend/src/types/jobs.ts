@@ -32,6 +32,8 @@ export interface Job {
    *  Null until the job completes. See Job.completed_at in the backend for why neither
    *  created_at nor updated_at could answer this. */
   completed_at?: string | null;
+  /** When the ERP entry last failed - shown under the "Failed" badge. */
+  erp_failed_at?: string | null;
   /** Set when status is "possible_duplicate" - the job this one's extracted data matched.
    *  duplicate_of_reference is the Job No to show in the popup; the id alone means nothing
    *  to an operator. */
@@ -78,6 +80,9 @@ export interface JobDocument {
   name: string;
   doc_type: string;
   is_uploaded: boolean;
+  /** No file, but the template lets this document be entered by hand: its tab shows with no
+   *  page image and its fields empty, typeable and never mandatory. */
+  manual_entry?: boolean;
   page_count: number;
   /** A slot can hold several files — three invoices for one shipment. Position within it. */
   file_index: number;
@@ -87,6 +92,9 @@ export interface JobDocument {
    */
   set_index: number | null;
   original_name: string | null;
+  /** "excel" for a sheet read from its cells (no page images - shown as a table). */
+  source_kind?: string;
+  sheet_name?: string | null;
   /** Operator (GK1) pressed "Submit for Approval" on this document, on Data Extraction. */
   approved?: boolean;
   /** GK2's OWN independent approval of this document — separate from GK1's `approved`. */
@@ -258,6 +266,22 @@ export interface JobDetail {
   /** Names of the mandatory documents still missing, in template order - set only when
    *  outer_status is "Missing Documents". */
   missing_documents?: string[] | null;
+  /** What came with the mail/upload but could NOT be read: password-protected zips (with the
+   *  file names inside) and skipped files with the reason. Null when everything was read. */
+  /** The ERP Excel was edited in the app and saved - it replaces the generated one. */
+  erp_excel_edited?: { saved_by?: string | null; saved_at?: string | null; file?: string } | null;
+  attachment_notes?: {
+    skipped?: { path: string; reason: string }[];
+    locked?: { path: string; files: string[] }[];
+    /** Locked zips a saved password opened. */
+    unlocked?: string[];
+    /** True while the job is held "Waiting for Password" (nothing read yet). */
+    held?: boolean;
+    /** A zip over the template's limit: placed, extraction waits for Run extraction. */
+    large_zip?: { size_mb: number; limit_mb: number };
+    /** Run extraction queued on the large-job lane (one large job at a time). */
+    lane_extract?: { requested_at: string; is_rerun?: boolean };
+  } | null;
   assigned_operator_id?: string | null;
   operator_name?: string | null;
   /** Whether this job's template submits via a bulk Excel import (TemplateGroup.entry_mode)

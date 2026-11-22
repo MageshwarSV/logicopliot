@@ -293,3 +293,135 @@ export function EyeSlashIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function UserIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx={12} cy={8} r={4} />
+      <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+    </Icon>
+  );
+}
+
+export function LockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x={4.5} y={10.5} width={15} height={10} rx={2} />
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+      <circle cx={12} cy={15.5} r={1} fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function LogoutIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+      <path d="M9 16l-4-4 4-4" />
+      <path d="M5 12h11" />
+    </Icon>
+  );
+}
+
+export function GlobeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+    </Icon>
+  );
+}
+
+export function PencilIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" />
+      <path d="M14.5 5.5l3 3" />
+    </Icon>
+  );
+}
+
+export function MapPinIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21Z" />
+      <circle cx="12" cy="9.5" r="2.5" />
+    </Icon>
+  );
+}
+
+export function UploadIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 16V4" />
+      <path d="M7 9l5-5 5 5" />
+      <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
+    </Icon>
+  );
+}
+
+export function PlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Icon>
+  );
+}
+
+export function SortIcon({ direction, ...props }: SVGProps<SVGSVGElement> & { direction?: "asc" | "desc" | null }) {
+  return (
+    <Icon {...props}>
+      <path d="M8 9l4-4 4 4" opacity={direction === "desc" ? 0.3 : 1} />
+      <path d="M16 15l-4 4-4-4" opacity={direction === "asc" ? 0.3 : 1} />
+    </Icon>
+  );
+}
+
+export function ShipIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M3 17l1.5 3h15L21 17" />
+      <path d="M5 17l1-6h12l1 6" />
+      <path d="M12 3v8M9 6h3" />
+    </Icon>
+  );
+}
+
+export function PlaneIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M21 4.5c.6.6.4 1.6-.3 2.2L16 10.5l2 9-1.6 1.6-3.9-7.3-3.6 3V20l-1.4 1.4-1.5-3.5L2.5 16.4 3.9 15h3l3-3.6-7.3-3.9L4.2 6l9 2 3.8-4.7c.6-.7 1.6-.9 2.2-.3l1.8 1.5Z" />
+    </Icon>
+  );
+}
+
+export function CheckBadgeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12.5l2.5 2.5L16 9.5" />
+    </Icon>
+  );
+}
+
+export function PrinterIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M7 8V3h10v5" />
+      <path d="M7 17H5a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2" />
+      <path d="M7 14h10v7H7z" />
+      <path d="M17 11h.01" />
+    </Icon>
+  );
+}
+
+export function SparklesIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3Z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" />
+    </Icon>
+  );
+}
+

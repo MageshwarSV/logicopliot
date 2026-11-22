@@ -325,17 +325,53 @@ class ProcessingTimeMetrics:
     by_job: list[JobTiming] = field(default_factory=list)
 
 
-def _extraction_end(job: Job) -> datetime | None:
-    """The timestamp right after the LAST "extracting" JobEvent - i.e. when this job's final
-    extraction pass actually finished. Shared by _job_stage_durations (Job Processing Time)
-    and compute_workforce_metrics (review-time-per-employee), so the two pages can never
-    disagree about where extraction ends and review begins."""
+def _extraction_pass(job: Job) -> tuple[datetime | None, datetime | None]:
+    """(start, end) of the job's CURRENT extraction - the one its review is based on.
+
+    By request (2026-11-18 / 19):
+      - read once: created -> first "Documents extracted". (Email jobs go straight from
+        Created to Documents extracted with no "extracting" entry at all, which is why the
+        old "last extracting event" rule showed "—" for most jobs.)
+      - re-extracted: everything before the LAST Re-extract press is dropped - the pass runs
+        from that press ("extracting" entry) to the "Documents extracted" right after it.
+    """
     events = sorted(job.events, key=lambda e: e.created_at)
-    extraction_end = None
+    start = job.created_at
+    after = 0
+    seen_extracted = False
     for i, ev in enumerate(events):
-        if ev.status == "extracting":
-            extraction_end = events[i + 1].created_at if i + 1 < len(events) else None
-    return extraction_end
+        if ev.status == "extracted":
+            seen_extracted = True
+        # Only an "extracting" AFTER the job was already extracted is a Re-extract - a hand
+        # upload writes one for its FIRST read too, and that pass still counts from creation.
+        elif ev.status == "extracting" and seen_extracted:
+            start, after = ev.created_at, i + 1
+    end = next((ev.created_at for ev in events[after:] if ev.status == "extracted"), None)
+    return start, end
+
+
+def _extraction_end(job: Job) -> datetime | None:
+    """When the job's current extraction finished (see _extraction_pass). Shared by Job
+    Processing Time and Workforce Productivity, so the two pages agree where review begins."""
+    return _extraction_pass(job)[1]
+
+
+def _review_start(job: Job, extraction_end: datetime | None) -> datetime | None:
+    """When the operator started reviewing - their first correction / page submitted / Next
+    (Job.review_started_at), which Re-extract clears so the review starts again after the
+    fresh read. A job nobody touched before Final Submit starts at its extraction's end."""
+    start = job.review_started_at
+    if start is not None and extraction_end is not None and start < extraction_end:
+        # Stamped before the latest Re-extract (a job from before Re-extract cleared it): its
+        # review restarts when that fresh extraction finished.
+        start = extraction_end
+    return start or extraction_end
+
+
+def _final_submit(job: Job) -> datetime | None:
+    """The Final Submit press that sends the job to the ERP - its LAST one (erp_submitted_at),
+    else the first (ai_submitted_at), else completion for a job that never went through it."""
+    return job.erp_submitted_at or job.ai_submitted_at or job.completed_at
 
 
 def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | None]:
@@ -352,20 +388,22 @@ def _job_stage_durations(job: Job) -> tuple[float | None, float | None, float | 
     more than once - failed, retried, finished days later - is timed on its final attempt
     only; see _erp_entry_minutes.
     """
+    # By request (2026-11-18 / 19):
+    #   Extracted Time  = created -> "Documents extracted"; after a Re-extract, that press ->
+    #                     its "Documents extracted" (the earlier pass is dropped)
+    #   Review Time     = operator's first action after that extraction -> Final Submit
+    #   ERP Entry Time  = Final Submit -> ERP submitted (unchanged, _erp_entry_minutes)
     events = sorted(job.events, key=lambda e: e.created_at)
-    extraction_start = None
-    extraction_end = _extraction_end(job)
-    for ev in events:
-        if ev.status == "extracting":
-            extraction_start = ev.created_at
+    extraction_start, extraction_end = _extraction_pass(job)
     extraction_minutes = None
-    if extraction_start and extraction_end:
+    if extraction_start and extraction_end and extraction_end >= extraction_start:
         extraction_minutes = (extraction_end - extraction_start).total_seconds() / 60
 
-    review_end = job.ai_submitted_at or job.completed_at
+    review_start = _review_start(job, extraction_end)
+    review_end = _final_submit(job)
     review_minutes = None
-    if extraction_end and review_end and review_end > extraction_end:
-        review_minutes = (review_end - extraction_end).total_seconds() / 60
+    if review_start and review_end and review_end > review_start:
+        review_minutes = (review_end - review_start).total_seconds() / 60
 
     return extraction_minutes, review_minutes, _erp_entry_minutes(job, events)
 
@@ -543,7 +581,9 @@ def compute_workforce_metrics(
     jobs_with_review: set[str] = set()
 
     for job in jobs:
-        extraction_end = _extraction_end(job)
+        # Review is timed from the operator's first action (see _review_start), the same start
+        # Job Processing Time's Review Time uses.
+        extraction_end = _review_start(job, _extraction_end(job))
         if extraction_end is None:
             continue
 
@@ -577,7 +617,7 @@ def compute_workforce_metrics(
             if job.id not in jobs_with_review:
                 continue
             total = 0.0
-            extraction_end = _extraction_end(job)
+            extraction_end = _review_start(job, _extraction_end(job))
             if job.validation_approved_at and job.validation_approved_by_id and extraction_end and job.validation_approved_at > extraction_end:
                 total += (job.validation_approved_at - extraction_end).total_seconds() / 60
             gk2_start = job.validation_approved_at or extraction_end

@@ -274,6 +274,25 @@ def edit_mark(
         updates["anchor_variations"] = cleaned
     if updates.get("date_picker") is None and "date_picker" in updates:
         updates["date_picker"] = False
+    if "fixed_options" in updates:
+        # blanks and repeats out, order kept; nothing left = no list (a text box again)
+        seen_options: set[str] = set()
+        choices: list[str] = []
+        for option in updates["fixed_options"] or []:
+            option = str(option or "").strip()
+            if option and option.lower() not in seen_options:
+                seen_options.add(option.lower())
+                choices.append(option)
+        updates["fixed_options"] = choices or None
+    if updates.get("dropdown_style") is not None:
+        from app.models.custom_field import DROPDOWN_STYLES
+
+        if updates["dropdown_style"] not in DROPDOWN_STYLES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(f"{updates['dropdown_style']!r} is not a dropdown style. Use one of: "
+                        + ", ".join(DROPDOWN_STYLES)),
+            )
     for field, value in updates.items():
         setattr(mark, field, value)
     new_label = updates.get("label_name")
@@ -696,11 +715,39 @@ def create_custom_field(
         date_picker=payload.date_picker,
         date_format=payload.date_format,
         field_order=payload.field_order,
+        requires_value_of=_check_requires_value_of(db, group_id, payload.requires_value_of,
+                                                   payload.label_name.strip()),
     )
     db.add(cf)
     db.commit()
     db.refresh(cf)
     return CustomFieldOut.model_validate(cf)
+
+
+def _check_requires_value_of(db: Session, group_id: str | None, label: str | None, own_label: str) -> str | None:
+    """CustomField.requires_value_of must name another field that exists on the SAME template -
+    a typo would otherwise silently blank this field on every job, since a field that does not
+    exist is always "empty". Returns the cleaned label (None to clear the condition)."""
+    from app.models.custom_field import CustomField
+    from app.models.field_mark import FieldMark
+    from app.models.template_document import TemplateDocument
+
+    label = (label or "").strip()
+    if not label:
+        return None
+    if label == own_label:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="A field cannot depend on itself.")
+    exists = (
+        db.query(CustomField.id).filter(CustomField.group_id == group_id,
+                                        CustomField.label_name == label).first()
+        or db.query(FieldMark.id).join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
+        .filter(TemplateDocument.group_id == group_id, FieldMark.label_name == label).first()
+    )
+    if not exists:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"No field called {label!r} on this template.")
+    return label
 
 
 @router.patch("/custom-fields/{field_id}")
@@ -759,6 +806,9 @@ def edit_custom_field(
         updates["source_document_ids"] = []
     if "display_document_id" in updates:
         _check_display_document_id(db, cf.group_id, updates["display_document_id"])
+    if "requires_value_of" in updates:
+        updates["requires_value_of"] = _check_requires_value_of(
+            db, cf.group_id, updates["requires_value_of"], updates.get("label_name") or cf.label_name)
     for field, value in updates.items():
         setattr(cf, field, value)
     new_label = updates.get("label_name")

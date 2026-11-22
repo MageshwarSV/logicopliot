@@ -44,6 +44,7 @@ export async function updateErpScript(
     notes: string | null;
     checkpoint_index: number | null;
     stay_open: boolean;
+    branch_field: string | null;
   }>,
 ): Promise<ErpScript> {
   const { data } = await apiClient.patch<ErpScript>(`/erp-scripts/${scriptId}`, patch);

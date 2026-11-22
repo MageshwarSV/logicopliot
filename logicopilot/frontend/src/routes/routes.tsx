@@ -17,22 +17,29 @@ import { WorkforceProductivityDashboardPage } from "../pages/tenant-admin/Workfo
 import { InvoicesPage } from "../pages/tenant-admin/InvoicesPage";
 import { SubscriptionPlansPage } from "../pages/tenant-admin/SubscriptionPlansPage";
 import { TenantReportsPage } from "../pages/tenant-admin/TenantReportsPage";
+import { UserJobSummaryPage } from "../pages/tenant-admin/UserJobSummaryPage";
 import { MastersPage } from "../pages/tenant-admin/MastersPage";
+import { QuotationMasterDataPage } from "../pages/tenant-admin/QuotationMasterDataPage";
+import { CthMasterDataPage } from "../pages/tenant-admin/CthMasterDataPage";
+import { ImporterMasterDataPage } from "../pages/tenant-admin/ImporterMasterDataPage";
 import { UsersPage } from "../pages/tenant-admin/UsersPage";
 import { OperatorDashboard } from "../pages/operator/DashboardShell";
 import { ManagerDashboard } from "../pages/manager/DashboardShell";
 import { JobsPage } from "../pages/jobs/JobsPage";
+import { DuplicateEmailsPage } from "../pages/jobs/DuplicateEmailsPage";
 import { JobRunPage } from "../pages/jobs/JobRunPage";
 import { EDocketPage } from "../pages/jobs/EDocketPage";
 import { IrnPendingListPage } from "../pages/irn/IrnPendingListPage";
 import { IrnPendingDetailPage } from "../pages/irn/IrnPendingDetailPage";
 import { CustomerListPage } from "../pages/tenant-admin/CustomerListPage";
+import { ZipPasswordsPage } from "../pages/tenant-admin/ZipPasswordsPage";
 import { DataTransformationPage } from "../pages/super-admin/DataTransformationPage";
 import { DataTransformationDetailPage } from "../pages/super-admin/DataTransformationDetailPage";
 import { PendingMailPage } from "../pages/super-admin/PendingMailPage";
 import { SettingsPage } from "../pages/super-admin/SettingsPage";
 import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
+import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
@@ -45,6 +52,7 @@ import { SaasFinancePaymentsPage } from "../pages/saas-finance/PaymentsPage";
 import { SaasFinancePricingPlansPage } from "../pages/saas-finance/PricingPlansPage";
 import { SaasFinanceReportsPage } from "../pages/saas-finance/ReportsPage";
 import { SaasFinanceInvoicePrintPage } from "../pages/saas-finance/InvoicePrintPage";
+import { SaasFinanceInvoiceSettingsPage } from "../pages/saas-finance/InvoiceSettingsPage";
 
 export function AppRoutes() {
   return (
@@ -140,6 +148,14 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/super-admin/document-processing"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <DocumentProcessingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/super-admin/filter-pages"
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
@@ -228,6 +244,22 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/tenant-admin/reports/user-jobs"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <UserJobSummaryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/zip-passwords"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ZipPasswordsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/tenant-admin/customers"
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
@@ -240,6 +272,30 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["tenant_admin"]}>
             <MastersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/importer"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <ImporterMasterDataPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/quotation"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <QuotationMasterDataPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/cth"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <CthMasterDataPage />
           </ProtectedRoute>
         }
       />
@@ -292,6 +348,14 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/duplicate-emails"
+        element={
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
+            <DuplicateEmailsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/jobs/:jobId"
         element={
           <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
@@ -310,7 +374,7 @@ export function AppRoutes() {
       <Route
         path="/account"
         element={
-          <ProtectedRoute allowedRoles={["tenant_admin", "operator", "gk2", "saas_finance"]}>
+          <ProtectedRoute allowedRoles={["super_admin", "tenant_admin", "admin", "operator", "gk2", "manager", "saas_finance"]}>
             <AccountSettingsPage />
           </ProtectedRoute>
         }
@@ -368,6 +432,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["saas_finance"]}>
             <SaasFinancePaymentsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/saas-finance/invoice-settings"
+        element={
+          <ProtectedRoute allowedRoles={["saas_finance", "super_admin"]}>
+            <SaasFinanceInvoiceSettingsPage />
           </ProtectedRoute>
         }
       />

@@ -62,7 +62,9 @@ class UsageResult(NamedTuple):
     deleted_pages: int = 0
 
 
-def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResult:
+def compute_usage(db: Session, tenant_id: str, period_start: date, *,
+                  bounds: tuple[datetime, datetime] | None = None,
+                  job_dates: tuple[date, date] | None = None) -> UsageResult:
     """Every page actually processed counts toward the bill regardless of what happened to its
     job afterward (rejected, duplicate, failed extraction, a later delete, or even the job
     itself being deleted) - the AI-page-processing cost was already incurred the moment the
@@ -72,8 +74,12 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     app/api/v1/jobs.py), silently erasing cost that was already incurred.
 
     "Jobs" counts still come straight from Job - a job's own count isn't subject to the same
-    delete-erases-history problem an individual page's cost is."""
-    start_dt, end_dt = _month_bounds(period_start)
+    delete-erases-history problem an individual page's cost is.
+
+    `bounds` (with `job_dates`, the same window as calendar days) narrows it to a shorter window
+    than the month - the finance screen's Today / This week. Usage figures only: a bill is
+    always for a whole month."""
+    start_dt, end_dt = bounds or _month_bounds(period_start)
 
     jobs = (
         db.query(Job.id, Job.group_id)
@@ -161,7 +167,16 @@ def compute_usage(db: Session, tenant_id: str, period_start: date) -> UsageResul
     # event-date scoped on purpose - see compute_usage's own docstring and calculate_bill's
     # caller, which must never lose a later-month rerun's cost just because the job it belongs
     # to started in an earlier, already-finalized month.
-    month_rows = _resolve_job_billing_rows(db, _job_billing_query(db, tenant_id, period_start).all())
+    if job_dates:
+        # A window may start in the previous month (a week over the 1st) - each month's part.
+        month_rows = []
+        m = job_dates[0].replace(day=1)
+        while m <= job_dates[1]:
+            month_rows += _resolve_job_billing_rows(db, _job_billing_query(
+                db, tenant_id, m, date_from=job_dates[0], date_to=job_dates[1]).all())
+            m = (m.replace(day=28) + timedelta(days=4)).replace(day=1)
+    else:
+        month_rows = _resolve_job_billing_rows(db, _job_billing_query(db, tenant_id, period_start).all())
     deleted_pages = sum(r.deleted_pages for r in month_rows)
 
     return UsageResult(
@@ -195,6 +210,11 @@ class JobBillingRow(NamedTuple):
     # classified or unclassified anywhere. Never negative: a rerun's own extra pages land in
     # rerun_pages, not here, so they can't make this go below zero.
     deleted_pages: int
+    # For a deleted job only: who deleted it and when (JobDeletion), as recorded at the time.
+    # None for a live job, and for a job deleted before deletions were recorded. The API hands
+    # these to a Super Admin only.
+    deleted_by: str | None = None
+    deleted_at: datetime | None = None
 
 
 def _job_billing_query(
@@ -303,6 +323,26 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
         ):
             unclassified_by_job[jid] = cnt
 
+    # Who deleted each job that no longer exists - one query for the whole page of rows.
+    from app.models.job_deletion import JobDeletion
+
+    gone_ids = [r.job_id for r in agg_rows if r.job_id not in jobs_by_id]
+    deletions: dict[str, JobDeletion] = {}
+    for i in range(0, len(gone_ids), 500):
+        for d in (db.query(JobDeletion).filter(JobDeletion.job_id.in_(gone_ids[i:i + 500]))
+                  .order_by(JobDeletion.created_at).all()):
+            deletions[d.job_id] = d
+
+    def _who(d: JobDeletion | None) -> str | None:
+        if d is None:
+            return None
+        if d.deleted_by_id is None and not d.deleted_by_name:
+            return d.how or "The system"
+        person = d.deleted_by_name or d.deleted_by_email or "A user"
+        if d.deleted_by_email and d.deleted_by_email != person:
+            person = f"{person} ({d.deleted_by_email})"
+        return person
+
     rows = []
     for r in agg_rows:
         live = jobs_by_id.get(r.job_id)
@@ -317,6 +357,8 @@ def _resolve_job_billing_rows(db: Session, agg_rows: list) -> list[JobBillingRow
             final_classified_pages=classified,
             final_unclassified_pages=unclassified,
             deleted_pages=max(0, orig - classified - unclassified),
+            deleted_by=None if live else _who(deletions.get(r.job_id)),
+            deleted_at=None if live or r.job_id not in deletions else deletions[r.job_id].created_at,
         ))
     return rows
 
@@ -542,6 +584,21 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
             pass
     month = start_basis.replace(day=1)
 
+    # Proper tax invoice (app/core/tax_invoice.py): numbered in the financial year it is raised
+    # in (INV/2026-27/0001), with Axiora's and the customer's details frozen on it.
+    from sqlalchemy import func as _func
+
+    from app.core.tax_invoice import buyer_snapshot, financial_year, seller_snapshot, split_tax
+    from app.models.invoice_settings import SINGLETON_ID, InvoiceSettings
+    from app.models.tenant import Tenant
+
+    inv_settings = db.get(InvoiceSettings, SINGLETON_ID) or InvoiceSettings()
+    tenant_row = db.get(Tenant, tenant_id)
+    raised = today
+    fy = financial_year(raised)
+    prefix = (inv_settings.number_prefix or "INV").strip() or "INV"
+    next_seq = (db.query(_func.max(Invoice.fy_sequence)).filter(Invoice.financial_year == fy).scalar() or 0) + 1
+
     while month < current_month_start:
         exists = (
             db.query(Invoice.id)
@@ -552,9 +609,17 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
             usage = compute_usage(db, tenant_id, month)
             bill = calculate_bill(config, usage.total_pages, month, usage.final_unclassified_pages)
             last_day = calendar.monthrange(month.year, month.month)[1]
+            seller = seller_snapshot(inv_settings)
+            buyer = buyer_snapshot(tenant_row) if tenant_row is not None else {}
+            tax_mode, cgst, sgst, igst = split_tax(bill.gst_amount, seller.get("state_code"), buyer.get("state_code"))
+            due = raised + timedelta(days=inv_settings.due_days or 0)
             db.add(Invoice(
                 tenant_id=tenant_id,
-                invoice_number=_invoice_number(tenant_id, month),
+                invoice_number=f"{prefix}/{fy}/{next_seq:04d}",
+                invoice_date=raised.isoformat(), due_date=due.isoformat(),
+                financial_year=fy, fy_sequence=next_seq,
+                seller=seller, buyer=buyer, tax_mode=tax_mode,
+                cgst_amount=cgst, sgst_amount=sgst, igst_amount=igst,
                 period_start=month.isoformat(),
                 period_end=month.replace(day=last_day).isoformat(),
                 platform_fee=bill.platform_fee,
@@ -570,6 +635,7 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
                 by_shipment_type=usage.by_shipment_type,
                 status="unpaid",
             ))
+            next_seq += 1
         if month.month == 12:
             month = date(month.year + 1, 1, 1)
         else:

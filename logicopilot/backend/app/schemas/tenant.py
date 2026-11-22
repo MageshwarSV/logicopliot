@@ -125,6 +125,10 @@ class BillingUsageOut(BaseModel):
     own numbers (in which case invoice_id/invoice_number/status are also set)."""
     month: str  # YYYY-MM
     is_finalized: bool
+    # Set for the Today / This week views (YYYY-MM-DD, India time): the usage figures cover only
+    # this window; the bill amounts are still the whole month's.
+    range_from: str | None = None
+    range_to: str | None = None
     invoice_id: str | None = None
     invoice_number: str | None = None
     status: str | None = None
@@ -190,6 +194,10 @@ class JobBillingRowOut(BaseModel):
     final_unclassified_pages: int
     deleted_pages: int  # original_pages minus whatever is still classified/unclassified live
     total_billed: int  # original_pages + rerun_pages
+    # A deleted job only, and only for a Super Admin: who deleted it and when. Null for
+    # everyone else, for a live job, and for a job deleted before deletions were recorded.
+    deleted_by: str | None = None
+    deleted_at: str | None = None  # ISO 8601
 
 
 class JobBillingPageOut(BaseModel):
@@ -307,6 +315,9 @@ class InvoiceOut(BaseModel):
     status: str
     paid_at: str | None
     created_at: datetime
+    # Razorpay payment id when the invoice was paid online with "Pay now"; None for a bank
+    # transfer marked paid by hand, or an unpaid invoice.
+    payment_reference: str | None = None
 
 
 class MarkInvoicePaid(BaseModel):

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { formatDateTime as formatAppDateTime } from "../../utils/dateTime";
 import axios from "axios";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
@@ -6,6 +7,7 @@ import { DataTable, type Column } from "../ui/DataTable";
 import { Pagination } from "../ui/Pagination";
 import { SearchIcon, DownloadIcon } from "../ui/icons";
 import * as tenantsApi from "../../api/tenants";
+import { useAuth } from "../../auth/useAuth";
 import type { JobBillingHighlight, JobBillingRow, ShipmentTypeUsage } from "../../api/tenants";
 
 const PAGE_SIZE = 10;
@@ -60,9 +62,7 @@ function StatusChip({ status }: { status: string }) {
 }
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+  return formatAppDateTime(iso, { year: true });
 }
 
 /** The reference design's "Job Details" card - per-job Original/Rerun/Total Pages breakdown,
@@ -76,9 +76,13 @@ export function JobBillingTable({
   onJobClick,
   highlight,
   onClearHighlight,
+  range,
 }: {
   tenantId: string;
   month: string;
+  /** A narrower starting window than the month (Today / This week, YYYY-MM-DD). Kept inside
+   *  `month`, since the table is per month. */
+  range?: { from: string; to: string } | null;
   /** Options for the Shipment Type filter - reuse whatever this month's usage already named. */
   shipmentTypes: ShipmentTypeUsage[];
   onJobClick?: (jobId: string) => void;
@@ -87,7 +91,15 @@ export function JobBillingTable({
   /** Clears the parent's highlight state - wired to the chip's own × and to Page 1 resets. */
   onClearHighlight?: () => void;
 }) {
-  const defaultBounds = useMemo(() => monthBounds(month), [month]);
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
+  const rangeFrom = range?.from;
+  const rangeTo = range?.to;
+  const defaultBounds = useMemo(() => {
+    const m = monthBounds(month);
+    if (!rangeFrom || !rangeTo) return m;
+    return { from: rangeFrom < m.from ? m.from : rangeFrom, to: rangeTo > m.to ? m.to : rangeTo };
+  }, [month, rangeFrom, rangeTo]);
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -184,6 +196,32 @@ export function JobBillingTable({
       header: "Total Pages",
       render: (r) => <span className="font-semibold text-slate-900 dark:text-slate-100">{r.total_billed.toLocaleString()}</span>,
     },
+    // Super Admin only - the server sends these to nobody else (it names a member of the
+    // customer's own staff, and the customer's Tenant Admin reads this same table). Shown on
+    // every view, not just "Deleted Jobs": a deleted job in the full list raises the same
+    // question. A live job has nobody to name, so its cells stay empty.
+    ...(isSuperAdmin
+      ? ([
+          {
+            header: "Deleted By",
+            render: (r) =>
+              r.status !== "deleted" ? (
+                ""
+              ) : r.deleted_by ? (
+                r.deleted_by
+              ) : (
+                <span className="text-slate-400" title="This job was deleted before deletions were recorded.">
+                  Not recorded
+                </span>
+              ),
+          },
+          {
+            header: "Deleted At",
+            render: (r) => (r.status === "deleted" && r.deleted_at ? formatDateTime(r.deleted_at) : ""),
+            className: "whitespace-nowrap",
+          },
+        ] as Column<JobBillingRow>[])
+      : []),
   ];
 
   return (

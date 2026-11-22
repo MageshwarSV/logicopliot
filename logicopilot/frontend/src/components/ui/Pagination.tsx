@@ -10,6 +10,8 @@ interface PaginationProps {
   noun?: string;
   /** Extra control shown just before the page buttons, e.g. a rows-per-page select. */
   extra?: ReactNode;
+  /** Also show first («) and last (») page buttons. */
+  showEnds?: boolean;
 }
 
 /** Windowed page-number control: first, last, current ±2, "…" for gaps. No existing precedent
@@ -27,7 +29,7 @@ function pageWindow(current: number, lastPage: number): (number | "…")[] {
   return out;
 }
 
-export function Pagination({ page, pageSize, total, onPageChange, noun = "jobs", extra }: PaginationProps) {
+export function Pagination({ page, pageSize, total, onPageChange, noun = "jobs", extra, showEnds = false }: PaginationProps) {
   if (total === 0) return null;
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
   const from = (page - 1) * pageSize + 1;
@@ -40,6 +42,11 @@ export function Pagination({ page, pageSize, total, onPageChange, noun = "jobs",
       </p>
       <div className="flex flex-wrap items-center justify-center gap-1">
         {extra}
+        {showEnds && (
+          <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(1)} aria-label="First page">
+            «
+          </Button>
+        )}
         <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
           ‹
         </Button>
@@ -66,6 +73,11 @@ export function Pagination({ page, pageSize, total, onPageChange, noun = "jobs",
         <Button variant="ghost" size="sm" disabled={page >= lastPage} onClick={() => onPageChange(page + 1)}>
           ›
         </Button>
+        {showEnds && (
+          <Button variant="ghost" size="sm" disabled={page >= lastPage} onClick={() => onPageChange(lastPage)} aria-label="Last page">
+            »
+          </Button>
+        )}
       </div>
     </div>
   );

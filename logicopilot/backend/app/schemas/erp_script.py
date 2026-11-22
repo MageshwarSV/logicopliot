@@ -6,6 +6,12 @@ class ErpStep(BaseModel):
     selector: str | None = None
     value: str | None = None
     field_label: str | None = None  # template field mapped to this input (a data "pill")
+    # select only: several job fields that may hold the answer, tried in order at run time -
+    # the first whose value one of the dropdown's options actually holds is picked (see
+    # browser._pick_select_value). E.g. ["branch_name", "Destination"] for the ERP's
+    # organisation Address dropdown, named after a customer's own branches ("3 (3)") or,
+    # for a forwarder, after ours ("CHENNAI").
+    value_fields: list[str] | None = None
     prompt: str | None = None  # AI rule: decide the value at run time from the job's data
     goal: str | None = None  # AI step: natural-language goal for AI to pick what to click
     frames: list[str] | None = None  # iframe chain (top -> innermost) the element lives in
@@ -96,6 +102,18 @@ class ErpStep(BaseModel):
     row_steps: list["ErpStep"] | None = None
     end_steps: list["ErpStep"] | None = None
 
+    # action "if_else": test the screen, run ONE of two recorded step sequences, then carry on.
+    #   cond        "text" (default) - the value (field_label / value) is on screen as the
+    #               exact text of something, in any frame; "element" - `selector` is on screen.
+    #   timeout     seconds to keep looking before deciding "not there" (default 5).
+    #   then_steps  run when the test passes;  then_goto  step number (1-based) to continue at
+    #   else_steps  run when it fails;         else_goto  afterwards - empty = the next step.
+    cond: str | None = None
+    then_steps: list["ErpStep"] | None = None
+    else_steps: list["ErpStep"] | None = None
+    then_goto: int | None = None
+    else_goto: int | None = None
+
 
 # row_steps/end_steps refer to ErpStep itself, so the forward reference must be resolved.
 ErpStep.model_rebuild()
@@ -114,6 +132,8 @@ class ErpScriptUpdate(BaseModel):
     # 0-based index of the step marked as the checkpoint; null clears it.
     checkpoint_index: int | None = None
     stay_open: bool | None = None
+    # The job field naming the job's ERP branch - routes it to that branch's always-on login.
+    branch_field: str | None = None
     name: str | None = None
     url: str | None = None
     has_login: bool | None = None
@@ -130,6 +150,7 @@ class ErpScriptOut(BaseModel):
 
     checkpoint_index: int | None = None
     stay_open: bool = False
+    branch_field: str | None = None
 
     id: str
     tenant_id: str

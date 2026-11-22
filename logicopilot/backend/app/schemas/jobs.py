@@ -59,6 +59,8 @@ class JobOut(BaseModel):
     # date the Manager app counts a completed job against. See Job.completed_at for why
     # neither created_at nor updated_at could be used for this.
     completed_at: datetime | None = None
+    # When the ERP entry last failed - shown under the "Failed" badge. See Job.erp_failed_at.
+    erp_failed_at: datetime | None = None
     # Set when status is "possible_duplicate" - the job whose extracted data this one's
     # checksum matched. duplicate_of_reference is the human-readable Job No for the popup
     # ("this looks like JOB-1E928B") - the id alone means nothing to an operator.
@@ -151,6 +153,9 @@ class JobDocumentOut(BaseModel):
     file_index: int = 0
     set_index: int | None = None
     original_name: str | None = None
+    # "excel" for a sheet read from its cells (no page images - shown as a table), else "pdf".
+    source_kind: str = "pdf"
+    sheet_name: str | None = None
     # The raw OCR this document was read from, per page. Stored since the "save the extracted
     # OCR" change but never returned, which left no way to tell a genuine extraction fault
     # from the document simply having been read badly.
@@ -160,6 +165,10 @@ class JobDocumentOut(BaseModel):
     # GK2's OWN independent approval of this document — see JobDocument.gk2_approved.
     gk2_approved: bool = False
     # False = this document is optional — Document Capture can complete without it.
+    # True when this is a document with NO file that the template lets be entered by hand
+    # (TemplateDocument.manual_entry_when_missing) - the screen shows its tab with no page
+    # image and its fields empty, typeable and never mandatory.
+    manual_entry: bool = False
     is_required: bool = True
     # This file's content changed since it was last read (a page cut out, a page added, a
     # reupload) and nothing has re-read it since - every one of those paths clears
@@ -340,6 +349,10 @@ class JobDetailOut(BaseModel):
     # Names of the mandatory documents this job still has not received - same meaning as on
     # JobOut, populated only when outer_status is "Missing Documents".
     missing_documents: list[str] | None = None
+    # What came with the mail/upload but could not be read (see Job.attachment_notes).
+    attachment_notes: dict | None = None
+    # The ERP Excel was edited in the app and saved (app/core/erp_excel_edit.py): who, when.
+    erp_excel_edited: dict | None = None
     mode: str | None = None
     # Same meaning as on JobOut - who this job is assigned to, and their name, so the Jobs
     # list's assign dropdown reflects a change immediately without waiting for its own
@@ -465,3 +478,10 @@ class AvailableGroup(BaseModel):
     mode: str | None = None
     pull_email: str | None = None
     pull_operator_id: str | None = None
+    # Excel by sheet - see TemplateGroup.excel_mode / excel_ignore_patterns.
+    excel_mode: str = "legacy"
+    excel_ignore_patterns: list[str] | None = None
+    auto_extract: bool = True
+    large_zip_hold: bool = False
+    large_zip_mb: int = 5
+    large_job_lane: bool = False

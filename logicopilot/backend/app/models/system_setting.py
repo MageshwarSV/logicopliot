@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Boolean, Date, Float, Integer, Text
+from sqlalchemy import Boolean, Date, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -55,6 +55,16 @@ class SystemSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # app/core/system_settings.max_erp_script_workers) - a number this machine cannot
     # actually sustain is refused, never silently clamped.
     erp_script_workers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Auto: ignore the number above and size the pool from this server's free memory, CPU
+    # cores and load each time an ERP run is queued (system_settings.auto_erp_script_workers).
+    erp_script_workers_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
+    # Parallel AI/OCR calls inside ONE large job on the large-job lane (app/core/large_job_lane.py).
+    large_job_parallel_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=6, server_default="6")
+
+    # off | record | replay - free testing of AI-heavy flows (app/core/ai_practice.py). Only
+    # honoured where the server's .env has PRACTICE_AI_ALLOWED=1 (SIT); ignored everywhere else.
+    practice_ai_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="off", server_default="off")
 
     # A JSON snapshot of the poller's own last cycle (see email_puller._record_cycle_status),
     # read by GET /email/poll-status. Persisted here rather than kept in a plain module-level

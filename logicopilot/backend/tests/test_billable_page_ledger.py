@@ -206,3 +206,37 @@ def test_jobs_created_in_a_later_month_than_their_page_events_still_bill_the_pag
     usage_old_month = compute_usage(db_session, tenant.id, two_months_ago)
     assert usage_old_month.total_pages == 0
     assert usage_old_month.total_jobs == 1
+
+
+def test_smart_upload_bills_every_page_blank_ones_included(client, db_session):
+    """By request (2026-11-19): a blank page costs the same render + OCR call as any other, so
+    it is billed too - 3 pages read, 3 billed, even though page 2 has no text."""
+    tenant = make_tenant(db_session)
+    group = TemplateGroup(tenant_id=tenant.id, name="Air Import", status="ready", mode="Air Import")
+    db_session.add(group)
+    db_session.flush()
+    tdoc = TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice", doc_type="Invoice")
+    db_session.add(tdoc)
+    db_session.flush()
+    job = Job(tenant_id=tenant.id, group_id=group.id, reference="JOB-BLANK-LEDGER", status="extracted")
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(JobDocument(tenant_id=tenant.id, job_id=job.id, template_document_id=tdoc.id, page_count=0))
+    db_session.commit()
+
+    op = make_user(db_session, role="operator", tenant=tenant, email="op-ledger-blank@example.com")
+    login(client, op.email)
+
+    texts = iter(["invoice text", "", "more invoice text"])
+    with patch("app.api.v1.jobs.ocr_page_image", side_effect=lambda *_a, **_k: {"text": next(texts), "tokens": []}), \
+         patch("app.core.classifier_air_import.assign_documents_detailed",
+               return_value=[[{"key": tdoc.id, "pages": [1, 2], "evidence": "e"}]]):
+        resp = client.post(
+            f"/api/v1/jobs/{job.id}/smart-upload",
+            files=[("files", ("inv.pdf", _pdf_bytes(3), "application/pdf"))],
+        )
+    assert resp.status_code == 200, resp.text
+
+    billed = sum(e.page_count for e in
+                 db_session.query(BillablePageEvent).filter(BillablePageEvent.job_id == job.id).all())
+    assert billed == 3

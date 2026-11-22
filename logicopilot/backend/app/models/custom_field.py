@@ -219,3 +219,10 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Mirrors FieldMark.field_order - see its own docstring.
     field_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # "Fill only when <another field> has a value": the label of another JOB-LEVEL field on the
+    # same job. While that field is empty, this one is kept empty too - at extraction, on a
+    # recompute, and the moment an operator clears that field. Built for MAWB Date, which must
+    # be blank whenever MAWB Number is (a plain House Air Waybill has no master date to give),
+    # and reusable for any such pair (HBL No / HBL Date, ...). None = no condition.
+    requires_value_of: Mapped[str | None] = mapped_column(String(255), nullable=True)
+

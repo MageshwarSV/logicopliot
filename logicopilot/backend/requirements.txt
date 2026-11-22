@@ -44,6 +44,10 @@ PyMuPDF>=1.24
 
 # Excel reading/writing — material master lookup sheets, reference-value templates
 openpyxl>=3.1
+# Old .xls workbooks, read per sheet (app/core/excel_text.py).
+xlrd>=2.0.1
+# AES-encrypted (7-Zip / WinZip) password-protected zips (app/core/attachment_unpack.py).
+pyzipper>=0.3.6
 
 # OCR — Google Cloud Document AI
 google-cloud-documentai>=2.29

@@ -10,6 +10,12 @@ export interface AvailableGroup {
   mode?: string | null;
   pull_email?: string | null;
   pull_operator_id?: string | null;
+  /** How Excel files are handled: "legacy" (converted to PDF) or "sheet" (read per sheet). */
+  excel_mode?: string;
+  /** Excel file names that are never documents; null = the built-in defaults. */
+  excel_ignore_patterns?: string[] | null;
+  /** Off: documents are read, classified and placed; extraction waits for Extract. */
+  auto_extract?: boolean;
 }
 
 export async function listAvailableGroups(): Promise<AvailableGroup[]> {
@@ -148,6 +154,22 @@ export interface PullProgress {
 
 export async function jobPullProgress(jobId: string): Promise<PullProgress> {
   const { data } = await apiClient.get<PullProgress>(`/jobs/${jobId}/pull-progress`);
+  return data;
+}
+
+/** Live progress of a running extraction (Run / Re-run extraction): which phase, "N of M",
+ *  and a time estimate. `active` is false whenever the job is not extracting. */
+export interface ExtractionProgress {
+  active: boolean;
+  phase?: "text" | "ai" | "docs" | "finishing";
+  done?: number;
+  total?: number;
+  eta_seconds?: number | null;
+  elapsed_seconds?: number;
+}
+
+export async function jobExtractionProgress(jobId: string): Promise<ExtractionProgress> {
+  const { data } = await apiClient.get<ExtractionProgress>(`/jobs/${jobId}/extraction-progress`);
   return data;
 }
 
@@ -370,9 +392,18 @@ export interface SmartUploadResult {
 /** Accepts any number of files in one request — several PDFs picked at once, or a mix of
  *  PDFs and ZIPs. They MUST go up together: the slot-vs-slot specificity rule that decides
  *  which file wins a contested slot only works when the whole batch is classified as one. */
-export async function smartUpload(jobId: string, files: File[]): Promise<SmartUploadResult> {
+export async function smartUpload(
+  jobId: string,
+  files: File[],
+  /** For a password-protected zip: the password, whether to save it for this customer, or
+   *  "read it without the locked zips". The server answers 409 (zip_password_needed) first. */
+  zip?: { password?: string; remember?: boolean; skipLocked?: boolean },
+): Promise<SmartUploadResult> {
   const form = new FormData();
   for (const file of files) form.append("files", file);
+  if (zip?.password) form.append("zip_password", zip.password);
+  if (zip?.remember) form.append("remember_password", "true");
+  if (zip?.skipLocked) form.append("skip_locked", "true");
   const { data } = await apiClient.post<SmartUploadResult>(`/jobs/${jobId}/smart-upload`, form);
   return data;
 }
@@ -393,6 +424,8 @@ export interface UnclassifiedPage {
   original_filename: string;
   page_number: number;
   preview_url: string;
+  /** Heading it is shown under, e.g. "Air Waybill" for a consolidation's house waybills. */
+  group_label?: string | null;
 }
 
 export async function getUnclassifiedPages(jobId: string): Promise<UnclassifiedPage[]> {
@@ -615,6 +648,12 @@ export async function carryAcrossRows(
   return data;
 }
 
+/** Make sure a document that may be entered by hand (no file uploaded) has its empty boxes on
+ *  this job. Adds only what is missing - see ensure_manual_entry_fields in jobs.py. */
+export async function ensureManualEntryFields(jobId: string): Promise<void> {
+  await apiClient.post(`/jobs/${jobId}/manual-entry-fields`);
+}
+
 export async function correctFieldValue(valueId: string, correctedValue: string): Promise<JobFieldValue> {
   const { data } = await apiClient.patch<JobFieldValue>(`/job-field-values/${valueId}`, {
     corrected_value: correctedValue,
@@ -640,11 +679,18 @@ export interface CustomFieldReferenceOption {
  * that consignee's own branches). Omit it for a table small enough to fetch whole and filter
  * client-side, same as before. */
 export async function listCustomFieldReferenceOptions(
-  jobId: string, customFieldId: string, key?: string,
+  jobId: string, customFieldId: string, key?: string, country?: string,
 ): Promise<CustomFieldReferenceOption[]> {
+  // `country` is the importer country picked on the job. The server reads it for one thing
+  // only: on a template that offers an Indian importer branch just once its GSTIN is in the
+  // dump, it is how the branch list knows it is being asked about India (the branch table
+  // itself has no country). Not sent unless given, so every other call is unchanged.
+  const params: Record<string, string> = {};
+  if (key) params.key = key;
+  if (country) params.country = country;
   const { data } = await apiClient.get<{ options: CustomFieldReferenceOption[] }>(
     `/jobs/${jobId}/custom-fields/${customFieldId}/reference-options`,
-    key ? { params: { key } } : undefined,
+    Object.keys(params).length ? { params } : undefined,
   );
   return data.options;
 }
@@ -919,4 +965,97 @@ export async function approveDuplicate(jobId: string): Promise<JobDetail> {
     decision: "approve",
   });
   return data;
+}
+
+// ---- Excel by sheet (template excel_mode "sheet") ------------------------------------------
+
+/** An Excel file (or the sheets of one) that came with the job but was not placed in a slot. */
+export interface UnclassifiedFile {
+  id: string;
+  original_filename: string;
+  sheets: { name: string; rows: number; reason?: string | null }[];
+}
+
+/** A sheet as rows of cells, for showing it as a table. */
+export interface SheetTable {
+  name: string;
+  columns: string[];
+  rows: { row: number; cells: Record<string, string> }[];
+  total_rows: number;
+}
+
+export async function getUnclassifiedFiles(jobId: string): Promise<UnclassifiedFile[]> {
+  const { data } = await apiClient.get<UnclassifiedFile[]>(`/jobs/${jobId}/unclassified-files`);
+  return data;
+}
+
+export async function previewUnclassifiedFile(jobId: string, fileId: string): Promise<SheetTable[]> {
+  const { data } = await apiClient.get<SheetTable[]>(`/jobs/${jobId}/unclassified-files/${fileId}/sheets`);
+  return data;
+}
+
+/** Put one sheet (or every sheet left in the file, when `sheet` is omitted) into a slot. */
+export async function assignUnclassifiedFile(
+  jobId: string, fileId: string, templateDocumentId: string, sheet?: string,
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(
+    `/jobs/${jobId}/unclassified-files/${fileId}/assign`,
+    { template_document_id: templateDocumentId, ...(sheet ? { sheet } : {}) },
+  );
+  return data;
+}
+
+export async function deleteUnclassifiedFile(jobId: string, fileId: string, sheet?: string): Promise<void> {
+  await apiClient.delete(`/jobs/${jobId}/unclassified-files/${fileId}`, { params: sheet ? { sheet } : {} });
+}
+
+export async function getDocumentSheet(jobId: string, documentId: string): Promise<SheetTable> {
+  const { data } = await apiClient.get<SheetTable>(`/jobs/${jobId}/documents/${documentId}/sheet`);
+  return data;
+}
+
+
+// ---- a job held for a zip password ("Waiting for Password") ---------------------------------
+
+/** Give the held job its zip password (or read it without the locked zips). The whole mail is
+ *  then read once, into this job, in the background. */
+export async function unlockHeldJob(
+  jobId: string,
+  body: { password?: string; remember?: boolean; label?: string; skip_locked?: boolean },
+): Promise<JobDetail> {
+  const { data } = await apiClient.post<JobDetail>(`/jobs/${jobId}/held/unlock`, body);
+  return data;
+}
+
+/** Document Capture -> Print: the chosen documents as ONE PDF (Blob), in the order given. */
+export async function printDocuments(
+  jobId: string,
+  body: {
+    documents: string[]; unclassified_pages: string[]; unclassified_files: string[];
+    /** "Print pages...": only these pages (1-based) of a document; unlisted = whole document. */
+    document_pages?: Record<string, number[]>;
+  },
+): Promise<Blob> {
+  const { data } = await apiClient.post<Blob>(`/jobs/${jobId}/print`, body, { responseType: "blob" });
+  return data;
+}
+
+// ---- the job's ERP Excel, opened and edited in the app ------------------------------------
+
+export interface ErpExcelSheet { name: string; rows: string[][] }
+export interface ErpExcelEdited { saved_by?: string | null; saved_at?: string | null; file?: string }
+
+export async function openJobExcel(jobId: string): Promise<{ edited: ErpExcelEdited | null; file: string; sheets: ErpExcelSheet[]; locked?: string | null }> {
+  const { data } = await apiClient.get(`/jobs/${jobId}/erp-excel/sheets`);
+  return data;
+}
+
+/** Save the edited workbook - from then on it replaces the generated one (download AND ERP import). */
+export async function saveJobExcel(jobId: string, sheets: ErpExcelSheet[]): Promise<{ edited: ErpExcelEdited | null }> {
+  const { data } = await apiClient.put(`/jobs/${jobId}/erp-excel/sheets`, { sheets });
+  return data;
+}
+
+export async function resetJobExcel(jobId: string): Promise<void> {
+  await apiClient.delete(`/jobs/${jobId}/erp-excel/edited`);
 }

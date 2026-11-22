@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { formatDateTime } from "../../utils/dateTime";
 import axios from "axios";
 import { AppShell } from "../../components/AppShell";
 import { Button } from "../../components/ui/Button";
@@ -48,9 +49,7 @@ function formatLastLogin(iso: string | null): string {
   if (!iso) return "Never";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
-  return `${date}, ${time}`;
+  return formatDateTime(d, { year: true });
 }
 
 function PlaneIcon() {

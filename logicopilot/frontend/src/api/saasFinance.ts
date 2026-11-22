@@ -109,3 +109,93 @@ export async function exportFinanceReport(
   link.remove();
   window.URL.revokeObjectURL(url);
 }
+
+// ---- Tax invoice (proper GST invoice) ------------------------------------------------------
+
+/** Axiora's own details printed on every invoice (SaaS Finance -> Invoice settings). */
+export interface InvoiceSettings {
+  seller_name?: string | null;
+  address?: string | null;
+  state_name?: string | null;
+  state_code?: string | null;
+  country?: string | null;
+  gstin?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  sac_platform?: string | null;
+  sac_usage?: string | null;
+  terms?: string | null;
+  due_days?: number | null;
+  notes?: string | null;
+  bank_details?: string | null;
+  number_prefix?: string | null;
+}
+
+export async function getInvoiceSettings(): Promise<InvoiceSettings> {
+  const { data } = await apiClient.get<InvoiceSettings>("/finance/invoice-settings");
+  return data;
+}
+
+export async function saveInvoiceSettings(body: InvoiceSettings): Promise<InvoiceSettings> {
+  const { data } = await apiClient.put<InvoiceSettings>("/finance/invoice-settings", body);
+  return data;
+}
+
+/** A customer's details on their tax invoice (Bill To / Ship To / place of supply). */
+export interface BillingDetails {
+  billing_legal_name?: string | null;
+  billing_gstin?: string | null;
+  billing_address?: string | null;
+  billing_state_name?: string | null;
+  billing_state_code?: string | null;
+  billing_email?: string | null;
+  billing_ship_to?: string | null;
+}
+
+export async function getBillingDetails(tenantId: string): Promise<BillingDetails> {
+  const { data } = await apiClient.get<BillingDetails>(`/tenants/${tenantId}/billing-details`);
+  return data;
+}
+
+export async function saveBillingDetails(tenantId: string, body: BillingDetails): Promise<BillingDetails> {
+  const { data } = await apiClient.put<BillingDetails>(`/tenants/${tenantId}/billing-details`, body);
+  return data;
+}
+
+export interface TaxInvoiceLine {
+  description: string; sac: string; qty: number; rate: number; taxable: number;
+  cgst_percent: number; cgst: number; sgst_percent: number; sgst: number;
+  igst_percent: number; igst: number; amount: number;
+}
+
+export interface TaxInvoiceParty {
+  name: string; address: string; state_name: string; state_code: string; gstin: string;
+  email?: string; phone?: string; country?: string; ship_to?: string;
+}
+
+export interface TaxInvoice {
+  invoice_number: string; invoice_date: string; due_date: string; terms: string; period: string;
+  place_of_supply: string; seller: TaxInvoiceParty; buyer: TaxInvoiceParty;
+  tax_mode: "cgst_sgst" | "igst"; lines: TaxInvoiceLine[];
+  subtotal: number; gst_percent: number; cgst: number; sgst: number; igst: number;
+  total: number; balance_due: number; amount_in_words: string; notes: string; bank_details: string;
+  status: string; paid_at?: string | null;
+}
+
+export async function getTaxInvoice(tenantId: string, invoiceId: string): Promise<TaxInvoice> {
+  const { data } = await apiClient.get<TaxInvoice>(`/tenants/${tenantId}/billing/invoices/${invoiceId}/print`);
+  return data;
+}
+
+/** GST state codes - first two digits of a GSTIN. */
+export const GST_STATES: [string, string][] = [
+  ["01", "Jammu and Kashmir"], ["02", "Himachal Pradesh"], ["03", "Punjab"], ["04", "Chandigarh"],
+  ["05", "Uttarakhand"], ["06", "Haryana"], ["07", "Delhi"], ["08", "Rajasthan"], ["09", "Uttar Pradesh"],
+  ["10", "Bihar"], ["11", "Sikkim"], ["12", "Arunachal Pradesh"], ["13", "Nagaland"], ["14", "Manipur"],
+  ["15", "Mizoram"], ["16", "Tripura"], ["17", "Meghalaya"], ["18", "Assam"], ["19", "West Bengal"],
+  ["20", "Jharkhand"], ["21", "Odisha"], ["22", "Chhattisgarh"], ["23", "Madhya Pradesh"], ["24", "Gujarat"],
+  ["26", "Dadra and Nagar Haveli and Daman and Diu"], ["27", "Maharashtra"], ["29", "Karnataka"],
+  ["30", "Goa"], ["31", "Lakshadweep"], ["32", "Kerala"], ["33", "Tamil Nadu"], ["34", "Puducherry"],
+  ["35", "Andaman and Nicobar Islands"], ["36", "Telangana"], ["37", "Andhra Pradesh"], ["38", "Ladakh"],
+  ["97", "Other Territory"],
+];

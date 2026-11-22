@@ -96,6 +96,13 @@ export interface TemplateGroup {
   /** Which transport mode this template is for — one of MODES below. */
   mode?: string | null;
   ruling_prompt?: string | null;
+  // Document Processing (Super Admin) - see TemplateGroup in the backend.
+  auto_extract?: boolean;
+  large_zip_hold?: boolean;
+  large_zip_mb?: number;
+  large_job_lane?: boolean;
+  excel_mode?: string;
+  excel_ignore_patterns?: string[] | null;
 }
 
 export interface CustomField {

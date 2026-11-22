@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -173,7 +174,27 @@ def rerun_live(job_id: str, db: Session = Depends(get_db), _=Depends(require_rol
     job_id_ = job.id
     script_id_ = script.id
 
+    from app.core import branch_sessions, erp_priority
+
+    # A branch-routed script runs this rerun on the job's branch login, from after the flag,
+    # like any queued job: no login of its own, so nothing running is paused or logged out.
+    branch = branch_sessions.branch_for_job(db, script, values)
+    if branch is not None and branch.get("missing"):
+        raise HTTPException(status_code=422, detail=branch["missing"])
+
+    hold_key = f"rerun:{job.id}:{uuid.uuid4().hex[:8]}"
+
+    def _wait_for_queue(state: dict) -> None:
+        # One login per ERP account: let a queued run that is mid-entry stop and close its
+        # browser first, or this login logs it out. It goes back in line and starts again from
+        # the beginning once this run is done (app/core/erp_priority.py).
+        state["log"] = ["Pausing the ERP queue - waiting for the job it is entering to stop..."]
+        erp_priority.wait_for_queue_to_pause(timeout=180)
+        state["log"] = []
+
     def _record(result: dict) -> None:
+        # The ERP is free again: the queue carries on, starting with whatever this run paused.
+        erp_priority.end_manual(hold_key)
         own = SessionLocal()
         try:
             j = own.get(Job, job_id_)
@@ -204,9 +225,23 @@ def rerun_live(job_id: str, db: Session = Depends(get_db), _=Depends(require_rol
     # Time is measured from (see Job.erp_submitted_at).
     job.erp_submitted_at = datetime.now(timezone.utc)
     db.commit()
-    sid = playback_manager.start(script.url, login, script.steps or [], values,
-                                 rows=rows, uploads=uploads, downloads_dir=out_dir,
-                                 on_done=_record)
+    if branch is not None:
+        sid = playback_manager.start(script.url, None, script.steps or [], values,
+                                     rows=rows, uploads=uploads, downloads_dir=out_dir,
+                                     on_done=_record, branch=branch,
+                                     checkpoint_index=script.checkpoint_index)
+        return {"session_id": sid, "erp_url": script.url}
+    erp_priority.begin_manual(hold_key)
+    try:
+        sid = playback_manager.start(script.url, login, script.steps or [], values,
+                                     rows=rows, uploads=uploads, downloads_dir=out_dir,
+                                     on_done=_record, before=_wait_for_queue)
+    except Exception:
+        erp_priority.end_manual(hold_key)
+        raise
+    # Ends with the run (in _record) - or, as a backstop, as soon as the session is done.
+    erp_priority.set_alive(
+        hold_key, lambda: not (playback_manager.get(sid) or {}).get("done", True))
     return {"session_id": sid, "erp_url": script.url}
 
 
@@ -230,14 +265,42 @@ def stepped_start(job_id: str, db: Session = Depends(get_db), _=Depends(require_
         if script.has_login
         else None
     )
-    try:
-        # Headless — the Entry Browser streams it into the app panel (no separate window).
-        sid = manager.start(script.url, login, headless=True)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Could not open the ERP: {exc}")
+    # One login per ERP account: pause the queue and let a run that is mid-entry close its
+    # browser before this one logs in. Bounded, because this is a request - nginx gives up at
+    # 60s. The paused run starts again from the beginning once this browser is closed (Stop,
+    # or the idle reaper). See app/core/erp_priority.py.
+    from app.core import branch_sessions, erp_priority
+
+    values, rows = entry_values_and_rows(db, job)
+    branch = branch_sessions.branch_for_job(db, script, values)
+    if branch is not None and branch.get("missing"):
+        raise HTTPException(status_code=422, detail=branch["missing"])
+    if branch is not None:
+        # On the job's branch login, starting at the page after the flag - a duplicate of the
+        # step-7 screen, like a queued job: nothing running is paused or logged out.
+        state, start_url = branch_sessions.wait_live(branch["id"], timeout=20)
+        if state is None:
+            raise HTTPException(status_code=503, detail=(
+                f"The ERP login for branch {branch['branch']} is not live right now. Check it "
+                "under ERP Scripts → Branch logins, then try again."))
+        try:
+            sid = manager.start(start_url or script.url, None, headless=True, storage_state=state)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Could not open the ERP: {exc}")
+    else:
+        hold_key = f"stepped:{job.id}:{uuid.uuid4().hex[:8]}"
+        erp_priority.begin_manual(hold_key)
+        erp_priority.wait_for_queue_to_pause(timeout=45)
+        try:
+            # Headless — the Entry Browser streams it into the app panel (no separate window).
+            sid = manager.start(script.url, login, headless=True)
+        except Exception as exc:  # noqa: BLE001
+            erp_priority.end_manual(hold_key)
+            raise HTTPException(status_code=502, detail=f"Could not open the ERP: {exc}")
+        # The hold lasts exactly as long as this browser does.
+        erp_priority.set_alive(hold_key, lambda: manager.has(sid))
     s = manager.get(sid)
     # The same files a real run gets. Without them the upload step has nothing to attach.
-    values, rows = entry_values_and_rows(db, job)
     out_dir = Path(get_settings().uploads_dir) / "jobs" / "_erp_captured" / job.id
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -245,6 +308,14 @@ def stepped_start(job_id: str, db: Session = Depends(get_db), _=Depends(require_
     except Exception:  # noqa: BLE001
         uploads = {}
     s.load_steps(script.steps or [], values, uploads=uploads)
+    if branch is not None and script.checkpoint_index is not None:
+        # Login and the steps up to the flag are already done by the branch login: the first
+        # Next press is the step after the flag.
+        ck = script.checkpoint_index
+        s._idx = ck + 1
+        s._done_set = set(range(ck + 1))
+        s._done_components = (ck + 1) + sum(
+            1 for st in (script.steps or [])[: ck + 1] if st.get("action") in ("click", "submit"))
     return {
         "session_id": sid,
         "erp_url": script.url,

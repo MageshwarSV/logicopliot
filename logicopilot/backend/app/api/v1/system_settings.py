@@ -21,8 +21,12 @@ from app.core.openai_pool import (
     list_api_keys,
     set_api_key_active,
 )
+from app.core.ai_practice import allowed as ai_practice_allowed
 from app.core.system_settings import (
     VALID_EXTRACTION_ENGINES,
+    auto_erp_script_workers,
+    get_erp_script_workers,
+    set_erp_script_workers_auto,
     InvalidExtractionEngine,
     InvalidOpenAIAdminKey,
     InvalidOpenAIBalance,
@@ -61,6 +65,10 @@ class OpenAIKeyIn(BaseModel):
 
 class WorkerCountIn(BaseModel):
     count: int
+
+
+class AutoIn(BaseModel):
+    on: bool
 
 
 class ExtractionEngineIn(BaseModel):
@@ -109,6 +117,15 @@ def read_system_settings(
         # How many real ERP submissions (browser automation) run at once - see
         # app/core/erp_queue.py. Defaults to 1.
         "erp_script_workers": row.erp_script_workers,
+        # Auto: the server sizes the pool itself (free memory, CPU cores, load) on every
+        # queued run - see system_settings.auto_erp_script_workers. The value is what Auto
+        # would pick right now.
+        "erp_script_workers_auto": bool(row.erp_script_workers_auto),
+        "erp_script_workers_auto_value": auto_erp_script_workers(),
+        # The large-job lane (app/core/large_job_lane.py) and practice AI (app/core/ai_practice.py).
+        "large_job_parallel_calls": row.large_job_parallel_calls,
+        "practice_ai_mode": row.practice_ai_mode if ai_practice_allowed() else "off",
+        "practice_ai_allowed": ai_practice_allowed(),
         "max_erp_script_workers": max_erp_script_workers(),
         # Manually entered - see app/core/system_settings.set_openai_balance's docstring for
         # why this can never come from OpenAI's own API, not even the Admin key.
@@ -599,6 +616,84 @@ def spend_analytics(
     )
 
 
+class LargeJobSettingsIn(BaseModel):
+    parallel_calls: int | None = None
+    practice_ai_mode: str | None = None          # off | record | replay
+
+
+@router.post("/large-job")
+def set_large_job_settings(
+    payload: LargeJobSettingsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Parallel calls per large job, and practice AI (off / record / replay). Practice AI can
+    only be switched on where the server's .env allows it (SIT) - never in production."""
+    from app.core import ai_practice
+
+    row = get_system_settings(db)
+    if payload.parallel_calls is not None:
+        if not 1 <= payload.parallel_calls <= 12:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Parallel calls must be between 1 and 12.")
+        row.large_job_parallel_calls = payload.parallel_calls
+    if payload.practice_ai_mode is not None:
+        if payload.practice_ai_mode not in ai_practice.MODES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Practice AI must be off, record or replay.")
+        if payload.practice_ai_mode != "off" and not ai_practice.allowed():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Practice AI is not available on this server.")
+        row.practice_ai_mode = payload.practice_ai_mode
+    db.commit()
+    ai_practice.forget_cached_mode()
+    return {"large_job_parallel_calls": row.large_job_parallel_calls,
+            "practice_ai_mode": row.practice_ai_mode if ai_practice.allowed() else "off"}
+
+
+@router.get("/large-job-lane")
+def large_job_lane_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """What the large-job lane is doing now and what waits - readable from any worker process."""
+    from app.core.large_job_lane import read_status
+
+    return read_status()
+
+
+class PipelinePingIn(BaseModel):
+    count: int = 5
+    sleep: float = 0.0
+    fail: bool = False
+
+
+@router.get("/pipeline")
+def pipeline_status(_: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Phase 2 pipeline: on/off, Redis, every stage's waiting / running / dead counts."""
+    from app.pipeline import runner
+
+    return runner.status()
+
+
+@router.post("/pipeline/ping")
+def pipeline_ping(payload: PipelinePingIn, _: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Queue a batch of do-nothing "ping" items - proves on SIT that items flow, survive a
+    restart and are counted, before any real work is routed to the pipeline."""
+    from app.pipeline import runner
+
+    if not runner.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="The pipeline is off here (PIPELINE_V2) or Redis is not reachable.")
+    count = max(1, min(int(payload.count), 500))
+    batch = runner.send_pings(count, sleep=max(0.0, min(payload.sleep, 30.0)), fail=payload.fail)
+    return {"batch": batch, "count": count}
+
+
+@router.get("/pipeline/ping/{batch}")
+def pipeline_ping_progress(batch: str, _: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    from app.pipeline import queues
+
+    return queues.progress(batch)
+
+
 @router.post("/workers")
 def set_workers(
     payload: WorkerCountIn,
@@ -633,6 +728,18 @@ def set_erp_workers(
     return {"erp_script_workers": get_system_settings(db).erp_script_workers}
 
 
+@router.post("/erp-workers/auto")
+def set_erp_workers_auto(
+    payload: AutoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Switch Auto on or off. On: every queued ERP run sizes the pool from this server's free
+    memory, CPU cores and load (never above one per core). Off: the saved number again."""
+    set_erp_script_workers_auto(db, payload.on)
+    return {"erp_script_workers_auto": payload.on, "erp_script_workers": get_erp_script_workers(db)}
+
+
 @router.get("/erp-queue")
 def get_erp_queue_status(
     db: Session = Depends(get_db),
@@ -648,7 +755,7 @@ def get_erp_queue_status(
     from app.core.erp_redis_queue import queue_depth
 
     depth = queue_depth()
-    depth["workers"] = get_system_settings(db).erp_script_workers
+    depth["workers"] = get_erp_script_workers(db)
     depth["max_workers"] = max_erp_script_workers()
     return depth
 

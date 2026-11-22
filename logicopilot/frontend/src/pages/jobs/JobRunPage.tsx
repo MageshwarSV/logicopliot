@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
+import { HeldPasswordPanel } from "./HeldPasswordPanel";
+import { PrintPagesModal } from "./PrintPagesModal";
+import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
+import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -8,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { displayStatusLabel } from "../../utils/statusDisplay";
-import { CalendarIcon } from "../../components/ui/icons";
+import { ArrowPathIcon, ArrowRightIcon, CalendarIcon, CheckBadgeIcon, CheckCircleIcon, ClockIcon, DownloadIcon, LayersIcon, PencilIcon, PrinterIcon, SparklesIcon, UploadIcon } from "../../components/ui/icons";
 import { pickedDateToFieldValue, toInputDate } from "../../utils/fieldDates";
 import { isNumberPattern, sanitizeNumericInput } from "../../utils/fieldNumbers";
 import { Input } from "../../components/ui/Input";
@@ -231,7 +236,7 @@ function fieldLabelOverride(
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
 const FIELD_HINTS: Record<string, string> = {
-  TOI: "EXW, EX-WORK and FCA are all taken as FOB for this declaration.",
+  TOI: "E and F terms (EXW, FCA, FAS, FOB) are declared as FOB; CFR and CPT as C&F; CIF, CIP and all D terms (DAP, DPU, DDP) as CIF.",
 };
 // A fixed, short set of valid values reads better as a dropdown than free text. `label` is
 // what the operator sees; `value` is what actually gets saved as the field's corrected value
@@ -247,6 +252,31 @@ type FieldSelectOption = { value: string; label: string };
 function parseFixedOption(raw: string): FieldSelectOption {
   const i = raw.indexOf(":");
   return i === -1 ? { value: raw, label: raw } : { value: raw.slice(0, i).trim(), label: raw.slice(i + 1).trim() };
+}
+// The dropdown a field's OWN list of choices asks for - a custom field's (CustomField.
+// fixed_options) or a document field's (FieldMark.fixed_options), the server sends both the
+// same way. One place, because a job screen draws these in three spots (a document tab's
+// header fields, its product lines, Additional Details) and the product lines had none: a
+// quantity unit on line 3 stayed a free text box while the same unit in the header was a list.
+//
+// A value that is NOT one of the choices is kept as an extra option, marked. A native <select>
+// shows its first option when the value matches none - so a line still holding "EA" from before
+// the list existed would read "not found" while "EA" was what the Excel went on receiving.
+function fixedChoiceProps(fv: {
+  value?: string | null;
+  fixed_options?: string[] | null;
+  dropdown_style?: string | null;
+}): { options?: FieldSelectOption[]; comboOptions?: string[]; comboPickOnly?: boolean } {
+  if (!fv.fixed_options?.length) return {};
+  if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
+    return { comboOptions: fv.fixed_options, comboPickOnly: fv.dropdown_style === "search" };
+  }
+  const options = fv.fixed_options.map(parseFixedOption);
+  const value = (fv.value ?? "").trim();
+  if (value && !options.some((o) => o.value === value)) {
+    options.push({ value, label: `${value} (not in the list)` });
+  }
+  return { options };
 }
 const FIELD_SELECT_OPTIONS: Record<string, FieldSelectOption[]> = {
   TransportModeCode: [
@@ -462,26 +492,39 @@ const MULTILINE_FIELD_LABELS = new Set([
 // A label too long to read fully under the shared truncate style wraps onto a second line
 // instead of being cut off mid-word.
 const WRAP_LABEL_FIELD_LABELS = new Set(["ERP Importer Address / Branch Code"]);
-// Dummy placeholder, by request - a plain Shipper/Seller/None radio shown beside these two
-// fields only, local to this render (never saved, never read back). No behavior is wired to
-// it yet; what it should actually do is still to be decided.
-const DUMMY_SHIPPER_SELLER_RADIO_LABELS = new Set(["shipper", "Sold By / Buyer Name"]);
-function DummyShipperSellerRadio() {
-  const [choice, setChoice] = useState<"Shipper" | "Seller" | "None">("Shipper");
+// "Use this value as Supplier" - which party is the SUPPLIER on the ERP entry (Excel INVOICES
+// Supplier_Name / Supplier_Address). A checkbox beside each candidate NAME field, only one ticked
+// at a time; the choice is saved in the hidden "Supplier Source" field as the ticked field's own
+// label, and the Excel columns read whichever field it names (see excel_entry._picked_field /
+// "pick_by"). Nothing saved yet = the first candidate (Shipper), the same default the Excel uses.
+// Shown only on a template that HAS a "Supplier Source" field - November 5 today - so adding it
+// to another template is a template setting, not a code change.
+const SUPPLIER_SOURCE_LABEL = "Supplier Source";
+const SUPPLIER_SOURCE_NAME_LABELS = ["shipper", "Sold By / Buyer Name"];
+function SupplierSourceCheckbox({
+  checked, disabled, onPick,
+}: { checked: boolean; disabled: boolean; onPick: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
   return (
-    <div className="flex items-center gap-2.5 text-xs font-normal text-slate-600 dark:text-slate-300">
-      {(["Shipper", "Seller", "None"] as const).map((opt) => (
-        <label key={opt} className="flex items-center gap-1 whitespace-nowrap">
-          <input
-            type="radio"
-            name="dummy-shipper-seller"
-            checked={choice === opt}
-            onChange={() => setChoice(opt)}
-          />
-          {opt}
-        </label>
-      ))}
-    </div>
+    <label
+      className="flex items-center gap-1.5 whitespace-nowrap text-xs font-normal text-slate-600 dark:text-slate-300"
+      title="Use this party as the Supplier (name and address) in the ERP Excel"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled || busy || checked}
+        onChange={async () => {
+          setBusy(true);
+          try {
+            await onPick();
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      Use this value as Supplier
+    </label>
   );
 }
 // A reference-backed field too large to ever offer as a plain dropdown (Shipment Port Code's
@@ -553,14 +596,21 @@ function customsHouseCodeFormatError(raw: string): string | null {
     ? null
     : "Customs House Code must be 5 letters followed by 1 digit (e.g. INKAT1).";
 }
-// Terms of Invoice: exactly 3 letters ("FOB", "CIF") - by request. Lowercase is accepted and
-// upper-cased on save (transformBeforeSave below), same as Shipment Country Code/Customs House
-// Code; only the LENGTH and letters-only shape are enforced here, not which 3 letters.
+// Terms of Invoice: a 3-letter code ("FOB", "CIF") or one of the two written with an ampersand
+// ("C&F", "C&I"). Lowercase is accepted and upper-cased on save (transformBeforeSave below),
+// same as Shipment Country Code/Customs House Code; only the SHAPE is enforced here, not which
+// code - that is the field's own list of choices (FieldMark.fixed_options) where it has one.
+//
+// It was "exactly 3 letters", which refused C&F and C&I outright: the customs filing's Nature
+// of Contract is one of FOB / CIF / C&F / C&I, so two of the four valid answers could not be
+// saved, and an operator correcting a CPT invoice to C&F got an alert instead.
 const TOI_FORMAT_FIELD_LABELS = new Set(["TOI"]);
 function toiFormatError(raw: string): string | null {
   const v = raw.trim();
   if (!v) return null; // blank is a MISSING-value concern, not a format one - see approveActive
-  return /^[A-Za-z]{3}$/.test(v) ? null : "Terms of Invoice must be exactly 3 letters (e.g. FOB, CIF).";
+  return /^(?:[A-Za-z]{3}|[A-Za-z]&[A-Za-z])$/.test(v)
+    ? null
+    : "Terms of Invoice must be one of FOB, CIF, C&F or C&I.";
 }
 // Display-only grouping, requested for 4S Logistics' Sea Import template: the flat field grid
 // read better as named sections, grouped the way an operator actually thinks about a
@@ -604,7 +654,9 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
     { heading: "Invoice Details", labels: ["Invoice No", "Invoice Date", "HBL No"] },
     {
       heading: "Value & Quantity Details",
-      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Gross Wt"],
+      // Gross Wt Unit straight after Gross Wt, so on the 2-column grid each value sits beside
+      // its own unit: Total Quantity | Total Quantity Unit, then Gross Wt | Gross Wt Unit.
+      labels: ["Currency_type", "Product Value", "total_quantity", "unit", "Gross Wt", "Gross Wt Unit"],
     },
     {
       heading: "Party Details",
@@ -618,7 +670,16 @@ const FIELD_GROUPS_BY_DOC_TYPE: Record<string, { heading: string; labels: string
   ],
   PackingList: [
     { heading: "Shipment Reference", labels: ["Invoice No", "Invoice Date", "HBL No"] },
-    { heading: "Package & Weight Details", labels: ["package_count", "total_quantity", "Gross Wt"] },
+    {
+      heading: "Package & Weight Details",
+      // Each value beside its own unit on the 2-column grid: Total Quantity | Total Quantity
+      // Unit ("unit"), Gross Wt | Gross Wt Unit, Net Weight | Net Weight Unit, then Package
+      // Count on its own last row so it doesn't push every pair out of line.
+      labels: [
+        "total_quantity", "unit", "Gross Wt", "Gross Wt Unit", "Net Weight", "Net Weight Unit",
+        "package_count",
+      ],
+    },
   ],
   Custom: [
     { heading: "Shipment Reference", labels: ["HBL No", "package_count", "Gross Wt"] },
@@ -677,6 +738,25 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
   Misc_Charge_Currency: "Misc Charge Currency",
   Ins_Currency: "Insurance Currency",
 };
+// The NAME an Additional Details field goes by on screen. Its field box, the "still need an
+// answer" banner and the "You haven't changed anything" confirmation all use this, so the
+// same field is never called one thing where it is typed and its backend name
+// ("AdvancePriorNormal") where it is confirmed. An admin's own per-template display name
+// (CustomField.display_label - "PriorNormal" on Air import (November 5), where Advance is not
+// offered) wins; the name the Excel and the ERP script use is never changed by this.
+function askFieldLabel(fv: { label_name: string; display_label?: string | null }): string {
+  return fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name] || fv.label_name;
+}
+// ...and the VALUE as the operator picked it: a dropdown saves a short code ("P") and shows a
+// word ("Prior"). The confirmation listed the code, which nobody can check at a glance. The
+// saved value - what the Excel and the ERP receive - stays the code.
+function askFieldValueText(fv: { label_name: string; value?: string | null; fixed_options?: string[] | null }): string {
+  const value = fv.value ?? "";
+  const options = fv.fixed_options?.length
+    ? fv.fixed_options.map(parseFixedOption)
+    : FIELD_SELECT_OPTIONS[fv.label_name];
+  return options?.find((o) => o.value === value)?.label ?? value;
+}
 // These dropdowns' own options already cover every real possibility - no blank "not found"
 // choice to accidentally leave selected.
 const NO_BLANK_DROPDOWN_OPTION_LABELS = new Set(["Payment Method", "AdvancePriorNormal", "BETypeCode"]);
@@ -859,6 +939,8 @@ export function JobRunPage() {
   // document has landed in a slot - see jobPullProgress. null once there is nothing left to
   // report (classification has started, or the job already has a real file in some slot).
   const [pullProgress, setPullProgress] = useState<jobsApi.PullProgress | null>(null);
+  // Live progress of a running extraction - see jobsApi.jobExtractionProgress.
+  const [extractProgress, setExtractProgress] = useState<jobsApi.ExtractionProgress | null>(null);
   // Pressing Submit with something unfilled used to paint a red banner naming the fields and
   // leave the operator to find them. On a fourteen-line invoice that is a hunt. Instead the
   // fields are asked for one at a time, in a popup, with a count of how many are left.
@@ -874,6 +956,13 @@ export function JobRunPage() {
   // Pages a smart-upload could not confidently place - shown as draggable cards next to the
   // document slots so an operator resolves them by hand instead of them being silently gone.
   const [unclassifiedPages, setUnclassifiedPages] = useState<jobsApi.UnclassifiedPage[]>([]);
+  // Excel by sheet: Excel files not placed in a slot, and the Excel document being viewed.
+  const [unclassifiedFiles, setUnclassifiedFiles] = useState<jobsApi.UnclassifiedFile[]>([]);
+  const [viewingExcelDoc, setViewingExcelDoc] = useState<{ id: string; title: string } | null>(null);
+  // Document Capture -> Print pages (PrintPagesModal).
+  const [printPagesOpen, setPrintPagesOpen] = useState(false);
+  // The job's ERP Excel, opened and edited in the app (ErpExcelEditor).
+  const [excelEditorOpen, setExcelEditorOpen] = useState(false);
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const [assigningPageId, setAssigningPageId] = useState<string | null>(null);
   // An already-placed document being dragged onto a DIFFERENT slot - "Move to" by drag,
@@ -906,9 +995,19 @@ export function JobRunPage() {
 
   async function refreshUnclassifiedPages() {
     try {
-      setUnclassifiedPages(await jobsApi.getUnclassifiedPages(jobId));
+      // Pages with a heading (e.g. a consolidation's house waybills, "Air Waybill") first and
+      // together, then the rest - same order the viewer's Prev/Next walks.
+      const pages = await jobsApi.getUnclassifiedPages(jobId);
+      const labelled = pages.filter((p) => p.group_label);
+      labelled.sort((a, b) => (a.group_label ?? "").localeCompare(b.group_label ?? ""));
+      setUnclassifiedPages([...labelled, ...pages.filter((p) => !p.group_label)]);
     } catch {
       /* non-critical - the slots themselves still load and work */
+    }
+    try {
+      setUnclassifiedFiles(await jobsApi.getUnclassifiedFiles(jobId));
+    } catch {
+      /* non-critical - same as above */
     }
   }
 
@@ -1161,6 +1260,32 @@ export function JobRunPage() {
     };
   }, [job?.id, job?.status, hasAnyUploadedDoc]);
 
+  // While extracting: which phase it is in and how far, every 2 s (jobsApi.jobExtractionProgress).
+  useEffect(() => {
+    if (!job || job.status !== "extracting") {
+      setExtractProgress(null);
+      return;
+    }
+    const watchedJobId = job.id;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function tick() {
+      try {
+        const p = await jobsApi.jobExtractionProgress(watchedJobId);
+        if (stop) return;
+        setExtractProgress(p.active ? p : null);
+      } catch {
+        /* a missed frame is not worth an error; the next one will do */
+      }
+      if (!stop) timer = setTimeout(tick, 2000);
+    }
+    tick();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [job?.id, job?.status]);
+
   // Extraction now starts on its own — the moment every slot is filled, or on a manual
   // (Re-run) press — and runs in the background, so there is nothing here to watch a live
   // feed for. Just keep reloading the job until its status moves off "extracting" and the
@@ -1385,13 +1510,37 @@ export function JobRunPage() {
     setSmartBusy(true);
     setError(null);
     setSmartResult(null);
+    const files = Array.from(fileList);
     try {
-      const res = await jobsApi.smartUpload(jobId, Array.from(fileList));
-      setJob(res.detail);
-      setSmartResult(res.results);
-      await refreshUnclassifiedPages();
+      let zip: { password?: string; remember?: boolean; skipLocked?: boolean } | undefined;
+      // A password-protected zip that no saved password opens: the server says so (409) before
+      // reading anything - ask for the password and send the same files again.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await jobsApi.smartUpload(jobId, files, zip);
+          setJob(res.detail);
+          setSmartResult(res.results);
+          await refreshUnclassifiedPages();
+          break;
+        } catch (err) {
+          const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+          if (!(axios.isAxiosError(err) && err.response?.status === 409 && detail?.code === "zip_password_needed") || attempt >= 5) throw err;
+          const names = (detail.locked ?? []).map((l: { path: string }) => l.path.split("/").slice(-2).join(" / ")).join("\n");
+          const pw = window.prompt(`${detail.message}\n\n${names}\n\nEnter the zip password (Cancel to read the upload without it):`);
+          if (pw && pw.trim()) {
+            zip = { password: pw.trim(), remember: window.confirm("Remember this password for this customer?") };
+          } else if (window.confirm("Read the upload without the password-protected zip(s)?")) {
+            zip = { skipLocked: true };
+          } else {
+            break;
+          }
+        }
+      }
     } catch (err) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Smart upload failed.");
+      if (axios.isAxiosError(err)) {
+        const d = err.response?.data?.detail;
+        setError(typeof d === "string" ? d : d?.message ?? "Smart upload failed.");
+      }
     } finally {
       setSmartBusy(false);
     }
@@ -1550,6 +1699,20 @@ export function JobRunPage() {
    *  queue (gk2_status "pending"). When this tenant has turned GK2 review off for this job's
    *  shipment type, the server instead runs the real ERP submission right away (gk2_skipped),
    *  and the user is moved to the dashboard while it runs (see leaveWhileErpRuns). */
+  /** Final Submit as GK1 presses it: unanswered required fields are asked one at a time first
+   *  (instead of naming them in a banner), then the job is submitted. Used by the page button
+   *  and by the ERP Excel editor's Submit. */
+  function startFinalSubmit() {
+    if (fixQueue.length > 0) {
+      setFixAt(0);
+      setFixDraft(fixQueue[0].fv.corrected_value ?? fixQueue[0].fv.value ?? "");
+      setFixError(null);
+      setFixOpen(true);
+      return;
+    }
+    submitForGk2Approval();
+  }
+
   async function submitForGk2Approval() {
     setGk2Busy(true);
     setError(null);
@@ -1588,6 +1751,38 @@ export function JobRunPage() {
   /** "Download as Excel" — GK1's Final Submit for Approval and GK2's Final Approve & Proceed
    *  both offer this for an Excel-entry job: the same workbook the real submission builds,
    *  rebuilt fresh from the job's current data every time it's pressed. */
+  /** What the ERP Excel editor's Submit does - exactly what this page's own button would. */
+  function erpExcelSubmit(j: JobDetail): ErpExcelSubmit | null {
+    if (readOnly) return null;
+    if (user?.role === "gk2") {
+      const canAct = j.gk2_status === "pending" || j.gk2_status === "failed";
+      return { label: j.gk2_status === "failed" ? "Retry & submit to ERP" : "Approve & submit to ERP",
+        disabled: !canAct || gk2Busy, hint: canAct ? undefined : "Nothing for GK2 to approve on this job yet.",
+        run: gk2ApproveAndProceed };
+    }
+    if (j.gk2_status === "failed") {
+      return { label: "Retry & submit to ERP", disabled: gk2Busy, run: gk2ApproveAndProceed };
+    }
+    if (j.gk2_status != null) return null;
+    const notReady = j.status !== "extracted" || !j.validation_approved;
+    return {
+      label: j.gk2_required === false ? "Submit to ERP" : "Submit for Approval",
+      disabled: notReady || gk2Busy,
+      hint: notReady ? "Submit is available once the job's review steps are complete." : undefined,
+      run: startFinalSubmit,
+    };
+  }
+
+  async function resetEditedExcel() {
+    if (!window.confirm("Throw away the edited Excel and build it again from the job's data?")) return;
+    try {
+      await jobsApi.resetJobExcel(jobId);
+      setJob(await jobsApi.getJob(jobId));
+    } catch {
+      window.alert("Could not reset the Excel.");
+    }
+  }
+
   async function downloadExcel() {
     setExcelBusy(true);
     setExcelError(null);
@@ -1759,7 +1954,8 @@ export function JobRunPage() {
   // component) so the sidebar and the content pane share ONE "which file is open" state
   // instead of the sidebar being unable to drive what the content pane shows.
   const reviewFiles = useMemo(
-    () => (job?.documents ?? []).filter((d) => d.is_uploaded),
+    // ...plus a document with no file that the template lets be entered by hand.
+    () => (job?.documents ?? []).filter((d) => d.is_uploaded || d.manual_entry),
     [job?.documents],
   );
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -2156,7 +2352,7 @@ export function JobRunPage() {
         if (unapproved.length) {
           return `${unapproved.length} document${unapproved.length === 1 ? "" : "s"} still need${
             unapproved.length === 1 ? "s" : ""
-          } "${isGk2Tab ? "Approve & Proceed" : "Submit for Approval"}": ${unapproved.map((d) => d.name).join(", ")}.`;
+          } ${isGk2Tab ? '"Approve & Proceed"' : "their review completed (Complete … Review)"}: ${unapproved.map((d) => d.name).join(", ")}.`;
         }
         // Formerly Dump Data's own gate: a part the reference sheet does not carry is left
         // blank on purpose rather than guessed — and a Bill of Entry cannot go without a CTH.
@@ -2263,12 +2459,7 @@ export function JobRunPage() {
     const d = new Date(hit.at);
     return Number.isNaN(d.getTime())
       ? null
-      : d.toLocaleString(undefined, {
-          day: "2-digit",
-          month: "short",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+      : formatDateTime(d);
   })();
 
   const stageIndex = STEPS.findIndex((s) => s.key === activeTab);
@@ -2462,6 +2653,10 @@ export function JobRunPage() {
                   {reviewFiles.map((f) => {
                     const approved = isFileApproved(f);
                     const isOpen = activeFile?.id === f.id;
+                    // Serial number within its document type (Invoice 1, Invoice 2 ... of 57) -
+                    // only when the type has more than one file, so a single Air Waybill stays plain.
+                    const sameType = reviewFiles.filter((x) => x.name === f.name);
+                    const serial = sameType.length > 1 ? sameType.indexOf(f) + 1 : null;
                     return (
                       <li key={f.id}>
                         <button
@@ -2482,9 +2677,11 @@ export function JobRunPage() {
                           >
                             {approved ? "✓" : ""}
                           </span>
-                          <span className="min-w-0 flex-1 truncate">
+                          <span className="min-w-0 flex-1 truncate" title={serial ? `${f.name} ${serial} of ${sameType.length}${f.original_name ? ` · ${f.original_name}` : ""}` : undefined}>
                             {f.name}
+                            {serial ? <span className="ml-1 font-semibold tabular-nums">{serial}</span> : null}
                             {f.original_name ? <span className="opacity-60"> · {f.original_name}</span> : null}
+                            {f.manual_entry ? <span className="opacity-60"> · enter by hand</span> : null}
                             {f.set_index ? <span className="opacity-60"> · set {f.set_index}</span> : null}
                           </span>
                         </button>
@@ -2619,6 +2816,59 @@ export function JobRunPage() {
           </div>
         </div>
       )}
+      {/* What came with the mail/upload but could not be read - a password-protected zip, a
+          damaged one, a file type that is not read - so nothing is missed without a trace. */}
+      {job.attachment_notes?.large_zip && job.status === "draft" && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span className="font-medium">Large zip ({job.attachment_notes.large_zip.size_mb} MB, over {job.attachment_notes.large_zip.limit_mb} MB)</span>
+          {" "}— the documents are placed. Check them in Data Capture, then press <span className="font-medium">Run extraction</span>.
+        </div>
+      )}
+      {job.attachment_notes?.lane_extract && job.status === "extracting" && (
+        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+          <span className="font-medium">Extraction is on the large-job lane</span>
+          {" "}— large jobs run one at a time, so it starts as soon as the one before it finishes. Small jobs are not held up by it.
+        </div>
+      )}
+      {(job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password") && (
+        <HeldPasswordPanel job={job} readOnly={readOnly} onJob={setJob} />
+      )}
+      {(() => {
+        const held = job.outer_status === "Waiting for Password" || job.stage === "Waiting for Password";
+        const locked = held ? [] : job.attachment_notes?.locked ?? [];
+        const skipped = job.attachment_notes?.skipped ?? [];
+        if (locked.length === 0 && skipped.length === 0) return null;
+        const shortPath = (p: string) => p.split("/").slice(-3).join(" / ");
+        return (
+          <div className="mb-4 space-y-2">
+            {locked.map((l, i) => (
+              <div key={`l${i}`} className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+                <div className="font-medium">
+                  🔒 Password-protected zip not opened: <span className="break-all">{shortPath(l.path)}</span>
+                </div>
+                <details className="mt-1 text-xs">
+                  <summary className="cursor-pointer">{l.files.length} file(s) inside were not read</summary>
+                  <ul className="mt-1 list-disc pl-5">
+                    {l.files.map((f, k) => <li key={k} className="break-all">{f}</li>)}
+                  </ul>
+                </details>
+              </div>
+            ))}
+            {skipped.length > 0 && (
+              <details className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                <summary className="cursor-pointer font-medium">Files not read ({skipped.length})</summary>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {skipped.map((sk, k) => (
+                    <li key={k} className="break-all">
+                      {shortPath(sk.path)} <span className="text-slate-500">— {sk.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        );
+      })()}
       <div className="mb-4 flex items-center justify-between">
         <Link to={backToJobsPath} className="inline-block text-sm text-indigo-600 hover:underline">← All jobs</Link>
         {(job.status === "failed" || completedWithoutJobNo) && (
@@ -2673,7 +2923,47 @@ export function JobRunPage() {
           and looking at Required Details Review while it ran showed only blank CTH/RITC
           fields with nothing anywhere saying why - indistinguishable from the data simply
           being gone for good. */}
-      {job.status === "extracting" && (
+      {job.status === "extracting" && extractProgress?.active && (() => {
+        const p = extractProgress;
+        const steps = ["text", "ai", "docs", "finishing"] as const;
+        const label =
+          p.phase === "text" ? `Reading page text — ${p.done ?? 0} of ${p.total ?? 0} page(s)`
+          : p.phase === "ai" ? `AI is reading the documents — ${p.done ?? 0} of ${p.total ?? 0} read(s)`
+          : p.phase === "docs" ? `Checking the values — document ${p.done ?? 0} of ${p.total ?? 0}`
+          : "Finishing — CTH codes, computed fields and saving";
+        const pct = p.phase === "finishing" ? 100
+          : Math.round(((p.done ?? 0) / Math.max(p.total ?? 1, 1)) * 100);
+        return (
+          <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm font-medium text-sky-800 dark:text-sky-200">
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+                {label}
+              </span>
+              <span className="shrink-0 text-xs text-sky-600 dark:text-sky-300">
+                {p.eta_seconds != null ? `~${formatEtaSeconds(p.eta_seconds)} remaining · ` : ""}
+                {p.elapsed_seconds != null ? `${formatEtaSeconds(p.elapsed_seconds)} so far` : ""}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sky-100 dark:bg-sky-500/20">
+              <div className={`h-full rounded-full bg-sky-500 transition-all ${p.phase === "finishing" ? "animate-pulse" : ""}`}
+                style={{ width: `${pct}%` }} />
+            </div>
+            <div className="mt-2 flex gap-3 text-[11px] text-sky-600/80 dark:text-sky-300/70">
+              {steps.map((s, i) => {
+                const at = steps.indexOf((p.phase ?? "text") as (typeof steps)[number]);
+                const names = { text: "Page text", ai: "AI reading", docs: "Checking values", finishing: "Finishing" };
+                return (
+                  <span key={s} className={i < at ? "line-through opacity-60" : i === at ? "font-semibold text-sky-800 dark:text-sky-200" : ""}>
+                    {i + 1}. {names[s]}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+      {job.status === "extracting" && !extractProgress?.active && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
           <span>AI is reading this job's documents right now — fields will fill in as soon as it finishes. This can take a minute or two.</span>
@@ -2685,10 +2975,31 @@ export function JobRunPage() {
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-slate-50">Upload documents</h2>
+            {readOnly && !showsMachinery && (
+<button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
+                >
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
+                </button>
+            )}
             {(!readOnly || showsMachinery) && (
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPrintPagesOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                  title="Pick the pages to print, or download them as one PDF"
+                >
+                  <PrinterIcon className="h-4 w-4" />
+                  Print pages
+                </button>
                 {!readOnly && (
-                  <label className={`inline-flex cursor-pointer items-center rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10 ${smartBusy ? "opacity-60" : ""}`}>
+                  <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 shadow-sm transition-colors hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300 dark:hover:bg-violet-500/20 ${smartBusy ? "opacity-60" : ""}`}>
+                    <UploadIcon className="h-4 w-4" />
                     {smartBusy ? "Classifying…" : "Smart upload (auto-classify)"}
                     <input
                       type="file"
@@ -2713,15 +3024,16 @@ export function JobRunPage() {
                     gated the same way as every other super-admin-only recovery action on this
                     page (showsMachinery), not just hidden behind readOnly. */}
                 {showsMachinery && (
-                  <Button
-                    size="sm" variant="secondary"
+                  <button
+                    type="button"
                     onClick={handleReclassifyDocuments}
-                    isLoading={reclassifyBusy}
-                    disabled={!job.documents.some((d) => d.is_uploaded)}
+                    disabled={reclassifyBusy || !job.documents.some((d) => d.is_uploaded)}
                     title="Re-run classification on this job's own already-uploaded documents - replaces them entirely with the result."
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
                   >
-                    Re-classify documents
-                  </Button>
+                    <LayersIcon className="h-4 w-4" />
+                    {reclassifyBusy ? "Re-classifying…" : "Re-classify documents"}
+                  </button>
                 )}
                 {reclassifyNote && (
                   // Deliberately not <Alert> - that is styled for a failure, and this is the
@@ -2739,9 +3051,15 @@ export function JobRunPage() {
                   </span>
                 ) : (
                   !readOnly && (
-                    <Button size="sm" onClick={() => runExtract()} isLoading={extracting} disabled={!allUploaded}>
-                      {job.status === "draft" ? "Run extraction" : "Re-run extraction"}
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => runExtract()}
+                      disabled={extracting || !allUploaded}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {job.status === "draft" ? <SparklesIcon className="h-4 w-4" /> : <ArrowPathIcon className="h-4 w-4" />}
+                      {extracting ? "Starting…" : job.status === "draft" ? "Run extraction" : "Re-run extraction"}
+                    </button>
                   )
                 )}
               </div>
@@ -2933,12 +3251,27 @@ export function JobRunPage() {
                       >
                         <span className="min-w-0 truncate">
                           ✓ {d.original_name ?? `${d.page_count} page${d.page_count === 1 ? "" : "s"}`}
+                          {d.source_kind === "excel" && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setViewingExcelDoc({ id: d.id, title: d.original_name ?? "Excel sheet" }); }}
+                              className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300"
+                              title="Read from the sheet's cells - click to view the sheet"
+                            >
+                              Excel · view sheet
+                            </button>
+                          )}
                           <span className="ml-1 text-xs opacity-70">
-                            ({d.page_count} page{d.page_count === 1 ? "" : "s"}
                             {/* Which invoice this file was paired into — by invoice number,
-                                not by the order it was uploaded. */}
-                            {uploaded.length > 1 && d.set_index ? `, invoice ${d.set_index}` : ""}
-                            {uploaded.length > 1 && !d.set_index ? ", whole job" : ""})
+                                not by the order it was uploaded. An Excel sheet has no pages. */}
+                            {(() => {
+                              const bits = [
+                                d.source_kind === "excel" ? "" : `${d.page_count} page${d.page_count === 1 ? "" : "s"}`,
+                                uploaded.length > 1 && d.set_index ? `invoice ${d.set_index}` : "",
+                                uploaded.length > 1 && !d.set_index ? "whole job" : "",
+                              ].filter(Boolean);
+                              return bits.length ? `(${bits.join(", ")})` : "";
+                            })()}
                           </span>
                         </span>
                         {!readOnly && (
@@ -3035,8 +3368,17 @@ export function JobRunPage() {
               );
             })}
           </div>
-          {unclassifiedPages.length > 0 && (
+          {(unclassifiedPages.length > 0 || unclassifiedFiles.length > 0) && (
             <div className="lg:sticky lg:top-4 lg:self-start">
+              <UnclassifiedExcelFiles
+                jobId={jobId}
+                files={unclassifiedFiles}
+                slots={docSlots.map((sl) => ({ id: sl.tdocId, name: sl.name }))}
+                readOnly={readOnly}
+                onJob={setJob}
+                onChanged={refreshUnclassifiedPages}
+              />
+              {unclassifiedPages.length > 0 && (<>
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
                 Not Required pages · {unclassifiedPages.length}
               </p>
@@ -3048,6 +3390,14 @@ export function JobRunPage() {
                   document-type slots on the left out of reach while you're mid-drag. */}
               <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pr-1">
                 {unclassifiedPages.map((p, i) => (
+                  <div key={p.id}>
+                  {(i === 0 || (unclassifiedPages[i - 1].group_label ?? "") !== (p.group_label ?? "")) && (unclassifiedPages.some((x) => x.group_label)) && (
+                    <p className="mb-1 mt-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      {p.group_label
+                        ? `${p.group_label} · ${unclassifiedPages.filter((x) => x.group_label === p.group_label).length} pages (house waybills — not used)`
+                        : "Other pages"}
+                    </p>
+                  )}
                   <UnclassifiedPageCard
                     key={p.id}
                     jobId={jobId}
@@ -3061,9 +3411,28 @@ export function JobRunPage() {
                     onDragEnd={() => { setDraggedPageId(null); setDragOverId(null); setDragOverDocId(null); }}
                     onView={() => setViewingPageIndex(i)}
                   />
+                  </div>
                 ))}
               </div>
+              </>)}
             </div>
+          )}
+          {printPagesOpen && job && (
+            <PrintPagesModal
+              jobId={jobId}
+              jobReference={job.reference}
+              slots={docSlots}
+              pages={unclassifiedPages}
+              files={unclassifiedFiles}
+              onClose={() => setPrintPagesOpen(false)}
+            />
+          )}
+          {viewingExcelDoc && (
+            <ExcelSheetModal
+              title={viewingExcelDoc.title}
+              load={async () => [await jobsApi.getDocumentSheet(jobId, viewingExcelDoc.id)]}
+              onClose={() => setViewingExcelDoc(null)}
+            />
           )}
           {viewingPageIndex !== null && unclassifiedPages[viewingPageIndex] && (
             <UnclassifiedPageViewer
@@ -3369,6 +3738,16 @@ export function JobRunPage() {
       )}
 
       {/* ---------------- ERP Submission ---------------- */}
+      {/* Outside every tab block - the button lives on Final Submit. */}
+      {excelEditorOpen && job && (
+        <ErpExcelEditor
+          jobId={jobId}
+          readOnly={readOnly}
+          submit={erpExcelSubmit(job)}
+          onClose={() => setExcelEditorOpen(false)}
+          onSaved={() => { jobsApi.getJob(jobId).then(setJob).catch(() => undefined); }}
+        />
+      )}
       {activeTab === "submission" && (
         <Card className="p-5">
           {(() => {
@@ -3407,12 +3786,43 @@ export function JobRunPage() {
                             ? "Waiting on GK2's final approval."
                             : "Hand this job over to GK2 for a final approval and the real ERP entry."}
                   </p>
+                  {job.excel_entry && job.erp_excel_edited && (
+                    <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                      Edited Excel in use
+                      {job.erp_excel_edited.saved_by ? ` — saved by ${job.erp_excel_edited.saved_by}` : ""}
+                      {job.erp_excel_edited.saved_at ? ` on ${formatDateTime(job.erp_excel_edited.saved_at)}` : ""}.
+                      {" "}Download and the ERP import use this copy; field changes made after it are not in it.
+                      {!readOnly && (
+                        <button type="button" onClick={resetEditedExcel} className="ml-2 font-semibold underline hover:text-amber-900">
+                          Reset to generated
+                        </button>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {job.excel_entry && (
-                    <Button variant="secondary" onClick={downloadExcel} isLoading={excelBusy}>
-                      Download as Excel
-                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => setExcelEditorOpen(true)}
+                      title="Open the ERP Excel here, add or correct details, and save - Submit to ERP then sends your saved copy"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/20"
+                    >
+                      <PencilIcon className="h-4 w-4" />
+                      Edit ERP Excel
+                    </button>
+                  )}
+                  {job.excel_entry && (
+                    <button
+                      type="button"
+                      onClick={downloadExcel}
+                      disabled={excelBusy}
+                      title="Download the Excel that goes to the ERP"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 disabled:cursor-wait disabled:opacity-60 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                    >
+                      <DownloadIcon className="h-4 w-4" />
+                      {excelBusy ? "Preparing…" : "Download ERP Excel"}
+                    </button>
                   )}
                   {!readOnly && isGk2 && (
                     <Button
@@ -3424,24 +3834,15 @@ export function JobRunPage() {
                     </Button>
                   )}
                   {!readOnly && !isGk2 && !gk2Started && (
-                    <Button
-                      onClick={() => {
-                        if (fixQueue.length > 0) {
-                          // Ask for them one at a time instead of naming them in a banner and
-                          // leaving the operator to find them on the page.
-                          setFixAt(0);
-                          setFixDraft(fixQueue[0].fv.corrected_value ?? fixQueue[0].fv.value ?? "");
-                          setFixError(null);
-                          setFixOpen(true);
-                          return;
-                        }
-                        submitForGk2Approval();
-                      }}
-                      isLoading={gk2Busy}
-                      disabled={job.status !== "extracted" || !job.validation_approved}
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-emerald-600/25 transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:bg-slate-700 dark:disabled:text-slate-400"
+                      onClick={startFinalSubmit}
+                      disabled={gk2Busy || job.status !== "extracted" || !job.validation_approved}
                     >
-                      {gk2NotNeeded ? "Final Submit" : "Final Submit for Approval"}
-                    </Button>
+                      <ArrowRightIcon className="h-4 w-4" />
+                      {gk2Busy ? "Submitting…" : gk2NotNeeded ? "Submit to ERP" : "Submit for Approval"}
+                    </button>
                   )}
                   {/* GK1's own correct-and-resubmit, scoped to a FAILED ERP run only - the
                       original "pending" sign-off stays GK2's own (see gk2_approve's own
@@ -3514,7 +3915,7 @@ export function JobRunPage() {
                 ✎ {askPending.length} field{askPending.length === 1 ? "" : "s"} still need an answer before this entry can be submitted
               </p>
               <p className="mt-1 text-xs text-sky-700 dark:text-sky-400">
-                {askPending.map((f) => f.label_name).join(", ")}
+                {askPending.map((f) => askFieldLabel(f)).join(", ")}
               </p>
               <button
                 type="button"
@@ -3970,7 +4371,7 @@ export function JobRunPage() {
                               readOnly={!canEditValues}
                               reload={load}
                               tone={fv.origin === "computed" ? "computed" : undefined}
-                              labelOverride={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                              labelOverride={fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
                               options={
                                 fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
                                   ? fv.fixed_options.map(parseFixedOption)
@@ -4010,12 +4411,19 @@ export function JobRunPage() {
                       (() => {
                         // Live, pre-save drafts (see liveErpEntryName/liveBranchName above) -
                         // previews as the operator picks, not only once each is saved.
-                        const nameValue = liveErpEntryName.toUpperCase();
-                        const branchValue = liveBranchName.toUpperCase();
+                        // Compared the way the server stores reference keys (reference_cache.
+                        // normalize_key: single spaces, no surrounding " -–—:,;()", upper case) -
+                        // a branch such as "3 (3)" is stored as "3 (3", so an exact comparison
+                        // never found its address.
+                        const norm = (s: string) =>
+                          s.split(/\s+/).filter(Boolean).join(" ")
+                            .replace(/^[ \-–—:,;()]+|[ \-–—:,;()]+$/g, "").toUpperCase();
+                        const nameValue = norm(liveErpEntryName);
+                        const branchValue = norm(liveBranchName);
                         const match = quotationAddressOptions.find(
                           (o) =>
-                            (o.match_values[0] ?? "").toUpperCase() === nameValue &&
-                            (o.match_values[1] ?? "").toUpperCase() === branchValue,
+                            norm(o.match_values[0] ?? "") === nameValue &&
+                            norm(o.match_values[1] ?? "") === branchValue,
                         );
                         return (
                           <div className="mt-3">
@@ -4221,9 +4629,28 @@ export function JobRunPage() {
               ? "This stage is not finished yet."
               : `Ready to continue to ${displayLabelFor(nextStage.key)}.`}
           </p>
-          <Button variant="secondary" onClick={goNext}>
-            Next: {displayLabelFor(nextStage.key)} →
-          </Button>
+          {(() => {
+            const ready = !blockedBecause(activeTab);
+            const label = activeTab === "extraction" && nextStage.key === "validation"
+              ? "Review Completed — Start Cross-Document Verification"
+              : `Next: ${displayLabelFor(nextStage.key)}`;
+            return (
+              <button
+                type="button"
+                onClick={goNext}
+                title={ready ? undefined : "This stage is not finished yet"}
+                className={`group inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${
+                  ready
+                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-500 hover:shadow-lg"
+                    : "border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
+                }`}
+              >
+                {ready ? <CheckCircleIcon className="h-5 w-5" /> : <ClockIcon className="h-4 w-4" />}
+                {label}
+                <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              </button>
+            );
+          })()}
         </div>
       )}
 
@@ -4243,13 +4670,13 @@ export function JobRunPage() {
               {askPending.slice(0, 40).map((fv) => (
                 <tr key={fv.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800">
                   <td className="px-3 py-1.5 text-slate-500">
-                    {fv.label_name}
+                    {askFieldLabel(fv)}
                     {fv.row_index != null && (
                       <span className="ml-1 text-slate-400">· line {fv.row_index}</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5 font-medium text-slate-800 dark:text-slate-200">
-                    {fv.value}
+                    {askFieldValueText(fv)}
                   </td>
                 </tr>
               ))}
@@ -5218,8 +5645,14 @@ function ExtractedField({
       } else {
         await reload();
       }
-    } catch {
+    } catch (err) {
       setFailed(true);
+      // A save the server refused ON PURPOSE says why (e.g. "MAWB Date can only be filled when
+      // MAWB Number has a value") - show that under the box instead of a bare "could not save".
+      if (axios.isAxiosError(err) && err.response?.status === 400
+          && typeof err.response.data?.detail === "string") {
+        setFormatError(err.response.data.detail);
+      }
     } finally {
       setSaving(false);
     }
@@ -5545,8 +5978,36 @@ function ExtractedField({
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               placeholder="not found"
-              className={boxClassName}
+              // A box that opens a list keeps its text clear of the arrow drawn over it below.
+              // Not while it is already padded for its own buttons (dirty / corrected) - two
+              // right-padding classes on one element is whichever the stylesheet lists last.
+              className={
+                comboOptions && !(!readOnly && (dirty || corrected))
+                  ? `${boxClassName} pr-9`
+                  : boxClassName
+              }
             />
+            {/* The down arrow that says "this opens a list". A searchable dropdown is an <input>,
+                and an <input> draws no arrow of its own - so beside a plain text box the two were
+                indistinguishable until clicked, and an operator had no way to tell a field to
+                PICK from a field to TYPE. Same glyph, size and place as a native <select>'s and
+                as the search picker's above. Never clickable itself: the click falls through to
+                the box, which is what opens the list. Steps aside for the Save button, which
+                takes the same corner while a typed value is waiting to be saved. */}
+            {comboOptions && !(dirty || saving) && (
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            )}
             {/* Every known value, shown in full on open regardless of what's in the field above
                 - a native <datalist> narrows itself to whatever matches the TYPED text as you
                 type, which hid the very options an operator opens the list to compare against.
@@ -6364,14 +6825,41 @@ function ExtractionReview({
   insuranceMode: "percentage" | "amount" | null;
   onToggleInsuranceMode: (toAmount: boolean) => void;
 }) {
+  // The hidden "Supplier Source" field (see SupplierSourceCheckbox) - present only on a template
+  // set up for it. Its saved value is the label of the ticked name field; none yet = Shipper.
+  const supplierSourceFv = job.field_values.find(
+    (x) => x.row_index == null && x.label_name === SUPPLIER_SOURCE_LABEL,
+  );
+  const supplierSourceChoice =
+    (supplierSourceFv?.corrected_value ?? supplierSourceFv?.extracted_value ?? "").trim()
+    || SUPPLIER_SOURCE_NAME_LABELS[0];
   const files = useMemo(
     () =>
       // The order the API sends, which is the template's own — Bill of lading, Invoice,
       // Packing List, Freight Certificate. Sorting by name put "Fright Certificate" second,
       // alphabetically, which is not how anyone works through a shipment.
-      (job.documents ?? []).filter((d) => d.is_uploaded),
+      // A document with no file that the template lets be entered by hand (manual_entry) gets a
+      // tab too - no page image, its fields empty and typeable.
+      (job.documents ?? []).filter((d) => d.is_uploaded || d.manual_entry),
     [job.documents],
   );
+  // A hand-entry tab needs its empty boxes. Extraction creates them; a job that got here some
+  // other way (extracted before the setting was turned on, or its file deleted afterwards) has
+  // none yet, so ask for them once per document and reload.
+  const askedManualFieldsFor = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (readOnly) return;
+    const missing = (job.documents ?? []).filter(
+      (d) =>
+        d.manual_entry &&
+        !askedManualFieldsFor.current.has(d.id) &&
+        !job.field_values.some((fv) => fv.job_document_id === d.id),
+    );
+    if (!missing.length) return;
+    missing.forEach((d) => askedManualFieldsFor.current.add(d.id));
+    void jobsApi.ensureManualEntryFields(jobId).then(reload).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.documents, job.field_values, jobId, readOnly]);
   const insurancePercentageFv = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "insurance_percentage",
   );
@@ -6380,12 +6868,16 @@ function ExtractionReview({
   );
   const { user } = useAuth();
   const isGk2 = user?.role === "gk2";
-  const proceedLabel = isGk2 ? "Approve & Proceed" : "Submit for Approval";
+  // GK1 completes the review of each document; GK2 approves it.
+  const proceedLabel = (name: string) => (isGk2 ? `Approve & Proceed — ${name}` : `Complete ${name} Review`);
   // GK2 re-reviews every document independently, on its own column — never GK1's.
   const isApproved = (d: JobDocument) => (isGk2 ? d.gk2_approved : d.approved);
   const active = files.find((f) => f.id === activeFileId) ?? files[0];
   const [approvingId, setApprovingId] = useState<string | null>(null);
-  const approvedCount = files.filter(isApproved).length;
+  // Only a document that was actually uploaded has to be approved - a hand-entry tab never
+  // blocks moving on (see blockedBecause("extraction"), which counts uploaded documents only).
+  const mustApprove = files.filter((f) => f.is_uploaded);
+  const approvedCount = mustApprove.filter(isApproved).length;
 
   // Delete/Reupload for the file on screen. Reupload is delete-then-upload into the SAME
   // slot rather than a raw upload over the existing file: the upload endpoint adds a new
@@ -6528,7 +7020,11 @@ function ExtractionReview({
       const relocated = job.field_values.filter(
         (fv) =>
           fv.row_index == null &&
-          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id),
+          (relocatedLabels.has(fv.label_name) || fv.display_document_id === active.template_document_id) &&
+          // Only this document's own value, or the one job-level value - never another file's.
+          // A consolidation has many invoices sharing one template, each with its own Product
+          // Value; one blank on invoice 47 used to block approving invoice 1 (JOB-12B137).
+          (!fv.job_document_id || fv.job_document_id === active.id),
       );
       // Insurance Rate (%) / Insurance Amount are a pair - only whichever one the operator
       // picked (see the check just above, which already returned early if nothing was picked
@@ -6803,9 +7299,21 @@ function ExtractionReview({
     if (!active) return [];
     const labels = RELOCATED_FIELD_LABELS_BY_DOC_TYPE[active.doc_type];
     const wanted = labels && labels.length ? new Set(labels) : null;
+    // Custom fields ONLY, and never a hidden one.
+    //
+    // This matched on the label alone, so the day "Product Value" (Total Invoice Value) became
+    // a field read off each invoice FILE - one value per invoice instead of one per job - every
+    // invoice tab pulled in all of them: a five-invoice job showed its own total, then all five
+    // again, then the old job-wide total that had been hidden. A field marked on a document
+    // already shows on its own document through `fields` above, which is scoped to the file
+    // being looked at; relocating it as well can only ever duplicate it or bring in another
+    // file's reading. And hidden_from_capture means "renders nowhere on this screen" everywhere
+    // else it is checked - this was the one place that forgot.
     return job.field_values.filter(
       (fv) =>
         fv.row_index == null &&
+        !fv.mark_id &&
+        !fv.hidden_from_capture &&
         ((wanted && wanted.has(fv.label_name)) ||
           fv.display_document_id === active.template_document_id),
     );
@@ -6892,6 +7400,12 @@ function ExtractionReview({
   const consigneeBranchFieldId = job.field_values.find(
     (fv) => fv.row_index == null && fv.label_name === "ERP Importer Address / Branch Code",
   )?.custom_field_id;
+  const savedConsigneeCountryForBranches = (() => {
+    const fv = job.field_values.find(
+      (f) => f.row_index == null && f.label_name === "ERP Consignee Country",
+    );
+    return (fv?.corrected_value ?? fv?.extracted_value ?? "").trim();
+  })();
   const [consigneeBranchOptions, setConsigneeBranchOptions] =
     useState<jobsApi.CustomFieldReferenceOption[]>([]);
   useEffect(() => {
@@ -6901,7 +7415,12 @@ function ExtractionReview({
     }
     let cancelled = false;
     jobsApi
-      .listCustomFieldReferenceOptions(jobId, consigneeBranchFieldId, savedConsigneeName)
+      // The country goes with it: where the template asks for it, an Indian branch is listed
+      // only once its GSTIN is in the dump, and the branch table alone cannot tell which
+      // country it is being asked about.
+      .listCustomFieldReferenceOptions(
+        jobId, consigneeBranchFieldId, savedConsigneeName, savedConsigneeCountryForBranches,
+      )
       .then((options) => {
         if (!cancelled) setConsigneeBranchOptions(options);
       })
@@ -6911,7 +7430,7 @@ function ExtractionReview({
     return () => {
       cancelled = true;
     };
-  }, [savedConsigneeName, consigneeBranchFieldId, jobId]);
+  }, [savedConsigneeName, savedConsigneeCountryForBranches, consigneeBranchFieldId, jobId]);
 
   // "ERP Branch Address" - narrowed server-side by the picked consignee exactly as the branch
   // list above it is (same `key` param, same reason: ~31,000 rows is far too many to ship to
@@ -7377,7 +7896,7 @@ function ExtractionReview({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/50">
         <span className="text-slate-500">
-          {approvedCount} of {files.length} document{files.length === 1 ? "" : "s"} approved —
+          {approvedCount} of {mustApprove.length} document{mustApprove.length === 1 ? "" : "s"} approved —
           every one needs "Approved and Proceed" before this can move to Cross Docs Verification.
         </span>
       </div>
@@ -7395,7 +7914,7 @@ function ExtractionReview({
             <h2 className="font-semibold text-indigo-600 dark:text-indigo-400">
               Document Preview
             </h2>
-            {!readOnly && active && (
+            {!readOnly && active && active.is_uploaded && (
               <div className="flex items-center gap-2">
                 <input
                   ref={reuploadInputRef}
@@ -7431,8 +7950,22 @@ function ExtractionReview({
           {docActionError && (
             <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">{docActionError}</p>
           )}
-          {active && (
+          {active && active.is_uploaded && (
             <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} updatedAt={active.updated_at} highlight={highlight} />
+          )}
+          {/* No file for this document, and the template lets it be entered by hand: nothing to
+              show here, so say so plainly instead of an empty or broken page image. */}
+          {active && !active.is_uploaded && (
+            <div className="flex min-h-[320px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 text-center dark:border-slate-700 dark:bg-slate-800/40">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                No {active.name} was uploaded
+              </p>
+              <p className="max-w-sm text-xs text-slate-500 dark:text-slate-400">
+                Enter its details by hand in the fields on the right. Nothing here is mandatory —
+                fill what you have. To read them from a document instead, upload the {active.name} on
+                Document Capture.
+              </p>
+            </div>
           )}
         </Card>
 
@@ -7525,11 +8058,12 @@ function ExtractionReview({
                   let fixedChoiceComboOptions: string[] | undefined;
                   let fixedChoiceComboPickOnly = false;
                   if (fv.fixed_options && fv.fixed_options.length) {
-                    if (fv.dropdown_style === "search" || fv.dropdown_style === "search_free") {
-                      fixedChoiceComboOptions = fv.fixed_options;
-                      fixedChoiceComboPickOnly = fv.dropdown_style === "search";
+                    const choice = fixedChoiceProps(fv);
+                    if (choice.comboOptions) {
+                      fixedChoiceComboOptions = choice.comboOptions;
+                      fixedChoiceComboPickOnly = !!choice.comboPickOnly;
                     } else {
-                      options = fv.fixed_options.map(parseFixedOption);
+                      options = choice.options;
                     }
                   }
                   if (dynamicRows !== undefined) {
@@ -7704,8 +8238,17 @@ function ExtractionReview({
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
                         headerExtra={
-                          DUMMY_SHIPPER_SELLER_RADIO_LABELS.has(fv.label_name)
-                            ? <DummyShipperSellerRadio />
+                          supplierSourceFv && SUPPLIER_SOURCE_NAME_LABELS.includes(fv.label_name)
+                            ? (
+                              <SupplierSourceCheckbox
+                                checked={supplierSourceChoice === fv.label_name}
+                                disabled={readOnly}
+                                onPick={async () => {
+                                  await jobsApi.correctFieldValue(supplierSourceFv.id, fv.label_name);
+                                  await reload();
+                                }}
+                              />
+                            )
                             : fv.label_name === BRANCH_ADDRESS_LABEL &&
                                 branchAddressMatches.length > 1
                               ? (
@@ -7942,6 +8485,9 @@ function ExtractionReview({
                                 tone="document"
                                 onFocusField={setFocusedFv}
                                 labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                                // A product-line field with its own list of choices (a
+                                // quantity unit) is picked, not typed - see fixedChoiceProps.
+                                {...fixedChoiceProps(fv)}
                                 flagged={missingRequiredIds.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
@@ -8065,17 +8611,31 @@ function ExtractionReview({
         <div className="flex items-center justify-end gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700">
           {isApproved(active) ? (
             <>
-              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                ✓ Approved — {active.name}
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                <CheckBadgeIcon className="h-4 w-4" />
+                {isGk2 ? "Approved" : "Review complete"} — {active.name}
               </span>
-              <Button variant="secondary" onClick={approveActive} isLoading={approvingId === active.id}>
-                Undo
-              </Button>
+              <button
+                type="button"
+                onClick={approveActive}
+                disabled={approvingId === active.id}
+                title="Mark this document as not reviewed again"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                <ArrowPathIcon className="h-4 w-4" />
+                {approvingId === active.id ? "Undoing…" : "Undo"}
+              </button>
             </>
           ) : (
-            <Button onClick={approveActive} isLoading={approvingId === active.id}>
-              {proceedLabel} — {active.name}
-            </Button>
+            <button
+              type="button"
+              onClick={approveActive}
+              disabled={approvingId === active.id}
+              className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-emerald-600/25 transition-colors hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-70"
+            >
+              <CheckCircleIcon className="h-5 w-5" />
+              {approvingId === active.id ? "Saving…" : proceedLabel(active.name)}
+            </button>
           )}
         </div>
       )}

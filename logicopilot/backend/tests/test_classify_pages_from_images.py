@@ -273,22 +273,28 @@ def test_no_pages_matching_returns_empty_list(tmp_path):
     assert result == []
 
 
-def test_previous_key_is_threaded_through_between_calls(tmp_path):
+def test_previous_key_is_given_only_to_a_page_that_got_no_answer_on_its_own(tmp_path):
+    """Every page is judged on its own first. Only a page with no confident answer is asked
+    again, told what the page before it was - telling EVERY page that is what let an invoice
+    page after a packing list be read as "more of the packing list"."""
     pages = []
-    for i in (1, 2):
+    for i in (1, 2, 3):
         p = tmp_path / f"page_{i}.png"
         p.write_bytes(b"\x89PNG\r\n")
         pages.append((i, p))
-    seen_prev_keys = []
+    seen = []
 
     def fake_classify(filename, page_no, image_path, candidates, model, prev_key):
-        seen_prev_keys.append(prev_key)
+        seen.append((page_no, prev_key))
+        if page_no == 3 and prev_key is None:
+            return None                                   # a continuation page, unsure alone
         return {"key": "bl", "confidence": 0.95, "evidence": f"evidence {page_no}"}
 
     with patch("app.core.classifier_sea_import.classify_page_image", side_effect=fake_classify):
-        classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
+        claims = classify_pages_from_images("file.pdf", pages, CANDIDATES, "gpt-5-mini")
 
-    assert seen_prev_keys == [None, "bl"]
+    assert sorted(seen, key=lambda x: (x[0], x[1] or "")) == [(1, None), (2, None), (3, None), (3, "bl")]
+    assert [(c["key"], c["pages"]) for c in claims] == [("bl", [1, 2, 3])]
 
 
 # ---------------------------------------------------------------------------

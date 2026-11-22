@@ -291,7 +291,10 @@ def resume_all(db_factory) -> list[dict]:
         try:
             rows = (
                 db.query(ErpScript)
-                .filter(ErpScript.stay_open.is_(True), ErpScript.checkpoint_index.isnot(None))
+                .filter(ErpScript.stay_open.is_(True), ErpScript.checkpoint_index.isnot(None),
+                        # branch-routed scripts run on branch logins - a parked browser would
+                        # log in as the script's own user and fight them (branch_sessions.py)
+                        ErpScript.branch_field.is_(None))
                 .all()
             )
             uploads = Path(get_settings().uploads_dir)

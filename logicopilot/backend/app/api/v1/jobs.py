@@ -5,8 +5,8 @@ import logging
 import math
 import re
 import shutil
-import zipfile
 from datetime import date, datetime, timedelta, timezone
+from app.core.modes import MODES
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -39,6 +39,7 @@ from app.core.page_filter import (
     kept_page_to_original,
     merge_pdf_pages,
     strip_repeated_page_header,
+    claim_covers_file,
 )
 from app.core.custom_page_filter import filter_pages_with_custom, get_active_custom_filter_texts
 from app.core.system_settings import get_extraction_engine, is_extraction_paused
@@ -935,6 +936,11 @@ def _is_missing_documents(
     # classified into slots, and during those seconds it genuinely has no documents yet. See
     # _outer_status's own version of this check; the two must agree, or the badge on a job
     # and the list it is counted in say different things about the same job.
+    # Except a job held for a zip password (app/core/zip_passwords.py): it IS missing its
+    # documents - nothing has been read yet - and is listed under Missing Documents, with its
+    # own "Waiting for Password" badge.
+    if job.stage_override == "Waiting for Password" and job.status not in _MISSING_DOCS_EXCLUDED_STATUSES:
+        return True
     if job.stage_override is not None:
         return False
     if job.status in _MISSING_DOCS_EXCLUDED_STATUSES:
@@ -955,8 +961,8 @@ def _missing_documents_sql_candidates(query, bucket: str | None = None):
         # Same exclusion as _is_missing_documents' own stage_override check - a job still
         # being filled from its email cannot be "missing" anything yet. Narrowing it here
         # too keeps this cheap pass and the Python check from disagreeing about which jobs
-        # are even candidates.
-        Job.stage_override.is_(None),
+        # are even candidates. Except a job held for a zip password (see _is_missing_documents).
+        or_(Job.stage_override.is_(None), Job.stage_override == "Waiting for Password"),
         Job.status.notin_(_MISSING_DOCS_EXCLUDED_STATUSES),
     )
     if bucket:
@@ -1150,6 +1156,15 @@ def _start_extraction_background(
     submit_extraction(_go)
 
 
+def _mark_review_started(job: Job) -> None:
+    """The first time an operator acts on an extracted job (a correction, a page submitted, a
+    Next, a check accepted) - the start of its "Review Time". Stamped once, never moved."""
+    if job.review_started_at is None and job.status not in ("draft", "extracting"):
+        from datetime import timezone as _tz
+
+        job.review_started_at = datetime.now(_tz.utc)
+
+
 def _begin_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -1186,6 +1201,20 @@ def _begin_extraction(
     job.stage_override = None
     job.status = "extracting"
     job.extraction_is_rerun = is_rerun
+    # Which document a one-document re-read is for, so a restart that interrupts it resumes
+    # THAT read rather than re-reading the whole job (app/core/restart_resume.py).
+    if job.attachment_notes is None or isinstance(job.attachment_notes, dict):
+        _notes = dict(job.attachment_notes or {})
+        if only_job_document_id:
+            _notes["extract_doc"] = only_job_document_id
+        else:
+            _notes.pop("extract_doc", None)
+        if _notes != (job.attachment_notes or {}):
+            job.attachment_notes = _notes
+    # A fresh read means a fresh review: "Review Time" restarts from the operator's first
+    # action AFTER this extraction finishes (by request, 2026-11-19), not from the first
+    # action before it. _mark_review_started stamps it again once they start working the job.
+    job.review_started_at = None
     # The note text itself is what job_history's external_status_label reads back to tell a
     # rerun apart from a job's first pass - is_rerun itself is a Job column, not snapshotted
     # onto the JobEvent, so by the time an OLDER event is viewed this note is the only record
@@ -1197,6 +1226,15 @@ def _begin_extraction(
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage="Data Validation", note=note))
     db.commit()
+    if not only_job_document_id:
+        # A large consolidation on a template using the large-job lane: its extraction waits its
+        # turn on the lane instead of taking a shared worker (app/core/large_job_lane.py). A
+        # one-document re-read stays on the normal path - it is small.
+        from app.core.large_job_lane import is_lane_job, request_extraction
+
+        if is_lane_job(job, db.get(TemplateGroup, job.group_id)):
+            request_extraction(db, job, is_rerun=is_rerun)
+            return
     _start_extraction_background(job.id, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
 
 
@@ -1213,6 +1251,10 @@ def _maybe_auto_extract(db: Session, job: Job) -> None:
     group = db.get(TemplateGroup, job.group_id)
     if group is None or not group.documents:
         return
+    if getattr(group, "auto_extract", True) is False:
+        return                      # this template waits for someone to press Extract
+    if (job.attachment_notes or {}).get("large_zip"):
+        return                      # a large zip job waits for Run extraction (large_zip_hold)
     filled = {
         jd.template_document_id
         for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
@@ -1693,7 +1735,8 @@ def create_job(
     return _job_out(db, job)
 
 
-def _delete_job_cascade(db: Session, job: Job) -> list[Path]:
+def _delete_job_cascade(db: Session, job: Job, deleted_by: User | None = None,
+                        how: str = "") -> list[Path]:
     """Delete a job and everything that hangs off it - field values, documents. Also,
     unlike a single document's own removal (see _remove_document_file, which does this per
     file), the actual files on disk for every one of them: without this, every job delete -
@@ -1717,6 +1760,30 @@ def _delete_job_cascade(db: Session, job: Job) -> list[Path]:
              for sd in db.query(SupportingDocument).filter(SupportingDocument.job_id == job.id).all()]
     dirs.append(job_email_dir(job.id))
 
+    # WHO deleted it, written in the same transaction as the delete itself: once the job row
+    # is gone its billing rows are all that is left, and the Billing page's "Deleted Jobs" had
+    # no way to say who removed any of them. See JobDeletion. `deleted_by` None = the system.
+    from app.models.job_deletion import JobDeletion
+
+    db.add(JobDeletion(
+        tenant_id=job.tenant_id, job_id=job.id, job_reference=job.reference or job.id,
+        deleted_by_id=deleted_by.id if deleted_by is not None else None,
+        deleted_by_name=(deleted_by.full_name if deleted_by is not None else None),
+        deleted_by_email=(deleted_by.email if deleted_by is not None else None),
+        deleted_by_role=(deleted_by.role if deleted_by is not None else None),
+        how=(how or ("Deleted from the Jobs list" if deleted_by is not None else "Removed by the system"))[:255],
+    ))
+
+    # Excel files left in Unclassified (see app/core/excel_intake.py) - their rows and folder.
+    from app.models.job import UnclassifiedFile
+    from app.core.excel_intake import unclassified_excel_dir
+
+    dirs.append(unclassified_excel_dir(job.id))
+    from app.core.erp_excel_edit import edited_dir as _edited_xlsx_dir
+
+    dirs.append(_edited_xlsx_dir(job.id))
+    db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id).delete()
+
     db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).delete()
     db.query(JobDocument).filter(JobDocument.job_id == job.id).delete()
     db.delete(job)
@@ -1733,7 +1800,7 @@ def delete_job(
     """Delete a job and its documents/values. Operators may delete their own or the
     mail-routed jobs assigned to them; admins any job in scope."""
     job = _load_job(db, job_id, scope, user)
-    dirs = _delete_job_cascade(db, job)
+    dirs = _delete_job_cascade(db, job, deleted_by=user)
     db.commit()
     for d in dirs:
         shutil.rmtree(d, ignore_errors=True)
@@ -2191,6 +2258,140 @@ def job_activity_chart(
     return JobActivityChartOut(days=days, pending_jobs=pending_jobs)
 
 
+def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | None,
+                      date_from: str, date_to: str) -> dict:
+    """Reports -> User Job Summary. For the chosen operation and period (IST dates, both ends
+    inclusive): per user, the jobs that ARRIVED in the period (Total), how many of those have
+    reached the ERP (ERP Completed - the same _category_condition("submitted") rule as the
+    ERP Submitted badge and list) and the rest (Pending = Total - Completed). The same
+    "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
+
+    The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
+    else the mail-routed operator); jobs with neither are "Unassigned". Every active operator
+    working this operation is listed even with no jobs (0s), busiest first."""
+    try:
+        d_from = date.fromisoformat(date_from)
+        d_to = date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be YYYY-MM-DD")
+    if d_to < d_from:
+        raise HTTPException(status_code=422, detail="date_to must not be before date_from")
+    if (d_to - d_from).days > 366:
+        raise HTTPException(status_code=422, detail="Pick a range of 366 days or fewer")
+    # IST day boundaries, passed as UTC so every database compares them the same way.
+    start = datetime(d_from.year, d_from.month, d_from.day, tzinfo=IST).astimezone(timezone.utc)
+    end = (datetime(d_to.year, d_to.month, d_to.day, tzinfo=IST) + timedelta(days=1)).astimezone(timezone.utc)
+
+    base = _jobs_visible_query(db, scope, user)
+    group_modes = {g.id: g.mode for g in scoped_query(db, TemplateGroup, scope).all()}
+    modes = sorted({m for m in group_modes.values() if m}, key=lambda m: (MODES.index(m) if m in MODES else 99, m))
+
+    arrived = base.filter(Job.created_at >= start, Job.created_at < end)
+    jobs = arrived.all()
+    submitted_ids = {
+        row[0] for row in arrived.filter(_category_condition("submitted")).with_entities(Job.id).all()
+    }
+    if mode:
+        jobs = [j for j in jobs if (group_modes.get(j.group_id) or _shipment_mode(db, j)) == mode]
+
+    users_by_id: dict[str, User] = {}
+    rows: dict[str, dict] = {}
+
+    def _row_for(u: User | None) -> dict:
+        return rows.setdefault(u.id if u else "", {
+            "user_id": u.id if u else None,
+            "name": (u.full_name.strip() if u and u.full_name else None) or "Unassigned",
+            "avatar_url": getattr(u, "avatar_url", None) if u else None,
+            "total": 0, "completed": 0, "pending": 0,
+        })
+
+    # Every active operator (Gate Keeper) of this tenant who works this operation is listed,
+    # with 0s when they had no jobs - by request, so an idle user is visible rather than missing.
+    # Operators own jobs (creator / mail-routed); other roles appear only if they have jobs.
+    if scope.tenant_id is not None:
+        operators = scoped_query(db, User, scope).filter(User.role == OPERATOR, User.is_active.is_(True)).all()
+        for op in operators:
+            if mode and op.assigned_modes and mode not in op.assigned_modes:
+                continue
+            users_by_id[op.id] = op
+            _row_for(op)
+
+    for j in jobs:
+        uid = j.created_by_id or j.assigned_operator_id
+        u = None
+        if uid:
+            if uid not in users_by_id:
+                users_by_id[uid] = db.get(User, uid)
+            u = users_by_id[uid]
+        r = _row_for(u)
+        r["total"] += 1
+        if j.id in submitted_ids:
+            r["completed"] += 1
+        else:
+            r["pending"] += 1
+    ordered = sorted(rows.values(), key=lambda r: (r["user_id"] is None, -r["total"], r["name"].lower()))
+    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "pending")}
+    return {"modes": modes, "mode": mode, "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
+            "users": ordered, "totals": totals}
+
+
+@router.get("/jobs/user-summary")
+def user_job_summary(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+) -> dict:
+    return _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+
+
+@router.get("/jobs/user-summary/export")
+def user_job_summary_export(
+    date_from: str,
+    date_to: str,
+    mode: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(SUPER_ADMIN, TENANT_ADMIN)),
+):
+    """The same table as an Excel file, with its Total row."""
+    import io
+
+    import openpyxl
+    from fastapi.responses import Response
+    from openpyxl.styles import Font
+
+    data = _user_job_summary(db, scope, user, mode or None, date_from, date_to)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "User Job Summary"
+    ws.append([f"User Job Summary - {data['mode'] or 'All operations'} - {data['date_from']} to {data['date_to']}"])
+    ws["A1"].font = Font(bold=True)
+    ws.append([])
+    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"])
+    for c in ws[3]:
+        c.font = Font(bold=True)
+    for i, r in enumerate(data["users"], start=1):
+        ws.append([i, r["name"], r["total"], r["completed"], r["pending"]])
+    t = data["totals"]
+    ws.append(["", "Total", t["total"], t["completed"], t["pending"]])
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+    ws.column_dimensions["B"].width = 32
+    for col in "CDE":
+        ws.column_dimensions[col].width = 20
+    buf = io.BytesIO()
+    wb.save(buf)
+    stem = f"User_Job_Summary_{(data['mode'] or 'All').replace(' ', '_')}_{data['date_from']}_to_{data['date_to']}"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.xlsx"'},
+    )
+
+
 @router.get("/jobs", response_model=list[JobOut])
 def list_jobs(
     db: Session = Depends(get_db),
@@ -2547,6 +2748,31 @@ def job_pull_progress(
     }
 
 
+@router.get("/jobs/{job_id}/extraction-progress")
+def job_extraction_progress(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """Where a running extraction has got to (app/core/extraction_progress.py): the phase,
+    "N of M", and a time estimate. "active": false whenever the job is not extracting - so a
+    run that failed and left a frame behind never shows a stale bar."""
+    import time as _time
+
+    from app.core import extraction_progress
+
+    job = _load_job(db, job_id, scope, user)
+    frame = extraction_progress.latest(job_id) if job.status == "extracting" else None
+    if frame is None:
+        return {"active": False}
+    return {
+        "active": True, "phase": frame["phase"], "done": frame["done"], "total": frame["total"],
+        "eta_seconds": frame["eta_seconds"],
+        "elapsed_seconds": round(_time.time() - frame["started"]),
+    }
+
+
 @router.get("/jobs/{job_id}/live")
 def job_live(
     job_id: str,
@@ -2681,12 +2907,35 @@ def record_stage(
         return None
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                     stage=stage, note=f"Moved on to {stage}"))
+    _mark_review_started(job)
     db.commit()
     return None
 
 
 class DocumentApprove(BaseModel):
     approved: bool = True
+
+
+@router.post("/jobs/{job_id}/manual-entry-fields", response_model=JobDetailOut)
+def ensure_manual_entry_fields(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> JobDetailOut:
+    """Make sure a document that may be entered by hand has its empty boxes on this job.
+
+    Extraction does this itself; this is for a job that reached the state some other way - one
+    extracted before the template turned the setting on, or whose Air Waybill was deleted
+    afterwards. The review screen calls it when it finds a hand-entry tab with no fields.
+    Adds only what is missing - never changes or removes a value.
+    """
+    job = _load_job(db, job_id, scope, user)
+    group = db.get(TemplateGroup, job.group_id)
+    if job.status not in ("draft", "extracting") and _ensure_manual_entry_fields(db, job, group):
+        db.commit()
+        db.refresh(job)
+    return _build_detail(db, job)
 
 
 @router.post("/jobs/{job_id}/documents/{job_document_id}/approve", response_model=JobDetailOut)
@@ -2717,6 +2966,8 @@ def approve_document(
         jdoc.gk2_approved = payload.approved
     else:
         jdoc.approved = payload.approved
+    if payload.approved:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -3218,13 +3469,6 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     def _live(shot, log, debug=None, _jid=job.id):
         live_runs.publish(_jid, shot, log, debug=debug)
 
-    # Everything up to here was preparation - "AI - Preparing for ERP" is still accurate. Only
-    # from here does the run actually touch the real ERP, so that is when the badge moves to
-    # "ERP Entry Process Started" - a visibly different, longer-running stage from a workbook
-    # build that finishes in under a second.
-    job.gk2_status = "entering_erp"
-    db.commit()
-
     # The same session reuse complete_job's Submit Entry has had all along, which this path
     # - the one GK2's "Final Approve & Proceed" actually runs - never got. Without it every
     # job here replays the full login, and with erp_script_workers above 1 that is several
@@ -3235,20 +3479,68 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     if ckpt is not None:
         sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
 
+    from app.core import branch_sessions, erp_priority
     from app.core.erp_session import script_slot
 
-    try:
-        # A script with no session to share has to take turns, however many workers are
-        # configured - see script_slot. One with a shared session does not.
-        with script_slot(script.id, shared_login=ckpt is not None):
-            result = play_steps(
-                script.url, login, script.steps or [], values, headless=True, rows=rows,
-                downloads_dir=dl_dir, uploads=up_map, progress=_live,
-                checkpoint_index=ckpt, session_file=sess_file,
-            )
-    except Exception as exc:  # noqa: BLE001
-        _fail(f"The ERP entry could not be run: {exc}")
+    # A branch-routed script runs on its branch's always-on login (app/core/branch_sessions.py)
+    # alongside that branch's other jobs; anything else runs exactly as before.
+    branch = branch_sessions.branch_for_job(db, script, values)
+    if branch is not None and branch.get("missing"):
+        _fail(branch["missing"])
         return
+    if branch is not None:
+        logger.info("job %s: ERP entry on the %s branch login", job.reference, branch["branch"])
+
+    while True:
+        # An Entry Browser run holds the ERP (one login per account) - wait it out before
+        # logging in, still reading "AI - Preparing for ERP". See app/core/erp_priority.py.
+        # Not on a branch login: those never log in, and the Entry Browser runs on them too.
+        if branch is None:
+            erp_priority.wait_turn()
+        db.refresh(job)
+        if job.gk2_status != "preparing_erp":
+            # The Entry Browser run that held the ERP was THIS job, and wrote it up
+            # (persist_run_outcome clears gk2_status) - running it again would enter it twice.
+            logger.info("job %s: already run from the Entry Browser - not queued again",
+                        job.reference)
+            return
+        # Everything up to here was preparation - "AI - Preparing for ERP" is still accurate.
+        # Only from here does the run actually touch the real ERP, so that is when the badge
+        # moves to "ERP Entry Process Started" - a visibly different, longer-running stage from
+        # a workbook build that finishes in under a second.
+        job.gk2_status = "entering_erp"
+        db.commit()
+        try:
+            if branch is not None:
+                # No pause: each job is its own copy of the branch login's step-7 page, so an
+                # Entry Browser run (also on the branch login) cannot disturb it.
+                result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                    script.url, None, script.steps or [], values, headless=True, rows=rows,
+                    downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                    checkpoint_index=script.checkpoint_index, branch_session=sess,
+                ))
+            else:
+                # A script with no session to share has to take turns, however many workers
+                # are configured - see script_slot. One with a shared session does not.
+                with erp_priority.queued_run(job.id), \
+                        script_slot(script.id, shared_login=ckpt is not None):
+                    result = play_steps(
+                        script.url, login, script.steps or [], values, headless=True, rows=rows,
+                        downloads_dir=dl_dir, uploads=up_map, progress=_live,
+                        checkpoint_index=ckpt, session_file=sess_file,
+                        cancel=erp_priority.manual_active,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            _fail(f"The ERP entry could not be run: {exc}")
+            return
+        if not erp_priority.was_preempted(result):
+            break
+        # Paused for an Entry Browser run: back in line, then the WHOLE entry again from step 0
+        # - the half-filled form it was on went with the login the Entry Browser took over.
+        logger.info("job %s: ERP run paused for an Entry Browser run - will start again "
+                    "from the beginning", job.reference)
+        job.gk2_status = "preparing_erp"
+        db.commit()
     live_runs.publish(job.id, None, result.get("log") or [], done=True)
 
     persist_run_outcome(db, job, script, result, operator_id=job.assigned_operator_id)
@@ -3297,6 +3589,82 @@ def download_job_excel(
         # serve back an earlier download instead of ever re-fetching this freshly-built one.
         headers={"Cache-Control": "no-store"},
     )
+
+
+# ---- the ERP Excel, opened and edited in the app (app/core/erp_excel_edit.py) ----
+
+class ErpExcelSheets(BaseModel):
+    sheets: list[dict]
+
+
+@router.get("/jobs/{job_id}/erp-excel/sheets")
+def open_job_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """The job's ERP workbook as sheets of cell text, for the in-app editor - the saved edited
+    copy when there is one, else freshly built from the job's data."""
+    from app.core.erp_excel_edit import edited_meta, read_sheets
+
+    job = _load_job(db, job_id, scope, user)
+    try:
+        book = _build_job_excel(db, job)
+    except ExcelBuildFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from app.core.erp_excel_edit import locked_reason
+
+    return {"edited": edited_meta(job.id), "file": book.name, "sheets": read_sheets(book),
+            "locked": locked_reason(job)}
+
+
+@router.put("/jobs/{job_id}/erp-excel/sheets")
+def save_job_excel(
+    job_id: str,
+    payload: ErpExcelSheets,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Save the edited workbook. From now on it is the job's ERP Excel - Download as Excel and
+    the real ERP import use it - until "Reset to generated"."""
+    from app.core.erp_excel_edit import edited_file, edited_meta, locked_reason, save_sheets
+
+    job = _load_job(db, job_id, scope, user)
+    if (why := locked_reason(job)):
+        raise HTTPException(status_code=409, detail=why)
+    try:
+        base = edited_file(job.id) or _build_job_excel(db, job, ignore_edited=True)
+    except ExcelBuildFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    save_sheets(base, payload.sheets, job.id, f"{job.reference or job.id}.xlsx",
+                saved_by=(user.full_name or user.email) if user else None)
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage=None,
+                    note="ERP Excel edited and saved in the app - it replaces the generated one"))
+    db.commit()
+    return {"edited": edited_meta(job.id)}
+
+
+@router.delete("/jobs/{job_id}/erp-excel/edited")
+def reset_job_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, GK2)),
+) -> dict:
+    """Throw the edited copy away - the workbook is built from the job's data again."""
+    from app.core.erp_excel_edit import edited_file, locked_reason, reset
+
+    job = _load_job(db, job_id, scope, user)
+    if (why := locked_reason(job)):
+        raise HTTPException(status_code=409, detail=why)
+    if edited_file(job.id) is not None:
+        reset(job.id)
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage=None,
+                        note="Edited ERP Excel reset - built from the job's data again"))
+        db.commit()
+    return {"edited": None}
 
 
 @router.get("/jobs/{job_id}/dump-preview")
@@ -3454,11 +3822,67 @@ def _one_per_field(fvs: list) -> list:
     return order
 
 
+def _manual_entry_slots(db: Session, job: Job, group: TemplateGroup) -> dict[str, "TemplateDocument"]:
+    """{JobDocument.id: its TemplateDocument} for every document on this job that has NO file and
+    whose template lets it be entered by hand (TemplateDocument.manual_entry_when_missing).
+
+    Only when NONE of that document's slots holds a file: the moment an Air Waybill is uploaded
+    there is a real document to read, and no empty hand-entry tab beside it.
+    """
+    out: dict[str, TemplateDocument] = {}
+    jds = db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
+    for tdoc in group.documents:
+        if not getattr(tdoc, "manual_entry_when_missing", False):
+            continue
+        mine = sorted((d for d in jds if d.template_document_id == tdoc.id), key=lambda d: d.file_index)
+        if mine and not any(d.file_path for d in mine):
+            out[mine[0].id] = tdoc
+    return out
+
+
+def _ensure_manual_entry_fields(db: Session, job: Job, group: TemplateGroup) -> int:
+    """Give a hand-entered document (see _manual_entry_slots) an empty box for every one of its
+    job-level marks. Returns how many were created; never touches a box that already exists, so
+    whatever the operator has typed stays. Does not commit.
+
+    Without this a November 5 job with no Air Waybill had no HAWB Number, Airline or Flight
+    box anywhere - marks only ever became fields by being READ off a file. A table column
+    (is_multi_value) is skipped: its rows come from a document, and there is none.
+    """
+    created = 0
+    for jd_id, tdoc in _manual_entry_slots(db, job, group).items():
+        have = {
+            mid for (mid,) in db.query(JobFieldValue.mark_id)
+            .filter(JobFieldValue.job_id == job.id, JobFieldValue.job_document_id == jd_id,
+                    JobFieldValue.mark_id.isnot(None)).all()
+        }
+        for mark in tdoc.marks:
+            if mark.id in have or getattr(mark, "is_multi_value", False):
+                continue
+            db.add(JobFieldValue(
+                tenant_id=job.tenant_id, job_id=job.id, mark_id=mark.id,
+                template_document_id=tdoc.id, job_document_id=jd_id,
+                label_name=mark.label_name, extracted_value="",
+            ))
+            created += 1
+    if created:
+        db.flush()
+        logger.info("job %s: created %d empty hand-entry field(s)", job.id, created)
+    return created
+
+
+def _erp_excel_edited_meta(job_id: str) -> dict | None:
+    from app.core.erp_excel_edit import edited_meta
+
+    return edited_meta(job_id)
+
+
 def _build_detail(db: Session, job: Job) -> JobDetailOut:
     group = db.get(TemplateGroup, job.group_id)
     tdoc_by_id = {d.id: d for d in group.documents}
     job_docs = db.query(JobDocument).filter(JobDocument.job_id == job.id).all()
     _tdoc_order = {d.id: i for i, d in enumerate(group.documents)}
+    manual_slots = _manual_entry_slots(db, job, group)
 
     documents = [
         JobDocumentOut(
@@ -3467,10 +3891,13 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
             name=tdoc_by_id[jd.template_document_id].name if jd.template_document_id in tdoc_by_id else "?",
             doc_type=tdoc_by_id[jd.template_document_id].doc_type if jd.template_document_id in tdoc_by_id else "",
             is_uploaded=jd.file_path is not None,
+            manual_entry=jd.id in manual_slots,
             page_count=jd.page_count,
             file_index=jd.file_index,
             set_index=jd.set_index,
             original_name=jd.original_name,
+            source_kind=getattr(jd, "source_kind", None) or "pdf",
+            sheet_name=jd.sheet_name,
             extracted_json=jd.extracted_json,
             approved=jd.approved,
             gk2_approved=jd.gk2_approved,
@@ -3625,6 +4052,13 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     # grouped under - see CustomField.fixed_options/display_document_id's own docstrings.
     cf_fixed_options = {c.id: list(c.fixed_options) if c.fixed_options else None for c in cf_rows}
     cf_dropdown_style = {c.id: c.dropdown_style for c in cf_rows}
+    # ...and a document field's own (FieldMark.fixed_options) - same two values, same meaning.
+    mark_fixed_options = {
+        m.id: list(m.fixed_options) for tdoc in group.documents for m in tdoc.marks if m.fixed_options
+    }
+    mark_dropdown_style = {
+        m.id: m.dropdown_style for tdoc in group.documents for m in tdoc.marks if m.fixed_options
+    }
     cf_validation_pattern = {c.id: c.validation_pattern for c in cf_rows}
     cf_validation_uppercase = {c.id: c.validation_uppercase for c in cf_rows}
     cf_validation_message = {c.id: c.validation_message for c in cf_rows}
@@ -3790,7 +4224,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 is_custom=bool(fv.custom_field_id),
                 ask_operator=(fv.mark_id in ask_ids) or (fv.custom_field_id in ask_ids),
                 ask_operator_required=(fv.mark_id in required_ids) or (fv.custom_field_id in required_ids),
-                mandatory=(fv.mark_id in raw_required_ids) or (fv.custom_field_id in raw_required_ids),
+                # Nothing on a hand-entered document (no file - see _manual_entry_slots) is
+                # mandatory: the operator fills what they have.
+                mandatory=((fv.mark_id in raw_required_ids) or (fv.custom_field_id in raw_required_ids))
+                and fv.job_document_id not in manual_slots,
                 ask_operator_hint=hints.get(fv.mark_id) or hints.get(fv.custom_field_id),
                 self_filled=fv.custom_field_id in self_fill_ids,
                 job_document_id=fv.job_document_id,
@@ -3838,8 +4275,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                     mark_validation_message.get(fv.mark_id) or cf_validation_message.get(fv.custom_field_id)
                 ),
                 hidden_from_capture=cf_hidden.get(fv.custom_field_id, False),
-                fixed_options=cf_fixed_options.get(fv.custom_field_id),
-                dropdown_style=cf_dropdown_style.get(fv.custom_field_id),
+                fixed_options=(cf_fixed_options.get(fv.custom_field_id)
+                               or mark_fixed_options.get(fv.mark_id)),
+                dropdown_style=(cf_dropdown_style.get(fv.custom_field_id)
+                                or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
                 full_width=(
@@ -3950,6 +4389,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         outer_status=outer_status,
         missing_documents=(_missing_mandatory_documents(db, job)
                           if outer_status == "Missing Documents" else None),
+        attachment_notes=job.attachment_notes,
+        erp_excel_edited=_erp_excel_edited_meta(job.id),
         mode=_shipment_mode(db, job),
         assigned_operator_id=job.assigned_operator_id,
         operator_name=_operator_name(db, job),
@@ -3998,7 +4439,19 @@ def get_job(
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
 ) -> JobDetailOut:
-    return _build_detail(db, _load_job(db, job_id, scope, user))
+    job = _load_job(db, job_id, scope, user)
+    # A saved Indian importer whose GSTIN is not in the dump is shown empty - where the
+    # template asks for it (TemplateGroup.importer_requires_gstin). Done as the job is opened,
+    # so it reaches a job that was already in progress when the rule was switched on. Does
+    # nothing, and costs one lookup, on every other template.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied = clear_importer_without_gstin(db, job)
+    if emptied:
+        db.commit()
+        db.refresh(job)
+        logger.info("job %s: %s emptied - the importer has no GSTIN in the dump", job.reference, emptied)
+    return _build_detail(db, job)
 
 
 @router.get("/jobs/{job_id}/custom-fields/{custom_field_id}/reference-options")
@@ -4006,6 +4459,7 @@ def list_custom_field_reference_options(
     job_id: str,
     custom_field_id: str,
     key: str | None = None,
+    country: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
@@ -4037,19 +4491,43 @@ def list_custom_field_reference_options(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Custom field not found on this job's template.",
         )
-    return _reference_options_payload(db, custom_field_id, key=key)
+    from app.core.importer_gstin import gstin_rule
+
+    # `country` is the importer country picked on the job. It is only ever read by the GSTIN
+    # rule below (the branch table itself carries no country), so every caller that does not
+    # send it gets exactly what it always got.
+    return _reference_options_payload(
+        db, custom_field_id, key=key, country=country,
+        gstin=gstin_rule(db, db.get(TemplateGroup, job.group_id), cf))
 
 
-def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None) -> dict:
+def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None,
+                               country: str | None = None, gstin: dict | None = None) -> dict:
     from app.core.reference_cache import normalize_key
     from app.models.custom_field_reference import CustomFieldReferenceValue
 
     query = db.query(CustomFieldReferenceValue).filter(
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
+        CustomFieldReferenceValue.is_active.is_(True),
     )
     if key and key.strip():
         query = query.filter(CustomFieldReferenceValue.match_value_1 == normalize_key(key))
     rows = query.order_by(CustomFieldReferenceValue.resolved_value).all()
+    # An Indian importer branch is offered only once its GSTIN is in the dump - see
+    # app/core/importer_gstin.py. `gstin` is None unless the template has the rule on AND this
+    # field is part of the importer cascade, so nothing else is ever narrowed here.
+    if gstin is not None:
+        from app.core.importer_gstin import GSTIN_COUNTRY, branches_with_gstin, is_gstin_country
+
+        if gstin["role"] == "address":
+            # the row carries its own country and its own GSTIN
+            rows = [r for r in rows
+                    if r.match_value_3 != GSTIN_COUNTRY or (r.gstin or "").strip()]
+        elif gstin["role"] == "branch" and key and key.strip() and is_gstin_country(country):
+            allowed = branches_with_gstin(db, gstin["address_field_id"], key)
+            rows = [r for r in rows
+                    if (r.match_value_2 or "") in allowed
+                    or normalize_key(r.resolved_value or "") in allowed]
     return {
         "options": [
             {
@@ -4197,10 +4675,24 @@ def search_custom_field_reference_values(
     filters = [
         CustomFieldReferenceValue.custom_field_id == custom_field_id,
         CustomFieldReferenceValue.resolved_value != "",
+        CustomFieldReferenceValue.is_active.is_(True),
     ]
     if country_scoped:
         filters.append(CustomFieldReferenceValue.match_value_1.ilike(needle))
         filters.append(CustomFieldReferenceValue.match_value_2 == country_norm)
+        # An Indian importer is offered only once one of its branches has a GSTIN in the dump
+        # - see app/core/importer_gstin.py. The name table has no GSTIN of its own, so it is
+        # read off the branch-address table: by the name this row is keyed on, or the name it
+        # resolves to (the one that is actually saved on the job when it is picked).
+        from app.core.importer_gstin import gstin_rule, is_gstin_country, names_with_gstin
+
+        rule = gstin_rule(db, db.get(TemplateGroup, job.group_id), cf)
+        if rule is not None and rule["role"] == "name" and is_gstin_country(country_norm):
+            allowed_names = names_with_gstin(db, rule["address_field_id"])
+            filters.append(or_(
+                CustomFieldReferenceValue.match_value_1.in_(allowed_names),
+                func.upper(func.trim(CustomFieldReferenceValue.resolved_value)).in_(allowed_names),
+            ))
     else:
         filters.append(
             CustomFieldReferenceValue.match_value_1.ilike(needle)
@@ -4279,6 +4771,7 @@ def list_custom_field_reference_countries(
         .filter(
             CustomFieldReferenceValue.custom_field_id == custom_field_id,
             CustomFieldReferenceValue.match_value_2 != "",
+            CustomFieldReferenceValue.is_active.is_(True),
         )
         .distinct()
         .order_by(CustomFieldReferenceValue.match_value_2)
@@ -4676,6 +5169,8 @@ def set_verification_decision(
     else:
         accepted.discard(payload.link_id)
     job.accepted_verifications = sorted(accepted)
+    if payload.accept:
+        _mark_review_started(job)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -4806,6 +5301,26 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         values.setdefault(label, vals[0] if vals else "")
     values.setdefault("job_reference", job.reference or "")
 
+    # Each document's OWN reading of a job-level label, under "<label>@@<document name>" - for an
+    # Excel column set to "from_document" (see excel_entry._picked_field). The plain label above
+    # lets the last non-empty reading win, so on November 5 an invoice's "0" overwrote the Air
+    # Waybill's 12 packages / 162 kg in SHIPMENT No_of_Pkg / GrWt (BLR/AI/3886/26-27). These
+    # extra keys change nothing for a column that does not ask for them.
+    _doc_names = {
+        td.id: (td.name or "").strip()
+        for td in db.query(TemplateDocument).filter(TemplateDocument.group_id == job.group_id).all()
+    }
+    for fv in sorted(job_fvs, key=_priority):
+        if fv.row_index is not None or not fv.template_document_id:
+            continue
+        doc_name = _doc_names.get(fv.template_document_id)
+        if not doc_name:
+            continue
+        key = f"{fv.label_name}@@{doc_name}"
+        v = fv.value or ""
+        if key not in values or (not values[key].strip() and v.strip()):
+            values[key] = v
+
     # insurance_percentage/insurance_amount are mutually exclusive in the ERP import (see
     # InsuranceModeField in JobRunPage.tsx) - exactly one of the two Excel columns may be
     # non-blank. Enforced HERE, at read time, against whichever the "insurance_mode" hidden
@@ -4879,7 +5394,7 @@ class ExcelBuildFailed(Exception):
     operator-readable reason, never a bare exception."""
 
 
-def _build_job_excel(db: Session, job: Job, out_dir=None) -> Path:
+def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False) -> Path:
     """Build this job's ERP-import workbook fresh from its CURRENT extracted values.
 
     The same build complete_job's Excel-entry path already uses (see entry_uploads below),
@@ -4897,6 +5412,13 @@ def _build_job_excel(db: Session, job: Job, out_dir=None) -> Path:
     grp = db.get(TemplateGroup, job.group_id)
     if grp is None or (grp.entry_mode or "fields") != "excel":
         raise ExcelBuildFailed("This job's template is not set up for Excel entry.")
+    # Edited in the app and saved: that copy is the job's workbook until it is reset
+    # (app/core/erp_excel_edit.py) - for the download and the real ERP import alike.
+    from app.core.erp_excel_edit import edited_file, use_edited_or_build
+
+    if not ignore_edited and edited_file(job.id) is not None:
+        target = Path(out_dir) if out_dir else Path(get_settings().uploads_dir) / "job_excel" / job.id
+        return use_edited_or_build(job.id, target, lambda: None)
     cfg = grp.excel_config or {}
     values, rows = entry_values_and_rows(db, job)
     filled, mapped = _column_fill(cfg, values, rows)
@@ -4945,8 +5467,10 @@ def entry_uploads(db: Session, job: Job, values: dict, rows: dict, out_dir) -> d
         tpl_dir = _P(get_settings().uploads_dir) / "excel_templates" / grp.id
         tpl = (next((x for x in tpl_dir.glob("template.*")), None)
                if cfg.get("source") == "template" else None)
-        book = build_for_job(cfg, values, rows, _P(out_dir), tpl,
-                             name_as=job.reference or job.id)
+        from app.core.erp_excel_edit import use_edited_or_build
+
+        book = use_edited_or_build(job.id, _P(out_dir), lambda: build_for_job(
+            cfg, values, rows, _P(out_dir), tpl, name_as=job.reference or job.id))
         up_map.setdefault("excel_import", str(book))
         up_map.setdefault(book.name, str(book))
         # The file is now named after the job, but a step recorded before that still asks for
@@ -5458,7 +5982,17 @@ def complete_job(
             needs_attachment = (
                 grp_for_mode is not None and (grp_for_mode.entry_mode or "fields") == "excel"
             )
-            if ckpt is not None and not needs_attachment:
+            from app.core import branch_sessions
+
+            # A branch-routed job runs on its branch's always-on login, never a parked browser.
+            branch = branch_sessions.branch_for_job(db, script, values)
+            if branch is not None and branch.get("missing"):
+                job.status = "failed"
+                job.erp_status = "error"
+                job.erp_reason = branch["missing"]
+                db.commit()
+                raise HTTPException(status_code=422, detail=branch["missing"])
+            if ckpt is not None and not needs_attachment and branch is None:
                 # A browser may already be parked at this script's checkpoint — logged in and
                 # sitting on the entry screen. Hand it the job: it runs only the steps below
                 # the checkpoint, then closes and re-parks itself. If nothing is parked, or the
@@ -5494,9 +6028,13 @@ def complete_job(
                     tpl = (next((p for p in tpl_dir.glob("template.*")), None)
                            if cfg.get("source") == "template" else None)
                     try:
-                        book = build_for_job(cfg, values, rows,
-                                             Path(dl_dir) if dl_dir else Path("."), tpl,
-                                             name_as=job.reference or job.id)
+                        from app.core.erp_excel_edit import use_edited_or_build
+
+                        book = use_edited_or_build(
+                            job.id, Path(dl_dir) if dl_dir else Path("."),
+                            lambda: build_for_job(cfg, values, rows,
+                                                  Path(dl_dir) if dl_dir else Path("."), tpl,
+                                                  name_as=job.reference or job.id))
                         up_map.setdefault("excel_import", str(book))
                         up_map.setdefault(book.name, str(book))
                         # ...and under the template's own name, so a step recorded before the
@@ -5587,14 +6125,36 @@ def complete_job(
                 def _live(shot, log, debug=None, _jid=job.id):
                     live_runs.publish(_jid, shot, log, debug=debug)
 
+                from app.core import erp_priority
                 from app.core.erp_session import script_slot
 
-                with script_slot(script.id, shared_login=ckpt is not None):
-                    result = play_steps(
-                        script.url, login, script.steps or [], values, headless=True,
-                        rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
-                        session_file=sess_file, uploads=up_map, progress=_live,
-                    )
+                while True:
+                    # Same rule as the queued GK2 run: an Entry Browser run goes first, and a
+                    # run it interrupts starts again from step 0. See app/core/erp_priority.py.
+                    if branch is None:
+                        erp_priority.wait_turn()
+                    if branch is not None:
+                        # On the branch's always-on login - see app/core/branch_sessions.py.
+                        # Never paused for an Entry Browser run (that runs on the login too).
+                        result = branch_sessions.play_on_branch(branch, lambda sess: play_steps(
+                            script.url, None, script.steps or [], values, headless=True,
+                            rows=rows, downloads_dir=dl_dir,
+                            checkpoint_index=script.checkpoint_index, branch_session=sess,
+                            uploads=up_map, progress=_live,
+                        ))
+                    else:
+                        with erp_priority.queued_run(job.id), \
+                                script_slot(script.id, shared_login=ckpt is not None):
+                            result = play_steps(
+                                script.url, login, script.steps or [], values, headless=True,
+                                rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
+                                session_file=sess_file, uploads=up_map, progress=_live,
+                                cancel=erp_priority.manual_active,
+                            )
+                    if not erp_priority.was_preempted(result):
+                        break
+                    logger.info("job %s: ERP run paused for an Entry Browser run - will start "
+                                "again from the beginning", job.reference)
                 live_runs.publish(job.id, None, result.get("log") or [], done=True)
         except HTTPException:
             # Raised deliberately above (the workbook could not be built, or nothing would
@@ -5659,6 +6219,9 @@ def _slot_for_new_file(db: Session, job: Job, template_document_id: str) -> JobD
         return None
     free = next((d for d in existing if not d.file_path), None)
     if free is not None:
+        # Never let an emptied row's old Excel marker stick to the file about to go in it.
+        free.source_kind = "pdf"
+        free.sheet_name = None
         return free
     jd = JobDocument(
         tenant_id=job.tenant_id,
@@ -6481,6 +7044,278 @@ def _wipe_derived_field_values(db: Session, job: Job, jd: JobDocument) -> None:
         job.needs_reextraction = True
 
 
+def _page_texts(jd: JobDocument) -> dict[int, str]:
+    """{page number: its words, normalised and space-padded} for one document, from the OCR
+    ALREADY cached on disk (ocr/page_N.json). Never OCRs anything - a page with no cache is
+    simply absent, and the caller treats that as "cannot tell what was on it"."""
+    from app.core.docai import _normalize_for_match
+
+    out: dict[int, str] = {}
+    ocr_dir = _job_doc_dir(jd.id) / "ocr"
+    for page in range(1, (jd.page_count or 0) + 1):
+        cache = ocr_dir / f"page_{page}.json"
+        if not cache.exists():
+            continue
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        tokens = cached.get("tokens") or []
+        words = (" ".join(str(t.get("text", "")) for t in tokens) if tokens
+                 else str(cached.get("text") or ""))
+        norm = _normalize_for_match(words)
+        if norm:
+            out[page] = f" {norm} "
+    return out
+
+
+def _pages_holding(page_texts: dict[int, str], value: str | None) -> set[int]:
+    """Which pages print this value. Whole words only, so "5" is not found inside "2025". A long
+    value (a description, an address) wraps across lines and rarely survives OCR word for word,
+    so it is looked for by its opening words instead."""
+    from app.core.docai import _normalize_for_match
+
+    norm = _normalize_for_match(str(value or ""))
+    if not norm:
+        return set()
+    hit = {p for p, text in page_texts.items() if f" {norm} " in text}
+    words = norm.split(" ")
+    if not hit and len(words) > 6:
+        opening = " " + " ".join(words[:6]) + " "
+        hit = {p for p, text in page_texts.items() if opening in text}
+    return hit
+
+
+def _line_owner(db: Session, job: Job, jd: JobDocument) -> bool:
+    """Does this document carry the job's PRODUCT lines - the ones every per-row custom field
+    (CTH, Combined Description, duty notifications) hangs off? Only an Invoice-type document
+    does. A packing list or a bill of lading has rows of its own, numbered 1, 2, 3 the same
+    way, and removing one of THOSE must never take product 2's CTH with it (JOB-8BA341)."""
+    tdoc = db.get(TemplateDocument, jd.template_document_id)
+    return tdoc is not None and (tdoc.doc_type or "").strip().lower() == "invoice"
+
+
+def _fields_reading_only(db: Session, job: Job, jd: JobDocument) -> list:
+    """The job-level AI fields that have NO file to read from other than this one.
+
+    A field reads the documents it names (source_document_ids), or every document when it
+    names none. One that can still read another file - "invoice no" set to the invoice, the
+    packing list and the bill of lading, with the packing list being the one removed - is not
+    in this list, and so is never touched by a removal."""
+    from app.models.custom_field import CustomField
+
+    other_slots = {
+        tid for (tid,) in db.query(JobDocument.template_document_id)
+        .filter(JobDocument.job_id == job.id, JobDocument.id != jd.id,
+                JobDocument.file_path.isnot(None)).all()
+    }
+    out = []
+    for cf in (db.query(CustomField)
+               .filter(CustomField.group_id == job.group_id, CustomField.kind == "ai",
+                       CustomField.per_row.is_(False)).all()):
+        named = {x for x in (cf.source_document_ids or []) if x}
+        if named and jd.template_document_id not in named:
+            continue                       # does not read this document at all
+        if not (other_slots & named if named else other_slots):
+            out.append(cf)
+    return out
+
+
+def _drop_page_values(db: Session, job: Job, jd: JobDocument, page_number: int) -> bool:
+    """Remove what was read from ONE page of a document - and nothing else. Call BEFORE the page
+    is cut out of the file (it needs the pages as they are still numbered).
+
+    Cutting a page used to delete every value read from the WHOLE document plus every
+    calculated field on the WHOLE job (see _wipe_derived_field_values), and then read nothing
+    again - an extracted job stays extracted. So removing one stray page from a five-page
+    invoice left the job without its invoice, without its CTHs and lookups, and the Excel built
+    from it went out with those cells empty. And a field set to read the invoice, the packing
+    list AND the bill of lading lost its value because a packing-list page was removed.
+
+    Now, going by where each value is actually printed (the OCR already cached per page):
+      - a single value printed ONLY on the removed page is emptied; one that is also printed on
+        a page that stays (an invoice number repeated on every page) is kept;
+      - a table row whose values sit on the removed page is deleted, and the rows after it are
+        renumbered - with the product's own per-row fields when this document is the one that
+        carries the product lines (_line_owner);
+      - a calculated field is touched only when this document is the ONE document it reads and
+        its value was on the removed page. A field that reads other documents too is kept.
+    Anything that cannot be placed on a page is KEPT: losing a value that is still on the
+    document is the worse mistake. Something an operator typed (corrected_value) always stays.
+
+    Returns False when the removed page was never OCR'd (nothing cached - the read-from-images
+    path), which means there is no telling what was on it: nothing is removed at all, and the
+    caller marks the document as needing a re-read instead. Does not commit.
+    """
+    from app.models.custom_field import CustomField
+
+    texts = _page_texts(jd)
+    if page_number not in texts:
+        return False
+    group = db.get(TemplateGroup, job.group_id)
+    standalone = _standalone_mark_labels(group) if group else set()
+    own = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                        JobFieldValue.job_document_id == jd.id).all()
+
+    def _forget_position(fv: JobFieldValue) -> None:
+        fv.found_page = fv.found_x = fv.found_y = fv.found_width = fv.found_height = None
+
+    emptied: list[str] = []
+    # -- single values
+    for fv in own:
+        if fv.row_index is not None:
+            continue
+        pages = _pages_holding(texts, fv.target_value_raw or fv.extracted_value)
+        if not pages and fv.found_page:
+            pages = {fv.found_page}
+        if pages == {page_number}:
+            if (fv.extracted_value or "").strip():
+                emptied.append(fv.label_name)
+            fv.extracted_value = ""
+            fv.target_value_raw = None
+            _forget_position(fv)
+        elif fv.found_page == page_number:
+            _forget_position(fv)          # still on the document, just not highlighted here
+        elif fv.found_page and fv.found_page > page_number:
+            fv.found_page -= 1
+
+    # -- table rows: a row belongs to the page most of its values are printed on. A tie (or
+    #    nothing found) keeps the row.
+    by_row: dict[tuple[bool, int], list[JobFieldValue]] = {}
+    for fv in own:
+        if fv.row_index is not None:
+            by_row.setdefault((fv.label_name in standalone, fv.row_index), []).append(fv)
+    doomed: dict[bool, set[int]] = {True: set(), False: set()}
+    for (is_standalone, row_index), fvs in by_row.items():
+        score: dict[int, int] = {}
+        for fv in fvs:
+            for pg in _pages_holding(texts, fv.extracted_value):
+                score[pg] = score.get(pg, 0) + 1
+        here = score.get(page_number, 0)
+        elsewhere = max((n for pg, n in score.items() if pg != page_number), default=0)
+        if here and here > elsewhere:
+            doomed[is_standalone].add(row_index)
+
+    removed_rows = 0
+    for is_standalone, indexes in doomed.items():
+        if not indexes:
+            continue
+        rows = [fv for (st, _), fvs in by_row.items() if st == is_standalone for fv in fvs]
+        if not is_standalone and _line_owner(db, job, jd):
+            # the product's own per-row fields: keyed on (set, row), no document of their own
+            standalone_keyed = {
+                cid for cid, key in db.query(CustomField.id, CustomField.lookup_key_label)
+                .filter(CustomField.group_id == job.group_id).all() if key in standalone
+            }
+            rows += [
+                fv for fv in db.query(JobFieldValue).filter(
+                    JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                    JobFieldValue.custom_field_id.isnot(None),
+                    func.coalesce(JobFieldValue.set_index, 1) == (jd.set_index or 1)).all()
+                if fv.custom_field_id not in standalone_keyed
+            ]
+        keep = sorted({fv.row_index for fv in rows} - indexes)
+        renumber = {old: new for new, old in enumerate(keep, start=1)}
+        for fv in rows:
+            if fv.row_index in indexes:
+                db.delete(fv)
+            elif renumber[fv.row_index] != fv.row_index:
+                fv.row_index = renumber[fv.row_index]
+        removed_rows += len(indexes)
+
+    # -- a calculated field with no OTHER file to read from: this document is all it has
+    for cf in _fields_reading_only(db, job, jd):
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id,
+                           JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if _pages_holding(texts, fv.extracted_value) == {page_number}:
+                emptied.append(cf.label_name)
+                fv.extracted_value = ""
+    logger.info("job %s: page %s cut from %s - emptied %s, removed %s row(s); everything else kept",
+                job.reference, page_number, jd.id, emptied, removed_rows)
+    return True
+
+
+def _renumber_page_caches(jd: JobDocument, page_number: int, placed: bool) -> None:
+    """After a page is cut: keep the per-page OCR cache and the stored OCR record in step with
+    the pages that are left. The cache is keyed by page NUMBER, so left alone it would hand the
+    removed page's text to page N and lose the last page on the next read.
+
+    `placed` False (the page's values could not be placed - see _drop_page_values) clears the
+    stored record instead, which is what marks the document "needs re-extraction" on screen."""
+    ocr_dir = _job_doc_dir(jd.id) / "ocr"
+    try:
+        (ocr_dir / f"page_{page_number}.json").unlink(missing_ok=True)
+        later = sorted(
+            (int(f.stem.split("_")[1]), f) for f in ocr_dir.glob("page_*.json")
+            if f.stem.split("_")[1].isdigit() and int(f.stem.split("_")[1]) > page_number
+        )
+        for number, f in later:
+            f.replace(ocr_dir / f"page_{number - 1}.json")
+    except Exception:  # noqa: BLE001 - a stale cache must not be left behind half-renumbered
+        logger.exception("could not renumber the OCR cache of %s - clearing it", jd.id)
+        shutil.rmtree(ocr_dir, ignore_errors=True)
+    record = jd.extracted_json if placed else None
+    pages = (record or {}).get("pages")
+    if not isinstance(pages, list) or not (1 <= page_number <= len(pages)):
+        jd.extracted_json = None
+        return
+    pages = pages[:page_number - 1] + pages[page_number:]
+    excluded = [n - 1 if n > page_number else n
+                for n in (record.get("excluded_pages") or []) if n != page_number]
+    jd.extracted_json = {
+        **record, "pages": pages, "page_count": len(pages), "excluded_pages": excluded,
+        "text": "\n".join(t for i, t in enumerate(pages, start=1) if i not in excluded),
+    }
+
+
+def _drop_document_values(db: Session, job: Job, jd: JobDocument) -> None:
+    """A whole file is leaving its slot: remove what was read from IT, and nothing else.
+
+    This used to go through _wipe_derived_field_values, which also deleted every calculated
+    field on the job - so removing a packing list emptied a field that reads the invoice, the
+    packing list and the bill of lading, though the invoice and the bill of lading were still
+    there saying the same thing.
+
+    Removed with the file:
+      - every value read from it (they carry its job_document_id);
+      - the per-row fields of its product lines, when it is the document that carries them
+        (_line_owner) - the lines themselves are gone. Hand-typed (hardcoded) ones are kept,
+        as they always were;
+      - a calculated field that reads ONLY this document, when no other file is left in its
+        slot: emptied, with anything an operator typed over it kept.
+    Every other calculated field is left exactly as it is. Does not commit.
+    """
+    from app.models.custom_field import CustomField
+
+    had_lines = (db.query(JobFieldValue.id)
+                 .filter(JobFieldValue.job_document_id == jd.id,
+                         JobFieldValue.row_index.isnot(None)).first() is not None)
+    db.query(JobFieldValue).filter(JobFieldValue.job_document_id == jd.id).delete()
+    if job.status == "draft":
+        return
+    fields = db.query(CustomField).filter(CustomField.group_id == job.group_id).all()
+    if had_lines and _line_owner(db, job, jd):
+        per_row = [cf.id for cf in fields if cf.kind != "hardcoded"]
+        if per_row:
+            db.query(JobFieldValue).filter(
+                JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.custom_field_id.in_(per_row),
+                func.coalesce(JobFieldValue.set_index, 1) == (jd.set_index or 1),
+            ).delete(synchronize_session=False)
+    only_this = [cf.id for cf in _fields_reading_only(db, job, jd)]
+    if only_this:
+        db.query(JobFieldValue).filter(
+            JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None),
+            JobFieldValue.custom_field_id.in_(only_this),
+        ).update({"extracted_value": ""}, synchronize_session=False)
+    # Kept as it always was for a whole file leaving: the banner that offers "Extract now",
+    # which is also what picks up the replacement when this is the first half of a reupload.
+    # Nothing depends on it being pressed any more - the values above are already in step.
+    job.needs_reextraction = True
+
+
 def _park_pages_as_unclassified(
     db: Session, job: Job, jd: JobDocument, page_numbers: list[int],
 ) -> None:
@@ -6546,7 +7381,7 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
         .order_by(JobDocument.file_index)
         .all()
     )
-    _wipe_derived_field_values(db, job, jd)
+    _drop_document_values(db, job, jd)
     doc_dir = _job_doc_dir(jd.id)
 
     if len(siblings) == 1:
@@ -6563,6 +7398,10 @@ def _remove_document_file(db: Session, job: Job, jd: JobDocument) -> Path:
         jd.set_index = None
         jd.approved = False
         jd.gk2_approved = False
+        # An emptied slot row is a plain slot again - the next file put in it is a PDF unless
+        # whoever fills it says otherwise (an Excel sheet marks itself).
+        jd.source_kind = "pdf"
+        jd.sheet_name = None
     else:
         db.delete(jd)
         db.flush()
@@ -6666,6 +7505,10 @@ def delete_job_document_page(
 
     import fitz  # PyMuPDF
 
+    # What was read from THIS page goes; everything else on the document and on the job stays.
+    # Done first - it goes by the pages as they are still numbered. See _drop_page_values.
+    placed = job.status != "draft" and _drop_page_values(db, job, jd, page_number)
+
     doc = fitz.open(src_path)
     try:
         doc.delete_page(page_number - 1)
@@ -6680,14 +7523,17 @@ def delete_job_document_page(
     pages_dir = _job_doc_dir(jd.id) / "pages"
     shutil.rmtree(pages_dir, ignore_errors=True)
     jd.page_count = _render_pages(src_path, pages_dir)
-    jd.extracted_json = None
-    jd.extraction_attempted = False
+    # The OCR cache and the stored OCR record follow the new page numbers. When the page's
+    # values could not be placed (never OCR'd), the record is cleared instead - that is what
+    # shows "needs re-extraction" on this document - and nothing was removed.
+    _renumber_page_caches(jd, page_number, placed)
+    if not placed and job.status != "draft":
+        job.needs_reextraction = True
     # The approved content just changed under this slot - same reasoning _remove_document_file
     # already applies to a whole-file swap: a stale approval must not silently attach itself to
     # content nobody has actually reviewed yet.
     jd.approved = False
     jd.gk2_approved = False
-    _wipe_derived_field_values(db, job, jd)
 
     db.commit()
     _maybe_auto_extract(db, job)
@@ -6888,6 +7734,15 @@ def _classify_and_place_files(
     # same way an unreadable PDF already is, rather than silently vanishing from the batch.
     office_work_dir = tmp / "_office"
     converted: list[tuple[str, bytes]] = []
+    # Excel by sheet (TemplateGroup.excel_mode = "sheet"): Excel is not converted - each sheet
+    # is read from its cells and placed after the PDFs (app/core/excel_intake.py).
+    from app.core.excel_intake import intake_excel_files, is_excel, is_sheet_mode
+
+    excel_files: list[tuple[str, bytes]] = []
+    if is_sheet_mode(group):
+        excel_files = [(n, d) for n, d in files if is_excel(n)]
+        files = [(n, d) for n, d in files if not is_excel(n)]
+    placed_pdf_texts: dict[str, list[str]] = {}
     for name, data in files:
         ext = Path(name).suffix.lower()
         if ext not in office_convert.OFFICE_EXTS:
@@ -6940,13 +7795,13 @@ def _classify_and_place_files(
                 except Exception:  # noqa: BLE001 — OCR down; this page just reads as blank
                     extra_raw.append("")
                     extra_tokens.append([])
-        # Billed the same way as the initial OCR pass above (real text only) - these pages past
+        # Billed the same way as the initial OCR pass above (every page, blank too) - these pages past
         # the <=6-page cap are only ever rendered and OCR'd here, the first time a claim
         # actually needs them, so this IS their one OCR pass, whatever this function's own
         # docstring's idempotency note says about a second call being a no-op (it never re-runs
         # this block for the same item).
         record_billable_pages(
-            db, job, sum(1 for t in extra_raw if t.strip()), is_rerun=is_rerun,
+            db, job, len(extra_raw), is_rerun=is_rerun,
         )
         extra_kept, extra_dropped = filter_pages_with_custom(extra_raw, custom_filter_texts, item["name"])
         extra_kept_original = [already + p for p in kept_page_to_original(len(extra_raw), extra_dropped)]
@@ -6982,8 +7837,9 @@ def _classify_and_place_files(
                 with fitz.open(orig) as doc:
                     real_page_count = doc.page_count
                     for i, page in enumerate(doc, start=1):
-                        if i > 6:  # cap pages OCR'd for classification
-                            break
+                        # Every page, however many - no page limit (see page_filter). The
+                        # extension further down is kept for safety but no longer has pages
+                        # past a cap to reach.
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
                         if i == 1:
@@ -6995,29 +7851,28 @@ def _classify_and_place_files(
                 # cannot tell a column header from the value printed under it (see
                 # doc_sets.invoice_number_from_tokens); the geometry can.
                 raw_tokens: list[list[dict]] = []
-                for i in range(1, page_count + 1):
-                    try:
-                        got = ocr_page_image(fdir / "pages" / f"page_{i}.png")
-                        t = got.get("text", "")
-                        raw_tokens.append(got.get("tokens") or [])
-                    except Exception:  # noqa: BLE001 — OCR down; fall back to image classify
-                        logger.warning("OCR unavailable for %s page %s; classifying from image", name, i)
-                        t = ""
-                        raw_tokens.append([])
-                    raw_pages.append(t)
+                # Several pages at once when switched on (app/core/parallel_ocr.py); with
+                # parallel_ocr_workers=1 this is the old page-by-page loop. A failed page still
+                # comes back as empty text, classified from its image as before.
+                from app.core.parallel_ocr import ocr_pages, workers_for
+
+                for got in ocr_pages([fdir / "pages" / f"page_{i}.png" for i in range(1, page_count + 1)],
+                                     workers=workers_for(False), label=name, ocr=ocr_page_image):
+                    raw_pages.append(got.get("text", ""))
+                    raw_tokens.append(got.get("tokens") or [])
                 # Billed HERE, not when (or if) a page ends up in a real document - every page
                 # with real OCR text in this loop was just sent to Document AI, which costs the
                 # same whether it goes on to classify correctly, lands in Unclassified, or this
                 # whole run is a reclassify re-processing pages already billed once before. By
                 # request: the cost is the OCR pass itself, not the outcome, and a reclassify is
-                # its own fresh processing cost too, not a free re-run. A page with NO text at
-                # all (a blank separator page, say) is not billed - nothing was really read off
-                # it. Every later call site that used to bill once a page became part of a real
+                # its own fresh processing cost too, not a free re-run. EVERY page is billed,
+                # blank ones included (by request, 2026-11-19: a blank page costs the same render
+                # and OCR call as any other). Every later call site that used to bill once a page became part of a real
                 # document (the cluster write below, and both assign_unclassified_page branches
                 # further down) no longer does, so a page is billed exactly once per OCR pass,
                 # never twice for the same pass.
                 record_billable_pages(
-                    db, job, sum(1 for t in raw_pages if t.strip()), is_rerun=is_rerun,
+                    db, job, len(raw_pages), is_rerun=is_rerun,
                 )
                 # Carrier terms out before CLASSIFYING, not only before extracting. Those 39,000
                 # characters of legal prose define "Freight", "Packing List", "Package" and
@@ -7146,6 +8001,7 @@ def _classify_and_place_files(
                 result_by_item_id[id(item)]["debug_text"] = item["text"][:6000]
                 result_by_item_id[id(item)]["debug_claims"] = claims
             item_pending_count = 0
+            item_claimed_pages: set[int] = set()
             for claim in strong_claims:
                 doc_type = key_doc_type.get(claim["key"])
                 claim_pages = claim["pages"]
@@ -7210,6 +8066,10 @@ def _classify_and_place_files(
                                 confirmed |= set(mapped)
                         claim_pages = claim_pages + sorted(confirmed - {p for oc in other_claims for p in oc["pages"]})
                         for oc in other_claims:
+                            # Its own document, carved out of the same file - so it counts
+                            # towards "this file holds more than one document" below.
+                            item_pending_count += 1
+                            item_claimed_pages |= set(oc["pages"])
                             other_doc_type = key_doc_type.get(oc["key"])
                             other_number = None
                             if other_doc_type in doc_sets.GROUPABLE_DOC_TYPES:
@@ -7276,11 +8136,19 @@ def _classify_and_place_files(
                         ) or doc_sets.extract_invoice_number_from_text(doc_type, page_text)
                     pending.append({"item": item, "claim": sub_claim, "key": sub_claim["key"], "number": number})
                     item_pending_count += 1
+                    item_claimed_pages |= set(pages)
             # A combined file needs its pages carved apart whenever it ends up contributing
             # more than one real document - whether that's several DIFFERENT types sharing one
             # PDF (the original reason this flag exists) or ONE type that turned out to hold
             # several separate invoices once split above - see merge_pdf_pages below.
-            split_by_item_id[id(item)] = item_pending_count > 1 and item["ext"] == ".pdf"
+            # ...and when its ONE document does not cover the whole file: the pages nobody
+            # claimed must not ride along into that slot (see claim_covers_file). They stay in
+            # Unclassified, where they were staged above.
+            split_by_item_id[id(item)] = item["ext"] == ".pdf" and (
+                item_pending_count > 1
+                or (item_pending_count == 1
+                    and not claim_covers_file(item_claimed_pages, item["kept_pages"]))
+            )
 
         # Before grouping: drop a claim whose pages say exactly what another claim has
         # already said for the SAME slot.
@@ -7386,6 +8254,10 @@ def _classify_and_place_files(
                 )[:255] or None
                 jd.page_count = _render_pages(dorig, ddir / "pages")
             jd.file_path = str(dorig)
+            for p in cluster:
+                kept_txt = p["item"].get("kept_pages") or []
+                placed_pdf_texts.setdefault(key, []).append(
+                    "\n".join(kept_txt[pg - 1] for pg in (p["claim"].get("pages") or []) if 1 <= pg <= len(kept_txt)))
             # Not billed here - every page in this cluster was already billed above, the moment
             # it was first OCR'd during classification, regardless of which slot (or none) it
             # ends up in. See that call site's own comment.
@@ -7397,6 +8269,23 @@ def _classify_and_place_files(
             row = result_by_item_id[id(item)]
             row["matched"] = row["matched"] or None
             results.append(row)
+        # Excel by sheet - after the PDFs, never weighed against them (see excel_intake).
+        if excel_files:
+            slots: dict[str, JobDocument] = {}
+            for jd_row in (db.query(JobDocument).filter(JobDocument.job_id == job.id)
+                           .order_by(JobDocument.file_index).all()):
+                slots[jd_row.template_document_id] = jd_row       # the last row of each slot
+            xl = intake_excel_files(db, job, group, excel_files, candidates, slots,
+                                    placed_pdf_texts, is_rerun=is_rerun)
+            for name, _data in excel_files:
+                got = [line.split(" -> ", 1)[1] for line in xl.placed if line.startswith(f"{name} - ")]
+                results.append({"filename": name, "matched": got or None,
+                                **({} if got else {"note": "sent to Unclassified"})})
+            if xl.skipped or xl.locked:
+                notes = dict(job.attachment_notes or {})
+                notes["skipped"] = list(notes.get("skipped") or []) + xl.skipped
+                notes["locked"] = list(notes.get("locked") or []) + xl.locked
+                job.attachment_notes = notes
         db.commit()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -7416,6 +8305,11 @@ def smart_upload(
     # misclassification (a bill of lading and an arrival notice swapping identities) without
     # guessing at what the classifier actually saw.
     debug: bool = False,
+    # A password-protected zip: the password typed in the upload dialog, whether to save it for
+    # this customer, or "read it without the locked zips".
+    zip_password: str | None = Form(None),
+    remember_password: bool = Form(False),
+    skip_locked: bool = Form(False),
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
     user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
@@ -7473,21 +8367,78 @@ def smart_upload(
     ]
 
     # Collect the files to process — each uploaded item as itself, or unzipped if it is a ZIP.
+    # A zip is opened by the same unpacker the email puller uses (app/core/attachment_unpack.py):
+    # every folder, and zips inside zips; what cannot be read is listed on the job.
+    from app.core.attachment_unpack import unpack_attachments
+
+    from app.core.zip_passwords import candidate_passwords, mark_used, save_password
+
+    max_upload = 100 * 1024 * 1024
     files: list[tuple[str, bytes]] = []
+    skipped: list[dict] = []
+    locked: list[dict] = []
+    typed_pw = (zip_password or "").strip()
+    zipped_sizes: list[tuple[int, str]] = []
+    saved_pw: list[tuple[str, str]] | None = None
+    used_pw: list[str] = []
     for uf in files_in:
-        content = uf.file.read(50 * 1024 * 1024)
+        # One byte past the limit, so a file that is too big is refused with a clear message
+        # instead of being silently cut short (which made a big zip look "invalid").
+        content = uf.file.read(max_upload + 1)
         fname = uf.filename or "upload"
+        zipped_sizes.append((len(content), fname))
+        if len(content) > max_upload:
+            raise HTTPException(status_code=422,
+                                detail=f"{fname}: larger than {max_upload // (1024 * 1024)} MB - too large to upload.")
         if fname.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    for n in z.namelist():
-                        if not n.endswith("/") and Path(n).suffix.lower() in UPLOAD_EXTS:
-                            files.append((Path(n).name, z.read(n)))
-            except zipfile.BadZipFile:
+            if saved_pw is None:                     # looked up once, only if a zip came
+                saved_pw = candidate_passwords(db, job.tenant_id, group_id=job.group_id)
+            unpacked = unpack_attachments([(fname, content)], UPLOAD_EXTS,
+                                          passwords=([typed_pw] if typed_pw else []) + [pw for _i, pw in saved_pw])
+            used_pw.extend(unpacked.used_passwords)
+            if any(sk["path"] == fname and sk["reason"].startswith("damaged") for sk in unpacked.skipped):
                 raise HTTPException(status_code=422, detail=f"{fname}: invalid ZIP file.")
+            files.extend(unpacked.files)
+            skipped.extend(unpacked.skipped)
+            locked.extend(unpacked.locked)
         else:
             files.append((fname, content))
+    if locked and not skip_locked:
+        # Asked BEFORE anything is read or billed: the dialog asks for the password and sends
+        # the same files again (or says "read it without the locked zips").
+        raise HTTPException(status_code=409, detail={
+            "code": "zip_password_needed",
+            "message": ("A zip is password-protected." if not typed_pw
+                        else "That password did not open the zip."),
+            "locked": locked,
+        })
+    if used_pw:
+        mark_used(db, [rid for rid, pw in (saved_pw or []) if pw in used_pw])
+        if typed_pw and typed_pw in used_pw and remember_password:
+            group_row = db.get(TemplateGroup, job.group_id)
+            save_password(db, tenant_id=job.tenant_id, label=(group_row.name if group_row else "Zip password"),
+                          password=typed_pw, created_by_id=user.id if user else None)
+        db.commit()
+    # "Hold extraction for a large zip" (TemplateGroup.large_zip_hold): placed, then waits for
+    # Run extraction - set before placing, so _maybe_auto_extract leaves it alone.
+    biggest_zip = max((size for size, n in zipped_sizes if n.lower().endswith(".zip")), default=0)
+    _grp = db.get(TemplateGroup, job.group_id)
+    _limit = (getattr(_grp, "large_zip_mb", 5) or 5) if _grp is not None else 5
+    if _grp is not None and getattr(_grp, "large_zip_hold", False) is True and biggest_zip > _limit * 1024 * 1024:
+        notes = dict(job.attachment_notes or {})
+        notes["large_zip"] = {"size_mb": round(biggest_zip / (1024 * 1024), 1), "limit_mb": _limit}
+        job.attachment_notes = notes
+        db.commit()
+    if skipped or locked:
+        notes = dict(job.attachment_notes or {})
+        notes["skipped"] = (list(notes.get("skipped") or []) + skipped)[:200]
+        notes["locked"] = (list(notes.get("locked") or []) + locked)[:200]
+        job.attachment_notes = notes
+        db.commit()
     if not files:
+        if locked:
+            raise HTTPException(status_code=422,
+                                detail="The zip is password-protected and could not be opened.")
         raise HTTPException(status_code=422, detail="No PDF/image/Word/Excel files found to classify.")
 
     from app.core.extraction_queue import run_queued
@@ -7627,6 +8578,8 @@ class UnclassifiedPageOut(BaseModel):
     # no slot for it) without needing direct database access - same reasoning the page image
     # itself is already exposed for.
     ocr_text: str | None = None
+    # The heading it is shown under (e.g. "Air Waybill" for a consolidation's house waybills).
+    group_label: str | None = None
 
 
 @router.get("/jobs/{job_id}/unclassified-pages", response_model=list[UnclassifiedPageOut])
@@ -7652,6 +8605,7 @@ def list_unclassified_pages(
             id=r.id, original_filename=r.original_filename, page_number=r.page_number,
             preview_url=f"/api/v1/jobs/{job.id}/unclassified-pages/{r.id}/image",
             ocr_text=r.ocr_text,
+            group_label=getattr(r, "group_label", None),
         )
         for r in rows
     ]
@@ -7774,6 +8728,401 @@ def assign_unclassified_page(
     db.delete(row)
     db.commit()
     _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+# ---- Excel by sheet: Unclassified Excel files and Excel documents (app/core/excel_intake.py) ----
+
+class UnclassifiedSheetOut(BaseModel):
+    name: str
+    rows: int
+    reason: str | None = None
+
+
+class UnclassifiedFileOut(BaseModel):
+    id: str
+    original_filename: str
+    sheets: list[UnclassifiedSheetOut]
+
+
+class AssignUnclassifiedFilePayload(BaseModel):
+    template_document_id: str
+    # One sheet's name, or None for every sheet still in this file.
+    sheet: str | None = None
+
+
+def _load_unclassified_file(db: Session, job: Job, file_id: str):
+    from app.models.job import UnclassifiedFile
+
+    row = (db.query(UnclassifiedFile)
+           .filter(UnclassifiedFile.id == file_id, UnclassifiedFile.job_id == job.id).first())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return row
+
+
+def _sheet_rows_out(sheet, max_rows: int = 200) -> dict:
+    """A sheet as rows of cells for the screen: {"name", "columns", "rows": [{"row", "cells"}],
+    "total_rows"} - only the first `max_rows` rows."""
+    cols: list[str] = []
+    for _r, cells in sheet.rows[:max_rows]:
+        for col, _v in cells:
+            if col not in cols:
+                cols.append(col)
+    cols.sort(key=lambda c: (len(c), c))
+    return {
+        "name": sheet.name,
+        "columns": cols,
+        "rows": [{"row": r, "cells": dict(cells)} for r, cells in sheet.rows[:max_rows]],
+        "total_rows": sheet.data_rows,
+    }
+
+
+@router.get("/jobs/{job_id}/unclassified-files", response_model=list[UnclassifiedFileOut])
+def list_unclassified_files(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[UnclassifiedFileOut]:
+    """Excel files (or sheets) that came with this job but were not placed in a slot."""
+    from app.models.job import UnclassifiedFile
+
+    job = _load_job(db, job_id, scope, user)
+    rows = (db.query(UnclassifiedFile).filter(UnclassifiedFile.job_id == job.id)
+            .order_by(UnclassifiedFile.original_filename).all())
+    return [UnclassifiedFileOut(id=r.id, original_filename=r.original_filename,
+                                sheets=[UnclassifiedSheetOut(name=sh.get("name") or "", rows=sh.get("rows") or 0,
+                                                             reason=sh.get("reason")) for sh in (r.sheets or [])])
+            for r in rows]
+
+
+@router.get("/jobs/{job_id}/unclassified-files/{file_id}/sheets")
+def preview_unclassified_file(
+    job_id: str,
+    file_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> list[dict]:
+    """The file's still-unassigned sheets as tables (first 200 rows each), for a preview."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    wanted = {sh.get("name") for sh in (row.sheets or [])}
+    try:
+        wb = read_workbook(Path(row.file_path).read_bytes(), row.original_filename)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        raise HTTPException(status_code=422, detail="This Excel file could not be read.")
+    return [_sheet_rows_out(sh) for sh in wb.sheets if sh.name in wanted]
+
+
+@router.post("/jobs/{job_id}/unclassified-files/{file_id}/assign")
+def assign_unclassified_file(
+    job_id: str,
+    file_id: str,
+    payload: AssignUnclassifiedFilePayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """An operator puts an Unclassified Excel file - one sheet, or every sheet left in it - into a
+    document slot. Each sheet becomes its own Excel document, read from its cells at extraction.
+    Teaches the classifier the format (same as assigning an Unclassified page). Not billed again:
+    every sheet was billed when it was first read."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook, sheet_text
+    from app.core.excel_intake import _safe_name
+
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    tdoc = db.get(TemplateDocument, payload.template_document_id)
+    if tdoc is None or tdoc.group_id != job.group_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Document type not found on this job's template.")
+    left = [sh for sh in (row.sheets or []) if payload.sheet is None or sh.get("name") == payload.sheet]
+    if not left:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sheet not found")
+    try:
+        data = Path(row.file_path).read_bytes()
+        wb = read_workbook(data, row.original_filename)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        raise HTTPException(status_code=422, detail="This Excel file could not be read.")
+    by_name = {sh.name: sh for sh in wb.sheets}
+    for sh in left:
+        sheet = by_name.get(sh.get("name"))
+        if sheet is None:
+            continue
+        jd = _slot_for_new_file(db, job, tdoc.id)
+        if jd is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Could not find or create a slot for this document type.")
+        ddir = _job_doc_dir(jd.id)
+        ddir.mkdir(parents=True, exist_ok=True)
+        dest = ddir / _safe_name(row.original_filename)
+        dest.write_bytes(data)
+        jd.file_path = str(dest)
+        jd.source_kind = "excel"
+        jd.sheet_name = sheet.name
+        jd.page_count = 0
+        jd.original_name = f"{row.original_filename} - {sheet.name}"[:255]
+        db.flush()
+        try:
+            document_samples.remember(db, tenant_id=job.tenant_id, template_document_id=tdoc.id,
+                                      text=sheet_text(sheet, 60), job_document_id=jd.id)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not sample Excel %s for slot %s", jd.id, tdoc.id, exc_info=True)
+    remaining = [sh for sh in (row.sheets or []) if sh not in left]
+    if remaining:
+        row.sheets = remaining
+    else:
+        Path(row.file_path).unlink(missing_ok=True)
+        db.delete(row)
+    db.commit()
+    _maybe_auto_extract(db, job)
+    db.refresh(job)
+    return _build_detail(db, job)
+
+
+@router.delete("/jobs/{job_id}/unclassified-files/{file_id}")
+def delete_unclassified_file(
+    job_id: str,
+    file_id: str,
+    sheet: str | None = None,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+):
+    """Remove one sheet (?sheet=name) or the whole Excel file from Unclassified."""
+    job = _load_job(db, job_id, scope, user)
+    row = _load_unclassified_file(db, job, file_id)
+    remaining = [sh for sh in (row.sheets or []) if sheet is not None and sh.get("name") != sheet]
+    if remaining:
+        row.sheets = remaining
+    else:
+        Path(row.file_path).unlink(missing_ok=True)
+        db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/jobs/{job_id}/documents/{document_id}/sheet")
+def get_document_sheet(
+    job_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """An Excel document's sheet as a table (first 500 rows), for the document viewer."""
+    job = _load_job(db, job_id, scope, user)
+    jd = db.query(JobDocument).filter(JobDocument.id == document_id, JobDocument.job_id == job.id).first()
+    if jd is None or jd.source_kind != "excel" or not jd.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Excel document not found")
+    sheet = _excel_sheet(jd)
+    if sheet is None:
+        raise HTTPException(status_code=422, detail="This Excel sheet could not be read.")
+    return _sheet_rows_out(sheet, max_rows=500)
+
+
+# ---- Document Capture -> Print: the chosen documents as ONE PDF --------------------------------
+
+class PrintDocumentsPayload(BaseModel):
+    # Placed documents (JobDocument ids), Unclassified pages, and Unclassified Excel files - each
+    # printed in the order given here (the screen sends slots in template order, then the rest).
+    documents: list[str] = []
+    unclassified_pages: list[str] = []
+    unclassified_files: list[str] = []
+    # "Print pages...": only these pages (1-based, as shown) of a document; a document not
+    # listed here prints whole. Print only - the document itself is not changed.
+    document_pages: dict[str, list[int]] = {}
+
+
+def _image_page(out, png_path: Path) -> bool:
+    """Add one page image to `out` as an A4-proportioned PDF page (JPEG inside, to keep a
+    190-page print from becoming a 40 MB file)."""
+    import fitz
+
+    try:
+        pix = fitz.Pixmap(str(png_path))
+        if pix.alpha:
+            pix = fitz.Pixmap(pix, 0)
+        jpg = pix.tobytes("jpeg", jpg_quality=80)
+        page = out.new_page(width=pix.width * 72 / 150, height=pix.height * 72 / 150)
+        page.insert_image(page.rect, stream=jpg)
+        return True
+    except Exception:  # noqa: BLE001 - one unreadable page must not lose the whole print
+        logger.warning("print: could not add page image %s", png_path)
+        return False
+
+
+def _sheet_pages(out, title: str, sheet) -> int:
+    """An Excel sheet as plain text pages (row by row, with its cell letters) - printable, and
+    the same text the sheet is read with."""
+    from app.core.excel_text import sheet_text
+
+    lines = [title, ""] + sheet_text(sheet).splitlines()
+    per_page, added = 70, 0
+    for start in range(0, len(lines), per_page):
+        page = out.new_page(width=842, height=595)                    # A4 landscape
+        page.insert_textbox(fitz_rect(page), "\n".join(l[:180] for l in lines[start:start + per_page]),
+                            fontsize=7, fontname="cour")
+        added += 1
+    return added
+
+
+def fitz_rect(page):
+    import fitz
+
+    return fitz.Rect(28, 28, page.rect.width - 28, page.rect.height - 28)
+
+
+@router.post("/jobs/{job_id}/print")
+def print_job_documents(
+    job_id: str,
+    payload: PrintDocumentsPayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+):
+    """Document Capture -> Print: the chosen documents, Unclassified pages and Excel files as one
+    PDF, in the order sent. Built from what is on screen (each document's own page images), so
+    it prints exactly what the operator sees. No AI, no OCR."""
+    import fitz
+    from fastapi.responses import Response
+
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+    from app.models.job import UnclassifiedFile
+
+    job = _load_job(db, job_id, scope, user)
+    if not (payload.documents or payload.unclassified_pages or payload.unclassified_files):
+        raise HTTPException(status_code=422, detail="Choose at least one document to print.")
+    out = fitz.open()
+    docs = {d.id: d for d in db.query(JobDocument).filter(JobDocument.job_id == job.id,
+                                                          JobDocument.id.in_(payload.documents or [""]))}
+    for did in payload.documents:
+        jd = docs.get(did)
+        if jd is None or not jd.file_path:
+            continue
+        if jd.source_kind == "excel":
+            sheet = _excel_sheet(jd)
+            if sheet is not None:
+                _sheet_pages(out, jd.original_name or "Excel sheet", sheet)
+            continue
+        pages_dir = _job_doc_dir(jd.id) / "pages"
+        chosen = payload.document_pages.get(did)
+        numbers = (sorted({n for n in chosen if 1 <= n <= (jd.page_count or 0)}) if chosen is not None
+                   else range(1, (jd.page_count or 0) + 1))
+        for n in numbers:
+            _image_page(out, pages_dir / f"page_{n}.png")
+    pages = {r.id: r for r in db.query(UnmatchedUploadPage).filter(
+        UnmatchedUploadPage.job_id == job.id, UnmatchedUploadPage.id.in_(payload.unclassified_pages or [""]))}
+    for pid in payload.unclassified_pages:
+        r = pages.get(pid)
+        if r is not None and r.image_path:
+            _image_page(out, Path(r.image_path))
+    files = {f.id: f for f in db.query(UnclassifiedFile).filter(
+        UnclassifiedFile.job_id == job.id, UnclassifiedFile.id.in_(payload.unclassified_files or [""]))}
+    for fid in payload.unclassified_files:
+        f = files.get(fid)
+        if f is None:
+            continue
+        try:
+            wb = read_workbook(Path(f.file_path).read_bytes(), f.original_filename)
+        except (OSError, WorkbookLocked, WorkbookUnreadable):
+            continue
+        wanted = {sh.get("name") for sh in (f.sheets or [])}
+        for sheet in wb.sheets:
+            if sheet.name in wanted:
+                _sheet_pages(out, f"{f.original_filename} - {sheet.name}", sheet)
+    if out.page_count == 0:
+        raise HTTPException(status_code=422, detail="Nothing printable in the chosen documents.")
+    data = out.tobytes(garbage=3, deflate=True)
+    out.close()
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{job.reference}-documents.pdf"'})
+
+
+# ---- a job held for a zip password (app/core/zip_passwords.py, email_puller._hold_for_password) ----
+
+class UnlockHeldJobPayload(BaseModel):
+    password: str | None = None
+    # Save the password for this customer, so the next mail opens by itself.
+    remember: bool = False
+    label: str | None = None
+    # Read the job without the locked zips instead ("Process without locked files").
+    skip_locked: bool = False
+
+
+_UNLOCK_MAX_TRIES = 5
+_UNLOCK_LOCKOUT = timedelta(minutes=15)
+
+
+@router.post("/jobs/{job_id}/held/unlock")
+def unlock_held_job(
+    job_id: str,
+    payload: UnlockHeldJobPayload,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN)),
+):
+    """Give a job that is "Waiting for Password" its zip password (checked here, before anything
+    is read) - or read it without the locked zips. Either way the whole mail is then read ONCE,
+    into this same job, in the background. 5 wrong passwords lock it for 15 minutes."""
+    import threading
+
+    from app.core.attachment_unpack import unpack_attachments
+    from app.core.email_puller import ATTACH_EXTS, CLASSIFY_EXTS, _extract_attachments, resume_held_job
+    from app.core.job_email import job_email_dir
+    from app.core.office_convert import OFFICE_EXTS
+    from app.core.zip_passwords import WAITING_FOR_PASSWORD, save_password
+
+    job = _load_job(db, job_id, scope, user)
+    if job.stage_override != WAITING_FOR_PASSWORD:
+        raise HTTPException(status_code=409, detail="This job is not waiting for a password.")
+    notes = dict(job.attachment_notes or {})
+    until = notes.get("locked_until")
+    if until and datetime.fromisoformat(until) > datetime.now(timezone.utc):
+        raise HTTPException(status_code=429, detail="Too many wrong passwords - try again in a few minutes.")
+    password = (payload.password or "").strip() or None
+    if not payload.skip_locked:
+        if not password:
+            raise HTTPException(status_code=422, detail="Enter the zip password.")
+        try:
+            import email as _email
+            msg = _email.message_from_bytes((job_email_dir(job.id) / "original.eml").read_bytes())
+        except OSError:
+            raise HTTPException(status_code=422, detail="The original mail for this job is missing.")
+        check = unpack_attachments(_extract_attachments(msg, ATTACH_EXTS), CLASSIFY_EXTS | OFFICE_EXTS,
+                                   passwords=[password])
+        if check.locked:
+            tries = int(notes.get("failed_attempts") or 0) + 1
+            notes["failed_attempts"] = tries
+            if tries >= _UNLOCK_MAX_TRIES:
+                notes["failed_attempts"] = 0
+                notes["locked_until"] = (datetime.now(timezone.utc) + _UNLOCK_LOCKOUT).isoformat()
+            job.attachment_notes = notes
+            db.commit()
+            left = _UNLOCK_MAX_TRIES - tries if tries < _UNLOCK_MAX_TRIES else 0
+            raise HTTPException(status_code=422,
+                                detail=f"Incorrect password." + (f" {left} tries left." if left else
+                                                                   " Locked for 15 minutes."))
+        if payload.remember:
+            save_password(db, tenant_id=job.tenant_id, label=(payload.label or "").strip() or "Zip password",
+                          password=password, created_by_id=user.id if user else None)
+    notes.pop("failed_attempts", None)
+    notes.pop("locked_until", None)
+    job.attachment_notes = notes
+    job.stage_override = "Document Classifying"
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage="Document Classifying",
+                    note=("Read without the password-protected zip(s)" if payload.skip_locked
+                          else "Zip password given - reading the documents")))
+    db.commit()
+    threading.Thread(target=resume_held_job, args=(job.id,),
+                     kwargs={"password": None if payload.skip_locked else password,
+                             "skip_locked": payload.skip_locked},
+                     name=f"resume-held-{job.id[:8]}", daemon=True).start()
     db.refresh(job)
     return _build_detail(db, job)
 
@@ -8087,6 +9436,35 @@ def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int
     return created
 
 
+def _excel_sheet(jdoc: JobDocument):
+    """The one sheet an Excel document is (JobDocument.sheet_name), or None if unreadable."""
+    from app.core.excel_text import WorkbookLocked, WorkbookUnreadable, read_workbook
+
+    try:
+        wb = read_workbook(Path(jdoc.file_path).read_bytes(), jdoc.file_path)
+    except (OSError, WorkbookLocked, WorkbookUnreadable):
+        logger.exception("could not read Excel document %s", jdoc.id)
+        return None
+    for sheet in wb.sheets:
+        if sheet.name == jdoc.sheet_name:
+            return sheet
+    return None
+
+
+def _excel_sheet_text(jdoc: JobDocument) -> str:
+    from app.core.excel_text import sheet_text
+
+    sheet = _excel_sheet(jdoc)
+    return sheet_text(sheet) if sheet is not None else ""
+
+
+def _excel_sheet_chunks(jdoc: JobDocument) -> list[str]:
+    from app.core.excel_text import sheet_chunks
+
+    sheet = _excel_sheet(jdoc)
+    return sheet_chunks(sheet) if sheet is not None else []
+
+
 def run_extraction(
     db: Session, job: Job, only_job_document_id: str | None = None, *, is_rerun: bool = False,
 ) -> None:
@@ -8143,7 +9521,8 @@ def run_extraction(
         # conditions: no file, no marks defined, or scoped to a different document) - billed
         # once, up front, so the cost is recorded even if a later per-document call fails.
         rerun_pages = sum(
-            jd.page_count or 0
+            (jd.page_count or 0) if getattr(jd, "source_kind", "pdf") != "excel"
+            else ((_excel_sheet(jd).billable_pages if _excel_sheet(jd) is not None else 0))
             for tdoc in group.documents if tdoc.marks
             for jd in docs_by_tdoc.get(tdoc.id, [])
             if jd.file_path and (not only_job_document_id or jd.id == only_job_document_id)
@@ -8219,6 +9598,13 @@ def run_extraction(
         database rather than only in the on-disk page cache.
         """
         if jdoc.id in doc_text_cache:
+            return doc_text_cache[jdoc.id]
+        # An Excel document (excel_mode "sheet") is read from its sheet's cells - exact values,
+        # no OCR, no page images. See app/core/excel_intake.py.
+        if getattr(jdoc, "source_kind", "pdf") == "excel":
+            doc_text_cache[jdoc.id] = _excel_sheet_text(jdoc)
+            doc_tokens_cache[jdoc.id] = []
+            doc_table_row_count_cache[jdoc.id] = 0
             return doc_text_cache[jdoc.id]
         tdoc_id = jdoc.template_document_id
         parts: list[str] = []
@@ -8319,6 +9705,74 @@ def run_extraction(
     # Every value written this run, so set_index can be stamped once pairing is known.
     written: list[JobFieldValue] = []
 
+    # Parallel extraction by prefetch (app/core/parallel_extract.py). Off (the default,
+    # parallel_extract_workers=1): the wrapped names below ARE the original functions and
+    # nothing is planned. On: page text and every AI call the loop below will make are fetched
+    # side by side first, mirroring the loop's own decisions exactly; the loop is unchanged and
+    # finds each answer waiting. Its "every field blank -> retry once" calls bypass this.
+    from app.core.large_job_lane import in_lane as _in_lane
+    from app.core.parallel_extract import Prefetch, prefetch_page_ocr, workers_for as _xworkers
+
+    # Live progress for the job page (app/core/extraction_progress.py): text -> ai -> docs ->
+    # finishing. Cleared first so a re-run never inherits the previous run's start time.
+    from app.core import extraction_progress as _xprog
+
+    _xprog.clear(job.id)
+    _pf = Prefetch(_xworkers(_in_lane()))
+    _pf_fields = _pf.wrap("fields", extract_document_fields)
+    _pf_fields_img = _pf.wrap("fields_img", extract_document_fields_from_images)
+    _pf_rows = _pf.wrap("rows", extract_document_rows)
+    _pf_rows_img = _pf.wrap("rows_img", extract_document_rows_from_images)
+    if _pf.on:
+        _todo = [(t, d) for t in group.documents for d in docs_by_tdoc.get(t.id, [])
+                 if d.file_path is not None and t.marks
+                 and not (only_job_document_id and d.id != only_job_document_id)]
+        # 1. page text, side by side, into the per-page cache files (no database)
+        prefetch_page_ocr(
+            [(_job_doc_dir(d.id), p) for _t, d in _todo
+             if getattr(d, "source_kind", "pdf") != "excel" and d.id not in doc_text_cache
+             for p in range(1, (d.page_count or 0) + 1)],
+            _pf.workers, on_done=lambda d, t: _xprog.publish(job.id, "text", d, t))
+        # 2. each document's text, one at a time as before; 3. plan the loop's calls
+        for _t, _d in _todo:
+            _text = text_for_doc(_d)
+            _single = [m for m in _t.marks if not m.is_multi_value]
+            _multi = [m for m in _t.marks if m.is_multi_value]
+            _fields = [field_spec(m, inline_format=True) for m in _single]
+            _excel = getattr(_d, "source_kind", "pdf") == "excel"
+            _force = extraction_engine == "gpt5_mini_vision" and not _excel
+            _vision = _force or (not _text.strip() and not _excel)
+            _model = vision_engine_model if _force else None
+            _imgs: list = [] if _excel else [_job_doc_dir(_d.id) / "pages" / f"page_{p}.png"
+                                            for p in range(1, _d.page_count + 1)]
+            _imgs = [p for p in _imgs if p.exists()]
+            if not _vision:
+                _pf.plan("fields", _text, _fields, tenant_id=job.tenant_id)
+            else:
+                _pf.plan("fields_img", _imgs, _fields, model=_model, tenant_id=job.tenant_id)
+            _aligned = [m for m in _multi if not m.standalone_multi_value]
+            for _group in ([_aligned] if _aligned else []) + [[m] for m in _multi if m.standalone_multi_value]:
+                _specs = [field_spec(m, inline_format=False) for m in _group]
+                _standalone = len(_group) == 1 and getattr(_group[0], "standalone_multi_value", False)
+                _rows_hint = doc_table_row_count_cache.get(_d.id, 0)
+                if _excel:
+                    for _part in _excel_sheet_chunks(_d):
+                        _pf.plan("rows", _part, _specs, None, tenant_id=job.tenant_id)
+                elif not _vision:
+                    _pf.plan("rows", _text, _specs, _rows_hint or None, tenant_id=job.tenant_id)
+                    if _imgs and not _standalone:
+                        _pf.plan("rows_img", _imgs, _specs, _rows_hint or None, tenant_id=job.tenant_id)
+                else:
+                    _pf.plan("rows_img", _imgs, _specs, _rows_hint or None, model=_model,
+                             tenant_id=job.tenant_id)
+        _pf.run(on_done=lambda d, t: _xprog.publish(job.id, "ai", d, t))
+
+    # The documents the loop below will actually read - for its "document N of M".
+    _loop_total = sum(1 for t in group.documents for d in docs_by_tdoc.get(t.id, [])
+                      if d.file_path is not None and t.marks
+                      and not (only_job_document_id and d.id != only_job_document_id))
+    _loop_no = 0
+
     # Every FILE, not every slot: a slot holding three invoices is read three times, and each
     # file's values are kept under its own job_document_id so three invoice numbers stay three
     # invoice numbers instead of overwriting one another.
@@ -8331,6 +9785,8 @@ def run_extraction(
         if only_job_document_id and jd.id != only_job_document_id:
             continue
 
+        _loop_no += 1
+        _xprog.publish(job.id, "docs", _loop_no, _loop_total)
         ocr_text = text_for_doc(jd)
 
         def _spec(m, inline_format: bool = True):
@@ -8353,13 +9809,15 @@ def run_extraction(
         # OCR-failure fallback (extraction.py then defaults to settings.openai_model exactly
         # as before this setting existed) and only becomes vision_engine_model when the
         # engine was deliberately chosen.
-        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
-        used_vision = engine_forces_vision or not ocr_text.strip()
+        is_excel_doc = getattr(jd, "source_kind", "pdf") == "excel"
+        # Never vision for an Excel sheet: it has no page image, and its text is exact.
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision" and not is_excel_doc
+        used_vision = engine_forces_vision or (not ocr_text.strip() and not is_excel_doc)
         model_override = vision_engine_model if engine_forces_vision else None
         # Computed unconditionally (cheap - just a filesystem check): the row cross-check below
         # needs these page images even when OCR text is present and single-value extraction
         # stays text-based.
-        image_paths: list = [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
+        image_paths: list = [] if is_excel_doc else [_job_doc_dir(jd.id) / "pages" / f"page_{p}.png" for p in range(1, jd.page_count + 1)]
         image_paths = [p for p in image_paths if p.exists()]
         if used_vision and not engine_forces_vision:
             # WARNING, not INFO: reading page images instead of OCR text measurably degrades
@@ -8377,9 +9835,9 @@ def run_extraction(
             )
 
         if not used_vision:
-            extracted = extract_document_fields(ocr_text, fields, tenant_id=job.tenant_id)
+            extracted = _pf_fields(ocr_text, fields, tenant_id=job.tenant_id)
         else:
-            extracted = extract_document_fields_from_images(
+            extracted = _pf_fields_img(
                 image_paths, fields, model=model_override, tenant_id=job.tenant_id)
 
         # By request: a document whose EVERY single-value field came back blank in one pass is
@@ -8557,9 +10015,15 @@ def run_extraction(
             # and used below as a third, independent source of truth for "how many rows are
             # there really" - the two LLM reads otherwise only ever argue with each other.
             detected_row_count = doc_table_row_count_cache.get(jd.id, 0)
-            if not used_vision:
-                rows = extract_document_rows(ocr_text, row_specs, detected_row_count or None,
-                                             tenant_id=job.tenant_id)
+            if is_excel_doc:
+                # A long sheet is read in parts, each repeating the heading rows, then joined in
+                # order - one huge table in one call is where rows get dropped.
+                rows = []
+                for part in _excel_sheet_chunks(jd):
+                    rows.extend(_pf_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
+            elif not used_vision:
+                rows = _pf_rows(ocr_text, row_specs, detected_row_count or None,
+                                tenant_id=job.tenant_id)
                 # Line-item tables are the highest-error part of extraction: a table whose OCR
                 # text doesn't preserve visual column order can make the model silently drop or
                 # merge rows (see ROW_IS_A_PRODUCT in extraction.py) no matter how the prompt is
@@ -8570,7 +10034,7 @@ def run_extraction(
                 # text read itself looks broken - but never prefer a candidate that itself looks
                 # broken just because it has a higher row count.
                 if image_paths and not is_standalone_group:
-                    vision_rows = extract_document_rows_from_images(
+                    vision_rows = _pf_rows_img(
                         image_paths, row_specs, detected_row_count or None,
                         tenant_id=job.tenant_id)
                     vision_broken = _row_read_looks_broken(vision_rows, row_labels)
@@ -8705,7 +10169,7 @@ def run_extraction(
                 # Previously this branch required OCR text, so with none the line items were
                 # dropped outright while the single fields still returned — an invoice would
                 # come back with a supplier and a total but no products at all.
-                rows = extract_document_rows_from_images(
+                rows = _pf_rows_img(
                     image_paths, row_specs, detected_row_count or None, model=model_override,
                     tenant_id=job.tenant_id)
             if is_standalone_group and multi_marks[0].label_name == "container_number":
@@ -8777,6 +10241,29 @@ def run_extraction(
     # Only possible now: the pairing is made on the invoice numbers, and those had to be read
     # off the documents first. Never on upload order — see app/core/doc_sets.py.
     from app.core.doc_sets import assign_sets, describe_sets, pairing_key
+
+    if _pf.on:
+        logger.info("job %s: parallel extraction - %d of %d AI call(s) answered from the prefetch",
+                    job.reference, _pf.hits, _pf.hits + _pf.misses)
+    _xprog.publish(job.id, "finishing")
+
+    # A scoped run read ONE file, so per_file only holds that file's invoice number. Every other
+    # file looked unnumbered to the pairing, which then put the re-read invoice - and every
+    # invoice re-read after it - into set 1: four invoices became "one" and the INVOICES sheet
+    # of the Excel came out with a single row pairing one invoice's number with another's
+    # value (found on SIT, MAA/SI/03725/26-27). The untouched files' readings are still in the
+    # table (the delete above kept them), so they are read back exactly as recompute-doc-sets
+    # does, and the pairing sees the whole job again.
+    if only_job_document_id:
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id,
+                           JobFieldValue.job_document_id.isnot(None),
+                           JobFieldValue.job_document_id != only_job_document_id)
+                   .all()):
+            val = (fv.corrected_value or fv.extracted_value or "").strip()
+            if val:
+                per_file.setdefault(fv.job_document_id, {}).setdefault(fv.label_name, val)
+            written.append(fv)   # re-stamped with the same pairing as the file just read
 
     paired_files = [
         {
@@ -9207,6 +10694,7 @@ def run_extraction(
 
             value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
                                          field_label=cf.label_name)
+            value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
         # Idempotent on the same reasoning as every other write loop in this function - see
@@ -9261,6 +10749,14 @@ def run_extraction(
     # box for every container column, so a container number filtered away by the ISO 6346
     # check leaves an empty box to fill instead of no box at all. See the helper.
     _backfill_missing_standalone_cells(db, job, group)
+    # "Fill only when <another field> has a value" (CustomField.requires_value_of) - now
+    # that every field has its final reading, a MAWB Date with no MAWB Number is emptied.
+    _enforce_requires_value_of(db, job)
+    # A document with no file that may be entered by hand gets its empty boxes - before the
+    # corrections are restored below, so values typed earlier come back into them.
+    _ensure_manual_entry_fields(db, job, group)
+    # A waybill generated from a pre-alert has no dates on it - see the helper.
+    _blank_dates_on_generated_waybills(db, job)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -9334,6 +10830,16 @@ def run_extraction(
         logger.info("job %s: flagged as a possible duplicate of %s (matching content checksum)",
                     job.reference, existing_dup.reference)
         return
+
+    # The importer the reader matched by itself is held to the same rule as one picked from
+    # the list: an Indian importer with no GSTIN in the dump is left empty for the operator.
+    # After the corrections were restored above, so a pick made earlier is checked too.
+    from app.core.importer_gstin import clear_importer_without_gstin
+
+    emptied_importer = clear_importer_without_gstin(db, job)
+    if emptied_importer:
+        logger.info("job %s: %s emptied after extraction - the importer has no GSTIN in the dump",
+                    job.reference, emptied_importer)
 
     job.status = "extracted"
     db.commit()
@@ -9486,6 +10992,167 @@ def _remember_safely(db: Session, **kwargs) -> None:
             db.flush()
     except Exception:  # noqa: BLE001 - a failed remember must never fail the save
         logger.exception("reference learning skipped for %s", kwargs.get("custom_field_id") or kwargs.get("mark_id"))
+
+
+def _job_level_value(db: Session, job_id: str, label: str) -> str:
+    """This job's current job-level value for `label` (corrected over extracted), "" if none.
+    A label on several documents (Invoice No on the Invoice and the Packing List) counts as
+    filled when ANY of them carries a value."""
+    for fv in (db.query(JobFieldValue)
+               .filter(JobFieldValue.job_id == job_id, JobFieldValue.label_name == label,
+                       JobFieldValue.row_index.is_(None)).all()):
+        v = (fv.corrected_value if fv.corrected_value is not None else fv.extracted_value) or ""
+        if v.strip():
+            return v.strip()
+    return ""
+
+
+# "NO MAWB": the MAWB Number field says, in words, that the page has no master waybill. It is
+# shown and sent to the ERP as it is, but for "fill only when <field> has a value" it counts as
+# EMPTY - otherwise the house waybill's date lands in MAWB Date. Only fields with
+# requires_value_of set are affected (today: MAWB Date on Air import (November 5)).
+_SAYS_NONE = re.compile(r"^\s*NO\s+M?AWB\s*$", re.I)
+
+
+def _has_required_value(db: Session, job_id: str, label: str) -> bool:
+    v = _job_level_value(db, job_id, label)
+    return bool(v) and not _SAYS_NONE.match(v)
+
+
+# A master air waybill number: the airline's 3-digit prefix, then 8 digits - written
+# "232-71281011", "232 71281011", "198 HAN 00111646" (departure airport between), or split by the
+# OCR over lines ("176 PER" ... "69375110").
+_MAWB_ONE_LINE = re.compile(
+    r"(?<![\w-])(\d{3})(?:[ \t]*-[ \t]*|[ \t]+(?:[A-Z]{3}[ \t]+)?|)(\d{4})[ \t]?(\d{4})(?![\w-])")
+_MAWB_SPLIT = re.compile(r"(?m)^[ \t]*(\d{3})[ \t]+[A-Z]{3}[ \t]*\n(?:[ \t]*\n)*[ \t]*(\d{8})[ \t]*$")
+_NOT_A_MAWB = re.compile(r"(phone|tel|fax|mob|contact|account)\W", re.I)
+
+
+def _mawb_number_from_page(page_text: str, ai_value: str, hawb: str) -> str:
+    """MAWB Number as 11 digits, read off the air waybill text by its fixed shape.
+
+    The AI alone was unreliable on these pages: it answered NO MAWB for a number the page
+    labels "MAWB Number" (232-19669366), dropped the airline prefix from "176 PER 69375110",
+    and returned the house number (9883236823, 41L0155474 -> 410155474). The shape is fixed,
+    so the page is searched for it; the first one found (the top of the page) wins, never the
+    house number and never one next to a phone/account label. With none on the page, the AI's
+    answer stands only if it is itself 11 digits - otherwise NO MAWB.
+    """
+    text = page_text or ""
+    hawb_digits = re.sub(r"\D", "", hawb or "")
+    found: list[tuple[int, str]] = []
+    for m in _MAWB_ONE_LINE.finditer(text):
+        if _NOT_A_MAWB.search(text[max(0, m.start() - 25):m.start()]):
+            continue
+        found.append((m.start(), "".join(m.groups())))
+    for m in _MAWB_SPLIT.finditer(text):
+        found.append((m.start(), m.group(1) + m.group(2)))
+    for _, num in sorted(found):
+        if num != hawb_digits:
+            return num
+    ai_digits = re.sub(r"\D", "", ai_value or "")
+    if len(ai_digits) == 11 and ai_digits != hawb_digits and not _SAYS_NONE.match(ai_value or ""):
+        return ai_digits
+    return "NO MAWB"
+
+
+def _apply_mawb_shape(db: Session, job: Job, cf, value: str, page_text: str) -> str:
+    """Only for a "MAWB Number" field another field depends on (Air import November 5's MAWB
+    Date requires it) - every other field and template is untouched."""
+    from app.models.custom_field import CustomField as _CFm
+
+    if (cf.label_name or "").strip().upper() != "MAWB NUMBER":
+        return value
+    if db.query(_CFm).filter(_CFm.group_id == job.group_id,
+                             _CFm.requires_value_of == cf.label_name).first() is None:
+        return value
+    new = _mawb_number_from_page(page_text, value or "", _job_level_value(db, job.id, "HBL No"))
+    if new != (value or ""):
+        logger.info("job %s: MAWB Number %r -> %r (read off the air waybill by its shape)",
+                    job.reference, value, new)
+    return new
+
+
+def _enforce_requires_value_of(db: Session, job: Job, only_required_label: str | None = None) -> list[str]:
+    """Blank every job-level custom field whose requires_value_of field is empty on this job.
+
+    CustomField.requires_value_of - "fill only when <another field> has a value". MAWB Date
+    requires MAWB Number: a plain House Air Waybill has no master waybill and so no master
+    date, and the two are read off the document separately, so a date could come back on a
+    page with no master number at all - the house date, in the wrong box. Run after
+    extraction, after a recompute, and when an operator saves the required field (pass its
+    label as only_required_label to look at just the fields depending on it). Does not commit.
+    Returns the labels it blanked.
+    """
+    from app.models.custom_field import CustomField
+
+    q = db.query(CustomField).filter(CustomField.group_id == job.group_id,
+                                     CustomField.requires_value_of.isnot(None),
+                                     CustomField.per_row.is_(False))
+    if only_required_label is not None:
+        q = q.filter(CustomField.requires_value_of == only_required_label)
+    blanked: list[str] = []
+    db.flush()
+    for cf in q.all():
+        required = (cf.requires_value_of or "").strip()
+        if not required or _has_required_value(db, job.id, required):
+            continue
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if (fv.extracted_value or "").strip() or (fv.corrected_value or "").strip():
+                fv.extracted_value = ""
+                fv.corrected_value = None
+                blanked.append(cf.label_name)
+    if blanked:
+        logger.info("job %s: %s left empty - the field(s) they require are empty", job.id, blanked)
+    return blanked
+
+
+def _blank_dates_on_generated_waybills(db: Session, job: Job) -> list[str]:
+    """A waybill the app generated from a pre-alert has NO date on it - so a date field that reads
+    only that waybill is left empty, whatever the model answered. Returns the labels it emptied.
+
+    The model is asked for "the date printed next to the MAWB number", there is none, and it
+    does not always say so: on the first real mail it gave the ETA (while the ETA was still
+    printed), and once that was gone it built '22-HAN-2023' out of the file number 22H0523041
+    and the origin HAN (JOB-60D883). The page is ours and we know what is on it, so this is
+    decided here rather than left to the model's restraint.
+
+    Which fields: job-level AI fields shown as a date (date_picker) whose ONLY source document
+    is the generated waybill - MAWB Date and HBL Date on November 5. A date field that also
+    reads another document keeps its reading. Runs before corrections are restored, so a date
+    an operator typed comes back. Does not commit.
+    """
+    from app.core.prealert_shipments import is_generated_awb
+    from app.models.custom_field import CustomField
+
+    generated = {
+        jd.template_document_id
+        for jd in db.query(JobDocument).filter(JobDocument.job_id == job.id,
+                                               JobDocument.file_path.isnot(None)).all()
+        if is_generated_awb(jd.file_path)
+    }
+    if not generated:
+        return []
+    emptied: list[str] = []
+    db.flush()
+    for cf in (db.query(CustomField)
+               .filter(CustomField.group_id == job.group_id, CustomField.kind == "ai",
+                       CustomField.per_row.is_(False), CustomField.date_picker.is_(True)).all()):
+        sources = [s for s in (cf.source_document_ids or []) if s]
+        if not sources or not set(sources) <= generated:
+            continue
+        for fv in (db.query(JobFieldValue)
+                   .filter(JobFieldValue.job_id == job.id, JobFieldValue.custom_field_id == cf.id,
+                           JobFieldValue.row_index.is_(None)).all()):
+            if (fv.extracted_value or "").strip():
+                fv.extracted_value = ""
+                emptied.append(cf.label_name)
+    if emptied:
+        logger.info("job %s: %s left empty - its only source is a waybill generated from the "
+                    "pre-alert, which carries no dates", job.id, emptied)
+    return emptied
 
 
 def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
@@ -9751,7 +11418,18 @@ def correct_field_value(
     # the shared helper is what actually enforces an operator's own-job restriction and a
     # GK2 user's assigned_modes; skipping it here (this used to discard `user` entirely) meant
     # either restriction could be bypassed just by knowing/guessing a value's id.
-    _load_job(db, fv.job_id, scope, user)
+    job_for_rules = _load_job(db, fv.job_id, scope, user)
+    if fv.custom_field_id and fv.row_index is None and (payload.corrected_value or "").strip():
+        from app.models.custom_field import CustomField as _CFr
+
+        own_cf = db.get(_CFr, fv.custom_field_id)
+        required = ((own_cf.requires_value_of if own_cf else None) or "").strip()
+        if required and not _has_required_value(db, fv.job_id, required):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{fv.label_name} can only be filled when {required} has a value - "
+                       f"fill {required} first.",
+            )
     # Stripped on the way in, not just read out stripped everywhere else (nearly every OTHER
     # read site in this file already defensively does `.strip()` - this was the one write site
     # that didn't). A stray leading/trailing space or non-breaking space copy-pasted into a
@@ -9759,11 +11437,27 @@ def correct_field_value(
     # to the Excel export and failed the ERP's own upload there, while clearing the cell and
     # retyping it by hand produced a clean string that "just worked" - the same value, by eye,
     # behaving differently purely because of what came along with it.
-    _apply_correction(db, fv, payload.corrected_value or "")
+    saved = payload.corrected_value or ""
+    # MAWB Number saved EMPTY by an operator is stored as "NO MAWB" - the same words extraction
+    # uses for a waybill with no master number. Only where MAWB Date depends on it
+    # (requires_value_of - today only Air import (November 5)); everywhere else empty stays empty.
+    if not saved.strip() and fv.row_index is None and fv.custom_field_id \
+            and (fv.label_name or "").strip().upper() == "MAWB NUMBER":
+        from app.models.custom_field import CustomField as _CFm
+
+        if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
+                                 _CFm.requires_value_of == fv.label_name).first() is not None:
+            saved = "NO MAWB"
+    _apply_correction(db, fv, saved)
+    _mark_review_started(job_for_rules)
     # ... and into every box on this line holding the same answer, in both directions. The
     # frontend already walked the link forwards; nothing walked it back, so typing into the
     # CTH box left "Dump CTH Number" - the field the entry sheet's CTH column reads - empty.
-    _carry_to_synced_partners(db, fv, payload.corrected_value or "")
+    _carry_to_synced_partners(db, fv, saved)
+    # A required field cleared takes every field that depends on it with it (MAWB Number
+    # emptied -> MAWB Date emptied) - see _enforce_requires_value_of.
+    if fv.row_index is None and (not saved.strip() or _SAYS_NONE.match(saved)):
+        _enforce_requires_value_of(db, job_for_rules, only_required_label=fv.label_name)
     db.commit()
     db.refresh(fv)
     tdoc = db.get(TemplateDocument, fv.template_document_id) if fv.template_document_id else None
@@ -10131,6 +11825,7 @@ def recompute_custom_field(
 
         value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
                                      field_label=cf.label_name)
+        value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
 
@@ -10147,6 +11842,8 @@ def recompute_custom_field(
     existing.label_name = cf.label_name
     existing.extracted_value = value
     existing.target_value_raw = raw_value if getattr(cf, "is_target_value", False) else None
+    _enforce_requires_value_of(db, job)
+    _blank_dates_on_generated_waybills(db, job)
     db.commit()
     db.refresh(existing)
     return [JobFieldValueOut(
@@ -10580,11 +12277,13 @@ def recompute_mark(
         ocr_text = "\n".join(kept)
         tokens = [(p, tokens_by_page[p]) for p in range(1, len(parts) + 1)
                   if p not in dropped_pages and p in tokens_by_page]
+        if getattr(jd, "source_kind", "pdf") == "excel":       # read from the sheet's cells
+            ocr_text, tokens = _excel_sheet_text(jd), []
 
         # Same "deliberate engine choice" vs. "OCR genuinely found nothing" distinction as
         # run_extraction - see its own comment for why model_override stays None in the
         # fallback case.
-        engine_forces_vision = extraction_engine == "gpt5_mini_vision"
+        engine_forces_vision = extraction_engine == "gpt5_mini_vision" and getattr(jd, "source_kind", "pdf") != "excel"
         used_vision = engine_forces_vision or not ocr_text.strip()
         model_override = vision_engine_model if engine_forces_vision else None
         if not used_vision:

@@ -42,7 +42,9 @@ def _sync_parked(script: ErpScript) -> dict | None:
     try:
         from app.core.parked import MANAGER
 
-        if script.stay_open and script.checkpoint_index is not None:
+        # A branch-routed script never parks: its jobs run on the branch logins, and a parked
+        # browser would log in as the script's own user alongside them.
+        if script.stay_open and script.checkpoint_index is not None and not script.branch_field:
             return MANAGER.park(_park_snapshot(script))
         MANAGER.unpark(script.id)
         return None
@@ -127,7 +129,8 @@ def update_erp_script(
     db.refresh(script)
     # Setting the checkpoint + stay open takes effect now, not at the next restart. Also stops
     # a parked browser whose steps or URL just changed under it.
-    if {"checkpoint_index", "stay_open", "steps", "url", "login_username", "login_password"} & set(updates):
+    if {"checkpoint_index", "stay_open", "steps", "url", "login_username", "login_password",
+         "branch_field"} & set(updates):
         _sync_parked(script)
     return ErpScriptOut.model_validate(script)
 
@@ -516,7 +519,8 @@ def _sample_for_label(db: Session, script: ErpScript, label: str) -> tuple[str, 
             row = (
                 db.query(CustomFieldReferenceValue)
                 .filter(CustomFieldReferenceValue.custom_field_id == cf.id,
-                        CustomFieldReferenceValue.resolved_value.isnot(None))
+                        CustomFieldReferenceValue.resolved_value.isnot(None),
+                        CustomFieldReferenceValue.is_active.is_(True))
                 .order_by(CustomFieldReferenceValue.id.desc())
                 .first()
             )

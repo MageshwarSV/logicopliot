@@ -10,6 +10,7 @@ import * as tenantsApi from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
+import { LargeJobLaneSection } from "./LargeJobLaneSection";
 
 /** Two live kill switches for AI-dependent work - NOT a backend shutdown. Everything else
  *  keeps running: viewing jobs, correcting values already extracted, ERP submission for
@@ -477,11 +478,29 @@ export function SettingsPage() {
     setErpWorkerSaved(false);
     try {
       const result = await systemSettingsApi.setErpScriptWorkers(count);
-      setSettings((prev) => (prev ? { ...prev, erp_script_workers: result.erp_script_workers } : prev));
+      setSettings((prev) => (prev ? { ...prev, erp_script_workers: result.erp_script_workers, erp_script_workers_auto: false } : prev));
       setErpWorkerSaved(true);
     } catch (err) {
       setErpWorkerError(
         axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not update the worker count." : "Could not update the worker count.",
+      );
+    } finally {
+      setBusyErpWorkers(false);
+    }
+  }
+
+  async function toggleErpWorkersAuto() {
+    if (!settings) return;
+    setBusyErpWorkers(true);
+    setErpWorkerError(null);
+    setErpWorkerSaved(false);
+    try {
+      const result = await systemSettingsApi.setErpScriptWorkersAuto(!settings.erp_script_workers_auto);
+      setSettings((prev) => (prev ? { ...prev, erp_script_workers_auto: result.erp_script_workers_auto } : prev));
+      setErpWorkerSaved(true);
+    } catch (err) {
+      setErpWorkerError(
+        axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not switch Auto." : "Could not switch Auto.",
       );
     } finally {
       setBusyErpWorkers(false);
@@ -635,10 +654,26 @@ export function SettingsPage() {
               <Button size="sm" onClick={saveErpWorkerCount} disabled={busyErpWorkers}>
                 {busyErpWorkers ? "Saving…" : "Save"}
               </Button>
+              <Button
+                size="sm"
+                variant={settings.erp_script_workers_auto ? "primary" : "secondary"}
+                onClick={toggleErpWorkersAuto}
+                disabled={busyErpWorkers}
+                title="Let the server decide from its free memory, CPU cores and current load"
+              >
+                {settings.erp_script_workers_auto ? "Auto: ON" : "Auto"}
+              </Button>
             </div>
+            {settings.erp_script_workers_auto && (
+              <p className="mt-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-800 dark:bg-indigo-500/10 dark:text-indigo-300">
+                Auto is on — the server picks the count itself on every queued run, from its free
+                memory (about 450 MB per browser), CPU cores and load. Right now that is{" "}
+                <b>{settings.erp_script_workers_auto_value ?? "—"}</b>. Saving a number switches Auto off.
+              </p>
+            )}
             {erpWorkerSaved && (
               <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
-                Saved — the next ERP submission uses this worker count.
+                Saved — the next ERP submission uses this setting.
               </p>
             )}
             {erpWorkerError && (
@@ -686,6 +721,8 @@ export function SettingsPage() {
             )}
           </div>
         )}
+
+        {settings && <LargeJobLaneSection settings={settings} />}
 
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">

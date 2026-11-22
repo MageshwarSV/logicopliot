@@ -73,5 +73,8 @@ def test_reupload_keeps_the_operators_own_manual_answer_but_still_clears_documen
     )
     assert manual_value is not None
     assert manual_value.corrected_value == "IGM-2026-00123"
-    assert ai_value is None
+    # The invoice was the job's only file, so the AI field has nothing left to read: its
+    # reading is emptied. (The row itself stays, so anything typed over it would be kept -
+    # see test_page_cut_keeps_other_data.py for a field that can still read another file.)
+    assert ai_value is not None and ai_value.extracted_value == ""
     assert job.needs_reextraction is True

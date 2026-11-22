@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, JSON, String
+from sqlalchemy import Boolean, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -36,5 +36,15 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Link" button and never rotated automatically, so a link already handed out keeps
     # working. Null until generated; unique so one key never resolves to two tenants.
     irn_pending_access_key: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    # Billing details printed on the customer's Cargora tax invoice (Bill To / Ship To / place of
+    # supply) - entered by SaaS Finance on the customer's page. Kept here, not on
+    # TenantBillingConfig, so saving an address can never start invoicing by itself.
+    billing_legal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    billing_gstin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    billing_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    billing_state_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    billing_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    billing_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    billing_ship_to: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="tenant")

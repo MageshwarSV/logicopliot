@@ -4,6 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -412,6 +413,7 @@ def _require_billing_read_access(user: User, tenant_id: str) -> None:
 def get_billing_usage(
     tenant_id: str,
     month: str | None = None,
+    period: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> BillingUsageOut:
@@ -436,6 +438,28 @@ def get_billing_usage(
         period_start = today.replace(day=1)
 
     ensure_invoices_finalized(db, tenant_id)
+
+    if period in ("today", "week"):
+        # Today / This week, by India time (Monday-start week): live usage figures from the
+        # same page ledger. The bill amounts in the reply are the month's - a bill only exists
+        # for a whole month, and the screen hides them for these views.
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+
+        ist = ZoneInfo("Asia/Kolkata")
+        local_today = datetime.now(ist).date()
+        first = local_today if period == "today" else local_today - timedelta(days=local_today.weekday())
+        start_dt = datetime(first.year, first.month, first.day, tzinfo=ist)
+        end_dt = datetime(local_today.year, local_today.month, local_today.day, tzinfo=ist) + timedelta(days=1)
+        r_usage = compute_usage(db, tenant_id, today.replace(day=1), bounds=(start_dt, end_dt),
+                                job_dates=(first, local_today))
+        config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
+        m_usage = compute_usage(db, tenant_id, today.replace(day=1))
+        bill = calculate_bill(config, m_usage.total_pages, today.replace(day=1), m_usage.final_unclassified_pages)
+        return _live_usage_out(today.replace(day=1), r_usage, bill,
+                               range_from=first.isoformat(), range_to=local_today.isoformat())
+    if period not in (None, "", "month"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be today, week or month")
 
     if period_start < today.replace(day=1):
         invoice = (
@@ -469,8 +493,14 @@ def get_billing_usage(
     config = db.get(TenantBillingConfig, tenant_id) or default_billing_config(tenant_id)
     usage = compute_usage(db, tenant_id, period_start)
     bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
+    return _live_usage_out(period_start, usage, bill)
+
+
+def _live_usage_out(period_start: date, usage, bill, *, range_from: str | None = None,
+                    range_to: str | None = None) -> BillingUsageOut:
     return BillingUsageOut(
         month=period_start.strftime("%Y-%m"), is_finalized=False,
+        range_from=range_from, range_to=range_to,
         total_jobs=usage.total_jobs, total_pages=usage.total_pages,
         by_shipment_type=[
             ShipmentTypeUsageOut(shipment_type=k, jobs=v["jobs"], pages=v["pages"])
@@ -552,6 +582,7 @@ def list_billing_jobs(
 
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
+    see_deleter = user.role == SUPER_ADMIN
     rows, total = list_job_billing(
         db, tenant_id, period_start, search=search, shipment_type=shipment_type,
         date_from=from_date, date_to=to_date, highlight=highlight, page=page, page_size=page_size,
@@ -566,6 +597,10 @@ def list_billing_jobs(
                 final_unclassified_pages=r.final_unclassified_pages,
                 deleted_pages=r.deleted_pages,
                 total_billed=r.original_pages + r.rerun_pages,
+                # Names a member of the customer's own staff - a Super Admin only, never the
+                # customer's Tenant Admin, who reads this same page.
+                deleted_by=r.deleted_by if see_deleter else None,
+                deleted_at=(r.deleted_at.isoformat() if see_deleter and r.deleted_at else None),
             )
             for r in rows
         ],
@@ -811,7 +846,19 @@ def list_invoices(
         .order_by(Invoice.period_start.desc())
         .all()
     )
-    return [InvoiceOut.model_validate(inv) for inv in invoices]
+    from app.models.invoice_payment import InvoicePayment
+
+    refs = dict(
+        db.query(InvoicePayment.invoice_id, InvoicePayment.razorpay_payment_id)
+        .filter(InvoicePayment.tenant_id == tenant_id, InvoicePayment.status == "paid")
+        .all()
+    )
+    out = []
+    for inv in invoices:
+        row = InvoiceOut.model_validate(inv)
+        row.payment_reference = refs.get(inv.id)
+        out.append(row)
+    return out
 
 
 TENANT_REPORT_TYPES = ("monthly-usage", "billing-summary", "revenue-trend", "outstanding-payments")
@@ -923,6 +970,83 @@ def export_tenant_report(
     )
 
 
+class TenantBillingDetailsIO(BaseModel):
+    """The customer's details on their Cargora tax invoice (Bill To / Ship To / place of supply)."""
+    billing_legal_name: str | None = None
+    billing_gstin: str | None = None
+    billing_address: str | None = None
+    billing_state_name: str | None = None
+    billing_state_code: str | None = None
+    billing_email: str | None = None
+    billing_ship_to: str | None = None
+
+
+@router.get("/{tenant_id}/billing-details", response_model=TenantBillingDetailsIO)
+def get_tenant_billing_details(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TenantBillingDetailsIO:
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return TenantBillingDetailsIO(**{k: getattr(tenant, k) for k in TenantBillingDetailsIO.model_fields})
+
+
+@router.put("/{tenant_id}/billing-details", response_model=TenantBillingDetailsIO)
+def save_tenant_billing_details(
+    tenant_id: str,
+    payload: TenantBillingDetailsIO,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SAAS_FINANCE, SUPER_ADMIN)),
+) -> TenantBillingDetailsIO:
+    """Used for invoices raised from now on - an invoice already raised keeps the details it
+    was raised with. Saving these never starts invoicing (that is the billing config)."""
+    from app.core.tax_invoice import GST_STATES
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    data = payload.model_dump(exclude_unset=True)
+    gstin = (data.get("billing_gstin") or "").strip().upper()
+    if "billing_gstin" in data:
+        if gstin and len(gstin) != 15:
+            raise HTTPException(status_code=422, detail="A GSTIN has 15 characters.")
+        data["billing_gstin"] = gstin or None
+        if gstin and not data.get("billing_state_code"):
+            data["billing_state_code"] = gstin[:2]
+    code = (data.get("billing_state_code") or "").strip()
+    if code:
+        data["billing_state_code"] = code.zfill(2)[:2]
+        if not data.get("billing_state_name"):
+            data["billing_state_name"] = GST_STATES.get(data["billing_state_code"])
+    for k, v in data.items():
+        setattr(tenant, k, (v.strip() if isinstance(v, str) else v) or None)
+    db.commit()
+    return TenantBillingDetailsIO(**{k: getattr(tenant, k) for k in TenantBillingDetailsIO.model_fields})
+
+
+@router.get("/{tenant_id}/billing/invoices/{invoice_id}/print")
+def get_invoice_print(
+    tenant_id: str,
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Everything the tax invoice page prints (app/core/tax_invoice.printable)."""
+    from app.core.tax_invoice import printable
+    from app.models.invoice_settings import SINGLETON_ID, InvoiceSettings
+
+    _require_billing_read_access(user, tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id).first()
+    if tenant is None or inv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    settings = db.get(InvoiceSettings, SINGLETON_ID) or InvoiceSettings()
+    return printable(inv, tenant, settings)
+
+
 @router.post("/{tenant_id}/billing/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)
 def mark_invoice_paid(
     tenant_id: str,
@@ -941,7 +1065,8 @@ def mark_invoice_paid(
     if invoice is None or invoice.tenant_id != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     invoice.status = "paid" if payload.paid else "unpaid"
-    invoice.paid_at = datetime.now(timezone.utc).isoformat() if payload.paid else None
+    # To the second: paid_at is String(30), and a full isoformat() (32 chars) is refused by Postgres.
+    invoice.paid_at = datetime.now(timezone.utc).isoformat(timespec="seconds") if payload.paid else None
     db.commit()
     db.refresh(invoice)
     return InvoiceOut.model_validate(invoice)

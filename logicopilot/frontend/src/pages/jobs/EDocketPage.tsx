@@ -17,6 +17,18 @@ const CRISIL_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAApQAAAFKCAYAA
 const FTWZ_LOGO = "data:image/png;base64,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";
 
 const FCL_OPTIONS = ["FCL", "LCL", "B.B"] as const;
+// The container row's label - one constant, so the row and the value filled into it can never
+// drift apart. Its value ends with the job's own FCL / LCL (Consignment Type).
+const CONTAINER_ROW = "No. of Container 20” & 40” / FCL / LCL";
+// Page 2 (the back of the paper docket): its two tables, ten rows each, as printed.
+const PAGE2_ROWS = 10;
+const FEEDBACK_COLUMNS = ["Container No.", "Empty Received Date", "Handover to Liner Date"];
+const ADVANCE_COLUMNS = ["Sl.No.", "Remarks", "Cheque Favour", "Amount", "Cheque No.", "Cheque Dt.", "Paid by"];
+const ADVANCE_WIDTHS = ["7%", "13%", "28%", "12%", "13%", "13%", "14%"];
+// ADVANCE DETAILS rows 1 and 2: their Cheque Favour is this fixed label + Yes / No tick boxes.
+const ADVANCE_PRESET = ["Free Do", "CFS Charges On Forwarders Scope"];
+const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
+const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
 const TRANSACTION_MODES = ["Deferred", "Transaction"] as const;
 const PRIORITY_TYPES = ["Advance", "Prior", "Normal"] as const;
@@ -110,15 +122,10 @@ function rows(isExport: boolean): DocketRow[] {
     // the document.
     { label: "Quotation Name", patterns: [/^erp entry name$/i] },
     { label: "Documents Received on" },
-    { label: "HAWB BL No.", patterns: [/house.*(bl|bill|way\s*bill)/i, /\bhawb\b/i, /\bhbl\b/i] },
-    {
-      label: "MAWB BL No.",
-      // "MBL No" (Additional Details) tried first, exactly - it's the authoritative, typed/
-      // corrected value, not a guess off whatever document happens to print something
-      // MBL-shaped. The looser patterns stay as a fallback for a job whose "MBL No" field is
-      // itself still blank.
-      patterns: [/^mbl no\.?$/i, /master.*(bl|bill|way\s*bill)/i, /\bmawb\b/i, /\bmbl\b/i],
-    },
+    // Number and date together on one row ("41P0085362 / 17-Nov-2026") - filled in the
+    // starting-values effect below from the house / master waybill's own fields.
+    { label: HAWB_ROW },
+    { label: MAWB_ROW },
     { label: "Vessel Name / Voyage No" },
     {
       label: "Inward Date / IGM Date",
@@ -130,7 +137,7 @@ function rows(isExport: boolean): DocketRow[] {
       label: "No. of Cartons / Pallet / Drum",
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
     },
-    { label: "No. of Container 20\u201d & 40\u201d / LCL", patterns: [/container/i] },
+    { label: CONTAINER_ROW, patterns: [/container/i] },
     {
       label: "Weight (Gross)",
       docName: "Bill of lading",
@@ -184,6 +191,16 @@ export function EDocketPage() {
   // Keyed by row label (the paired Date row uses "<label> / Date") - editable from whatever
   // was auto-mapped, or blank where nothing was.
   const [values, setValues] = useState<Record<string, string>>({});
+  // Page 2 - the paper docket's back side: both tables start blank, exactly like the paper,
+  // and every cell is editable.
+  const [feedback, setFeedback] = useState<string[][]>(() =>
+    Array.from({ length: PAGE2_ROWS }, () => FEEDBACK_COLUMNS.map(() => "")));
+  // ADVANCE DETAILS rows 1 and 2 come pre-printed (by request): their Cheque Favour is a fixed
+  // label with Yes / No tick boxes (ADVANCE_PRESET, yesNo below). The rest is blank.
+  const [advance, setAdvance] = useState<string[][]>(() =>
+    Array.from({ length: PAGE2_ROWS }, (_, i) => ADVANCE_COLUMNS.map((_c, j) =>
+      (j === 0 && i < ADVANCE_PRESET.length ? String(i + 1) : ""))));
+  const [yesNo, setYesNo] = useState<Record<number, "Yes" | "No" | null>>({});
 
   const isExport = /export/i.test(job?.mode ?? "");
   const docketRows = useMemo(() => rows(isExport), [isExport]);
@@ -275,10 +292,11 @@ export function EDocketPage() {
     // it should say, not just how many entries happen to follow it. The Shipment Type (the
     // same FCL/LCL/B.B this job's own tick-box above reads) closes the value out.
     const shipmentTypeDisplay = mappedFclLcl || (shipmentType?.value ?? "").trim();
+    // With no container read (the usual LCL case) the row still says FCL / LCL on its own.
     const containers = containerList.length
       ? `${containerList.length} x ${containerList.join(" , ")}`
         + (shipmentTypeDisplay ? ` / (${shipmentTypeDisplay})` : "")
-      : "";
+      : shipmentTypeDisplay;
     // "Ass. Value / Invoice Value" - the Invoice's own "Currency_type" + "Product Value"
     // ("Total Invoice Value") custom fields, appended after whatever Ass. Value itself
     // auto-filled to. Both are job-level custom fields (one value per job, not per-document),
@@ -297,8 +315,26 @@ export function EDocketPage() {
     const ffConsolLiner = (erpQuotationName?.value ?? "").trim()
       ? `${(erpQuotationName?.value ?? "").trim()} / /`
       : "";
+    // "HAWB BL No. / HAWB BL Date" and "MAWB BL No. / MAWB BL Date": the number and its own
+    // date, read by EXACT field name - a loose /mawb/ also matches "MAWB Date" and could put the
+    // date where the number goes. Air import: HBL No (shown as HAWB Number) + HBL Date, MAWB
+    // Number + MAWB Date. Sea import: HBL No + HBL Date, MBL No + MBL Date. The waybill / bill of
+    // lading's own reading is preferred over another document's copy of the same label.
+    const exact = (...names: string[]) => {
+      const want = names.map((n) => n.toLowerCase());
+      const hits = job.field_values.filter(
+        (f) => f.row_index == null && want.includes(f.label_name.trim().toLowerCase()) && (f.value ?? "").trim(),
+      );
+      const own = hits.find((f) => f.document_name === "Air Waybill" || f.document_name === "Bill of lading");
+      return ((own ?? hits[0])?.value ?? "").trim();
+    };
+    const joinNoDate = (no: string, date: string) => [no, date].filter(Boolean).join(" / ");
+    const hawbLine = joinNoDate(exact("HBL No", "HBL No.", "HAWB Number", "HAWB No"), exact("HBL Date", "HAWB Date"));
+    const mawbLine = joinNoDate(exact("MAWB Number", "MAWB No", "MBL No", "MBL No."), exact("MAWB Date", "MBL Date"));
     setValues((prev) => {
       const next = { ...prev };
+      if (!(HAWB_ROW in prev) && hawbLine) next[HAWB_ROW] = hawbLine;
+      if (!(MAWB_ROW in prev) && mawbLine) next[MAWB_ROW] = mawbLine;
       for (const row of rows(isExport)) {
         if (!(row.label in next)) next[row.label] = bestValue(job.field_values, row.patterns, row.docName);
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
@@ -314,8 +350,8 @@ export function EDocketPage() {
       if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
         next["No. of Cartons / Pallet / Drum"] = cartons;
       }
-      if (!("No. of Container 20” & 40” / LCL" in prev) && containers) {
-        next["No. of Container 20” & 40” / LCL"] = containers;
+      if (!(CONTAINER_ROW in prev) && containers) {
+        next[CONTAINER_ROW] = containers;
       }
       // "Weight (Gross)" always reads as three decimals plus the unit (e.g. "725.000 KG"),
       // whatever precision/format the BL's own "Gross Wt" mark happened to read as.
@@ -323,10 +359,15 @@ export function EDocketPage() {
         const num = Number(next["Weight (Gross)"].replace(/[^0-9.]/g, ""));
         if (!Number.isNaN(num)) next["Weight (Gross)"] = `${num.toFixed(3)} KG`;
       }
-      // "Chargeable Weight" is an air-freight concept (the greater of actual vs volumetric
-      // weight) - a sea shipment is never charged this way, so it always reads "NA" there.
+      // "Chargeable Weight" on a sea docket shows the Bill of lading's own MEASUREMENT (its
+      // "CBM Measurement" field, by request 2026-11-19), e.g. "1.460 CBM"; "NA" only when the
+      // B/L gives none. Air keeps whatever its own fields read.
       if (!("Chargeable Weight" in prev) && /sea/i.test(job.mode ?? "")) {
-        next["Chargeable Weight"] = "NA";
+        const cbm = exact("CBM Measurement");
+        const cbmNum = Number(cbm.replace(/[^0-9.]/g, ""));
+        next["Chargeable Weight"] = cbm
+          ? (/cbm|m3|cu/i.test(cbm) || Number.isNaN(cbmNum) ? cbm : `${cbm} CBM`)
+          : "NA";
       }
       if (!("Ass. Value / Invoice Value" in prev) && invoiceValueDisplay) {
         const assValue = next["Ass. Value / Invoice Value"] ?? "";
@@ -357,8 +398,16 @@ export function EDocketPage() {
   }
 
   return (
-    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className="text-black">
-      <style>{`@media print { .no-print { display: none !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
+    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className="edocket-print text-black">
+      {/* @page margin 0: the browser prints its own header/footer (date, page title, URL,
+          "1/1") INSIDE the page margin - with no margin there is nowhere to put them, so the
+          printout carries only the docket. The docket's own spacing comes from .edocket-print. */}
+      {/* Each printed page is one .edocket-sheet: exactly one A4 sheet (210 x 297mm), painted
+          yellow edge to edge, the 12mm gap above and below the frame being PADDING inside it -
+          browsers do not print the page's own background, and a margin (which the earlier
+          version used) left that background showing white above page 1 and below page 2.
+          Page 2's frame is drawn down to the bottom gap, as on the paper docket. */}
+      <style>{`@page { size: A4; margin: 0; } @media print { html, body { margin: 0 !important; padding: 0 !important; } .no-print { display: none !important; } .edocket-print { min-height: 0 !important; padding: 0 !important; background: transparent !important; } .edocket-sheet { box-sizing: border-box; width: 210mm; height: 297mm; padding: 12mm 12mm; margin: 0 !important; overflow: hidden; break-after: page; page-break-after: always; } .edocket-sheet:last-child { break-after: auto; page-break-after: auto; } .edocket-page { box-sizing: border-box; width: 100% !important; max-width: none !important; margin: 0 !important; } .edocket-page2 { height: 100%; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
 
       <div className="no-print flex justify-end gap-2 p-3">
         <button
@@ -378,8 +427,9 @@ export function EDocketPage() {
         </button>
       </div>
 
+      <div className="edocket-sheet" style={{ background: PAGE_BG }}>
       <div
-        className="mx-auto max-w-3xl border-2 border-black p-4 font-sans text-sm"
+        className="edocket-page mx-auto max-w-3xl border-2 border-black p-4 font-sans text-sm"
         style={{ background: PAGE_BG }}
       >
         {/* Letterhead: logo | title+badges | address */}
@@ -553,11 +603,111 @@ export function EDocketPage() {
           </tbody>
         </table>
 
-        <p className="mt-3 text-xs text-slate-700">
-          Starting values come from what was extracted off the documents where a confident match
-          was found - everything above is editable or clearable before you print. Nothing here is
-          saved back to the job; this is a print/download view.
-        </p>
+      </div>
+      </div>
+
+      {/* Page 2 - the back of the paper docket. On screen it sits below page 1; printed or saved
+          as PDF it is a sheet of its own (.edocket-sheet, see the print styles). */}
+      <div className="edocket-sheet mt-6" style={{ background: PAGE_BG }}>
+      <div
+        className="edocket-page edocket-page2 mx-auto max-w-3xl border-2 border-black p-4 font-sans text-sm"
+        style={{ background: PAGE_BG }}
+      >
+        <h2 className="mb-2 text-base font-bold underline">FEEDBACK STATUS</h2>
+        <table className="mb-8 w-full table-fixed border-collapse text-sm">
+          <thead>
+            <tr>
+              {FEEDBACK_COLUMNS.map((c, j) => (
+                <th
+                  key={c}
+                  className="border border-black px-2 py-1.5 text-center font-medium"
+                  style={{ width: j === 0 ? "30%" : "35%" }}
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {feedback.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className="border border-black px-1.5" style={{ height: 30 }}>
+                    <input
+                      value={cell}
+                      onChange={(e) => setFeedback((t) => t.map((r, ri) =>
+                        ri === i ? r.map((c, ci) => (ci === j ? e.target.value : c)) : r))}
+                      className="w-full bg-transparent font-mono text-xs"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h2 className="mb-2 text-base font-bold underline">ADVANCE DETAILS</h2>
+        <table className="w-full table-fixed border-collapse text-sm">
+          <thead>
+            <tr>
+              {ADVANCE_COLUMNS.map((c, j) => (
+                <th
+                  key={c}
+                  className="border border-black px-1 py-1.5 text-center font-medium"
+                  style={{ width: ADVANCE_WIDTHS[j], fontSize: 12 }}
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {advance.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className="border border-black px-1" style={{ height: 30 }}>
+                    {i < ADVANCE_PRESET.length && j === 2 ? (
+                      // Rows 1-2's Cheque Favour: a fixed label (plain text, so it WRAPS - a
+                      // text box never wraps and was cut off on the narrower printed page) and a
+                      // Yes / No tick box, one or neither.
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-0.5 text-xs font-semibold leading-tight">
+                        <span>{ADVANCE_PRESET[i]}</span>
+                        <span className="flex items-center gap-2.5">
+                          {(["Yes", "No"] as const).map((o) => (
+                            <button
+                              key={o}
+                              type="button"
+                              onClick={() => setYesNo((v) => ({ ...v, [i]: v[i] === o ? null : o }))}
+                              className="flex items-center gap-1"
+                            >
+                              <span
+                                className="flex h-3.5 w-3.5 shrink-0 items-center justify-center border border-black leading-none"
+                                style={{ fontSize: 10 }}
+                              >
+                                {yesNo[i] === o ? "✓" : ""}
+                              </span>
+                              {o}
+                            </button>
+                          ))}
+                        </span>
+                      </div>
+                    ) : (
+                    <input
+                      value={cell}
+                      onChange={(e) => setAdvance((t) => t.map((r, ri) =>
+                        ri === i ? r.map((c, ci) => (ci === j ? e.target.value : c)) : r))}
+                      className={`w-full bg-transparent text-xs ${
+                        i < 2 && (j === 0 || j === 2) ? "font-semibold" : "font-mono"
+                      } ${j === 0 ? "text-center" : ""}`}
+                    />
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       </div>
     </div>
   );

@@ -33,6 +33,8 @@ class DocumentOut(BaseModel):
     is_uploaded: bool
     # False = Document Capture can complete without this one ever being uploaded.
     is_required: bool = True
+    # See TemplateDocument.manual_entry_when_missing.
+    manual_entry_when_missing: bool = False
     # NOTE: file_path is intentionally NOT exposed.
 
 
@@ -75,6 +77,10 @@ class MarkOut(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    # A closed list of choices, drawn as a dropdown on the job screen - see
+    # FieldMark.fixed_options / dropdown_style (the same pair a custom field has).
+    fixed_options: list[str] | None = None
+    dropdown_style: str | None = None
 
 
 class CrossDocLinkOut(BaseModel):
@@ -155,6 +161,7 @@ class CustomFieldOut(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class CustomFieldCreate(BaseModel):
@@ -202,6 +209,7 @@ class CustomFieldCreate(BaseModel):
     date_picker: bool = False
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class CustomFieldEdit(BaseModel):
@@ -253,6 +261,7 @@ class CustomFieldEdit(BaseModel):
     date_picker: bool | None = None
     date_format: str | None = None
     field_order: int | None = None
+    requires_value_of: str | None = None  # see CustomField.requires_value_of
 
 
 class DocumentDetailOut(DocumentOut):
@@ -274,6 +283,17 @@ class TemplateGroupOut(BaseModel):
     # workbook for a bulk import.
     entry_mode: str = "fields"
     excel_config: dict | None = None
+    # See TemplateGroup.prealert_shipments.
+    prealert_shipments: bool = False
+    # See TemplateGroup.importer_requires_gstin.
+    importer_requires_gstin: bool = False
+    # Excel by sheet - see TemplateGroup.excel_mode / excel_ignore_patterns.
+    excel_mode: str = "legacy"
+    excel_ignore_patterns: list[str] | None = None
+    auto_extract: bool = True
+    large_zip_hold: bool = False
+    large_zip_mb: int = 5
+    large_job_lane: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):
@@ -342,6 +362,9 @@ class MarkEdit(BaseModel):
     date_picker: bool | None = None
     date_format: str | None = None
     field_order: int | None = None
+    # See FieldMark.fixed_options / dropdown_style. An empty list clears the choices.
+    fixed_options: list[str] | None = None
+    dropdown_style: str | None = None
     # The two pieces of evidence the wizard captures AUTOMATICALLY when a box is drawn - the
     # text it found around the box, and the value inside it. On a two-column layout the words
     # beside a value are not its caption, so both can come out wrong: a Gross Weight box that

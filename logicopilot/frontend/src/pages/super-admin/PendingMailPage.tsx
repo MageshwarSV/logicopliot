@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatDateTime } from "../../utils/dateTime";
 import axios from "axios";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
@@ -107,9 +108,7 @@ export function PendingMailPage() {
                 )}
               </div>
               <span className="shrink-0 text-xs text-slate-400">
-                {new Date(row.created_at).toLocaleString(undefined, {
-                  day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-                })}
+                {formatDateTime(row.created_at)}
               </span>
             </div>
 

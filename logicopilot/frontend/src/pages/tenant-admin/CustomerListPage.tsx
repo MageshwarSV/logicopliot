@@ -101,6 +101,7 @@ export function CustomerListPage() {
 
   const modeOptions = allowedModes.length ? allowedModes : [...MODES];
 
+
   function openAssign(c: jobsApi.AvailableGroup) {
     setAssignFor(c);
     setEmail(c.pull_email ?? "");

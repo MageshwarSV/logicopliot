@@ -25,6 +25,14 @@ class TemplateDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # already behaved as - nothing changes for an existing template until someone turns one off.
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # "Enter by hand when not uploaded": a job with NO file for this document still gets its tab
+    # on Required Details Review - no page image, every one of its fields empty and typeable,
+    # none of them mandatory. Built for November 5's Air Waybill, which is optional but whose
+    # values (HAWB number, airline, flight, weights) the entry still needs when the customer
+    # never sends one. False (every existing document) = no tab without a file, as before.
+    manual_entry_when_missing: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+
     # Set on upload (Step 2). file_path is internal only — never serialized to the client.
     file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

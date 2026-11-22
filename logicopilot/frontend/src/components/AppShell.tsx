@@ -1,14 +1,17 @@
-import { useEffect, useState, type ReactNode, type SVGProps } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { RoleBadge } from "./ui/Badge";
 import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/registry";
 import * as jobsApi from "../api/jobs";
+import * as duplicateEmailsApi from "../api/duplicateEmails";
 import { NotificationBell } from "./NotificationBell";
+import { ChangePasswordModal } from "./ChangePasswordModal";
+import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
-  CodeIcon, MonitorIcon, ArrowPathIcon,
+  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -67,6 +70,17 @@ function MissingDocumentsIcon() {
   );
 }
 
+// Two stacked envelopes: the same mail, arriving twice.
+function DuplicateEmailsIcon() {
+  return (
+    <svg className="h-4 w-4 shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <rect x="2" y="7" width="14" height="10" rx="1.5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 8l6.5 4.5L15.5 8" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M18 9h3a1 1 0 011 1v7a1 1 0 01-1 1h-9" />
+    </svg>
+  );
+}
+
 function ErpFailedIcon() {
   return (
     <svg className="h-4 w-4 shrink-0 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -93,6 +107,7 @@ function CountBadge({ count, cls }: { count: number; cls: string }) {
 
 export function AppShell({
   title,
+  icon,
   subtitle,
   actions,
   sidebar,
@@ -100,6 +115,8 @@ export function AppShell({
   categoryCountFilters,
 }: {
   title: string;
+  /** Optional tile shown left of the title (e.g. ERP Master Data's database icon). */
+  icon?: ReactNode;
   /** ReactNode, not string: the job header puts an icon beside the words. */
   subtitle?: ReactNode;
   actions?: ReactNode;
@@ -118,8 +135,9 @@ export function AppShell({
   const { user, logout } = useAuth();
   const location = useLocation();
   const [masterDataOpen, setMasterDataOpen] = useState(
-    location.pathname.startsWith("/tenant-admin/masters"),
+    location.pathname.startsWith("/tenant-admin/masters") || location.pathname.startsWith("/tenant-admin/master-data"),
   );
+  const [reportsOpen, setReportsOpen] = useState(location.pathname.startsWith("/tenant-admin/reports"));
   // The page you are actually on is what should be lit up — a nav rail that always shows
   // "Dashboard" as current, even while you are looking at Jobs, is worse than no highlight
   // at all, because it actively tells you the wrong thing.
@@ -162,6 +180,10 @@ export function AppShell({
   const showsJobCategories =
     user != null && ["operator", "admin", "gk2", "manager", "tenant_admin"].includes(user.role);
   const [categoryCounts, setCategoryCounts] = useState<jobsApi.JobCategoryCounts | null>(null);
+  // Pre-alerts held because their BL already came in. Its own fetch rather than another
+  // field on the job counts: these are NOT jobs - they were deliberately never created -
+  // and the counts endpoint only knows about rows in the jobs table.
+  const [duplicateCount, setDuplicateCount] = useState<number | null>(null);
   const ccfDateFrom = categoryCountFilters?.dateFrom;
   const ccfDateTo = categoryCountFilters?.dateTo;
   const ccfAssignedTo = categoryCountFilters?.assignedTo;
@@ -182,12 +204,33 @@ export function AppShell({
     return () => { alive = false; window.clearInterval(t); };
   }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
 
+  // Held pre-alerts. Deliberately unfiltered by the Jobs list's own filters, unlike the
+  // counts above: these are not jobs, so a date or customer filter meant for the jobs table
+  // has nothing to say about them, and a badge that went to zero because of a filter
+  // elsewhere would read as "nothing to decide" when there is.
+  useEffect(() => {
+    if (!showsJobCategories) return;
+    let alive = true;
+    const load = () => {
+      duplicateEmailsApi.listDuplicateEmails()
+        .then((rows) => { if (alive) setDuplicateCount(rows.length); })
+        .catch(() => {});
+    };
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [showsJobCategories]);
+
+  const tenantJobsWorkspace =
+    user?.role === "tenant_admin" &&
+    (location.pathname === "/jobs" || location.pathname === "/duplicate-emails");
+
   const totalJobsCount = categoryCounts
     ? Object.values(categoryCounts).reduce((a, b) => a + b, 0)
     : null;
 
   function jobCategoryLinks() {
-    return JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
+    const links = JOB_CATEGORIES.map(({ key, label, icon: Icon, badgeCls }) => (
       <Link
         key={key}
         to={`/jobs?category=${key}`}
@@ -198,6 +241,25 @@ export function AppShell({
         {categoryCounts && <CountBadge count={categoryCounts[key]} cls={badgeCls} />}
       </Link>
     ));
+    // Last in the list, after ERP Submitted Jobs (by request): emails held back as duplicates,
+    // not jobs yet.
+    links.push((
+      <Link
+        key="duplicates"
+        to="/duplicate-emails"
+        className={location.pathname === "/duplicate-emails" ? NAV_ACTIVE : NAV_INACTIVE}
+      >
+        <DuplicateEmailsIcon />
+        <span className="min-w-0 flex-1 truncate">Duplicate Emails</span>
+        {duplicateCount !== null && (
+          <CountBadge
+            count={duplicateCount}
+            cls="bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300"
+          />
+        )}
+      </Link>
+    ));
+    return links;
   }
   const dashboardPath =
     user?.role === "super_admin"
@@ -261,7 +323,20 @@ export function AppShell({
             </>
           )}
 
-          {user?.role === "tenant_admin" && (
+          {/* A Tenant Admin's "Jobs" opens in its own tab, and there the jobs screens look
+              exactly like an operator's: the Workspace list (New Jobs, Missing Documents, ERP
+              Failed, ERP Submitted, Duplicate Emails) instead of the whole admin menu - so new
+              and submitted jobs are one click apart, as they are for the people doing the work. */}
+          {tenantJobsWorkspace && (
+            <div className="mt-8">
+              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
+              <div className="mt-2 space-y-1">
+                {jobCategoryLinks()}
+              </div>
+            </div>
+          )}
+
+          {user?.role === "tenant_admin" && !tenantJobsWorkspace && (
             <>
               <div className="mt-8">
                 <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Billing &amp; Finance</h3>
@@ -300,6 +375,10 @@ export function AppShell({
                   {masterDataOpen && (
                     <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
                       {[
+                        { label: "ERP Master Data – Importer", to: "/tenant-admin/master-data/importer" },
+                        { label: "ERP Master Data – Quotation", to: "/tenant-admin/master-data/quotation" },
+                        { label: "CTH Master", to: "/tenant-admin/master-data/cth" },
+                        { label: "Zip Passwords", to: "/tenant-admin/master-data/zip-passwords" },
                         { label: "Shipments", to: "/tenant-admin/customers" },
                         { label: "Shipment Type", to: "/tenant-admin/masters" },
                         { label: "Ports", to: "/tenant-admin/masters" },
@@ -309,34 +388,70 @@ export function AppShell({
                         <Link
                           key={item.label}
                           to={item.to}
-                          className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                            location.pathname === item.to && item.to.startsWith("/tenant-admin/master-data")
+                              ? "bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          }`}
                         >
-                          <span className="h-1 w-1 rounded-full bg-slate-400" />
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" />
                           {item.label}
                         </Link>
                       ))}
                     </div>
                   )}
-
-                  <Link to="/account" className={navClass("/account")}>
-                    <GearIcon /> Settings
-                  </Link>
                 </div>
               </div>
 
               <div className="mt-8">
                 <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Operations</h3>
                 <div className="mt-2 space-y-1">
-                  <Link to="/jobs" className={navClass("/jobs")}>
+                  <a
+                    href="/jobs?category=new"
+                    target="_blank"
+                    rel="noopener"
+                    title="Opens the jobs workspace in a new tab"
+                    className={NAV_INACTIVE}
+                  >
                     <BriefcaseIcon />
                     <span className="min-w-0 flex-1 truncate">Jobs</span>
                     {totalJobsCount != null && (
                       <CountBadge count={totalJobsCount} cls="bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" />
                     )}
-                  </Link>
-                  <Link to="/tenant-admin/reports" className={navClass("/tenant-admin/reports")}>
-                    <ChartBarIcon /> Reports
-                  </Link>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setReportsOpen((v) => !v)}
+                    className={`${location.pathname.startsWith("/tenant-admin/reports") ? NAV_ACTIVE : NAV_INACTIVE} w-full justify-between`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <ChartBarIcon /> Reports
+                    </span>
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${reportsOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                  {reportsOpen && (
+                    <div className="ml-3 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
+                      {[
+                        { label: "Activity & Billing", to: "/tenant-admin/reports" },
+                        { label: "User Job Summary", to: "/tenant-admin/reports/user-jobs" },
+                      ].map((item) => (
+                        <Link
+                          key={item.to}
+                          to={item.to}
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                            location.pathname === item.to
+                              ? "bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                          }`}
+                        >
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+                          {item.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </>
@@ -347,9 +462,6 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
-                <Link to="/account" className={navClass("/account")}>
-                  Settings
-                </Link>
               </div>
             </div>
           )}
@@ -368,9 +480,6 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
-                <Link to="/account" className={navClass("/account")}>
-                  Settings
-                </Link>
               </div>
             </div>
           )}
@@ -395,8 +504,8 @@ export function AppShell({
                   { to: "/saas-finance/invoices", label: "Invoices" },
                   { to: "/saas-finance/payments", label: "Payments" },
                   { to: "/saas-finance/pricing-plans", label: "Pricing & Plans" },
+                  { to: "/saas-finance/invoice-settings", label: "Invoice Settings" },
                   { to: "/saas-finance/reports", label: "Reports" },
-                  { to: "/account", label: "Settings" },
                 ].map((item) => (
                   <Link key={item.to} to={item.to} className={navClass(item.to)}>
                     {item.label}
@@ -409,28 +518,11 @@ export function AppShell({
           )}
         </nav>
 
-        <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-          <div className="mb-3 flex items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">
-              {user ? initials(user.full_name) : ""}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user?.full_name}</p>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</p>
-            </div>
-          </div>
-          {user && <RoleBadge role={user.role} />}
-          <button
-            type="button"
-            onClick={() => logout()}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Log out
-          </button>
-        </div>
+        <UserMenu
+          user={user}
+          initials={user ? initials(user.full_name) : ""}
+          onLogout={() => logout()}
+        />
       </aside>
 
       <div className="flex-1 overflow-y-auto">
@@ -438,9 +530,16 @@ export function AppShell({
             away, so which job you were in and how it was doing had to be remembered rather
             than read. z-20 keeps it over the pinned document preview underneath. */}
         <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/90 px-8 py-4 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
-            {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+          <div className="flex min-w-0 items-center gap-4">
+            {icon && (
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
+                {icon}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
+              {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+            </div>
           </div>
           {/* The bell lives in the SHELL, not on any one page: an ERP submission finishes
               minutes after the operator left that job, so it has to reach them wherever they
@@ -453,6 +552,83 @@ export function AppShell({
         </header>
         <main className="p-8">{children}</main>
       </div>
+    </div>
+  );
+}
+
+
+/** The account card at the bottom of the sidebar, and the menu it opens: Profile, Change
+ *  Password, Log out. This replaced the separate "Settings" sidebar link (it only ever led to
+ *  the same account page) and the always-visible Log out button. The menu opens upward, since
+ *  the card sits at the very bottom of the screen. */
+function UserMenu({
+  user, initials, onLogout,
+}: {
+  user: ReturnType<typeof useAuth>["user"];
+  initials: string;
+  onLogout: () => void;
+}) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const item =
+    "flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800";
+
+  return (
+    <div ref={rootRef} className="relative border-t border-slate-200 p-4 dark:border-slate-800">
+      {open && (
+        <div
+          role="menu"
+          className="absolute inset-x-4 bottom-full z-30 mb-2 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900"
+        >
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); navigate("/account"); }}>
+            <UserIcon className="h-4 w-4 text-slate-500" /> Profile
+          </button>
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); setChangePasswordOpen(true); }}>
+            <LockIcon className="h-4 w-4 text-slate-500" /> Change Password
+          </button>
+          <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+          <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); onLogout(); }}>
+            <LogoutIcon className="h-4 w-4 text-slate-500" /> Log out
+          </button>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="-m-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
+      >
+        <Avatar name={user?.full_name ?? initials} url={user?.avatar_url} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user?.full_name}</p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</p>
+        </div>
+        <ChevronDownIcon className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {user && <div className="mt-3"><RoleBadge role={user.role} /></div>}
+
+      <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
     </div>
   );
 }

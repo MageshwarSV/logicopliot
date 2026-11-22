@@ -33,6 +33,18 @@ def _reset_openai_key_pool():
     _pool_module._tenant_modes = {}
 
 
+@pytest.fixture(autouse=True)
+def _reset_ai_wait():
+    """app.core.email_puller keeps "the AI service is down, hold off" in process memory (see
+    AI_DOWN_WAIT_MINUTES). Like the key pool above it is not scoped to a test's own database:
+    one test simulating an outage would leave every later test's mail held instead of read."""
+    from app.core import email_puller as _puller
+
+    _puller.clear_ai_wait()
+    yield
+    _puller.clear_ai_wait()
+
+
 @pytest.fixture()
 def test_engine():
     engine = create_engine(

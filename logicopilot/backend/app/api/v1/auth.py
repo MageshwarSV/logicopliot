@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+import re
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -16,7 +22,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.refresh_token import RefreshToken
-from app.models.user import GK2, MANAGER, OPERATOR, TENANT_ADMIN, User
+from app.models.user import GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -307,3 +313,144 @@ def change_password(
     db.commit()
     db.refresh(user)
     return _user_out(user)
+
+
+# ---------------------------------------------------------------------------
+# Self-service profile: name, phone, photo (the sidebar's Profile page)
+# ---------------------------------------------------------------------------
+
+class ProfileUpdate(BaseModel):
+    full_name: str | None = None
+    phone: str | None = None
+
+
+# Digits with the usual separators, optional leading +: "+91 98400 12345", "044-2345 6789".
+_PHONE_CHARS = re.compile(r"\+?[0-9][0-9 ()\-]*")
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    payload: ProfileUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> UserOut:
+    """Edit your OWN name and phone. Email and role are not here on purpose: those are what an
+    admin issued the account with, and changing them is an admin action (Users & Access)."""
+    data = payload.model_dump(exclude_unset=True)
+    if "full_name" in data:
+        name = " ".join((data["full_name"] or "").split())
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty.")
+        if len(name) > 255:
+            raise HTTPException(status_code=422, detail="Name is too long (255 characters at most).")
+        user.full_name = name
+    if "phone" in data:
+        phone = " ".join((data["phone"] or "").split())
+        if phone:
+            digits = sum(c.isdigit() for c in phone)
+            if not _PHONE_CHARS.fullmatch(phone) or not 7 <= digits <= 15 or len(phone) > 30:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Enter a valid phone number: 7 to 15 digits, optionally starting with +.")
+        user.phone = phone or None
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return _user_out(user)
+
+
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+
+
+def _avatar_kind(head: bytes) -> str | None:
+    """The image type from the file's own first bytes, never from its name or the browser's
+    claimed content type - either of those can say "png" about anything."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _avatar_file(rel: str) -> Path:
+    return Path(get_settings().uploads_dir) / rel
+
+
+def _remove_avatar_file(rel: str | None) -> None:
+    if not rel:
+        return
+    try:
+        _avatar_file(rel).unlink(missing_ok=True)
+    except OSError:
+        pass  # a leftover file is harmless; the row no longer points at it
+
+
+@router.post("/me/avatar", response_model=UserOut)
+def upload_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> UserOut:
+    """Set your OWN profile photo: PNG, JPG or WEBP, 2 MB at most. Replaces any previous one."""
+    content = file.file.read(AVATAR_MAX_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="That file is empty.")
+    if len(content) > AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="The photo must be 2 MB or smaller.")
+    kind = _avatar_kind(content[:16])
+    if kind is None:
+        raise HTTPException(status_code=422, detail="Upload a PNG, JPG or WEBP image.")
+    rel = f"avatars/{user.id}-{int(time.time() * 1000)}.{kind}"
+    path = _avatar_file(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    old = user.avatar_path
+    user.avatar_path = rel
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    if old != rel:
+        _remove_avatar_file(old)
+    return _user_out(user)
+
+
+@router.delete("/me/avatar", response_model=UserOut)
+def delete_avatar(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> UserOut:
+    old = user.avatar_path
+    user.avatar_path = None
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    _remove_avatar_file(old)
+    return _user_out(user)
+
+
+@router.get("/avatar/{user_id}")
+def get_avatar(
+    user_id: str,
+    db: Session = Depends(get_db),
+    viewer: User = Depends(get_current_user),
+) -> FileResponse:
+    """A user's photo, for anyone signed in to the same tenant (a Super Admin sees any). Not
+    found rather than forbidden for anyone else, so the endpoint doesn't confirm who exists."""
+    target = db.get(User, user_id)
+    if (
+        target is None
+        or not target.avatar_path
+        or (viewer.role != SUPER_ADMIN and viewer.tenant_id != target.tenant_id)
+    ):
+        raise HTTPException(status_code=404, detail="No photo")
+    path = _avatar_file(target.avatar_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No photo")
+    kind = path.suffix.lstrip(".")
+    return FileResponse(
+        path, media_type=_AVATAR_TYPES.get(kind, "application/octet-stream"),
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )

@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Content hints per doc type, to steer the classifier.
 DOC_TYPE_HINTS = {
-    "BL": "bill of lading, sea/air waybill, B/L no, shipper, consignee, notify party, vessel, port of loading/discharge",
+    "BL": "the carrier's own document titled Bill of Lading or Sea Waybill, B/L no, shipper, consignee, "
+          "notify party, vessel, port of loading/discharge, the carrier's terms of carriage - "
+          "never a forwarder's ARRIVAL NOTICE, even though that repeats the same parties and vessel",
     "PackingList": "packing list, number of packages/cartons, net weight, gross weight, dimensions, marks & numbers",
     "Invoice": "commercial invoice, invoice no, invoice date, unit price, amount, total value, incoterm, HS code",
-    "Freight": "freight certificate/invoice, freight charges, ocean freight, THC, BAF, freight amount",
+    "Freight": "freight certificate/invoice, or a forwarder's ARRIVAL NOTICE, freight charges, "
+               "ocean freight, THC, BAF, freight amount",
 }
 
 # Words a customer uses when NAMING a slot, mapped to the built-in hint for that kind of
@@ -828,52 +831,225 @@ def classify_page_image(filename: str, page_no: int, image_path: Path, candidate
         return None
 
 
-def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
-                               candidates: list[dict], model: str) -> list[dict]:
-    """Smart-Upload-only counterpart to classify_document_from_image: classifies EVERY kept
-    page of a file independently from its own image (not just page 1) - the fix for a
-    combined/multi-page file's classification, done once over the whole file's OCR text,
-    sometimes assigning the wrong page to the wrong slot. `page_images` is this file's own
-    KEPT-page numbering, same contract as this function's own return value (see this
-    module's docstring on assign_documents_detailed).
+# How many pages of ONE file are judged at the same time (each is its own model call).
+PAGE_CLASSIFY_WORKERS = 6
 
-    Consecutive pages landing on the SAME slot are merged into one document instance (a
-    2-page bill of lading stays one BL, not two) - a deliberate v1 trade-off: several
-    genuinely SEPARATE same-type documents back-to-back in one file (e.g. three invoices
-    with no gap) would currently merge into one entry too. The whole-file text classifier's
-    own number/date/header reasoning still catches that case; this path trades it away for
-    reliably keeping each page in the right slot, which is the bug this exists to fix. The
-    manual Unclassified Pages tray remains the fallback either way.
 
-    Returns the same shape as classify_document/classify_document_from_image:
-    [{"key", "pages": [int], "evidence": str}].
-    """
-    out: list[dict] = []
-    current: dict | None = None
-    prev_key: str | None = None
-    for page_no, image_path in page_images:
-        result = classify_page_image(filename, page_no, image_path, candidates, model, prev_key)
-        if result is None:
-            prev_key = None
-            if current is not None:
-                out.append(current)
-                current = None
+def _page_signature_keys(text: str, candidates: list[dict]) -> list[str]:
+    """The slots whose keyword signature THIS page's own text carries - one key per type, the
+    first slot of that type. Deterministic: a required phrase plus supporting markers, the same
+    test _augment_combined_document_claims applies to a whole file (see _TYPE_SIGNATURES)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        doc_type = _effective_doc_type(c)
+        if doc_type is None or doc_type in seen or doc_type not in _TYPE_SIGNATURES:
             continue
-        key = result["key"]
-        if current is not None and current["key"] == key:
-            current["pages"].append(page_no)
-        else:
-            if current is not None:
-                out.append(current)
-            current = {"key": key, "pages": [page_no], "evidence": result["evidence"],
-                      "source": "model"}
-        prev_key = key
-    if current is not None:
-        out.append(current)
-    if not out:
-        logger.info("classify %s: no slot's document is present on any page (per-page "
-                    "vision engine, %s slots offered)", filename, len(candidates))
+        seen.add(doc_type)
+        if _keyword_signature_match(text or "", doc_type)[0]:
+            out.append(c["key"])
     return out
+
+
+def classify_pages_from_images(filename: str, page_images: list[tuple[int, Path]],
+                               candidates: list[dict], model: str,
+                               page_texts: list[str] | None = None) -> list[dict]:
+    """Classify EVERY page of a file on its own, from its own image. `page_images` is this
+    file's own KEPT-page numbering, same contract as the return value; `page_texts`, when
+    given, is the OCR text of those same pages (index n-1 is page n).
+
+    Three passes, each only for what the one before could not settle:
+
+      1. every page judged on its own, several at a time - fast, and judged on what the page
+         itself shows. A fresh answer must clear the confidence bar.
+      2. a page that got NO confident answer is asked again in page order, told what the page
+         before it turned out to be: a continuation page (page 2 of an invoice, with no title)
+         rarely looks like anything on its own. Asked only of the unsure pages - telling EVERY
+         page what came before it is what let an invoice page after a packing list be read as
+         "more of the packing list".
+      3. the page's own TEXT: a page still unplaced that carries a type's keyword signature is
+         placed by it, and a placed page that ALSO carries another type's signature (a
+         "commercial invoice cum packing list") gets that second type too. Per page, never per
+         file - a whole-file check put every page of a 13-page attachment into a slot because
+         somewhere in it the words were present.
+
+    Consecutive pages on the same slot become one document instance (a 2-page bill of lading
+    stays one). Several same-type documents back to back merge here too; the callers split
+    those apart by their printed invoice number. Returns [{"key", "pages", "evidence",
+    "source"}], source "model" or "signature".
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    pages = [(int(n), p) for n, p in page_images]
+    if not pages:
+        logger.info("classify %s: no page images to classify", filename)
+        return []
+    order = [n for n, _ in pages]
+    path_by_page = dict(pages)
+    results: dict[int, dict | None] = {}
+
+    # 1 - every page on its own, side by side
+    with ThreadPoolExecutor(max_workers=max(1, min(PAGE_CLASSIFY_WORKERS, len(pages))),
+                            thread_name_prefix="classify-page") as pool:
+        futures = {pool.submit(classify_page_image, filename, n, path, candidates, model, None): n
+                   for n, path in pages}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+
+    # 2 - an unsure page, asked again with the page before it as context
+    continued = 0
+    prev_key: str | None = None
+    for n in order:
+        result = results.get(n)
+        if result is None and prev_key is not None:
+            result = classify_page_image(filename, n, path_by_page[n], candidates, model, prev_key)
+            if result is not None:
+                continued += 1
+            results[n] = result
+        prev_key = result["key"] if result else None
+
+    # 3 - the page's own text
+    keys_by_page: dict[int, list[tuple[str, str, str]]] = {}
+    by_text = 0
+    for n in order:
+        result = results.get(n)
+        entries = [(result["key"], result["evidence"], "model")] if result else []
+        text = page_texts[n - 1] if page_texts and 1 <= n <= len(page_texts) else ""
+        if text.strip():
+            for key in _page_signature_keys(text, candidates):
+                if any(k == key for k, _, _ in entries):
+                    continue
+                entries.append((key, "keyword signature on this page's own text", "signature"))
+                by_text += 1
+        keys_by_page[n] = entries
+
+    out: list[dict] = []
+    for key in dict.fromkeys(k for n in order for k, _, _ in keys_by_page[n]):
+        run: dict | None = None
+        for n in order:
+            hit = next((e for e in keys_by_page[n] if e[0] == key), None)
+            if hit is None:
+                if run is not None:
+                    out.append(run)
+                    run = None
+                continue
+            if run is None:
+                run = {"key": key, "pages": [], "evidence": hit[1], "source": hit[2]}
+            run["pages"].append(n)
+            if hit[2] == "model":
+                run["source"] = "model"
+        if run is not None:
+            out.append(run)
+    out.sort(key=lambda c: c["pages"][0])
+    unplaced = [n for n in order if not keys_by_page[n]]
+    logger.info("classify %s: %d page(s) - %d placed by their own image, %d as a continuation, "
+                "%d slot(s) added from the page text, %d left unplaced%s",
+                filename, len(order), sum(1 for n in order if results.get(n)) - continued,
+                continued, by_text, len(unplaced),
+                f" (pages {unplaced})" if unplaced else "")
+    return out
+
+
+# A forwarder's ARRIVAL NOTICE prints its own title in these words. Its first page also carries a
+# shipper, a consignee, a notify party, the vessel and both ports - everything the Bill of lading
+# slot is described by - so the page-image reader kept calling it a bill of lading, and the same
+# page then ALSO went to Fright Certificate by its charges (Kuehne+Nagel's "ARRIVAL NOTICE
+# India.pdf": 35 Sea import jobs on production, JOB-9E0377 on SIT). Checked against every page
+# in the Bill of lading slot on SIT and production (276): the words appear on no real bill of
+# lading or sea waybill - only on these arrival notices.
+_ARRIVAL_NOTICE = re.compile(r"\barrival\s+notice\b", re.IGNORECASE)
+
+
+def _page_texts_of(f: dict) -> list[str]:
+    """This file's text per kept page (index n-1 is page n) - the callers' own `kept_pages`,
+    or the "=== PAGE n ===" blocks of its whole text when a caller gave only that."""
+    kept = f.get("kept_pages")
+    if isinstance(kept, list) and kept:
+        return [str(t or "") for t in kept]
+    text = f.get("text") or ""
+    parts = re.split(r"=== PAGE \d+ ===", text)
+    return [p for p in parts[1:]] if len(parts) > 1 else [text]
+
+
+def _arrival_notice_is_not_a_bl(files: list[dict], candidates: list[dict],
+                                claims: list[list[dict]]) -> None:
+    """Mutates `claims`: a page whose own text says ARRIVAL NOTICE is taken out of every Bill of
+    lading claim. If nothing else holds that page, it goes to the freight slot instead - that is
+    where this template's operators file the arrival notice. Only the Bill of lading slot is
+    touched; a page with no such words is never moved."""
+    bl_keys = {c["key"] for c in candidates if _effective_doc_type(c) == "BL"}
+    freight_key = next((c["key"] for c in candidates if _effective_doc_type(c) == "Freight"), None)
+    if not bl_keys:
+        return
+    for i, ms in enumerate(claims):
+        texts = _page_texts_of(files[i])
+        notice_pages = {n for n, t in enumerate(texts, 1) if _ARRIVAL_NOTICE.search(t or "")}
+        if not notice_pages:
+            continue
+        moved: set[int] = set()
+        kept: list[dict] = []
+        for m in ms:
+            if m["key"] in bl_keys and set(m["pages"]) & notice_pages:
+                rest = [p for p in m["pages"] if p not in notice_pages]
+                moved |= set(m["pages"]) & notice_pages
+                if rest:
+                    kept.append({**m, "pages": rest})
+                continue
+            kept.append(m)
+        if not moved:
+            continue
+        held = {p for m in kept for p in m["pages"]}
+        orphans = sorted(p for p in moved if p not in held)
+        if orphans and freight_key:
+            fr = next((m for m in kept if m["key"] == freight_key), None)
+            if fr is not None:
+                fr["pages"] = sorted(set(fr["pages"]) | set(orphans))
+            else:
+                kept.append({"key": freight_key, "pages": orphans, "source": "signature",
+                             "evidence": "the page is titled ARRIVAL NOTICE - a forwarder's "
+                                         "arrival notice, not the bill of lading"})
+        claims[i] = kept
+        logger.info("classify %s: page(s) %s say ARRIVAL NOTICE - taken out of the Bill of "
+                    "lading%s", files[i].get("name"), sorted(moved),
+                    f", given to the freight slot: {orphans}" if orphans and freight_key else "")
+
+
+# The carrier's own continuation page of a bill of lading / sea waybill: "ATTACHMENT FOR
+# KUEHNE+NAGEL  Sea Waybill-No. 1077706333" then marks & numbers, weight, packages. On its own it
+# looks like a packing list, so the page reader gave it to Packing List or to nothing, and page
+# 2 of a 2-page waybill ended up in "Not required pages" (SIT, JOB-9E0377).
+_CONTINUATION = re.compile(r"\battachment\s+for\b|\bcontinu(?:ed|ation)\b", re.IGNORECASE)
+_BL_NUMBER_LABEL = re.compile(r"(?:sea\s*)?way\s*bill|\bb\s*/\s*l\b|bill\s+of\s+lading", re.IGNORECASE)
+
+
+def _bl_continuation_stays_with_bl(files: list[dict], candidates: list[dict],
+                                   claims: list[list[dict]]) -> None:
+    """Mutates `claims`: a page that says ATTACHMENT FOR / CONTINUED next to a waybill or B/L
+    number, right after a page of this SAME file that is in the Bill of lading, joins that Bill of
+    lading and leaves every other claim. A page not directly after a Bill of lading page, or
+    without both kinds of words, is never moved."""
+    bl_keys = {c["key"] for c in candidates if _effective_doc_type(c) == "BL"}
+    if not bl_keys:
+        return
+    for i, ms in enumerate(claims):
+        texts = _page_texts_of(files[i])
+        joined: list[int] = []
+        for n in range(2, len(texts) + 1):
+            head = (texts[n - 1] or "")[:400]
+            if not (_CONTINUATION.search(head) and _BL_NUMBER_LABEL.search(head)):
+                continue
+            bl = next((m for m in ms if m["key"] in bl_keys and n - 1 in m["pages"]), None)
+            if bl is None or n in bl["pages"]:
+                continue
+            bl["pages"] = sorted(set(bl["pages"]) | {n})
+            for m in ms:
+                if m is not bl and n in m["pages"]:
+                    m["pages"] = [p for p in m["pages"] if p != n]
+            joined.append(n)
+        if joined:
+            claims[i] = [m for m in ms if m["pages"]]
+            logger.info("classify %s: page(s) %s are the carrier's continuation of the Bill of "
+                        "lading - kept with it", files[i].get("name"), joined)
 
 
 def assign_documents_detailed(
@@ -912,10 +1088,12 @@ def assign_documents_detailed(
     `page_images` independently (classify_pages_from_images) - see that function's own
     docstring for the trade-off this makes. Ignored under the default engine.
     """
-    if engine == "gpt5_mini_vision" and per_page_vision:
+    per_page = engine == "gpt5_mini_vision" and per_page_vision
+    if per_page:
         claims: list[list[dict]] = [
             classify_pages_from_images(f.get("name") or "", f.get("page_images") or [],
-                                       candidates, vision_model)
+                                       candidates, vision_model,
+                                       page_texts=f.get("kept_pages"))
             for f in files
         ]
     elif engine == "gpt5_mini_vision":
@@ -932,7 +1110,14 @@ def assign_documents_detailed(
 
     # A deterministic backstop, run BEFORE the reconciliation below so an added claim is
     # reconciled exactly like one the model found itself. See _augment_combined_document_claims.
-    _augment_combined_document_claims(files, candidates, claims)
+    #
+    # Not in per-page mode: there the same keyword test has already run on each page's own
+    # text (classify_pages_from_images, pass 3). Run here as well, on the WHOLE file's text,
+    # it gave every page of a file a second slot because the words were somewhere in it.
+    if not per_page:
+        _augment_combined_document_claims(files, candidates, claims)
+    _arrival_notice_is_not_a_bl(files, candidates, claims)
+    _bl_continuation_stays_with_bl(files, candidates, claims)
 
     # 1. The SAME key may never claim a page twice - a file can genuinely hold several
     #    invoices, and each is its own document with its own, non-overlapping pages, so only
