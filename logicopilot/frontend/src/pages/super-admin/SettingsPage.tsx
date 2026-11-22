@@ -731,9 +731,10 @@ export function SettingsPage() {
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Extraction engine</h3>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Which engine production document classification and field extraction use.
-              Every AI step runs on GPT-6 Luna. "GPT-6 Luna Vision" reads the page image
-              directly for both steps; "Document OCR + GPT-6 Luna" reads Document AI's OCR
-              text instead. Takes effect on the very next job, no restart.
+              "AI Vision" reads the page image directly for both steps; "Document OCR + AI
+              text" reads Document AI's OCR text instead. Takes effect on the very next job, no
+              restart. Which AI model runs is set per server in .env (OPENAI_MODEL and
+              VISION_ENGINE_MODEL - e.g. gpt-6-luna).
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="flex-1 sm:max-w-xs">

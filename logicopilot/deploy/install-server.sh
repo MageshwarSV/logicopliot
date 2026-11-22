@@ -153,6 +153,9 @@ if [ ! -f "$ENVF" ]; then
     echo "EMAIL_POLL_MINUTES=0"
     echo "BROWSER_HEADLESS=true"
     [ "$ROLE" = erp ] && echo "ERP_SESSIONS_DIR=$ERP_SESSIONS"
+    echo "# AI model for every AI step (code default gpt-4o-mini / gpt-5-mini). GPT-6 Luna:"
+    echo "OPENAI_MODEL=gpt-6-luna"
+    echo "VISION_ENGINE_MODEL=gpt-6-luna"
     echo "# Copied from the source environment (SIT for the test, production at the switch):"
     echo "# JWT_SECRET_KEY OPENAI_API_KEY OPENAI_MODEL GOOGLE_APPLICATION_CREDENTIALS DOCAI_PROJECT_ID"
     echo "# DOCAI_LOCATION DOCAI_PROCESSOR_ID CORS_ORIGINS COOKIE_SECURE RAZORPAY_* PARALLEL_*_WORKERS"
@@ -162,7 +165,7 @@ else
   echo "     exists - not touched"
 fi
 # Report the lines that decide this server's behaviour; never values of secrets.
-for k in PROCESS_ROLE UPLOADS_DIR EMAIL_POLL_MINUTES ERP_SESSIONS_DIR; do
+for k in PROCESS_ROLE UPLOADS_DIR EMAIL_POLL_MINUTES ERP_SESSIONS_DIR OPENAI_MODEL VISION_ENGINE_MODEL; do
   v="$(grep -E "^$k=" "$ENVF" | tail -1 | cut -d= -f2- || true)"
   [ -n "$v" ] && echo "     $k=$v"
 done
