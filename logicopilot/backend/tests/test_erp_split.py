@@ -17,8 +17,8 @@ class FakeRedis:
     def __init__(self):
         self.items = []
 
-    def rpush(self, key, value):
-        self.items.append((key, value))
+    def lpush(self, key, value):
+        self.items.insert(0, (key, value))
 
 
 @pytest.fixture
