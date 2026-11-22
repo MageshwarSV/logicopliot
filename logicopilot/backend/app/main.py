@@ -165,6 +165,13 @@ def create_app() -> FastAPI:
             logging.getLogger(__name__).exception("could not load the OpenAI key pool")
         finally:
             db.close()
+        # Split servers: a key saved on another server is picked up here too (settings_sync.py).
+        from app.core.process_role import is_split
+
+        if is_split():
+            from app.core import settings_sync
+
+            settings_sync.start()
 
     @app.on_event("startup")
     def _start_email_poller() -> None:
