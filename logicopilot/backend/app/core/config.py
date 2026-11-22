@@ -159,6 +159,10 @@ class Settings(BaseSettings):
     parallel_extract_workers: int = 1
     # Ceiling on prefetched AI calls in flight across the whole process.
     parallel_extract_max_total: int = 12
+    # Parallel computed fields (jobs.run_extraction's finishing step): how many of ONE job's AI
+    # computed-field calls run at once - same prompts, same answers, made side by side instead
+    # of one after another. 1 = one at a time, exactly as before (the default everywhere).
+    parallel_computed_workers: int = 1
 
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.

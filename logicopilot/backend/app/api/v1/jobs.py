@@ -10480,6 +10480,72 @@ def run_extraction(
         return out
 
     standalone_mark_labels = _standalone_mark_labels(group)
+    def _ai_docs_text(src_ids: list[str]) -> str:
+        """The documents' text for an AI computed field: an equal share per FILE (see the note
+        in the single-value branch below). One copy for every caller, so the parallel plan and
+        the loop send byte-for-byte the same text."""
+        def _files_in(did: str) -> int:
+            return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
+
+        n_files = sum(_files_in(did) for did in src_ids)
+        share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
+        chunks = []
+        for did in src_ids:
+            name = next((d.name for d in group.documents if d.id == did), "DOC")
+            text = text_for(did)
+            allow = share * _files_in(did)
+            if len(text) > allow:
+                text = text[:allow] + "\n…[document truncated]"
+            chunks.append(f"=== {name} ===\n{text}")
+        return "\n\n".join(chunks)
+
+    def _row_context() -> list[dict]:
+        descs = _line_values("product_description")
+        codes = _line_values("item_material_code")
+        qtys = _line_values("item_quantity")
+        return [
+            {
+                "row": i + 1,
+                "part_code": codes.get(key, ""),
+                "description": descs.get(key, ""),
+                "quantity": qtys.get(key, ""),
+            }
+            for i, key in enumerate(line_keys)
+        ]
+
+    # PARALLEL_COMPUTED_WORKERS > 1: every AI computed field's call is planned here with EXACTLY
+    # the arguments the loop below will use, made several at once, and the loop's identical
+    # call is then answered from that (parallel_extract.Prefetch - a call that does not match
+    # is simply made by the loop, as before). The AI calls depend only on the documents and
+    # the extracted values, never on another computed field, so their order does not matter;
+    # the loop itself - its order, lookups, composites and every write - is unchanged.
+    # 1 (the default) = the loop makes every call itself, one after another, exactly as before.
+    from app.core.llm import compute_custom_field as _ccf, compute_custom_field_per_row as _ccfr
+    from app.core.parallel_extract import Prefetch as _CPrefetch
+
+    _cpf = _CPrefetch(int(getattr(get_settings(), "parallel_computed_workers", 1) or 1))
+    _cf_call = _cpf.wrap("cf", _ccf)
+    _cf_row_call = _cpf.wrap("cf_row", _ccfr)
+    if _cpf.on:
+        for _pcf in custom_fields:
+            try:
+                _src = _pcf.source_document_ids or [d.id for d in group.documents]
+                if getattr(_pcf, "per_row", False):
+                    if line_count > 0 and _pcf.kind == "ai":
+                        _dt = _ai_docs_text(_src)
+                        _cpf.plan("cf_row", _pcf.ai_prompt or "", _dt, _row_context(),
+                                  records=[r for r in doc_records if r["template_document_id"] in set(_src)],
+                                  field_label=_pcf.label_name, images=_cf_images(_src, _dt))
+                elif (_pcf.kind != "hardcoded" and _pcf.id not in folded_values
+                      and not (_pcf.kind == "ai" and getattr(_pcf, "multi_value_from_document", False))):
+                    _dt = _ai_docs_text(_src)
+                    _cpf.plan("cf", _pcf.ai_prompt or "", _dt,
+                              records=[r for r in doc_records if r["template_document_id"] in set(_src)],
+                              field_label=_pcf.label_name, images=_cf_images(_src, _dt))
+            except Exception:  # noqa: BLE001 - a field not planned is simply asked by the loop
+                logger.warning("could not plan computed field %s", _pcf.label_name, exc_info=True)
+        _cpf.run(on_done=lambda d, t: _xprog.publish(job.id, "finishing", d, t))
+
     for cf in custom_fields:
         if getattr(cf, "per_row", False):
             if line_count == 0:
@@ -10623,37 +10689,11 @@ def run_extraction(
                 from app.core.llm import compute_custom_field_per_row
 
                 src_ids = cf.source_document_ids or [d.id for d in group.documents]
-
-                def _files_in_row(did: str) -> int:
-                    return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
-
-                n_files = sum(_files_in_row(did) for did in src_ids)
-                share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
-                chunks = []
-                for did in src_ids:
-                    name = next((d.name for d in group.documents if d.id == did), "DOC")
-                    text = text_for(did)
-                    allow = share * _files_in_row(did)
-                    if len(text) > allow:
-                        text = text[:allow] + "\n…[document truncated]"
-                    chunks.append(f"=== {name} ===\n{text}")
-                docs_text = "\n\n".join(chunks)
+                docs_text = _ai_docs_text(src_ids)
                 chosen = set(src_ids)
                 records = [r for r in doc_records if r["template_document_id"] in chosen]
-
-                descs = _line_values("product_description")
-                codes = _line_values("item_material_code")
-                qtys = _line_values("item_quantity")
-                row_context = [
-                    {
-                        "row": i + 1,
-                        "part_code": codes.get(key, ""),
-                        "description": descs.get(key, ""),
-                        "quantity": qtys.get(key, ""),
-                    }
-                    for i, key in enumerate(line_keys)
-                ]
-                answers = compute_custom_field_per_row(
+                row_context = _row_context()
+                answers = _cf_row_call(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
                     field_label=cf.label_name, images=_cf_images(src_ids, docs_text),
                 )
@@ -10727,6 +10767,7 @@ def run_extraction(
             value = cf.hardcoded_value or ""
         else:
             src_ids = cf.source_document_ids or [d.id for d in group.documents]
+            docs_text = _ai_docs_text(src_ids)
             # Same fair share as the ruling: compute_custom_field truncates the bundle, so a
             # field sourced from several documents would let the bill of lading's 42,000
             # characters — mostly page-2 carrier boilerplate — swallow the allowance and hide
@@ -10735,20 +10776,8 @@ def run_extraction(
             # An equal share per FILE, not per slot. Dividing by the slot count gave the
             # Invoice slot one invoice's worth of room no matter how many invoices were in
             # it, so a field told to total three invoices could only ever see the first.
-            def _files_in(did: str) -> int:
-                return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
-
-            n_files = sum(_files_in(did) for did in src_ids)
-            share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
-            chunks = []
-            for did in src_ids:
-                name = next((d.name for d in group.documents if d.id == did), "DOC")
-                text = text_for(did)
-                allow = share * _files_in(did)
-                if len(text) > allow:
-                    text = text[:allow] + "\n…[document truncated]"
-                chunks.append(f"=== {name} ===\n{text}")
-            docs_text = "\n\n".join(chunks)
+            # (built by _ai_docs_text above - one copy, shared with the per-row branch and the
+            # parallel plan, so all three are guaranteed to send the same text)
 
             # The records for the documents this field was told to read. Complete and never
             # shortened — all_values could only ever carry the FIRST document's value per
@@ -10799,9 +10828,9 @@ def run_extraction(
             if cf.id in folded_values:
                 value = folded_values[cf.id]
             else:
-                value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
-                                             field_label=cf.label_name,
-                                             images=_cf_images(src_ids, docs_text))
+                value = _cf_call(cf.ai_prompt or "", docs_text, records=records,
+                                 field_label=cf.label_name,
+                                 images=_cf_images(src_ids, docs_text))
             value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
@@ -10852,6 +10881,9 @@ def run_extraction(
     # Created EMPTY, which is the honest state for a line nobody has answered: the gate already
     # refuses an empty mandatory CTH, so the operator is asked rather than the line going out
     # silently. One query per per-row field, on a path that has just made dozens of model calls.
+    if _cpf.on:
+        logger.info("job %s: parallel computed fields - %d of %d AI call(s) answered from the prefetch",
+                    job.reference, _cpf.hits, _cpf.hits + _cpf.misses)
     _backfill_missing_per_row_slots(db, job, custom_fields)
     # The same guarantee for standalone tables (Container Detail): every container row gets a
     # box for every container column, so a container number filtered away by the ISO 6346
