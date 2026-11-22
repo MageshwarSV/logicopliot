@@ -20,6 +20,11 @@
 #   ./deploy.sh --check    show what WOULD change, touch nothing
 #   ./deploy.sh --force    discard server-side edits and deploy anyway
 #
+# Split over several servers (logicopilot/deploy/deploy-4.sh runs this on each), a server's own
+# deploy.env can switch two steps off - both default ON, so a single-server box is unchanged:
+#   RUN_MIGRATIONS=0   this server does not run alembic (only ONE server of a split should)
+#   BUILD_FRONTEND=0   this server serves no website (no frontend build, no frontend pm2 app)
+#
 set -euo pipefail
 
 # Wherever this checkout happens to be, rather than a path baked in for one box.
@@ -47,6 +52,8 @@ fi
 #   BACKEND_PORT=31299 ./deploy.sh
 BACKEND_PORT="${BACKEND_PORT:-30299}"
 FRONTEND_PORT="${FRONTEND_PORT:-30300}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 
 # Which pm2 apps THIS checkout owns. Derived from the checkout's own directory name, not
 # hardcoded - /root/logicopilot gives logicopilot-backend/-frontend exactly as before, and
@@ -144,16 +151,27 @@ if [ -f requirements.txt ]; then
   echo "     done"
 fi
 
-say "4/6  database migrations"
-# Before the restart, never after: the new code must not start against an old schema.
-PYTHONPATH=. ./venv/bin/python -m alembic upgrade head 2>&1 | tail -4
+if [ "$RUN_MIGRATIONS" = "1" ]; then
+  say "4/6  database migrations"
+  # Before the restart, never after: the new code must not start against an old schema.
+  PYTHONPATH=. ./venv/bin/python -m alembic upgrade head 2>&1 | tail -4
+else
+  say "4/6  database migrations - skipped here (RUN_MIGRATIONS=0; another server runs them)"
+fi
 
-say "5/6  building the frontend"
-cd "$APP/frontend"
-npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
-npm run build 2>&1 | tail -5
+# The pm2 apps this server owns: no frontend app where no website is served.
+APPS=("$BACKEND_APP")
+if [ "$BUILD_FRONTEND" = "1" ]; then
+  APPS+=("$FRONTEND_APP")
+  say "5/6  building the frontend"
+  cd "$APP/frontend"
+  npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
+  npm run build 2>&1 | tail -5
+else
+  say "5/6  frontend - skipped here (BUILD_FRONTEND=0)"
+fi
 
-say "6/6  restarting $BACKEND_APP + $FRONTEND_APP"
+say "6/6  restarting ${APPS[*]}"
 # Only these two. These boxes also run other apps under the same pm2 - meeting,
 # oos, productflow, ql, vessel-orch, wb-leads, workbooster, unified-orchestrator,
 # and the OTHER logicopilot instance - and none of them are ours to bounce.
@@ -161,7 +179,7 @@ say "6/6  restarting $BACKEND_APP + $FRONTEND_APP"
 # Refuse rather than guess: pm2 restart on a name that does not exist is a no-op that still
 # exits 0, so a typo or a renamed app would sail through to a health check that passes off
 # the instance already running on that port.
-for app in "$BACKEND_APP" "$FRONTEND_APP"; do
+for app in "${APPS[@]}"; do
   pm2 describe "$app" >/dev/null 2>&1 || {
     echo "     *** no pm2 app called '$app' - refusing to restart anything."
     echo "     This checkout is $ROOT, so it expects $BACKEND_APP and $FRONTEND_APP."
@@ -169,7 +187,7 @@ for app in "$BACKEND_APP" "$FRONTEND_APP"; do
     exit 1
   }
 done
-pm2 restart "$BACKEND_APP" "$FRONTEND_APP" --update-env >/dev/null
+pm2 restart "${APPS[@]}" --update-env >/dev/null
 sleep 4
 pm2 list --no-color | grep -E "logicopilot|name" | sed 's/^/     /'
 
@@ -181,8 +199,10 @@ for i in $(seq 1 15); do
   [ "$i" = 15 ] && { echo "     *** backend NOT answering - check: pm2 logs $BACKEND_APP"; exit 1; }
   sleep 2
 done
-curl -fsS -m 3 "http://127.0.0.1:$FRONTEND_PORT" >/dev/null 2>&1 \
-  && echo "     frontend OK on :$FRONTEND_PORT" \
-  || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
+if [ "$BUILD_FRONTEND" = "1" ]; then
+  curl -fsS -m 3 "http://127.0.0.1:$FRONTEND_PORT" >/dev/null 2>&1 \
+    && echo "     frontend OK on :$FRONTEND_PORT" \
+    || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
+fi
 
 say "deployed: $(git log --oneline -1)"
