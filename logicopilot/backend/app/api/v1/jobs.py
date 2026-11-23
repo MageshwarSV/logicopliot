@@ -3981,6 +3981,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 job.status not in ("draft", "extracting")
                 and jd.file_path is not None
                 and jd.extracted_json is None
+                # An Excel sheet is read straight from its cells and never stores a page-style
+                # reading, so this test would call every sheet "changed" - it is not.
+                and getattr(jd, "source_kind", "pdf") != "excel"
             ),
             updated_at=jd.updated_at,
         )
@@ -9024,6 +9027,30 @@ def get_document_sheet(
     if sheet is None:
         raise HTTPException(status_code=422, detail="This Excel sheet could not be read.")
     return _sheet_rows_out(sheet, max_rows=500)
+
+
+@router.get("/jobs/{job_id}/documents/{document_id}/file")
+def download_document_file(
+    job_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+):
+    """The file a document was read from, as it arrived (e.g. the customer's .xls) - so an
+    Excel sheet can be opened in Excel itself. Nothing is converted."""
+    from fastapi.responses import FileResponse
+
+    job = _load_job(db, job_id, scope, user)
+    jd = db.query(JobDocument).filter(JobDocument.id == document_id, JobDocument.job_id == job.id).first()
+    if jd is None or not jd.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    path = Path(jd.file_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The file is no longer on the server.")
+    return FileResponse(str(path), filename=path.name)
 
 
 # ---- Document Capture -> Print: the chosen documents as ONE PDF --------------------------------

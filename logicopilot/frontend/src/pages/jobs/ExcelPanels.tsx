@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import * as jobsApi from "../../api/jobs";
 import type { JobDetail } from "../../types/jobs";
@@ -224,6 +224,153 @@ export function UnclassifiedExcelFiles({
           load={() => jobsApi.previewUnclassifiedFile(jobId, viewing.id)}
           onClose={() => setViewing(null)}
         />
+      )}
+    </div>
+  );
+}
+
+
+/** What the reviewer is looking at on the right: the focused value, and its line for a line item. */
+export type SheetFocus = { fieldId: string; value: string; rowIndex: number | null } | null;
+
+function norm(v: string) {
+  return v.replace(/\s+/g, " ").trim().toUpperCase();
+}
+
+function asNumber(v: string): number | null {
+  const t = v.replace(/[,\s]/g, "");
+  return /^-?\d*\.?\d+$/.test(t) ? Number(t) : null;
+}
+
+/** Cells holding the value: exact (ignoring case, spaces and number formatting) first, then
+ *  cells that contain it. A line item (rowIndex) picks its own occurrence when there are several. */
+function findCells(sheet: jobsApi.SheetTable, value: string, rowIndex: number | null): { row: number; col: string } | null {
+  const want = norm(value);
+  if (!want) return null;
+  const wantNum = asNumber(want);
+  const exact: { row: number; col: string }[] = [];
+  const partial: { row: number; col: string }[] = [];
+  for (const r of sheet.rows) {
+    for (const c of sheet.columns) {
+      const cell = norm(r.cells[c] ?? "");
+      if (!cell) continue;
+      const cellNum = asNumber(cell);
+      if (cell === want || (wantNum !== null && cellNum !== null && Math.abs(cellNum - wantNum) < 1e-6)) exact.push({ row: r.row, col: c });
+      else if (want.length >= 3 && cell.includes(want)) partial.push({ row: r.row, col: c });
+    }
+  }
+  const hits = exact.length ? exact : partial;
+  if (!hits.length) return null;
+  if (rowIndex != null && hits.length > 1) {
+    const rows = [...new Set(hits.map((h) => h.row))];
+    const row = rows.at(Math.min(rowIndex, rows.length) - 1);
+    return hits.find((h) => h.row === row) ?? hits[0];
+  }
+  return hits[0];
+}
+
+/** An Excel document on the review screen: its cells as a grid where a PDF shows its page, the
+ *  focused value's cell highlighted and scrolled to. Read-only; nothing is converted. */
+export function ExcelSheetViewer({
+  jobId, docId, title, updatedAt, focus,
+}: {
+  jobId: string;
+  docId: string;
+  title: string;
+  updatedAt?: string;
+  focus?: SheetFocus;
+}) {
+  const [sheet, setSheet] = useState<jobsApi.SheetTable | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [size, setSize] = useState(12);
+  const [full, setFull] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setSheet(null);
+    setError(null);
+    jobsApi.getDocumentSheet(jobId, docId)
+      .then((s) => alive && setSheet(s))
+      .catch((err) => alive && setError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not open the sheet." : "Could not open the sheet."));
+    return () => { alive = false; };
+  }, [jobId, docId, updatedAt]);
+
+  const hit = useMemo(() => (sheet && focus ? findCells(sheet, focus.value, focus.rowIndex) : null), [sheet, focus?.fieldId, focus?.value, focus?.rowIndex]);
+
+  useEffect(() => {
+    if (!hit) return;
+    const el = boxRef.current?.querySelector<HTMLElement>(`[data-cell="${hit.col}${hit.row}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+  }, [hit]);
+
+  async function download() {
+    setDownloading(true);
+    try {
+      await jobsApi.downloadDocumentFile(jobId, docId, title.split(" - ")[0] || "sheet.xlsx");
+    } catch {
+      setError("Could not download the original file.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const btn = "rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-100 px-2 py-1.5 dark:bg-slate-800">
+        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Excel</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-slate-600 dark:text-slate-300" title={title}>{sheet?.name ?? title}</span>
+        <button type="button" className={btn} onClick={() => setSize((n) => Math.max(9, n - 1))} title="Smaller">A−</button>
+        <button type="button" className={btn} onClick={() => setSize((n) => Math.min(18, n + 1))} title="Larger">A+</button>
+        <button type="button" className={btn} onClick={() => setFull(true)}>Open full size</button>
+        <button type="button" className={btn} onClick={download} disabled={downloading}>{downloading ? "Downloading…" : "Download original"}</button>
+      </div>
+      {focus && sheet && !hit && (
+        <p className="text-xs text-amber-700 dark:text-amber-300">"{focus.value}" was not found as it is in this sheet - it may have been reformatted or worked out from several cells.</p>
+      )}
+      <div ref={boxRef} className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+        {error && <p className="p-3 text-sm text-rose-600">{error}</p>}
+        {!error && !sheet && <p className="p-3 text-sm text-slate-500">Loading the sheet…</p>}
+        {sheet && (
+          <table className="border-collapse" style={{ fontSize: `${size}px` }}>
+            <thead>
+              <tr>
+                <th className="sticky left-0 top-0 z-20 border border-slate-200 bg-slate-100 px-2 py-1 dark:border-slate-700 dark:bg-slate-800" />
+                {sheet.columns.map((c) => (
+                  <th key={c} className={`sticky top-0 z-10 border border-slate-200 px-2 py-1 font-medium dark:border-slate-700 ${hit?.col === c ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sheet.rows.map((r) => {
+                const onRow = hit?.row === r.row;
+                return (
+                  <tr key={r.row} className={onRow ? "bg-amber-50 dark:bg-amber-500/10" : ""}>
+                    <td className={`sticky left-0 z-10 border border-slate-200 px-2 py-1 text-right dark:border-slate-700 ${onRow ? "bg-amber-100 font-semibold text-amber-800 dark:bg-amber-500/20 dark:text-amber-200" : "bg-slate-50 text-slate-400 dark:bg-slate-800"}`}>{r.row}</td>
+                    {sheet.columns.map((c) => {
+                      const on = onRow && hit?.col === c;
+                      return (
+                        <td key={c} data-cell={`${c}${r.row}`}
+                          className={`max-w-[260px] truncate border border-slate-200 px-2 py-1 dark:border-slate-700 ${on ? "bg-amber-200 font-semibold text-slate-900 outline outline-2 outline-amber-500 dark:bg-amber-500/40 dark:text-white" : "text-slate-700 dark:text-slate-200"}`}
+                          title={r.cells[c] ?? ""}>
+                          {r.cells[c] ?? ""}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {sheet && sheet.total_rows > sheet.rows.length && (
+        <p className="text-xs text-slate-500">Showing the first {sheet.rows.length} of {sheet.total_rows} rows - Download original for the rest.</p>
+      )}
+      {full && (
+        <ExcelSheetModal title={title} load={async () => [await jobsApi.getDocumentSheet(jobId, docId)]} onClose={() => setFull(false)} />
       )}
     </div>
   );

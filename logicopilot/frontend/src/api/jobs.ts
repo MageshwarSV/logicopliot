@@ -984,6 +984,20 @@ export interface SheetTable {
   total_rows: number;
 }
 
+/** The file a document was read from, as it arrived (e.g. the customer's .xls), saved to disk. */
+export async function downloadDocumentFile(jobId: string, documentId: string, fallbackName: string): Promise<void> {
+  const res = await apiClient.get<Blob>(`/jobs/${jobId}/documents/${documentId}/file`, { responseType: "blob" });
+  const cd = String(res.headers["content-disposition"] ?? "");
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  const name = m ? decodeURIComponent(m[1]) : fallbackName;
+  const url = URL.createObjectURL(res.data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 export async function getUnclassifiedFiles(jobId: string): Promise<UnclassifiedFile[]> {
   const { data } = await apiClient.get<UnclassifiedFile[]>(`/jobs/${jobId}/unclassified-files`);
   return data;
