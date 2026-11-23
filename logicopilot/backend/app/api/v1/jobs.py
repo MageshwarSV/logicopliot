@@ -10610,8 +10610,22 @@ def run_extraction(
                 JobFieldValue.job_id == job.id,
                 JobFieldValue.row_index.isnot(None),
                 JobFieldValue.label_name == label).all():
-            out[((fv.set_index or 1), fv.row_index)] = (
-                fv.corrected_value or fv.extracted_value or "").strip()
+            key = ((fv.set_index or 1), fv.row_index)
+            val = (fv.corrected_value or fv.extracted_value or "").strip()
+            # One line of one set can have a row from MORE THAN ONE document - the same
+            # invoice attached twice, say - and only one of them actually read the line.
+            # The key is (set, row) with no document in it, so whichever row the query
+            # happened to return LAST used to win: an empty duplicate silently erased a real
+            # value, and a composite field built from it came out as its fixed text alone.
+            # Seen on production 2026-11-23, JOB-D6BE84: the same invoice (94283641) sat in
+            # the job as a 2-page and a 4-page file, the second read 24 blank lines, and 24
+            # of 51 Combined Descriptions collapsed to "-PART NO.(TRANSMISSION PARTS)" with
+            # the product description and part code gone.
+            # A real value always beats a blank one. Two non-blank rows for one line stay
+            # ambiguous - first seen wins - but that case is a genuine data question, not
+            # this one, where one side simply has nothing to say.
+            if val or key not in out:
+                out[key] = val
         return out
 
     standalone_mark_labels = _standalone_mark_labels(group)
@@ -11837,8 +11851,22 @@ def _recompute_per_row_custom_field(
                 JobFieldValue.job_id == job.id,
                 JobFieldValue.row_index.isnot(None),
                 JobFieldValue.label_name == label).all():
-            out[((fv.set_index or 1), fv.row_index)] = (
-                fv.corrected_value or fv.extracted_value or "").strip()
+            key = ((fv.set_index or 1), fv.row_index)
+            val = (fv.corrected_value or fv.extracted_value or "").strip()
+            # One line of one set can have a row from MORE THAN ONE document - the same
+            # invoice attached twice, say - and only one of them actually read the line.
+            # The key is (set, row) with no document in it, so whichever row the query
+            # happened to return LAST used to win: an empty duplicate silently erased a real
+            # value, and a composite field built from it came out as its fixed text alone.
+            # Seen on production 2026-11-23, JOB-D6BE84: the same invoice (94283641) sat in
+            # the job as a 2-page and a 4-page file, the second read 24 blank lines, and 24
+            # of 51 Combined Descriptions collapsed to "-PART NO.(TRANSMISSION PARTS)" with
+            # the product description and part code gone.
+            # A real value always beats a blank one. Two non-blank rows for one line stay
+            # ambiguous - first seen wins - but that case is a genuine data question, not
+            # this one, where one side simply has nothing to say.
+            if val or key not in out:
+                out[key] = val
         return out
 
     computed: dict[tuple[int, int], str] = {}

@@ -57,6 +57,7 @@ function errorText(err: unknown, fallback: string): string {
 /** Reports -> User Job Summary (Tenant Admin). Per user, for one operation and period: jobs
  *  that arrived, how many reached the ERP, and how many are still pending. */
 export function UserJobSummaryPage() {
+  // "" = All operations (the default); otherwise one operation, e.g. "Sea Import".
   const [mode, setMode] = useState<string>("");
   const [period, setPeriod] = useState<Period>("today");
   const [custom, setCustom] = useState(() => rangeFor("this_month"));
@@ -79,8 +80,6 @@ export function UserJobSummaryPage() {
       .then((d) => {
         if (cancelled) return;
         setData(d);
-        // First load: pick Sea Import if the tenant has it, else its first operation.
-        if (!mode && d.modes.length) setMode(d.modes.includes("Sea Import") ? "Sea Import" : d.modes[0]);
       })
       .catch((err) => !cancelled && setError(errorText(err, "Could not load the report.")))
       .finally(() => !cancelled && setLoading(false));
@@ -102,7 +101,7 @@ export function UserJobSummaryPage() {
   }
 
   const totals = data?.totals ?? { total: 0, completed: 0, pending: 0 };
-  const showData = Boolean(mode) && data?.mode === mode;
+  const showData = Boolean(data) && (data?.mode ?? "") === mode;
 
   return (
     <AppShell
@@ -117,6 +116,9 @@ export function UserJobSummaryPage() {
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Operation</span>
             <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 p-1 dark:border-slate-700">
+              <Segment active={mode === ""} onClick={() => setMode("")} strong>
+                <LayersIcon className="h-4 w-4" /> All
+              </Segment>
               {(data?.modes ?? []).map((m) => (
                 <Segment key={m} active={mode === m} onClick={() => setMode(m)} strong>
                   {modeIcon(m)} {m}
@@ -165,7 +167,7 @@ export function UserJobSummaryPage() {
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">User-wise Job Summary</h2>
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 Jobs that arrived {range.from === range.to ? `on ${fmt(range.from)}` : `from ${fmt(range.from)} to ${fmt(range.to)}`}
-                {mode ? ` · ${mode}` : ""}. ERP Completed = reached the ERP; Pending = not yet.
+                {mode ? ` · ${mode}` : " · all operations"}. ERP Completed = reached the ERP; Pending = not yet.
               </p>
             </div>
             <button type="button" className={OUTLINE_BTN} disabled={!showData || exporting || customInvalid} onClick={exportReport}>

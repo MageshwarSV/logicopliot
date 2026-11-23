@@ -2737,6 +2737,16 @@ export function JobRunPage() {
       sidebar={stageNav}
       actions={
         <div className="flex items-center gap-3">
+          {/* Print from any step - operators print while reviewing, not only on Document Capture. */}
+          <button
+            type="button"
+            onClick={() => setPrintPagesOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-medium text-sky-700 shadow-sm transition-colors hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+            title="Pick the pages to print (E-Docket first), or download them as one PDF"
+          >
+            <PrinterIcon className="h-4 w-4" />
+            Print pages
+          </button>
           <div className="text-right">
             {(() => {
               const outer = job.outer_status ?? job.stage ?? job.status;
@@ -3420,16 +3430,6 @@ export function JobRunPage() {
               </div>
               </>)}
             </div>
-          )}
-          {printPagesOpen && job && (
-            <PrintPagesModal
-              jobId={jobId}
-              jobReference={job.reference}
-              slots={docSlots}
-              pages={unclassifiedPages}
-              files={unclassifiedFiles}
-              onClose={() => setPrintPagesOpen(false)}
-            />
           )}
           {viewingExcelDoc && (
             <ExcelSheetModal
@@ -4962,6 +4962,17 @@ export function JobRunPage() {
           </div>
         </div>
       </Modal>
+      {/* Page level, not inside Document Capture: the header's Print pages opens it from any step. */}
+      {printPagesOpen && job && (
+        <PrintPagesModal
+          jobId={jobId}
+          jobReference={job.reference}
+          slots={docSlots}
+          pages={unclassifiedPages}
+          files={unclassifiedFiles}
+          onClose={() => setPrintPagesOpen(false)}
+        />
+      )}
     </AppShell>
   );
 }
