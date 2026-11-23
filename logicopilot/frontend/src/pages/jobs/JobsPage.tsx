@@ -971,7 +971,7 @@ export function JobsPage() {
       ),
     },
     {
-      header: "BL No",
+      header: "BL / HAWB",
       render: (j) => (
         <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
       ),
@@ -1200,7 +1200,7 @@ export function JobsPage() {
               type="search"
               value={jobSearch}
               onChange={(e) => setJobSearch(e.target.value)}
-              placeholder="Search by Job No, BL No or Air Waybill No..."
+              placeholder="Search by Job No or BL / HAWB..."
               className={`${quickField} w-full pl-9`}
               autoComplete="off"
             />
