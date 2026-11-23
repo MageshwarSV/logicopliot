@@ -9558,11 +9558,56 @@ def _excel_sheet_text(jdoc: JobDocument) -> str:
     return sheet_text(sheet) if sheet is not None else ""
 
 
-def _excel_sheet_chunks(jdoc: JobDocument) -> list[str]:
-    from app.core.excel_text import sheet_chunks
+def _excel_sheet_chunks(jdoc: JobDocument) -> list[tuple[str, int | None]]:
+    """[(part text, expected item rows or None)] - see excel_text.sheet_row_chunks."""
+    from app.core.excel_text import sheet_row_chunks
 
     sheet = _excel_sheet(jdoc)
-    return sheet_chunks(sheet) if sheet is not None else []
+    return sheet_row_chunks(sheet) if sheet is not None else []
+
+
+def _dedupe_excel_rows(rows: list[dict], sheet, labels: list[str]) -> list[dict]:
+    """Line items read from an Excel sheet, with the model's own repeats taken out.
+
+    A sheet is exact data, so it can settle what the model invents: a line that repeats an
+    earlier one value for value is dropped unless the sheet itself holds that line more often
+    (counted by its most distinctive value - the longest text, e.g. the description or part
+    number); a line whose values are only a part of an earlier line's (same quantity and
+    amount, no code or description) is a stray copy and dropped too. JOB-CEF1C1: lines 41-45
+    came back twice and item 107 once more without its code."""
+    def norm(v):
+        return " ".join(str(v or "").split()).upper()
+
+    sheet_lines = [norm(" ".join(v for _c, v in cells)) for _r, cells in (sheet.rows if sheet else [])]
+    kept: list[dict] = []
+    seen: dict[tuple, int] = {}
+    dropped = 0
+    for r in rows:
+        vals = {lab: norm(r.get(lab)) for lab in labels}
+        filled = {k: v for k, v in vals.items() if v}
+        if not filled:
+            dropped += 1
+            continue
+        key = tuple(vals[lab] for lab in labels)
+        if key in seen:
+            ident = max((v for v in filled.values() if not v.replace(".", "").replace(",", "").isdigit()),
+                        key=len, default="")
+            in_sheet = sum(1 for line in sheet_lines if ident and ident in line) if ident else 0
+            if seen[key] >= max(1, in_sheet):
+                dropped += 1
+                continue
+        part_of_earlier = any(
+            len(filled) < len([v for v in k if v])
+            and all(dict(zip(labels, k)).get(lab) == v for lab, v in filled.items())
+            for k in seen)
+        if part_of_earlier:
+            dropped += 1
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        kept.append(r)
+    if dropped:
+        logger.warning("Excel line items: %d repeated / partial line(s) dropped (%d kept)", dropped, len(kept))
+    return kept
 
 
 def run_extraction(
@@ -9892,8 +9937,8 @@ def run_extraction(
                 _standalone = len(_group) == 1 and getattr(_group[0], "standalone_multi_value", False)
                 _rows_hint = doc_table_row_count_cache.get(_d.id, 0)
                 if _excel:
-                    for _part in _excel_sheet_chunks(_d):
-                        _pf.plan("rows", _part, _specs, None, tenant_id=job.tenant_id)
+                    for _part, _hint in _excel_sheet_chunks(_d):
+                        _pf.plan("rows", _part, _specs, _hint, tenant_id=job.tenant_id)
                 elif not _vision:
                     _pf.plan("rows", _text, _specs, _rows_hint or None, tenant_id=job.tenant_id)
                     if _imgs and not _standalone:
@@ -10158,8 +10203,19 @@ def run_extraction(
                 # A long sheet is read in parts, each repeating the heading rows, then joined in
                 # order - one huge table in one call is where rows get dropped.
                 rows = []
-                for part in _excel_sheet_chunks(jd):
-                    rows.extend(_pf_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
+                for part, part_hint in _excel_sheet_chunks(jd):
+                    rows.extend(_pf_rows(part, row_specs, part_hint, tenant_id=job.tenant_id) or [])
+                # The sheet settles what the model repeated, and says how many items there are.
+                from app.core.excel_text import header_row_index, numbered_items
+
+                _sheet = _excel_sheet(jd)
+                rows = _dedupe_excel_rows(rows, _sheet, row_labels)
+                if _sheet is not None:
+                    _h = header_row_index(_sheet)
+                    _items = numbered_items(_sheet.rows[_h + 1:] if _h is not None else _sheet.rows)
+                    if _items and len(rows) != _items:
+                        logger.warning("job %s: %s read %d line(s) but the sheet numbers %d item(s)",
+                                       job.reference, tdoc.name, len(rows), _items)
             elif not used_vision:
                 rows = _pf_rows(ocr_text, row_specs, detected_row_count or None,
                                 tenant_id=job.tenant_id)

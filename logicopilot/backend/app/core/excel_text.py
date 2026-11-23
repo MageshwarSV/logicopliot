@@ -238,6 +238,75 @@ def sheet_chunks(sheet: Sheet, rows_per_chunk: int = 200, header_rows: int = 3) 
     return chunks
 
 
+ROW_CHUNK = 40          # line-item rows per AI request for an Excel table (see sheet_row_chunks)
+
+
+def _is_number(text: str) -> bool:
+    t = str(text or "").replace(",", "").strip()
+    try:
+        float(t)
+        return True
+    except ValueError:
+        return False
+
+
+def header_row_index(sheet: Sheet, scan: int = 80) -> int | None:
+    """Index (into sheet.rows) of the table's column-heading row - "ITEM | PRODUCT NUMBER |
+    DESCRIPTION ..." - or None. The heading row is all text, at least 3 cells, and the three
+    rows after it are table rows: about as many cells, and each holding a number. A title or
+    address block above the table never has three such rows straight after it."""
+    rows = sheet.rows[:scan]
+    for i, (_rn, cells) in enumerate(rows):
+        texts = [v for _c, v in cells if str(v).strip()]
+        if len(texts) < 3 or any(_is_number(v) for v in texts):
+            continue
+        after = rows[i + 1:i + 4]
+        need = max(3, len(texts) // 2)
+        if len(after) == 3 and all(
+                len(c) >= need and any(_is_number(v) for _col, v in c) for _r, c in after):
+            return i
+    return None
+
+
+def numbered_items(rows: list[tuple[int, list[tuple[str, str]]]]) -> int:
+    """Rows that look like numbered line items: the first cell a whole number, 4+ cells.
+    A TOTAL row (fewer cells, no item number) is not counted."""
+    n = 0
+    for _rn, cells in rows:
+        if len(cells) >= 4 and str(cells[0][1]).strip().isdigit():
+            n += 1
+    return n
+
+
+def sheet_row_chunks(sheet: Sheet, rows_per_chunk: int = ROW_CHUNK) -> list[tuple[str, int | None]]:
+    """The sheet split for reading line items, as [(text, expected_rows_or_None)].
+
+    One request per ~40 rows: a 110-line invoice sent whole came back with 5 lines repeated, one
+    garbled and one stray copy (JOB-CEF1C1). Every part repeats everything above and including
+    the real column-heading row (header_row_index - not just the first 3 rows, which on a
+    commercial invoice are its title), so each part is read with its own column names.
+    expected_rows: how many numbered item rows the part holds, given to the model as a count
+    to keep to - only when the rows really are numbered (most of the table-looking rows)."""
+    h = header_row_index(sheet)
+    head = sheet.rows[:h + 1] if h is not None else sheet.rows[:3]
+    body = sheet.rows[h + 1:] if h is not None else sheet.rows[3:]
+
+    def hint(part):
+        tableish = sum(1 for _r, c in part if len(c) >= 4)
+        n = numbered_items(part)
+        return n if n and n >= 0.8 * tableish else None
+
+    if len(body) <= rows_per_chunk:
+        return [(sheet_text(sheet), hint(body))]
+    out = []
+    for start in range(0, len(body), rows_per_chunk):
+        part = body[start:start + rows_per_chunk]
+        text = "\n".join([f"=== SHEET: {sheet.name} (rows part {len(out) + 1}) ==="]
+                         + [_row_line(r, c) for r, c in head + part])
+        out.append((text, hint(part)))
+    return out
+
+
 def find_cell(sheet: Sheet, value: str) -> str | None:
     """Where a value was read from, e.g. "Detail!D6" - exact match first, then contained."""
     want = " ".join(str(value or "").split())
