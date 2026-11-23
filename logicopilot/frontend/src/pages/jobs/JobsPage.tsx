@@ -273,6 +273,11 @@ export function JobsPage() {
     // filter the operator had deliberately set, every time they looked at another screen
     // and came back. They are now stored per screen instead, which settles both: see the
     // restore just below, and filtersScope() for the key each screen writes under.
+    // A date filter named in the link itself (the top bar's "Fix now · Failed jobs" sends
+    // quick=all) wins over whatever this screen last saved - otherwise the saved "Today" hid
+    // the older failures the button was counting.
+    const urlQuick: QuickKey | null =
+      quickParam === "today" || quickParam === "7" || quickParam === "30" || quickParam === "all" ? quickParam : null;
     if (group || category) {
       // Restore what was last set ON THIS SCREEN, rather than clearing everything.
       //
@@ -295,7 +300,7 @@ export function JobsPage() {
       // range and assignee included. One opened for the first time has nothing stored and
       // falls through to the defaults below, the same ones clearing used to produce.
       if (category && own.quick && own.assignedTo) {
-        setQuick(own.quick);
+        setQuick(urlQuick ?? own.quick);
         setAssignedTo(own.assignedTo);
         return;
       }
@@ -313,7 +318,7 @@ export function JobsPage() {
     // own quick=7&assignedTo=me for the very first New Jobs visit is just this same default,
     // reached a different way - redundant with this, not overridden by it).
     if (category) {
-      setQuick("7");
+      setQuick(urlQuick ?? "7");
       // Needs user.full_name, which may not have loaded yet on the very first render - this
       // effect re-runs the moment it does (same mechanism the assignedToParam effect below
       // already uses), so it still lands on "me" rather than silently staying "all assignees".
