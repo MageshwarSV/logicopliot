@@ -562,6 +562,25 @@ export function SettingsPage() {
       title="Settings"
       subtitle="System-wide controls — visible to Super Admin only."
     >
+      {/* The AI model every document is read with, on top of every tab - so a change (a
+          server's .env, a deploy) is seen by whoever opens Settings, not found later in the bill. */}
+      {settings?.ai_models && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-sky-50 px-5 py-3 dark:border-indigo-500/30 dark:from-indigo-500/10 dark:to-sky-500/10">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">AI model in use</span>
+            <span className="rounded-lg bg-indigo-600 px-3 py-1 font-mono text-base font-semibold text-white shadow-sm">
+              {settings.ai_models.document_model}
+            </span>
+          </div>
+          <span className="text-sm text-slate-700 dark:text-slate-200">
+            Documents (classify + extract){settings.ai_models.reads_page_images ? " · reads page images" : " · reads OCR text"}
+          </span>
+          <span className="text-sm text-slate-700 dark:text-slate-200">
+            Text calls: <b className="font-mono">{settings.ai_models.text_model}</b>
+          </span>
+          <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">Set in each server's .env (OPENAI_MODEL, VISION_ENGINE_MODEL)</span>
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900" role="tablist">
         {SETTINGS_TABS.map((t) => (
           <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)}
