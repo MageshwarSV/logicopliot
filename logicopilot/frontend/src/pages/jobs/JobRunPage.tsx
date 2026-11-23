@@ -575,6 +575,22 @@ const REFERENCE_SEARCH_PLACEHOLDERS: Record<string, string> = {
   "Shipment Port Code": "Search by city or country to find or correct the code…",
   "ERP Consignee Name": "Search by importer to find or correct the match…",
 };
+// What an EMPTY field says, where "not found" is the wrong words for it. "not found" reads as
+// a failure - the system looked and could not find it - and that is right for a value the
+// paperwork should carry. It is wrong for a field whose blank is itself the answer: an Air
+// Import shipment on a direct house waybill genuinely HAS no master number, and the client
+// reads "not found" there as something to chase.
+//
+// Extraction already writes "NO MAWB" into this field on most such jobs (24 of them on
+// production against 7 left empty), so the empty ones were the odd ones out - two different
+// things on screen for one situation. This only changes the empty ones to match.
+//
+// DISPLAY ONLY. The stored value stays empty and the ERP still receives an empty MAWB number;
+// this changes what the operator READS, not what is filed. Giving the field a real default
+// value would be a different change, with a different blast radius.
+const EMPTY_PLACEHOLDER_BY_LABEL: Record<string, string> = {
+  "MAWB Number": "NO MAWB",
+};
 // Shipment Country Code: 2-3 LETTERS only ("IN", "IND") - no digits, no symbols. Deliberately
 // format-only for now (confirmed with the user) - there is no country master data source in
 // the system yet to also check the code is a REAL country, only that it LOOKS like one.
@@ -5709,6 +5725,8 @@ function ExtractedField({
   const corrected =
     !neverEdited
     && fv.origin !== "fixed" && fv.corrected_value != null && fv.corrected_value !== "";
+  // See EMPTY_PLACEHOLDER_BY_LABEL. Every field keeps "not found" unless it is listed there.
+  const emptyPlaceholder = EMPTY_PLACEHOLDER_BY_LABEL[fv.label_name] ?? "not found";
   return (
     <div id={id} className="min-w-0">
       <div className="mb-1 flex items-center gap-1.5">
@@ -5846,7 +5864,7 @@ function ExtractedField({
             }}
             className={boxClassName}
           >
-            {!hideBlankOption && <option value="">not found</option>}
+            {!hideBlankOption && <option value="">{emptyPlaceholder}</option>}
             {options.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
@@ -5864,7 +5882,7 @@ function ExtractedField({
             // Blur still saves, as a safety net for anyone who types and tabs away - same
             // pattern as the single-line input below.
             onBlur={commit}
-            placeholder="not found"
+            placeholder={emptyPlaceholder}
             // Grows to fit its own content (see the scrollHeight effect above) - resize-y is
             // still there so an operator can stretch it further by hand if they want, but
             // nothing has to drag it open just to see a long address's last line.
@@ -5992,7 +6010,7 @@ function ExtractedField({
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
-              placeholder="not found"
+              placeholder={emptyPlaceholder}
               // A box that opens a list keeps its text clear of the arrow drawn over it below.
               // Not while it is already padded for its own buttons (dirty / corrected) - two
               // right-padding classes on one element is whichever the stylesheet lists last.
