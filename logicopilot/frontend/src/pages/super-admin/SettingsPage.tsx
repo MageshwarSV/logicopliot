@@ -23,7 +23,37 @@ import { QueuesSection } from "./QueuesSection";
  *  Also: a Super Admin's own OpenAI API key (write-only - never shown back, not even
  *  masked) and how many mailboxes are read at once (capped at what this server can
  *  actually sustain). */
+type SettingsTab = "controls" | "workers" | "ai" | "keys" | "pricing" | "reference";
+
+// The page grouped by what an admin comes here to do. Display only: every control is the same
+// as before, just under its own tab instead of one long page.
+const SETTINGS_TABS: { key: SettingsTab; label: string; title: string; help: string }[] = [
+  { key: "controls", label: "Controls", title: "System controls",
+    help: "Stop or start AI work (mail reading, extraction) without stopping the backend, and see every queue and server. Use the stop switches if the AI provider is out of credits or down." },
+  { key: "workers", label: "Workers", title: "Workers",
+    help: "How many mailboxes, ERP entries and large jobs run at the same time on this server." },
+  { key: "ai", label: "AI & extraction", title: "AI & extraction",
+    help: "How documents are read (OCR text or page images) and the AI setup per customer." },
+  { key: "keys", label: "OpenAI keys", title: "OpenAI keys & spend",
+    help: "The API key every call uses, the key pool, and the Admin key that reads real spend." },
+  { key: "pricing", label: "Pricing", title: "Tenant pricing",
+    help: "What each customer is charged per page." },
+  { key: "reference", label: "Reference data", title: "Reference data",
+    help: "Customer reference sheets (part code to CTH) and the values learned from operators." },
+];
+
+function initialTab(): SettingsTab {
+  const h = (typeof window !== "undefined" ? window.location.hash : "").replace("#", "");
+  return (SETTINGS_TABS.find((t) => t.key === h)?.key ?? "controls");
+}
+
 export function SettingsPage() {
+  const [tab, setTabState] = useState<SettingsTab>(initialTab);
+  const setTab = (t: SettingsTab) => {
+    setTabState(t);
+    try { window.history.replaceState(null, "", `#${t}`); } catch { /* the address bar is a convenience */ }
+  };
+  const activeTab = SETTINGS_TABS.find((t) => t.key === tab) ?? SETTINGS_TABS[0];
   const [settings, setSettings] = useState<systemSettingsApi.SystemSettings | null>(null);
   const [busyEmail, setBusyEmail] = useState(false);
   const [busyExtraction, setBusyExtraction] = useState(false);
@@ -532,19 +562,46 @@ export function SettingsPage() {
       title="Settings"
       subtitle="System-wide controls — visible to Super Admin only."
     >
+      {/* The AI model every document is read with, on top of every tab - so a change (a
+          server's .env, a deploy) is seen by whoever opens Settings, not found later in the bill. */}
+      {settings?.ai_models && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-sky-50 px-5 py-3 dark:border-indigo-500/30 dark:from-indigo-500/10 dark:to-sky-500/10">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">AI model in use</span>
+            <span className="rounded-lg bg-indigo-600 px-3 py-1 font-mono text-base font-semibold text-white shadow-sm">
+              {settings.ai_models.document_model}
+            </span>
+          </div>
+          <span className="text-sm text-slate-700 dark:text-slate-200">
+            Documents (classify + extract){settings.ai_models.reads_page_images ? " · reads page images" : " · reads OCR text"}
+          </span>
+          <span className="text-sm text-slate-700 dark:text-slate-200">
+            Text calls: <b className="font-mono">{settings.ai_models.text_model}</b>
+          </span>
+          <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">Set in each server's .env (OPENAI_MODEL, VISION_ENGINE_MODEL)</span>
+        </div>
+      )}
+      <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900" role="tablist">
+        {SETTINGS_TABS.map((t) => (
+          <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${tab === t.key
+              ? "bg-indigo-600 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
       <Card>
         <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-          <h2 className="font-semibold text-slate-900 dark:text-slate-50">System Controls</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Stops AI-dependent work only — not the backend. Use this if the AI provider is out
-            of credits or down, so nothing wastes a call or gets wrongly recorded while it lasts.
-          </p>
+          <h2 className="font-semibold text-slate-900 dark:text-slate-50">{activeTab.title}</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{activeTab.help}</p>
         </div>
 
         {!settings && !error && (
           <p className="px-5 py-6 text-sm text-slate-500 dark:text-slate-400">Loading…</p>
         )}
 
+        {tab === "controls" && (<>
         {settings && (
           <div className="flex flex-col gap-4 p-5 sm:flex-row">
             <div className="flex flex-1 items-center justify-between rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800">
@@ -590,6 +647,8 @@ export function SettingsPage() {
           </div>
         )}
 
+        </>)}
+        {tab === "workers" && (<>
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Email poller workers</h3>
@@ -723,9 +782,15 @@ export function SettingsPage() {
           </div>
         )}
 
+        </>)}
+        {tab === "controls" && (<>
         <QueuesSection />
+        </>)}
+        {tab === "workers" && (<>
         {settings && <LargeJobLaneSection settings={settings} />}
 
+        </>)}
+        {tab === "ai" && (<>
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Extraction engine</h3>
@@ -772,6 +837,8 @@ export function SettingsPage() {
           </div>
         )}
 
+        </>)}
+        {tab === "pricing" && (<>
         <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Tenant pricing</h3>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -946,6 +1013,8 @@ export function SettingsPage() {
           )}
         </div>
 
+        </>)}
+        {tab === "ai" && (<>
         <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Per-tenant AI processing</h3>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -1116,6 +1185,8 @@ export function SettingsPage() {
           )}
         </div>
 
+        </>)}
+        {tab === "keys" && (<>
         {settings && (
           <div className="border-t border-slate-200 px-5 py-5 dark:border-slate-800">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">OpenAI API key</h3>
@@ -1339,10 +1410,13 @@ export function SettingsPage() {
           </div>
         )}
 
+        </>)}
+        {tab === "reference" && (<>
         {settings && <ReferenceSheetsSection />}
 
         {settings && <ReferenceValuesSection />}
 
+        </>)}
         {note && (
           <p className="mx-5 mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
             {note}
