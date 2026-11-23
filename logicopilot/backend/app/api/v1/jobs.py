@@ -11615,6 +11615,12 @@ def carry_across_rows(
 
         if not targets:
             continue
+        # The operator's own carried value counts as an edit of the box it was carried into -
+        # not of the synced partner boxes it then flows on to (that would count it twice).
+        if targets[0] is primary:
+            from app.core import field_edits
+
+            field_edits.record(db, primary, primary.value, value, user, source="carry")
         for target in targets:
             _apply_correction(db, target, value)
         written += 1
@@ -11668,6 +11674,9 @@ def correct_field_value(
         if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
+    from app.core import field_edits
+
+    field_edits.record(db, fv, fv.value, saved, user, source="edit")
     _apply_correction(db, fv, saved)
     _mark_review_started(job_for_rules)
     # ... and into every box on this line holding the same answer, in both directions. The
