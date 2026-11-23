@@ -7,6 +7,7 @@ import { Modal } from "../../components/ui/Modal";
 import { DataTable, type Column } from "../../components/ui/DataTable";
 import * as onboardingApi from "../../api/onboarding";
 import * as tenantsApi from "../../api/tenants";
+import { getSystemSettings, type SystemSettings } from "../../api/systemSettings";
 import type { TemplateGroup } from "../../types/onboarding";
 import type { Tenant } from "../../types/tenant";
 
@@ -43,8 +44,12 @@ export function TemplateListPage() {
     }
   }
 
+  const [models, setModels] = useState<SystemSettings["ai_models"] | null>(null);
+
   useEffect(() => {
     load();
+    // Shown, never required: the list still works if this one call fails.
+    getSystemSettings().then((s) => setModels(s.ai_models ?? null)).catch(() => setModels(null));
   }, []);
 
   const tenantName = useMemo(() => new Map(tenants.map((t) => [t.id, t.name])), [tenants]);
@@ -96,6 +101,16 @@ export function TemplateListPage() {
     { header: "Template", render: (g) => <span className="font-medium text-slate-900 dark:text-slate-100">{g.name}</span> },
     { header: "Tenant", render: (g) => tenantName.get(g.tenant_id) ?? "—" },
     {
+      header: "AI model",
+      render: () =>
+        models ? (
+          <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200"
+            title={models.reads_page_images ? "Reads the page images" : "Reads the OCR text"}>
+            {models.document_model}
+          </span>
+        ) : <span className="text-xs text-slate-400">—</span>,
+    },
+    {
       header: "Status",
       render: (g) => (
         <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[g.status] ?? STATUS_STYLE.draft}`}>
@@ -135,6 +150,14 @@ export function TemplateListPage() {
       {error && (
         <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
           {error}
+        </div>
+      )}
+      {models && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100">
+          <span className="font-semibold">AI model used by every template</span>
+          <span>Documents (classify + extract): <b className="font-mono">{models.document_model}</b>{models.reads_page_images ? " · reads page images" : " · reads OCR text"}</span>
+          <span>Text calls (computed fields, helpers): <b className="font-mono">{models.text_model}</b></span>
+          <span className="text-xs text-sky-700/80 dark:text-sky-300/80">Set per server in .env (OPENAI_MODEL, VISION_ENGINE_MODEL)</span>
         </div>
       )}
       <div className="mb-3 flex justify-end">

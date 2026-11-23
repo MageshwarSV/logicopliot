@@ -1,7 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { PDFDocument } from "pdf-lib";
 import * as jobsApi from "../../api/jobs";
 import type { JobDocument } from "../../types/jobs";
+
+// The E-Docket's two sheets (front, back) print first, ticked to start.
+const EDOCKET_KEYS = ["e:1", "e:2"];
+const A4 = { width: 595.28, height: 841.89 };
+
+/** Render the job's saved E-Docket sheets as PNGs: the E-Docket page is loaded off-screen in
+ *  embed mode and draws its own sheets (window.renderEDocketPages, EDocketPage.tsx). */
+async function renderEDocket(jobId: string, pages: number[]): Promise<string[]> {
+  const frame = document.createElement("iframe");
+  Object.assign(frame.style, { position: "fixed", left: "-10000px", top: "0", width: "1000px", height: "3000px", border: "0" });
+  frame.src = `/jobs/${jobId}/e-docket?embed=1`;
+  document.body.appendChild(frame);
+  try {
+    const started = Date.now();
+    for (;;) {
+      const w = frame.contentWindow as (Window & { renderEDocketPages?: (p: number[]) => Promise<string[]> }) | null;
+      if (w?.renderEDocketPages) return await w.renderEDocketPages(pages);
+      if (Date.now() - started > 30000) throw new Error("The e-docket did not load in time.");
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  } finally {
+    frame.remove();
+  }
+}
+
+/** One PDF: the e-docket sheets first, then the documents' PDF from the server. */
+async function mergePdf(docketPngs: string[], serverPdf: Blob | null): Promise<Uint8Array> {
+  const out = await PDFDocument.create();
+  for (const png of docketPngs) {
+    const img = await out.embedPng(png);
+    const page = out.addPage([A4.width, A4.height]);
+    page.drawImage(img, { x: 0, y: 0, width: A4.width, height: A4.height });
+  }
+  if (serverPdf) {
+    const src = await PDFDocument.load(await serverPdf.arrayBuffer());
+    for (const p of await out.copyPages(src, src.getPageIndices())) out.addPage(p);
+  }
+  return out.save();
+}
 
 /** Document Capture -> "Print pages...": for the occasional print that must leave out some
  *  pages. Every document's pages as thumbnails; every classified page is ticked to start -
@@ -76,7 +116,7 @@ export function PrintPagesModal({
 
   // Starts with every page of every classified document ticked - untick what should not print.
   // Unclassified pages start unticked. Keys: page keys, Excel doc ids, "x:<file id>".
-  const [picked, setPicked] = useState<Set<string>>(() => new Set([...docItems.map((i) => i.key), ...excelDocIds]));
+  const [picked, setPicked] = useState<Set<string>>(() => new Set([...EDOCKET_KEYS, ...docItems.map((i) => i.key), ...excelDocIds]));
   const [busy, setBusy] = useState<"print" | "download" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [big, setBig] = useState<string | null>(null);
@@ -106,13 +146,23 @@ export function PrintPagesModal({
       }
       const documents = classified.flatMap((s) => s.files.map((f) => f.id))
         .filter((id) => documentPages[id] || picked.has(id));
-      const blob = await jobsApi.printDocuments(jobId, {
-        documents,
-        document_pages: documentPages,
-        unclassified_pages: looseItems.filter((i) => picked.has(i.key)).map((i) => (i as { pageId: string }).pageId),
-        unclassified_files: files.filter((f) => picked.has(`x:${f.id}`)).map((f) => f.id),
-      });
-      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      const unclassifiedPages = looseItems.filter((i) => picked.has(i.key)).map((i) => (i as { pageId: string }).pageId);
+      const unclassifiedFiles = files.filter((f) => picked.has(`x:${f.id}`)).map((f) => f.id);
+      const docketPages = [1, 2].filter((n) => picked.has(`e:${n}`));
+      const wantsServer = documents.length + unclassifiedPages.length + unclassifiedFiles.length > 0;
+      const [serverBlob, docketPngs] = await Promise.all([
+        wantsServer
+          ? jobsApi.printDocuments(jobId, { documents, document_pages: documentPages,
+              unclassified_pages: unclassifiedPages, unclassified_files: unclassifiedFiles })
+          : Promise.resolve(null),
+        docketPages.length
+          ? renderEDocket(jobId, docketPages).catch(() => { throw new Error("Could not draw the e-docket."); })
+          : Promise.resolve([] as string[]),
+      ]);
+      const pdfBytes: BlobPart = docketPngs.length
+        ? (await mergePdf(docketPngs, serverBlob)) as unknown as BlobPart
+        : (serverBlob as Blob);
+      const url = URL.createObjectURL(new Blob([pdfBytes], { type: "application/pdf" }));
       if (kind === "download") {
         const a = document.createElement("a");
         a.href = url;
@@ -130,7 +180,7 @@ export function PrintPagesModal({
         setTimeout(() => { frame.remove(); URL.revokeObjectURL(url); }, 5 * 60 * 1000);
       }
     } catch (err) {
-      let msg = "Could not build the PDF.";
+      let msg = err instanceof Error && err.message.includes("e-docket") ? err.message : "Could not build the PDF.";
       if (axios.isAxiosError(err) && err.response?.data instanceof Blob) {
         try { msg = JSON.parse(await err.response.data.text()).detail ?? msg; } catch { /* keep default */ }
       }
@@ -180,12 +230,12 @@ export function PrintPagesModal({
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-700">
           <div>
             <h3 className="text-base font-semibold text-slate-900 dark:text-slate-50">Print pages</h3>
-            <p className="text-xs text-slate-500">All classified pages are ticked to start - untick any page you do not want. The job's documents are not changed.</p>
+            <p className="text-xs text-slate-500">The E-Docket's two pages and all classified pages are ticked to start - untick any page you do not want. The E-Docket prints first. The job's documents are not changed.</p>
           </div>
           <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">Close</button>
         </div>
         <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-2 text-xs dark:border-slate-700">
-          <button onClick={() => flip([...classifiedKeys, ...unclassifiedKeys], true)} className={btn}>Select all</button>
+          <button onClick={() => flip([...EDOCKET_KEYS, ...classifiedKeys, ...unclassifiedKeys], true)} className={btn}>Select all</button>
           <button onClick={() => flip(classifiedKeys, true)} disabled={classifiedKeys.length === 0}
             title={classifiedKeys.length === 0 ? "Nothing classified on this job" : undefined}
             className={`${btn} disabled:cursor-not-allowed disabled:opacity-40`}>Select all classified</button>
@@ -198,6 +248,16 @@ export function PrintPagesModal({
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3 text-sm">
+          <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50/60 p-3 dark:border-yellow-500/30 dark:bg-yellow-500/5">
+            <div className="mb-2">{headingBox(EDOCKET_KEYS, "E-Docket · printed first", true)}</div>
+            <div className="flex flex-wrap gap-3">
+              {[1, 2].map((n) => tile(`e:${n}`, `Page ${n}`,
+                <div className="flex h-32 w-24 flex-col items-center justify-center gap-1 rounded border border-yellow-400 bg-[#f7f700] px-1 text-center text-[11px] font-semibold text-black">
+                  <span>E-DOCKET</span><span className="font-normal">{n === 1 ? "front" : "back"}</span>
+                </div>))}
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">As saved on the E-Docket page (its choices are saved automatically).</p>
+          </div>
           {classified.length > 0 && <div className="mb-3 border-b border-slate-100 pb-2 dark:border-slate-800">{headingBox(classifiedKeys, "Classified", true)}</div>}
           {classified.map((s) => (
             <div key={s.tdocId} className="mb-4 ml-2">

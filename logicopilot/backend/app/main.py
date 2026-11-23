@@ -98,18 +98,25 @@ def create_app() -> FastAPI:
 
         An ERP run in that state (the direct Submit Entry path, which ran inside the operator's
         own request) is marked failed, which is the truth and is re-runnable, with the reason
-        spelled out so nobody mistakes it for the ERP rejecting the entry.
+        spelled out so nobody mistakes it for the ERP rejecting the entry. Only where ERP
+        entries actually run (PROCESS_ROLE all or erp): restarting a split WEB server must not
+        fail entries the ERP server is still in the middle of.
 
         A stranded extraction is NOT touched here any more: it stays `extracting` and is read
         again, oldest first, by app/core/restart_resume.py (started below, in the process that
         owns background work) - `draft` only looked recoverable; nothing ever picked it back up.
         """
+        from app.core.process_role import runs, startup_report
+
+        startup_report()
+        if not runs("erp"):
+            return
         from app.db.session import SessionLocal
         from app.models.job import Job
 
         db = SessionLocal()
         try:
-            stuck = db.query(Job).filter(Job.status == "processing").all()
+            stuck =db.query(Job).filter(Job.status == "processing").all()
             for job in stuck:
                 job.status = "failed"
                 job.erp_status = "stopped"
@@ -158,6 +165,13 @@ def create_app() -> FastAPI:
             logging.getLogger(__name__).exception("could not load the OpenAI key pool")
         finally:
             db.close()
+        # Split servers: a key saved on another server is picked up here too (settings_sync.py).
+        from app.core.process_role import is_split
+
+        if is_split():
+            from app.core import settings_sync
+
+            settings_sync.start()
 
     @app.on_event("startup")
     def _start_email_poller() -> None:
@@ -165,9 +179,10 @@ def create_app() -> FastAPI:
         # Uvicorn's --workers forks several of this whole process; without the singleton
         # lock every worker would poll the same mailboxes on its own schedule, multiplying
         # both the IMAP traffic and the risk of two workers racing on the same message.
+        from app.core.process_role import runs
         from app.core.worker_lock import am_i_the_singleton_worker
 
-        if not am_i_the_singleton_worker():
+        if not runs("mail") or not am_i_the_singleton_worker():
             return
         from app.core.email_puller import release_interrupted_claims, start_scheduler
 
@@ -198,6 +213,23 @@ def create_app() -> FastAPI:
             if _db is not None:
                 _db.close()
 
+        # MAIL_QUEUE on: the workers that read queued mail - before the first poll queues any,
+        # and after the interrupted claims are released (a mail put back by the queue's own
+        # restart recovery then claims again cleanly). No-op when off or without Redis.
+        try:
+            from app.core import mail_queue
+            from app.core.system_settings import get_email_poll_workers
+            from app.db.session import SessionLocal as _SL
+
+            if mail_queue.enabled():
+                _wdb = _SL()
+                try:
+                    mail_queue.start(get_email_poll_workers(_wdb))
+                finally:
+                    _wdb.close()
+        except Exception:  # noqa: BLE001 - must never stop mail polling from starting
+            logging.getLogger(__name__).exception("could not start the mail queue workers")
+
         start_scheduler()
         # The large-job lane (app/core/large_job_lane.py) - also picks up extractions queued on
         # it before a restart. Only where mail is polled at all: that is the only thing that
@@ -222,9 +254,10 @@ def create_app() -> FastAPI:
         single lock-holding process may drive these browsers - two workers resuming the same
         parked script would mean two browsers replaying the same ERP entry.
         """
+        from app.core.process_role import runs
         from app.core.worker_lock import am_i_the_singleton_worker
 
-        if not am_i_the_singleton_worker():
+        if not runs("erp") or not am_i_the_singleton_worker():
             return
         import threading
 
@@ -248,38 +281,64 @@ def create_app() -> FastAPI:
         Gated like the email poller and the parked sessions: with several uvicorn workers
         only the lock-holding process runs these, so the number of ERP runs actually in
         flight stays the configured worker count rather than that many PER process.
+
+        Split servers (PROCESS_ROLE): the ERP server starts the queue and branch logins and
+        resumes ERP runs; the worker server resumes interrupted extractions and then reads the
+        ones the website hands it (app/core/extraction_dispatch.py).
         """
+        from app.core.process_role import is_split, runs
         from app.core.worker_lock import am_i_the_singleton_worker
 
-        if not am_i_the_singleton_worker():
+        kinds = tuple(k for k, part in (("extraction", "extraction"), ("ERP", "erp"))
+                      if runs(part))
+        if not kinds or not am_i_the_singleton_worker():
             return
+        from app.core import extract_queue
+
+        # The extraction queue, when on, replaces the split doorbell (one mechanism everywhere).
+        use_xq = "extraction" in kinds and extract_queue.enabled()
+        doorbell = is_split() and "extraction" in kinds and not use_xq
         import threading
 
         def _go() -> None:
-            from app.core.erp_redis_queue import start
             from app.core.restart_resume import resume_interrupted_work
-            from app.core.system_settings import get_erp_script_workers
-            from app.db.session import SessionLocal
 
-            db = SessionLocal()
-            try:
-                start(get_erp_script_workers(db))
-            except Exception:  # noqa: BLE001
-                logging.getLogger(__name__).exception("could not start the ERP queue")
-            finally:
-                db.close()
-            # The always-on branch logins (app/core/branch_sessions.py) - before the backlog
-            # comes back, so branch jobs find their login coming up rather than missing.
-            try:
-                from app.core import branch_sessions
+            if doorbell:
+                from app.core import extraction_dispatch
 
-                branch_sessions.start()
-            except Exception:  # noqa: BLE001
-                logging.getLogger(__name__).exception("could not start the branch logins")
+                # Everything waiting is `extracting` in the database: the resume below reads it.
+                extraction_dispatch.clear_queue()
+            if use_xq:
+                # Interrupted runs back first, BEFORE the resume below - which then finds them
+                # already queued and does not queue them twice.
+                extract_queue.start()
+
+            if "ERP" in kinds:
+                from app.core.erp_redis_queue import start
+                from app.core.system_settings import get_erp_script_workers
+                from app.db.session import SessionLocal
+
+                db = SessionLocal()
+                try:
+                    start(get_erp_script_workers(db))
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).exception("could not start the ERP queue")
+                finally:
+                    db.close()
+                # The always-on branch logins (app/core/branch_sessions.py) - before the backlog
+                # comes back, so branch jobs find their login coming up rather than missing.
+                try:
+                    from app.core import branch_sessions
+
+                    branch_sessions.start()
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).exception("could not start the branch logins")
             # Then everything the previous process was in the middle of - extractions and ERP
             # runs - back in its queue, oldest first. After start(), so Redis has already put
             # back its own reserved items and nothing is queued twice.
-            resume_interrupted_work()
+            resume_interrupted_work(kinds)
+            if doorbell:
+                extraction_dispatch.start()
 
         # Off the startup path: a Redis that is slow to answer must not hold up the app.
         threading.Thread(target=_go, name="erp-queue-start", daemon=True).start()
@@ -289,9 +348,10 @@ def create_app() -> FastAPI:
         """Phase 2 pipeline workers (app/pipeline/). Off unless PIPELINE_V2 is set AND Redis
         answers - then nothing starts and the app is exactly as before. Same singleton gate as
         the mail cycle and the ERP queue, so items are worked by one process only."""
+        from app.core.process_role import runs
         from app.core.worker_lock import am_i_the_singleton_worker
 
-        if not am_i_the_singleton_worker():
+        if not runs("pipeline") or not am_i_the_singleton_worker():
             return
         import threading
 
@@ -307,6 +367,34 @@ def create_app() -> FastAPI:
 
         threading.Thread(target=_go, name="pipeline-start", daemon=True).start()
 
+    @app.on_event("startup")
+    def _start_api_cost_scheduler() -> None:
+        """Nightly OpenAI cost collection (app/core/api_cost.py) - worker process only, singleton,
+        and only where API_COST_RECORDING is on."""
+        from app.core.config import get_settings as _gs
+        from app.core.process_role import runs
+        from app.core.worker_lock import am_i_the_singleton_worker
+
+        if not _gs().api_cost_recording or not runs("mail") or not am_i_the_singleton_worker():
+            return
+        try:
+            from app.core.api_cost import start_scheduler
+
+            start_scheduler()
+        except Exception:  # noqa: BLE001 - must never stop the app starting
+            logging.getLogger(__name__).exception("could not start the API cost scheduler")
+
+    @app.on_event("startup")
+    def _start_queue_heartbeat() -> None:
+        """Each process tells Platform Settings' queue panel which server it is and how many
+        workers it runs (app/core/queue_status.py). No-op without Redis."""
+        try:
+            from app.core.queue_status import start_heartbeat
+
+            start_heartbeat()
+        except Exception:  # noqa: BLE001 - visibility must never stop the app starting
+            logging.getLogger(__name__).exception("could not start the queue heartbeat")
+
     @app.on_event("shutdown")
     def _stop_parked_sessions() -> None:
         """Close parked browsers on the way down, so a restart cannot leak a Chromium."""
@@ -314,6 +402,12 @@ def create_app() -> FastAPI:
         from app.core.parked import MANAGER
 
         stop_erp_queue()
+        from app.core import mail_queue
+
+        mail_queue.stop()
+        from app.core import extract_queue
+
+        extract_queue.stop()
         MANAGER.unpark_all()
 
     @app.get("/health")

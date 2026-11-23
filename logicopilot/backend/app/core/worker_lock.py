@@ -38,7 +38,11 @@ def am_i_the_singleton_worker() -> bool:
         return True
     if _held_handle is not None:
         return True
-    handle = open(_LOCK_PATH, "w")
+    from app.core.process_role import lock_name
+
+    # "all" keeps the old file; a split role gets its own (see process_role.lock_name).
+    path = _LOCK_PATH.with_name(lock_name())
+    handle = open(path, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

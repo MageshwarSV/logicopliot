@@ -6,12 +6,14 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import * as duplicateEmailsApi from "../api/duplicateEmails";
 import { NotificationBell } from "./NotificationBell";
+import { ErpBranchButton } from "./ErpBranchButton";
+import { SystemAlertBanner } from "./SystemAlertBanner";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
-  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon,
+  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -23,11 +25,13 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/template-list": DocumentIcon,
   "/super-admin/template-creation": LayersIcon,
   "/super-admin/data-transformation": ArrowPathIcon,
+  "/super-admin/extraction-corrections": PencilIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,
   "/super-admin/entry-browser": MonitorIcon,
   "/jobs": BriefcaseIcon,
   "/super-admin/billing": CreditCardIcon,
+  "/super-admin/api-cost": ChartBarIcon,
   "/super-admin/settings": GearIcon,
 };
 
@@ -546,10 +550,13 @@ export function AppShell({
               happen to be. Left of the page's own actions so the primary call to action on
               each screen (+ New Job, Submit Entry) stays furthest right where it is expected. */}
           <div className="flex items-center gap-3">
+            {/* Only for users a Super Admin ticked ERP branch logins for - renders nothing otherwise. */}
+            <ErpBranchButton />
             <NotificationBell />
             {actions}
           </div>
         </header>
+        {user?.role === "super_admin" && <SystemAlertBanner />}
         <main className="p-8">{children}</main>
       </div>
     </div>

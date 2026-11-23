@@ -25,6 +25,9 @@ export const superAdminFeatures = [
   // Per template: start extraction automatically, hold it for a large zip, Excel by sheet and
   // the Excel files never used - how documents are processed, so Super Admin only.
   { path: "/super-admin/document-processing", navLabel: "Document Processing", group: "Platform Configuration", order: 5.6 },
+  // Fields operators keep correcting on many different jobs - where an extraction prompt needs
+  // work (app/core/field_edits.py).
+  { path: "/super-admin/extraction-corrections", navLabel: "Extraction Corrections", group: "Platform Configuration", order: 5.7 },
 
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
@@ -36,6 +39,8 @@ export const superAdminFeatures = [
   { path: "/jobs", navLabel: "Jobs", group: "Operations", order: 9 },
 
   { path: "/super-admin/billing", navLabel: "Billing & Usage", group: "Finance & System", order: 11 },
+  // OpenAI's real daily cost next to the pages it paid for - collected nightly (app/core/api_cost.py).
+  { path: "/super-admin/api-cost", navLabel: "API Cost & Usage", group: "Finance & System", order: 11.5 },
   // Live kill switches for AI-dependent work (email pull, extraction) - Super Admin only,
   // since it affects every tenant equally and nobody else should be able to stop the whole
   // platform's document processing.

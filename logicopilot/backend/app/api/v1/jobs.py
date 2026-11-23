@@ -16,7 +16,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.billing import record_billable_pages
-from app.core.config import get_settings
+from app.core.config import erp_sessions_dir, get_settings
 # The function, not the module: `def job_history(...)` in this file shadows a module of
 # that name at module level, so `job_history.describe` resolved to the ROUTE and raised
 # AttributeError on every request. Legal Python - it imported cleanly and 500'd live.
@@ -52,6 +52,8 @@ from app.core.extraction import (
     extract_document_rows_from_images,
     is_party_field,
     numeric_total,
+    reconcile_row_numbers,
+    reconcile_total,
 )
 from app.models.cross_doc_link import CrossDocLink
 from app.models.field_mark import FieldMark
@@ -144,6 +146,27 @@ def _job_doc_dir(job_document_id: str) -> Path:
     return Path(get_settings().uploads_dir) / "jobs" / job_document_id
 
 
+def _custom_field_page_images(docs_by_tdoc: dict, src_ids: list[str], docs_text: str) -> list | None:
+    """The page images an AI computed field reads when there is NO OCR text behind its
+    documents (OCR_ENGINE=none, or Document AI returned nothing): first pages of every file
+    first, so a field over several documents sees each one's front page. None when there is
+    text - the call is then exactly as before. Without this the field was asked about an
+    empty string and came back blank or guessed (JOB-5B0B6D: Quotation Name, Consignee)."""
+    body = "\n".join(ln for ln in docs_text.splitlines()
+                     if not (ln.startswith("=== ") and ln.endswith(" ===")))
+    if body.strip():
+        return None
+    files = [d for did in src_ids for d in docs_by_tdoc.get(did, []) if d.file_path]
+    pages: list = []
+    for p in range(1, 1 + max([d.page_count or 0 for d in files] or [0])):
+        for d in files:
+            if p <= (d.page_count or 0):
+                img = _job_doc_dir(d.id) / "pages" / f"page_{p}.png"
+                if img.exists():
+                    pages.append(img)
+    return pages or None
+
+
 def generate_job_no() -> str:
     """A short random, human-readable job number, e.g. JOB-7F3A9C."""
     import uuid
@@ -202,6 +225,9 @@ def _render_pages(original: Path, pages_dir: Path, skip: list[int] | None = None
                 continue
             kept += 1
             page.get_pixmap(dpi=RENDER_DPI).save(pages_dir / f"page_{kept}.png")
+            from app.core.docai import save_text_layer
+
+            save_text_layer(page, pages_dir / f"page_{kept}.png")   # OCR_ENGINE=pdftext only
     # A previous render of the same document may have left higher-numbered pages behind.
     for leftover in pages_dir.glob("page_*.png"):
         try:
@@ -855,6 +881,11 @@ def _job_stage(db: Session, job: Job, links: list | None = None) -> str:
             continue
         if f["status"] in BLOCKING_VERIFICATION_STATUSES:
             return "Data Validation"  # a field's own reconciliation reported MISMATCH
+    from app.core import money_checks
+
+    for f in money_checks.findings(db, job):   # [] unless MONEY_CHECKS is on
+        if not f["accepted"] and f["status"] in BLOCKING_VERIFICATION_STATUSES:
+            return "Data Validation"  # the invoice's own numbers do not add up
     # Past validation - or nothing to validate at all. Either way a human must still look at
     # the extracted data at least once before it is ready for ERP entry; WHERE past that -
     # Dump Data, Manual Data Entry, ERP Submission - is something only the operator's own
@@ -1118,9 +1149,35 @@ def _job_category(job: Job) -> str:
     return "new"
 
 
+def _run_extraction_job(job_id: str, only_job_document_id: str | None = None, *,
+                        is_rerun: bool = False) -> None:
+    """One job's extraction with its own DB session - the body every background path runs
+    (the in-process pool below and the Redis extraction queue, app/core/extract_queue.py).
+    A crash leaves the job re-runnable ("draft") rather than stuck on AI Processing."""
+    from app.db.session import SessionLocal
+
+    db2 = SessionLocal()
+    try:
+        job2 = db2.get(Job, job_id)
+        if job2 is None:
+            return
+        run_extraction(db2, job2, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
+    except Exception:  # noqa: BLE001
+        logger.exception("background extraction failed for job %s", job_id)
+        db2.rollback()
+        job2 = db2.get(Job, job_id)
+        # Let the operator try again rather than leave the job stuck reading "AI
+        # Processing" forever with nothing actually running.
+        if job2 is not None and job2.status == "extracting":
+            job2.status = "draft"
+            db2.commit()
+    finally:
+        db2.close()
+
+
 def _start_extraction_background(
     job_id: str, only_job_document_id: str | None = None, *, is_rerun: bool = False,
-) -> None:
+) -> bool:
     """Run extraction off the request thread, so an upload or the Extract button returns at
     once instead of sitting on OCR + model calls. Own DB session, same pattern as the parked-
     session resume in main.py: the request's session closes when the endpoint returns, long
@@ -1130,30 +1187,42 @@ def _start_extraction_background(
     quick, but the transaction stays open across every OpenAI call - so one thread per job
     meant one CONNECTION per job, and nothing capped how many jobs that was. See
     extraction_queue for the day that took the site down.
+
+    EXTRACT_QUEUE on: put on the Redis extraction queue instead (app/core/extract_queue.py) -
+    it survives restarts and reaches the worker server on a split setup.
+    Split servers without it (PROCESS_ROLE web/erp): handed to the worker server through Redis
+    (app/core/extraction_dispatch.py). With neither - every server today - nothing changes.
     """
+    from app.core import extract_queue, extraction_dispatch
     from app.core.extraction_queue import submit_extraction
-    from app.db.session import SessionLocal
+    from app.core.process_role import is_split
+
+    if extract_queue.enabled():
+        try:
+            if not extract_queue.enqueue(job_id, only_job_document_id, is_rerun):
+                logger.info("job %s is already on the extraction queue - not queued twice", job_id)
+                return False
+            return True
+        except Exception:  # noqa: BLE001 - never lose a run: fall back to the old path
+            logger.exception("job %s: could not queue the extraction - running it the old way", job_id)
+    if extraction_dispatch.hand_off(job_id, only_job_document_id, is_rerun):
+        return True
+    # Only a split worker de-duplicates: there a doorbell message and the startup resume can
+    # name the same job. One process doing everything ("all") behaves exactly as before.
+    dedupe = is_split()
+    if dedupe and not extraction_dispatch.claim(job_id):
+        logger.info("job %s is already being read in this process - not starting it twice", job_id)
+        return False
 
     def _go() -> None:
-        db2 = SessionLocal()
         try:
-            job2 = db2.get(Job, job_id)
-            if job2 is None:
-                return
-            run_extraction(db2, job2, only_job_document_id=only_job_document_id, is_rerun=is_rerun)
-        except Exception:  # noqa: BLE001
-            logger.exception("background extraction failed for job %s", job_id)
-            db2.rollback()
-            job2 = db2.get(Job, job_id)
-            # Let the operator try again rather than leave the job stuck reading "AI
-            # Processing" forever with nothing actually running.
-            if job2 is not None and job2.status == "extracting":
-                job2.status = "draft"
-                db2.commit()
+            _run_extraction_job(job_id, only_job_document_id, is_rerun=is_rerun)
         finally:
-            db2.close()
+            if dedupe:
+                extraction_dispatch.release(job_id)
 
     submit_extraction(_go)
+    return True
 
 
 def _mark_review_started(job: Job) -> None:
@@ -3477,7 +3546,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     sess_file = None
     ckpt = script.checkpoint_index if script.stay_open else None
     if ckpt is not None:
-        sess_file = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+        sess_file = erp_sessions_dir() / f"{script.id}.json"
 
     from app.core import branch_sessions, erp_priority
     from app.core.erp_session import script_slot
@@ -4373,6 +4442,24 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
 
     # Passes when nothing genuinely disagrees. A "missing" row is informational — the value is
     # absent on the other document, not in conflict with it — so it does not withhold the pass.
+    # MONEY_CHECKS: the invoice's own arithmetic (app/core/money_checks.py) - a row only when a
+    # check FAILS, accepted the same way as any other flagged row. [] when the switch is off.
+    from app.core import money_checks
+
+    for f in money_checks.findings(db, job):
+        verifications.append(
+            VerificationRow(
+                link_id=f["id"],
+                field_label=f["label"],
+                source_document="Invoice",
+                source_value=f["source_value"],
+                target_document="Invoice",
+                target_value=f["target_value"],
+                status=f["status"],
+                accepted=f["accepted"],
+            )
+        )
+
     all_passed = len(verifications) > 0 and all(
         v.status not in BLOCKING_VERIFICATION_STATUSES or v.accepted for v in verifications
     )
@@ -5900,9 +5987,16 @@ def complete_job(
     """Submit Entry: replay the template's ERP script into the real ERP with this job's
     extracted values, then mark the job completed on success."""
     from app.core.browser import play_steps
+    from app.core.process_role import runs
     from app.models.erp_script import ErpScript
 
     job = _load_job(db, job_id, scope, user)
+    # Split servers: this endpoint drives Chrome INSIDE the request, so it can only run where ERP
+    # entries run. The screen has not called it since early Nov 2026 (every entry goes through
+    # Final Approve -> the ERP queue); refuse plainly rather than run a browser on the web server.
+    if not runs("erp"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Use Final Submit - the entry is made by the ERP server.")
     if job.status != "extracted":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run extraction before submitting the entry.")
     # Fields the Super Admin ticked as "ask the operator" must be answered on THIS job
@@ -5970,7 +6064,7 @@ def complete_job(
             ckpt = script.checkpoint_index if script.stay_open else None
             if ckpt is not None:
                 sess_file = (
-                    Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+                    erp_sessions_dir() / f"{script.id}.json"
                 )
             result = None
             # A parked session cannot carry an attachment: parked.py calls play_steps without
@@ -7788,6 +7882,9 @@ def _classify_and_place_files(
                 png = item["fdir"] / "pages" / f"page_{i}.png"
                 if not png.exists():
                     doc[i - 1].get_pixmap(dpi=150).save(png)
+                    from app.core.docai import save_text_layer
+
+                    save_text_layer(doc[i - 1], png)   # OCR_ENGINE=pdftext only
                 try:
                     got = ocr_page_image(png)
                     extra_raw.append(got.get("text", ""))
@@ -7842,6 +7939,9 @@ def _classify_and_place_files(
                         # past a cap to reach.
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
+                        from app.core.docai import save_text_layer
+
+                        save_text_layer(page, png)   # OCR_ENGINE=pdftext only
                         if i == 1:
                             img_path = png
                         page_count = i
@@ -9458,11 +9558,56 @@ def _excel_sheet_text(jdoc: JobDocument) -> str:
     return sheet_text(sheet) if sheet is not None else ""
 
 
-def _excel_sheet_chunks(jdoc: JobDocument) -> list[str]:
-    from app.core.excel_text import sheet_chunks
+def _excel_sheet_chunks(jdoc: JobDocument) -> list[tuple[str, int | None]]:
+    """[(part text, expected item rows or None)] - see excel_text.sheet_row_chunks."""
+    from app.core.excel_text import sheet_row_chunks
 
     sheet = _excel_sheet(jdoc)
-    return sheet_chunks(sheet) if sheet is not None else []
+    return sheet_row_chunks(sheet) if sheet is not None else []
+
+
+def _dedupe_excel_rows(rows: list[dict], sheet, labels: list[str]) -> list[dict]:
+    """Line items read from an Excel sheet, with the model's own repeats taken out.
+
+    A sheet is exact data, so it can settle what the model invents: a line that repeats an
+    earlier one value for value is dropped unless the sheet itself holds that line more often
+    (counted by its most distinctive value - the longest text, e.g. the description or part
+    number); a line whose values are only a part of an earlier line's (same quantity and
+    amount, no code or description) is a stray copy and dropped too. JOB-CEF1C1: lines 41-45
+    came back twice and item 107 once more without its code."""
+    def norm(v):
+        return " ".join(str(v or "").split()).upper()
+
+    sheet_lines = [norm(" ".join(v for _c, v in cells)) for _r, cells in (sheet.rows if sheet else [])]
+    kept: list[dict] = []
+    seen: dict[tuple, int] = {}
+    dropped = 0
+    for r in rows:
+        vals = {lab: norm(r.get(lab)) for lab in labels}
+        filled = {k: v for k, v in vals.items() if v}
+        if not filled:
+            dropped += 1
+            continue
+        key = tuple(vals[lab] for lab in labels)
+        if key in seen:
+            ident = max((v for v in filled.values() if not v.replace(".", "").replace(",", "").isdigit()),
+                        key=len, default="")
+            in_sheet = sum(1 for line in sheet_lines if ident and ident in line) if ident else 0
+            if seen[key] >= max(1, in_sheet):
+                dropped += 1
+                continue
+        part_of_earlier = any(
+            len(filled) < len([v for v in k if v])
+            and all(dict(zip(labels, k)).get(lab) == v for lab, v in filled.items())
+            for k in seen)
+        if part_of_earlier:
+            dropped += 1
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        kept.append(r)
+    if dropped:
+        logger.warning("Excel line items: %d repeated / partial line(s) dropped (%d kept)", dropped, len(kept))
+    return kept
 
 
 def run_extraction(
@@ -9723,6 +9868,42 @@ def run_extraction(
     _pf_fields_img = _pf.wrap("fields_img", extract_document_fields_from_images)
     _pf_rows = _pf.wrap("rows", extract_document_rows)
     _pf_rows_img = _pf.wrap("rows_img", extract_document_rows_from_images)
+
+    # FOLD_AI_FIELDS (Option E): an AI computed field that reads ONE document - and that
+    # document is ONE file on this job - is asked in that document's own extraction call
+    # (same images, its own instruction) instead of a separate call afterwards that read the
+    # OCR text. Fields over several documents or several files keep their own call (given the
+    # page images when there is no OCR text). Off = exactly as before.
+    folded_by_tdoc: dict[str, list] = {}
+    folded_values: dict[str, str] = {}
+    fold_on = bool(getattr(get_settings(), "fold_ai_fields", False))
+    if fold_on:
+        from app.models.custom_field import CustomField as _FoldCF
+
+        _mark_labels = {t.id: {m.label_name for m in t.marks} for t in group.documents}
+        for _cf in db.query(_FoldCF).filter(_FoldCF.group_id == group.id, _FoldCF.kind == "ai").all():
+            _src = _cf.source_document_ids or []
+            if (len(_src) != 1 or getattr(_cf, "per_row", False)
+                    or getattr(_cf, "multi_value_from_document", False)
+                    or getattr(_cf, "lookup_key_label", None)):
+                continue
+            _tid = _src[0]
+            _t_obj = next((t for t in group.documents if t.id == _tid), None)
+            _files = [d for d in docs_by_tdoc.get(_tid, []) if d.file_path]
+            if (_t_obj is None or not _t_obj.marks or len(_files) != 1
+                    or _cf.label_name in _mark_labels.get(_tid, set())
+                    or (only_job_document_id and _files[0].id != only_job_document_id)):
+                continue
+            folded_by_tdoc.setdefault(_tid, []).append(_cf)
+        if folded_by_tdoc:
+            logger.info("job %s: %d AI computed field(s) asked inside their document's extraction",
+                        job.reference, sum(len(v) for v in folded_by_tdoc.values()))
+
+    def _fold(tdoc_id: str, fields_in: list[dict]) -> list[dict]:
+        extra = folded_by_tdoc.get(tdoc_id) or []
+        return fields_in + [{"label": c.label_name, "prompt": c.ai_prompt or "", "variations": []}
+                            for c in extra]
+
     if _pf.on:
         _todo = [(t, d) for t in group.documents for d in docs_by_tdoc.get(t.id, [])
                  if d.file_path is not None and t.marks
@@ -9738,7 +9919,7 @@ def run_extraction(
             _text = text_for_doc(_d)
             _single = [m for m in _t.marks if not m.is_multi_value]
             _multi = [m for m in _t.marks if m.is_multi_value]
-            _fields = [field_spec(m, inline_format=True) for m in _single]
+            _fields = _fold(_t.id, [field_spec(m, inline_format=True) for m in _single])
             _excel = getattr(_d, "source_kind", "pdf") == "excel"
             _force = extraction_engine == "gpt5_mini_vision" and not _excel
             _vision = _force or (not _text.strip() and not _excel)
@@ -9756,8 +9937,8 @@ def run_extraction(
                 _standalone = len(_group) == 1 and getattr(_group[0], "standalone_multi_value", False)
                 _rows_hint = doc_table_row_count_cache.get(_d.id, 0)
                 if _excel:
-                    for _part in _excel_sheet_chunks(_d):
-                        _pf.plan("rows", _part, _specs, None, tenant_id=job.tenant_id)
+                    for _part, _hint in _excel_sheet_chunks(_d):
+                        _pf.plan("rows", _part, _specs, _hint, tenant_id=job.tenant_id)
                 elif not _vision:
                     _pf.plan("rows", _text, _specs, _rows_hint or None, tenant_id=job.tenant_id)
                     if _imgs and not _standalone:
@@ -9800,7 +9981,7 @@ def run_extraction(
         # in one pass so their rows stay aligned; the rest are read as single values.
         single_marks = [m for m in tdoc.marks if not m.is_multi_value]
         all_multi_marks = [m for m in tdoc.marks if m.is_multi_value]
-        fields = [_spec(m) for m in single_marks]
+        fields = _fold(tdoc.id, [_spec(m) for m in single_marks])
 
         # The vision engine reads every document's image directly, by deliberate Settings
         # choice - a completely different reason to skip OCR text than the pre-existing
@@ -9867,6 +10048,9 @@ def run_extraction(
                     image_paths, fields, model=model_override, tenant_id=job.tenant_id)
             if any((retried.get(m.label_name) or "").strip() for m in single_marks):
                 extracted = retried
+
+        for _c in folded_by_tdoc.get(tdoc.id) or []:
+            folded_values[_c.id] = str(extracted.get(_c.label_name) or "").strip()
 
         for mark in single_marks:
             val = extracted.get(mark.label_name)
@@ -10019,8 +10203,19 @@ def run_extraction(
                 # A long sheet is read in parts, each repeating the heading rows, then joined in
                 # order - one huge table in one call is where rows get dropped.
                 rows = []
-                for part in _excel_sheet_chunks(jd):
-                    rows.extend(_pf_rows(part, row_specs, None, tenant_id=job.tenant_id) or [])
+                for part, part_hint in _excel_sheet_chunks(jd):
+                    rows.extend(_pf_rows(part, row_specs, part_hint, tenant_id=job.tenant_id) or [])
+                # The sheet settles what the model repeated, and says how many items there are.
+                from app.core.excel_text import header_row_index, numbered_items
+
+                _sheet = _excel_sheet(jd)
+                rows = _dedupe_excel_rows(rows, _sheet, row_labels)
+                if _sheet is not None:
+                    _h = header_row_index(_sheet)
+                    _items = numbered_items(_sheet.rows[_h + 1:] if _h is not None else _sheet.rows)
+                    if _items and len(rows) != _items:
+                        logger.warning("job %s: %s read %d line(s) but the sheet numbers %d item(s)",
+                                       job.reference, tdoc.name, len(rows), _items)
             elif not used_vision:
                 rows = _pf_rows(ocr_text, row_specs, detected_row_count or None,
                                 tenant_id=job.tenant_id)
@@ -10199,6 +10394,11 @@ def run_extraction(
                 "multi-value on %s: %d row(s) from %s",
                 tdoc.name, len(rows), "page images" if used_vision else "OCR text",
             )
+            # Numbers in standard form, settled by quantity x unit price = amount: a European
+            # invoice's '1.450' / '2,83' / '4.103,50' came back as printed in one run and
+            # converted in the next (JOB-5B0B6D) - see extraction.reconcile_row_numbers.
+            for _note in reconcile_row_numbers(rows):
+                logger.warning("job %s, %s: numbers settled - %s", job.reference, tdoc.name, _note)
             for i, row in enumerate(rows, start=1):
                 for mark in multi_marks:
                     value = row.get(mark.label_name)
@@ -10236,6 +10436,39 @@ def run_extraction(
                 first = (rows[0].get(mark.label_name) if rows else None) or ""
                 if first or mark.label_name not in all_values:
                     all_values[mark.label_name] = first
+
+        # This document's quantity / value totals in standard form, a two-way reading ('1.450')
+        # settled by the sum of its own lines (JOB-5B0B6D: total_quantity '1.450' = 1450 pieces).
+        _sums: dict[str, float | None] = {}
+        for _lab in ("item_quantity", "product_amount"):
+            try:
+                _vals = [float(f.extracted_value) for f in written
+                         if f.job_document_id == jd.id and f.row_index is not None
+                         and f.label_name == _lab and (f.extracted_value or "").strip()]
+                _sums[_lab] = sum(_vals) if _vals else None
+            except ValueError:
+                _sums[_lab] = None
+        _single_ids = {m.id for m in single_marks}
+        for f in written:
+            if (f.job_document_id != jd.id or f.row_index is not None
+                    or f.mark_id not in _single_ids or not (f.extracted_value or "").strip()):
+                continue
+            _lab = f.label_name.lower()
+            if "quantity" in _lab:
+                _target = _sums["item_quantity"]
+            elif "value" in _lab or "amount" in _lab:
+                _target = (_sums["product_amount"]
+                           if any(k in _lab for k in ("product", "invoice", "total")) else None)
+            else:
+                continue
+            _std = reconcile_total(f.extracted_value, _target)
+            if _std is not None and _std != f.extracted_value.strip():
+                logger.warning("job %s, %s: %s %r -> %s (standard form%s)", job.reference,
+                               tdoc.name, f.label_name, f.extracted_value, _std,
+                               ", matches the lines' sum" if _target is not None else "")
+                if all_values.get(f.label_name) == f.extracted_value:
+                    all_values[f.label_name] = _std
+                f.extracted_value = _std
 
     # ---- pair each invoice with its own packing list ---------------------------------------
     # Only possible now: the pairing is made on the invoice numbers, and those had to be read
@@ -10308,6 +10541,12 @@ def run_extraction(
     # Custom fields: hardcoded values, or AI-computed from the selected documents.
     from app.models.custom_field import CustomField
 
+    def _cf_images(src_ids: list[str], docs_text: str) -> list | None:
+        """No OCR text behind these documents: their page images, so the field reads the
+        paper rather than an empty string (with or without FOLD_AI_FIELDS - a field that is
+        not folded still has its own call). None when there is text: exactly as before."""
+        return _custom_field_page_images(docs_by_tdoc, src_ids, docs_text)
+
     custom_fields = db.query(CustomField).filter(CustomField.group_id == group.id).all()
     # A field with lookup_key_label reads ANOTHER field's value on this SAME job (see
     # _resolve_target_value) - it must be computed AFTER whatever it depends on, or it reads
@@ -10376,6 +10615,72 @@ def run_extraction(
         return out
 
     standalone_mark_labels = _standalone_mark_labels(group)
+    def _ai_docs_text(src_ids: list[str]) -> str:
+        """The documents' text for an AI computed field: an equal share per FILE (see the note
+        in the single-value branch below). One copy for every caller, so the parallel plan and
+        the loop send byte-for-byte the same text."""
+        def _files_in(did: str) -> int:
+            return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
+
+        n_files = sum(_files_in(did) for did in src_ids)
+        share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
+        chunks = []
+        for did in src_ids:
+            name = next((d.name for d in group.documents if d.id == did), "DOC")
+            text = text_for(did)
+            allow = share * _files_in(did)
+            if len(text) > allow:
+                text = text[:allow] + "\n…[document truncated]"
+            chunks.append(f"=== {name} ===\n{text}")
+        return "\n\n".join(chunks)
+
+    def _row_context() -> list[dict]:
+        descs = _line_values("product_description")
+        codes = _line_values("item_material_code")
+        qtys = _line_values("item_quantity")
+        return [
+            {
+                "row": i + 1,
+                "part_code": codes.get(key, ""),
+                "description": descs.get(key, ""),
+                "quantity": qtys.get(key, ""),
+            }
+            for i, key in enumerate(line_keys)
+        ]
+
+    # PARALLEL_COMPUTED_WORKERS > 1: every AI computed field's call is planned here with EXACTLY
+    # the arguments the loop below will use, made several at once, and the loop's identical
+    # call is then answered from that (parallel_extract.Prefetch - a call that does not match
+    # is simply made by the loop, as before). The AI calls depend only on the documents and
+    # the extracted values, never on another computed field, so their order does not matter;
+    # the loop itself - its order, lookups, composites and every write - is unchanged.
+    # 1 (the default) = the loop makes every call itself, one after another, exactly as before.
+    from app.core.llm import compute_custom_field as _ccf, compute_custom_field_per_row as _ccfr
+    from app.core.parallel_extract import Prefetch as _CPrefetch
+
+    _cpf = _CPrefetch(int(getattr(get_settings(), "parallel_computed_workers", 1) or 1))
+    _cf_call = _cpf.wrap("cf", _ccf)
+    _cf_row_call = _cpf.wrap("cf_row", _ccfr)
+    if _cpf.on:
+        for _pcf in custom_fields:
+            try:
+                _src = _pcf.source_document_ids or [d.id for d in group.documents]
+                if getattr(_pcf, "per_row", False):
+                    if line_count > 0 and _pcf.kind == "ai":
+                        _dt = _ai_docs_text(_src)
+                        _cpf.plan("cf_row", _pcf.ai_prompt or "", _dt, _row_context(),
+                                  records=[r for r in doc_records if r["template_document_id"] in set(_src)],
+                                  field_label=_pcf.label_name, images=_cf_images(_src, _dt))
+                elif (_pcf.kind != "hardcoded" and _pcf.id not in folded_values
+                      and not (_pcf.kind == "ai" and getattr(_pcf, "multi_value_from_document", False))):
+                    _dt = _ai_docs_text(_src)
+                    _cpf.plan("cf", _pcf.ai_prompt or "", _dt,
+                              records=[r for r in doc_records if r["template_document_id"] in set(_src)],
+                              field_label=_pcf.label_name, images=_cf_images(_src, _dt))
+            except Exception:  # noqa: BLE001 - a field not planned is simply asked by the loop
+                logger.warning("could not plan computed field %s", _pcf.label_name, exc_info=True)
+        _cpf.run(on_done=lambda d, t: _xprog.publish(job.id, "finishing", d, t))
+
     for cf in custom_fields:
         if getattr(cf, "per_row", False):
             if line_count == 0:
@@ -10519,39 +10824,13 @@ def run_extraction(
                 from app.core.llm import compute_custom_field_per_row
 
                 src_ids = cf.source_document_ids or [d.id for d in group.documents]
-
-                def _files_in_row(did: str) -> int:
-                    return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
-
-                n_files = sum(_files_in_row(did) for did in src_ids)
-                share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
-                chunks = []
-                for did in src_ids:
-                    name = next((d.name for d in group.documents if d.id == did), "DOC")
-                    text = text_for(did)
-                    allow = share * _files_in_row(did)
-                    if len(text) > allow:
-                        text = text[:allow] + "\n…[document truncated]"
-                    chunks.append(f"=== {name} ===\n{text}")
-                docs_text = "\n\n".join(chunks)
+                docs_text = _ai_docs_text(src_ids)
                 chosen = set(src_ids)
                 records = [r for r in doc_records if r["template_document_id"] in chosen]
-
-                descs = _line_values("product_description")
-                codes = _line_values("item_material_code")
-                qtys = _line_values("item_quantity")
-                row_context = [
-                    {
-                        "row": i + 1,
-                        "part_code": codes.get(key, ""),
-                        "description": descs.get(key, ""),
-                        "quantity": qtys.get(key, ""),
-                    }
-                    for i, key in enumerate(line_keys)
-                ]
-                answers = compute_custom_field_per_row(
+                row_context = _row_context()
+                answers = _cf_row_call(
                     cf.ai_prompt or "", docs_text, row_context, records=records,
-                    field_label=cf.label_name,
+                    field_label=cf.label_name, images=_cf_images(src_ids, docs_text),
                 )
                 # zip() stops at the shorter side, so a model that returns nine answers for
                 # eleven lines loses the last two WITHOUT A WORD - the rows are still written
@@ -10623,6 +10902,7 @@ def run_extraction(
             value = cf.hardcoded_value or ""
         else:
             src_ids = cf.source_document_ids or [d.id for d in group.documents]
+            docs_text = _ai_docs_text(src_ids)
             # Same fair share as the ruling: compute_custom_field truncates the bundle, so a
             # field sourced from several documents would let the bill of lading's 42,000
             # characters — mostly page-2 carrier boilerplate — swallow the allowance and hide
@@ -10631,20 +10911,8 @@ def run_extraction(
             # An equal share per FILE, not per slot. Dividing by the slot count gave the
             # Invoice slot one invoice's worth of room no matter how many invoices were in
             # it, so a field told to total three invoices could only ever see the first.
-            def _files_in(did: str) -> int:
-                return max(1, len([d for d in docs_by_tdoc.get(did, []) if d.file_path]))
-
-            n_files = sum(_files_in(did) for did in src_ids)
-            share = max(2000, RULING_TEXT_BUDGET // max(1, n_files))
-            chunks = []
-            for did in src_ids:
-                name = next((d.name for d in group.documents if d.id == did), "DOC")
-                text = text_for(did)
-                allow = share * _files_in(did)
-                if len(text) > allow:
-                    text = text[:allow] + "\n…[document truncated]"
-                chunks.append(f"=== {name} ===\n{text}")
-            docs_text = "\n\n".join(chunks)
+            # (built by _ai_docs_text above - one copy, shared with the per-row branch and the
+            # parallel plan, so all three are guaranteed to send the same text)
 
             # The records for the documents this field was told to read. Complete and never
             # shortened — all_values could only ever carry the FIRST document's value per
@@ -10662,7 +10930,8 @@ def run_extraction(
                 from app.core.llm import compute_custom_field_rows
 
                 rows = compute_custom_field_rows(cf.ai_prompt or "", docs_text, records=records,
-                                                 field_label=cf.label_name)
+                                                 field_label=cf.label_name,
+                                                 images=_cf_images(src_ids, docs_text))
                 logger.info("%r on job %s: %d row(s) read directly from its own document(s)",
                             cf.label_name, job.reference, len(rows))
                 # Idempotent on the same reasoning as every other write loop in this function -
@@ -10692,8 +10961,12 @@ def run_extraction(
 
             from app.core.llm import compute_custom_field
 
-            value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
-                                         field_label=cf.label_name)
+            if cf.id in folded_values:
+                value = folded_values[cf.id]
+            else:
+                value = _cf_call(cf.ai_prompt or "", docs_text, records=records,
+                                 field_label=cf.label_name,
+                                 images=_cf_images(src_ids, docs_text))
             value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)
@@ -10744,6 +11017,9 @@ def run_extraction(
     # Created EMPTY, which is the honest state for a line nobody has answered: the gate already
     # refuses an empty mandatory CTH, so the operator is asked rather than the line going out
     # silently. One query per per-row field, on a path that has just made dozens of model calls.
+    if _cpf.on:
+        logger.info("job %s: parallel computed fields - %d of %d AI call(s) answered from the prefetch",
+                    job.reference, _cpf.hits, _cpf.hits + _cpf.misses)
     _backfill_missing_per_row_slots(db, job, custom_fields)
     # The same guarantee for standalone tables (Container Detail): every container row gets a
     # box for every container column, so a container number filtered away by the ISO 6346
@@ -11395,6 +11671,12 @@ def carry_across_rows(
 
         if not targets:
             continue
+        # The operator's own carried value counts as an edit of the box it was carried into -
+        # not of the synced partner boxes it then flows on to (that would count it twice).
+        if targets[0] is primary:
+            from app.core import field_edits
+
+            field_edits.record(db, primary, primary.value, value, user, source="carry")
         for target in targets:
             _apply_correction(db, target, value)
         written += 1
@@ -11448,6 +11730,9 @@ def correct_field_value(
         if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
+    from app.core import field_edits
+
+    field_edits.record(db, fv, fv.value, saved, user, source="edit")
     _apply_correction(db, fv, saved)
     _mark_review_started(job_for_rules)
     # ... and into every box on this line holding the same answer, in both directions. The
@@ -11642,8 +11927,10 @@ def _recompute_per_row_custom_field(
             }
             for i, key in enumerate(line_keys)
         ]
-        answers = compute_custom_field_per_row(cf.ai_prompt or "", docs_text, row_context,
-                                               records=records, field_label=cf.label_name)
+        answers = compute_custom_field_per_row(
+            cf.ai_prompt or "", docs_text, row_context, records=records,
+            field_label=cf.label_name,
+            images=_custom_field_page_images(docs_by_tdoc, src_ids, docs_text))
         computed = dict(zip(line_keys, answers))
     elif cf.kind == "composite":
         if composite_pieces_override is not None:
@@ -11823,8 +12110,9 @@ def recompute_custom_field(
 
         from app.core.llm import compute_custom_field
 
-        value = compute_custom_field(cf.ai_prompt or "", docs_text, records=records,
-                                     field_label=cf.label_name)
+        value = compute_custom_field(
+            cf.ai_prompt or "", docs_text, records=records, field_label=cf.label_name,
+            images=_custom_field_page_images(docs_by_tdoc, src_ids, docs_text))
         value = _apply_mawb_shape(db, job, cf, value, docs_text)
         value = _clamp_bl_date_not_future(cf.label_name, value)
         value, raw_value = _resolve_target_value(db, job.id, cf, value)

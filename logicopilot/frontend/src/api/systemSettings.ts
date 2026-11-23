@@ -43,11 +43,20 @@ export interface SystemSettings {
   /** How many pooled keys (see listOpenAIKeyPool) are actually in rotation right now. 0
    *  means every OpenAI call still uses the single key above. */
   openai_key_pool_active_count: number;
+  /** The AI models in use right now (server .env), the same for every template. */
+  ai_models: {
+    /** What reads every document's pages: the vision model when the engine reads page images. */
+    document_model: string;
+    reads_page_images: boolean;
+    /** Text-only calls (some computed fields, small helpers). */
+    text_model: string;
+    vision_model: string;
+  };
 }
 
 export const EXTRACTION_ENGINE_OPTIONS: { value: SystemSettings["extraction_engine"]; label: string }[] = [
-  { value: "ocr_gpt4o_mini", label: "Document OCR + GPT-4o-mini" },
-  { value: "gpt5_mini_vision", label: "GPT-5-mini Vision" },
+  { value: "ocr_gpt4o_mini", label: "Document OCR + AI text" },
+  { value: "gpt5_mini_vision", label: "AI Vision (page images)" },
 ];
 
 export async function getSystemSettings(): Promise<SystemSettings> {
@@ -168,6 +177,40 @@ export interface ErpQueueStatus {
   running: number | null;
   workers: number;
   max_workers: number;
+}
+
+/** Every queue and the servers working them - see app/core/queue_status.py. */
+export interface QueueRow {
+  name: "mail" | "mail_large" | "extract" | "erp";
+  label: string;
+  waiting: number;
+  running: number;
+  oldest_wait_seconds: number | null;
+  stale: boolean;
+}
+export interface QueueServer {
+  host: string;
+  role: string;
+  seen_seconds_ago: number;
+  mail_workers: number;
+  extract_workers: number;
+  erp_workers: number;
+  mail_queue_on: boolean;
+  extract_queue_on: boolean;
+  mail_polling: boolean;
+  ocr_engine: string;
+}
+export interface QueuesStatus {
+  redis: boolean;
+  queues: QueueRow[];
+  servers: QueueServer[];
+  warnings: string[];
+  stale_after_seconds?: number;
+}
+
+export async function getQueuesStatus(): Promise<QueuesStatus> {
+  const { data } = await apiClient.get<QueuesStatus>("/system-settings/queues");
+  return data;
 }
 
 export async function getErpQueueStatus(): Promise<ErpQueueStatus> {

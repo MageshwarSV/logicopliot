@@ -1,15 +1,18 @@
 """Branch logins: one always-on ERP user per branch - see app/core/branch_sessions.py."""
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_db, require_role
+from app.core.deps import get_current_user, get_db, require_role
 from app.core.mail_crypto import encrypt_secret
 from app.models.erp_branch_session import ErpBranchSession
 from app.models.erp_script import ErpScript
-from app.models.user import SUPER_ADMIN
+from app.models.user import SUPER_ADMIN, User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/erp-branch-sessions", tags=["erp branch sessions"])
 
@@ -169,6 +172,130 @@ def delete_branch_session(bs_id: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch login not found")
     db.delete(bs)
     db.commit()
+
+
+# ---- per-user switch access ---------------------------------------------------------------
+# A Super Admin ticks, per user (Tenants -> Users -> ERP Branch), which branch logins that user
+# may turn on and off. The user then gets an "ERP Branch" button in the top bar with just those
+# logins - for the times someone needs that ERP user by hand: turn the always-on login off, use
+# the ERP, turn it back on. Turning it on/off is exactly the Super Admin's Turn on / Turn off.
+
+
+class BranchSwitchOut(BaseModel):
+    """What an assigned user sees of a branch login - never the username or password."""
+
+    id: str
+    branch: str
+    enabled: bool
+    status: str
+    status_note: str | None
+    live_since: datetime | None
+
+
+class UserBranchAccessOut(BaseModel):
+    user_id: str
+    branch_session_ids: list[str]
+    # Every branch login of the user's tenant, to tick from.
+    branches: list[BranchSwitchOut]
+
+
+class UserBranchAccessIn(BaseModel):
+    branch_session_ids: list[str] = []
+
+
+class BranchSwitchIn(BaseModel):
+    enabled: bool
+
+
+def _switch_out(bs: ErpBranchSession) -> BranchSwitchOut:
+    return BranchSwitchOut(id=bs.id, branch=bs.branch, enabled=bs.enabled, status=bs.status,
+                           status_note=bs.status_note, live_since=bs.live_since)
+
+
+def _access_out(db: Session, user: User) -> UserBranchAccessOut:
+    from app.models.erp_branch_session_user import ErpBranchSessionUser
+
+    branches = (db.query(ErpBranchSession).filter(ErpBranchSession.tenant_id == user.tenant_id)
+                .order_by(ErpBranchSession.branch).all()) if user.tenant_id else []
+    ids = [r.branch_session_id for r in db.query(ErpBranchSessionUser)
+           .filter(ErpBranchSessionUser.user_id == user.id).all()]
+    return UserBranchAccessOut(user_id=user.id, branch_session_ids=ids,
+                               branches=[_switch_out(b) for b in branches])
+
+
+@router.get("/user-access/{user_id}", response_model=UserBranchAccessOut)
+def get_user_branch_access(user_id: str, db: Session = Depends(get_db),
+                           _=Depends(require_role(SUPER_ADMIN))) -> UserBranchAccessOut:
+    """The branch logins of this user's tenant, and which of them the user may switch."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return _access_out(db, user)
+
+
+@router.put("/user-access/{user_id}", response_model=UserBranchAccessOut)
+def set_user_branch_access(user_id: str, payload: UserBranchAccessIn, db: Session = Depends(get_db),
+                           _=Depends(require_role(SUPER_ADMIN))) -> UserBranchAccessOut:
+    """Replace the set of branch logins this user may turn on and off (empty = none)."""
+    from app.models.erp_branch_session_user import ErpBranchSessionUser
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    wanted = set(payload.branch_session_ids or [])
+    for bs_id in wanted:
+        bs = db.get(ErpBranchSession, bs_id)
+        if bs is None or bs.tenant_id != user.tenant_id:
+            raise _bad("Every ticked branch login must belong to this user's own company.")
+    rows = db.query(ErpBranchSessionUser).filter(ErpBranchSessionUser.user_id == user.id).all()
+    have = {r.branch_session_id: r for r in rows}
+    for bs_id, row in have.items():
+        if bs_id not in wanted:
+            db.delete(row)
+    for bs_id in wanted - set(have):
+        db.add(ErpBranchSessionUser(tenant_id=user.tenant_id, user_id=user.id, branch_session_id=bs_id))
+    db.commit()
+    return _access_out(db, user)
+
+
+@router.get("/mine", response_model=list[BranchSwitchOut])
+def my_branch_switches(db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)) -> list[BranchSwitchOut]:
+    """The branch logins the signed-in user may turn on and off - drives the top-bar button
+    (shown only when this is not empty)."""
+    from app.models.erp_branch_session_user import ErpBranchSessionUser
+
+    rows = (db.query(ErpBranchSession)
+            .join(ErpBranchSessionUser, ErpBranchSessionUser.branch_session_id == ErpBranchSession.id)
+            .filter(ErpBranchSessionUser.user_id == user.id)
+            .order_by(ErpBranchSession.branch).all())
+    return [_switch_out(b) for b in rows]
+
+
+@router.post("/{bs_id}/switch", response_model=BranchSwitchOut)
+def switch_branch_session(bs_id: str, payload: BranchSwitchIn, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> BranchSwitchOut:
+    """Turn one branch login on or off - a Super Admin, or a user it was assigned to. The
+    supervisor (app/core/branch_sessions.py) stops or starts its keeper within seconds."""
+    from app.models.erp_branch_session_user import ErpBranchSessionUser
+
+    bs = db.get(ErpBranchSession, bs_id)
+    if bs is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch login not found")
+    if user.role != SUPER_ADMIN:
+        allowed = db.query(ErpBranchSessionUser).filter(
+            ErpBranchSessionUser.user_id == user.id,
+            ErpBranchSessionUser.branch_session_id == bs.id).first()
+        if allowed is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="You are not allowed to turn this ERP branch login on or off.")
+    if bs.enabled != payload.enabled:
+        bs.enabled = payload.enabled
+        db.commit()
+        db.refresh(bs)
+        logger.info("branch login %s (%s) turned %s by %s", bs.id, bs.branch,
+                    "ON" if bs.enabled else "OFF", user.email)
+    return _switch_out(bs)
 
 
 @router.post("/{bs_id}/relogin", response_model=BranchSessionOut)

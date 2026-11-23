@@ -20,6 +20,12 @@
 #   ./deploy.sh --check    show what WOULD change, touch nothing
 #   ./deploy.sh --force    discard server-side edits and deploy anyway
 #
+# Split over several servers (logicopilot/deploy/deploy-4.sh runs this on each), a server's own
+# deploy.env can switch two steps off - both default ON, so a single-server box is unchanged:
+#   RUN_MIGRATIONS=0   this server does not run alembic (only ONE server of a split should)
+#   BACKEND_HOST=...   the backend listens on this IP, not 127.0.0.1 (health check)
+#   BUILD_FRONTEND=0   this server serves no website (no frontend build, no frontend pm2 app)
+#
 set -euo pipefail
 
 # Wherever this checkout happens to be, rather than a path baked in for one box.
@@ -47,6 +53,11 @@ fi
 #   BACKEND_PORT=31299 ./deploy.sh
 BACKEND_PORT="${BACKEND_PORT:-30299}"
 FRONTEND_PORT="${FRONTEND_PORT:-30300}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+# Where the backend listens, for the health check. 127.0.0.1 everywhere except a split server
+# whose backend listens on its private (WireGuard) IP, e.g. BACKEND_HOST=10.50.0.3 in deploy.env.
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 
 # Which pm2 apps THIS checkout owns. Derived from the checkout's own directory name, not
 # hardcoded - /root/logicopilot gives logicopilot-backend/-frontend exactly as before, and
@@ -66,6 +77,25 @@ CHECK=${1:-}
 cd "$ROOT"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# The AI model this server's backend reads documents with - OPENAI_MODEL / VISION_ENGINE_MODEL as
+# the backend itself resolves them (.env first, then the code default). A deploy must never change
+# it by surprise: on 2026-11-22 a code-default change plus a .env without the two lines quietly
+# put production back on gpt-5-mini after it had been tested on gpt-6-luna. Printed before and
+# after, and a missing .env line is called out (the code default would decide).
+ai_models() {
+  (cd "$APP/backend" && PYTHONPATH=. ./venv/bin/python -W ignore -c \
+    'from app.core.config import get_settings as g; s=g(); print(f"OPENAI_MODEL={s.openai_model} VISION_ENGINE_MODEL={s.vision_engine_model}")' \
+    2>/dev/null | tail -n 1) || true
+}
+missing_model_lines() {
+  local f="$APP/backend/.env" k out=""
+  for k in OPENAI_MODEL VISION_ENGINE_MODEL; do
+    grep -qE "^$k=" "$f" 2>/dev/null || out="$out $k"
+  done
+  echo "$out"
+}
+MODELS_BEFORE="$(ai_models)"
 
 say "1/6  fetching origin/$BRANCH"
 git fetch --quiet origin "$BRANCH"
@@ -99,6 +129,12 @@ WARN
 fi
 
 if [ "$CHECK" = "--check" ]; then
+  say "AI model now: ${MODELS_BEFORE:-unknown}"
+  MISSING="$(missing_model_lines)"
+  [ -n "$MISSING" ] && echo "     *** WARNING: .env has no line for:$MISSING - the code default decides, so a code change could switch the model"
+  if git diff --name-only "HEAD..origin/$BRANCH" | grep -q "backend/app/core/config.py"; then
+    echo "     note: config.py changes in this deploy - check the model defaults are unchanged"
+  fi
   say "what WOULD change (nothing has been touched)"
   git diff --stat "HEAD..origin/$BRANCH" || true
   echo
@@ -144,16 +180,27 @@ if [ -f requirements.txt ]; then
   echo "     done"
 fi
 
-say "4/6  database migrations"
-# Before the restart, never after: the new code must not start against an old schema.
-PYTHONPATH=. ./venv/bin/python -m alembic upgrade head 2>&1 | tail -4
+if [ "$RUN_MIGRATIONS" = "1" ]; then
+  say "4/6  database migrations"
+  # Before the restart, never after: the new code must not start against an old schema.
+  PYTHONPATH=. ./venv/bin/python -m alembic upgrade head 2>&1 | tail -4
+else
+  say "4/6  database migrations - skipped here (RUN_MIGRATIONS=0; another server runs them)"
+fi
 
-say "5/6  building the frontend"
-cd "$APP/frontend"
-npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
-npm run build 2>&1 | tail -5
+# The pm2 apps this server owns: no frontend app where no website is served.
+APPS=("$BACKEND_APP")
+if [ "$BUILD_FRONTEND" = "1" ]; then
+  APPS+=("$FRONTEND_APP")
+  say "5/6  building the frontend"
+  cd "$APP/frontend"
+  npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
+  npm run build 2>&1 | tail -5
+else
+  say "5/6  frontend - skipped here (BUILD_FRONTEND=0)"
+fi
 
-say "6/6  restarting $BACKEND_APP + $FRONTEND_APP"
+say "6/6  restarting ${APPS[*]}"
 # Only these two. These boxes also run other apps under the same pm2 - meeting,
 # oos, productflow, ql, vessel-orch, wb-leads, workbooster, unified-orchestrator,
 # and the OTHER logicopilot instance - and none of them are ours to bounce.
@@ -161,7 +208,7 @@ say "6/6  restarting $BACKEND_APP + $FRONTEND_APP"
 # Refuse rather than guess: pm2 restart on a name that does not exist is a no-op that still
 # exits 0, so a typo or a renamed app would sail through to a health check that passes off
 # the instance already running on that port.
-for app in "$BACKEND_APP" "$FRONTEND_APP"; do
+for app in "${APPS[@]}"; do
   pm2 describe "$app" >/dev/null 2>&1 || {
     echo "     *** no pm2 app called '$app' - refusing to restart anything."
     echo "     This checkout is $ROOT, so it expects $BACKEND_APP and $FRONTEND_APP."
@@ -169,20 +216,33 @@ for app in "$BACKEND_APP" "$FRONTEND_APP"; do
     exit 1
   }
 done
-pm2 restart "$BACKEND_APP" "$FRONTEND_APP" --update-env >/dev/null
+pm2 restart "${APPS[@]}" --update-env >/dev/null
 sleep 4
 pm2 list --no-color | grep -E "logicopilot|name" | sed 's/^/     /'
 
 say "checking it answers"
 for i in $(seq 1 15); do
-  if curl -fsS -m 3 "http://127.0.0.1:$BACKEND_PORT/docs" >/dev/null 2>&1; then
-    echo "     backend OK on :$BACKEND_PORT"; break
+  if curl -fsS -m 3 "http://$BACKEND_HOST:$BACKEND_PORT/docs" >/dev/null 2>&1; then
+    echo "     backend OK on $BACKEND_HOST:$BACKEND_PORT"; break
   fi
   [ "$i" = 15 ] && { echo "     *** backend NOT answering - check: pm2 logs $BACKEND_APP"; exit 1; }
   sleep 2
 done
-curl -fsS -m 3 "http://127.0.0.1:$FRONTEND_PORT" >/dev/null 2>&1 \
-  && echo "     frontend OK on :$FRONTEND_PORT" \
-  || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
+if [ "$BUILD_FRONTEND" = "1" ]; then
+  curl -fsS -m 3 "http://127.0.0.1:$FRONTEND_PORT" >/dev/null 2>&1 \
+    && echo "     frontend OK on :$FRONTEND_PORT" \
+    || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
+fi
+
+MODELS_AFTER="$(ai_models)"
+say "AI model: ${MODELS_AFTER:-unknown}"
+if [ -n "$MODELS_BEFORE" ] && [ -n "$MODELS_AFTER" ] && [ "$MODELS_BEFORE" != "$MODELS_AFTER" ]; then
+  printf '\n\033[1;31m%s\033[0m\n' "     *** THE AI MODEL CHANGED WITH THIS DEPLOY"
+  echo "         before: $MODELS_BEFORE"
+  echo "         after:  $MODELS_AFTER"
+  echo "         If that was not intended, set both lines in $APP/backend/.env and restart $BACKEND_APP."
+fi
+MISSING="$(missing_model_lines)"
+[ -n "$MISSING" ] && echo "     *** WARNING: .env has no line for:$MISSING - the code default decides the model"
 
 say "deployed: $(git log --oneline -1)"

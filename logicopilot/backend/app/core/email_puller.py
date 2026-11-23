@@ -137,7 +137,9 @@ def start_scheduler() -> bool:
             cycle_start = datetime.now(timezone.utc)
             db = SessionLocal()
             try:
-                res = pull_inbox(db, tenant_id=None, skip_if_busy=True)
+                res = pull_inbox(db, tenant_id=None, skip_if_busy=True, use_queue=True)
+                if res.get("queued"):
+                    logger.info("email poller: queued %s mail(s) for the mail workers", res["queued"])
                 created = sum(1 for m in (res.get("processed") or []) if m.get("job_id"))
                 if created:
                     logger.info("email poller: created %s job(s) this cycle", created)
@@ -706,8 +708,13 @@ def ai_wait_status() -> dict:
 
 def _note_ai_down(reason: str) -> None:
     with _ai_down_lock:
+        already = _ai_down["until"] is not None and datetime.now(timezone.utc) < _ai_down["until"]
         _ai_down["until"] = datetime.now(timezone.utc) + timedelta(minutes=AI_DOWN_WAIT_MINUTES)
         _ai_down["reason"] = (reason or "")[:500]
+    if not already:
+        # Once per outage, not once per held mail: this is the line an alert can be keyed on.
+        logger.error("AI SERVICE UNAVAILABLE - mail reading paused for %d min: %s",
+                     AI_DOWN_WAIT_MINUTES, (reason or "")[:300])
 
 
 def clear_ai_wait() -> None:
@@ -1028,7 +1035,7 @@ def _save_pending_email(db: Session, message_id: str, sender: str, subject: str,
 
 def pull_inbox(
     db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    reexamine: bool = False, skip_if_busy: bool = False,
+    reexamine: bool = False, skip_if_busy: bool = False, use_queue: bool = False,
 ) -> dict:
     """Read unread mail, decide from the DOCUMENTS whose it is, and create the job.
 
@@ -1042,6 +1049,10 @@ def pull_inbox(
     is safe - it simply skips whatever is already being read and reports on the rest. Blocking
     it instead told an operator "try again later" and did nothing, which is a worse answer than
     "no new mail" and was never needed to stop the duplicate.
+
+    `use_queue` is for the background poller only: with MAIL_QUEUE on, harvested mail is put on
+    the Redis mail queue for the mail workers instead of being read in this call (see
+    app/core/mail_queue.py). A person pressing Check mail still waits for the result.
     """
     from app.core.system_settings import is_email_pull_paused
 
@@ -1057,15 +1068,15 @@ def pull_inbox(
             return {"ok": True, "processed": [], "busy": True,
                     "note": "A run was already in progress; this cycle was skipped."}
         try:
-            return _pull_inbox(db, tenant_id, max_messages, reexamine)
+            return _pull_inbox(db, tenant_id, max_messages, reexamine, use_queue)
         finally:
             _pull_lock.release()
-    return _pull_inbox(db, tenant_id, max_messages, reexamine)
+    return _pull_inbox(db, tenant_id, max_messages, reexamine, use_queue)
 
 
 def _pull_inbox(
     db: Session, tenant_id: str | None = None, max_messages: int = 30,
-    reexamine: bool = False,
+    reexamine: bool = False, use_queue: bool = False,
 ) -> dict:
     """Poll every mailbox this call is allowed to read, and merge the results: the tenant's
     shared inbox, plus every Connected Mailbox assigned to a tenant (see
@@ -1197,6 +1208,12 @@ def _pull_inbox(
     # message down with it, including ones from the very same mailbox now running on a
     # different worker.
     all_processed: list[dict] = []
+    queued = 0
+    if tasks and use_queue:
+        from app.core import mail_queue
+
+        if mail_queue.enabled():
+            tasks, queued = _queue_harvested_mail(db, tasks, reexamine)
     if tasks:
         def _process_with_own_session(task: dict) -> dict | None:
             worker_db = SessionLocal()
@@ -1250,6 +1267,8 @@ def _pull_inbox(
         "mailboxes_total": len(sources),
         "mailboxes_ok": len(sources) - len(mailbox_errors),
     }
+    if queued:
+        out["queued"] = queued
     if combined_note and not mailbox_errors:
         out["note"] = combined_note
     if mailbox_errors:
@@ -1286,23 +1305,11 @@ def _hand_large_mail_to_lane(db: Session, tasks: list[dict], reexamine: bool, ru
             continue
         if gid not in groups:
             groups[gid] = db.get(TemplateGroup, gid)
-        group = groups[gid]
-        if group is None or getattr(group, "large_job_lane", False) is not True:
+        big = _large_mail(groups[gid], task)
+        if big is None:
             keep.append(task)
             continue
-        try:
-            msg = email.message_from_bytes(task["raw"])
-            biggest = max((len(b) for n, b in _extract_attachments(msg, {".zip"})
-                           if n.lower().endswith(".zip")), default=0)
-            mid = _message_id(msg)
-            subject = _decode(msg.get("Subject"))
-        except Exception:  # noqa: BLE001
-            logger.exception("large-job lane: could not size a mail - processing it normally")
-            keep.append(task)
-            continue
-        if biggest <= (getattr(group, "large_zip_mb", 5) or 5) * 1024 * 1024:
-            keep.append(task)
-            continue
+        mid, subject, biggest = big
         # Already examined (it stays unread in the inbox on purpose, so every poll of the day
         # finds it again): leave it to the cycle, whose _claim() skips it at once - exactly as
         # before the lane. Only a new mail, or one held "failed" for a retry, goes to the lane.
@@ -1317,6 +1324,89 @@ def _hand_large_mail_to_lane(db: Session, tasks: list[dict], reexamine: bool, ru
         else:
             logger.info("email %s: already waiting on the large-job lane", mid[:60])
     return keep
+
+
+def _image_fingerprint(page_images: list, pages: list[int]) -> str:
+    """OCR off only (OCR_ENGINE none/pdftext): a hash of the rendered pixels of a claim's pages,
+    for the in-mail duplicate check when there is no text to fingerprint. "" = cannot tell."""
+    from app.core.docai import ocr_off
+
+    if not ocr_off() or not pages:
+        return ""
+    try:
+        import hashlib
+
+        import fitz
+
+        by_n = {int(n): p for n, p in page_images}
+        h = hashlib.sha256()
+        for n in pages:
+            path = by_n.get(int(n))
+            if path is None or not Path(path).exists():
+                return ""
+            pix = fitz.Pixmap(str(path))
+            h.update(f"{pix.width}x{pix.height}:".encode())
+            h.update(pix.samples)
+        return "img:" + h.hexdigest()
+    except Exception:  # noqa: BLE001 - cannot tell is the safe answer
+        return ""
+
+
+def _large_mail(group, task: dict) -> tuple[str, str, int] | None:
+    """(message id, subject, biggest zip bytes) when this mail is a large-job-lane mail: its
+    template has the lane on and its biggest zip is over the template's large_zip_mb. None
+    otherwise - including any doubt, so it is read the ordinary way."""
+    if group is None or getattr(group, "large_job_lane", False) is not True:
+        return None
+    try:
+        msg = email.message_from_bytes(task["raw"])
+        biggest = max((len(b) for n, b in _extract_attachments(msg, {".zip"})
+                       if n.lower().endswith(".zip")), default=0)
+        mid = _message_id(msg)
+        subject = _decode(msg.get("Subject"))
+    except Exception:  # noqa: BLE001
+        logger.exception("large-job lane: could not size a mail - processing it normally")
+        return None
+    if biggest <= (getattr(group, "large_zip_mb", 5) or 5) * 1024 * 1024:
+        return None
+    return mid, subject, biggest
+
+
+def _queue_harvested_mail(db: Session, tasks: list[dict], reexamine: bool) -> tuple[list[dict], int]:
+    """MAIL_QUEUE on: put each harvested mail on the Redis mail queue (app/core/mail_queue.py)
+    for the mail workers. Returns (tasks this cycle must still read itself, how many queued).
+
+    Read here, as before: the per-shipment parts of a split pre-alert (their parent is settled
+    in this cycle) and anything that could not be queued. Skipped: a mail already examined or
+    being read (it stays unread in the inbox, so every poll finds it again) - its claim would
+    turn it away anyway - and a mail already waiting on the queue."""
+    from app.core import mail_queue
+
+    keep: list[dict] = []
+    queued = 0
+    groups: dict[str, TemplateGroup | None] = {}
+    for task in tasks:
+        if task.get("parent_mid"):
+            keep.append(task)
+            continue
+        try:
+            mid = _message_id(email.message_from_bytes(task["raw"]))
+            if not reexamine:
+                seen = db.query(EmailSeen.verdict).filter(EmailSeen.message_id == mid).first()
+                if seen is not None and seen[0] != FAILED_VERDICT:
+                    continue
+            gid = (task.get("src") or {}).get("group_id")
+            if gid and gid not in groups:
+                groups[gid] = db.get(TemplateGroup, gid)
+            large = bool(gid) and _large_mail(groups.get(gid), task) is not None
+            if mail_queue.enqueue(task, reexamine=reexamine, large=large):
+                queued += 1
+                logger.info("email %s: queued on %s", mid[:60], "mail:large" if large else "mail:queue")
+        except Exception:  # noqa: BLE001 - never lose a mail: read it in this cycle instead
+            logger.exception("could not queue a harvested mail - reading it in this cycle")
+            db.rollback()
+            keep.append(task)
+    return keep, queued
 
 
 def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tuple[list[dict], dict | None]:
@@ -1340,6 +1430,7 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
         return [base], None
     if ai_wait_status()["waiting"]:
         return [base], None                          # the worker holds it; no model call here
+    claimed, mid = False, None
     try:
         from app.core import prealert_shipments as _ps
 
@@ -1372,7 +1463,11 @@ def _split_into_shipment_tasks(db: Session, base: dict, reexamine: bool) -> tupl
     except Exception:  # noqa: BLE001 - then it is one job, as it always was
         logger.exception("could not split a pre-alert into shipment tasks")
         db.rollback()
-        return [base], None
+        # The claim taken above must go, or the worker finds the mail "being read now" and
+        # skips it - the mail then sat unread until the claim went stale (found 2026-11-22).
+        if claimed and mid:
+            _unclaim(db, mid)
+        return [{**base, "split_checked": True}], None
 
 
 def _settle_split_parent(db: Session, parent: dict) -> dict:
@@ -1746,7 +1841,7 @@ def _process_one_message(
     from app.api.v1.jobs import _job_doc_dir, _render_pages, generate_job_no, run_extraction
     from app.core.classifier_common import AIServiceUnavailable, classifier_module, identify_customer
     from app.core.custom_page_filter import filter_pages_with_custom
-    from app.core.docai import ocr_page_image
+    from app.core.docai import ocr_page_image, save_text_layer
     from app.core import doc_sets
     from app.core.page_filter import (
         claim_covers_file, claim_fingerprint, extract_pdf_pages,
@@ -2127,6 +2222,7 @@ def _process_one_message(
                         # Every page, however many - no page limit (see page_filter).
                         png = fdir / "pages" / f"page_{i}.png"
                         page.get_pixmap(dpi=150).save(png)
+                        save_text_layer(page, png)   # OCR_ENGINE=pdftext only
                         if i == 1:
                             first_png = png
                         pages = i
@@ -2585,6 +2681,13 @@ def _process_one_message(
                 # for and must not lose. An empty fingerprint means "cannot tell" (too
                 # little readable text) and never counts as a match.
                 fingerprint = claim_fingerprint(item["text"] or "", claim.get("pages") or [])
+                if not fingerprint:
+                    # No text to compare (a scan, with OCR off): the same paper sent twice
+                    # renders to the same pixels, so those stand in. A re-scan differs and is
+                    # kept - "cannot tell" stays the safe answer. Production (Document AI on)
+                    # never gets here with OCR text missing on purpose: unchanged.
+                    fingerprint = _image_fingerprint(item.get("page_images") or [],
+                                                     claim.get("pages") or [])
                 already = placed_fingerprints.setdefault(key, set())
                 if fingerprint and fingerprint in already:
                     logger.info(
@@ -2790,7 +2893,23 @@ def _process_one_message(
             logger.info("email %s: auto-extract is off for %s - documents placed, extraction waits",
                         mid[:60], group.name)
         else:
-            run_extraction(db, job)
+            from app.core import extract_queue
+
+            queued = False
+            if extract_queue.enabled() and not in_lane():
+                # EXTRACT_QUEUE on: this mail's work ends at placement; its extraction goes on
+                # the extraction queue like every other one (app/core/extract_queue.py). Marked
+                # "extracting" first - that is what the queue's worker checks before running.
+                job.status = "extracting"
+                job.extraction_is_rerun = False
+                db.commit()
+                try:
+                    queued = extract_queue.enqueue(job.id) or True
+                except Exception:  # noqa: BLE001 - never lose it: extract here instead
+                    logger.exception("email %s: could not queue the extraction - extracting here",
+                                     mid[:60])
+            if not queued:
+                run_extraction(db, job)
     except Exception:  # noqa: BLE001
         # Confirmed root cause of jobs sitting silently in "draft" forever with their pulled
         # email marked "matched" below as if nothing went wrong: logging and moving on left

@@ -39,6 +39,12 @@ class Settings(BaseSettings):
 
     # Document-extraction stack (onboarding wizard: OCR + prompt generation).
     openai_api_key: str = ""
+    # Model choice is per server, in .env - the defaults below are what production and SIT run
+    # today, so a merge never switches a model by itself. GPT-6 Luna (the 4-server dev setup,
+    # cheaper and ~5x faster) is switched on with BOTH lines in that server's .env:
+    #   OPENAI_MODEL=gpt-6-luna
+    #   VISION_ENGINE_MODEL=gpt-6-luna
+    # Any gpt-6* model works: llm.create_chat_completion_with_retry translates the parameters.
     openai_model: str = "gpt-4o-mini"
     # The model production document classification/extraction use when a Super Admin flips
     # the "extraction_engine" Settings toggle to "gpt5_mini_vision" (see
@@ -58,7 +64,21 @@ class Settings(BaseSettings):
     docai_location: str = "us"
     docai_processor_id: str = ""
     google_application_credentials: str = "google-credentials.json"
+    # Page OCR at intake (app/core/docai.py). "docai" = Google Document AI, as everywhere today.
+    # "none" = no OCR call at all: every page reads as "no text", the path every caller already
+    # handles (classification and extraction from the page images). For testing on dev whether
+    # Document AI can be dropped - nothing is written to the OCR caches while it is "none".
+    ocr_engine: str = "docai"
+    # Option E: AI computed fields that read ONE document (one file on the job) are asked inside
+    # that document's extraction call; the rest get page images when there is no OCR text.
+    # OFF by default (and everywhere today): computed fields work exactly as before.
+    fold_ai_fields: bool = False
     uploads_dir: str = "uploads"
+    # Logged-in ERP browser state and the ERP login/tab lock files (see erp_sessions_dir()).
+    # Empty = uploads_dir/erp_sessions, as before. On a split setup the ERP server sets a LOCAL
+    # path: uploads_dir is then a shared NFS folder, and these are cookies + flock files that only
+    # the ERP server uses - kept off the share (no stale NFS locks, no cookies on other servers).
+    erp_sessions_dir: str = ""
     # Verified live against real jobs (Cisco commercial invoice Seller/Ship-From splice, and
     # JOB-92F564's Bill of Lading Shipper-vs-carrier-letterhead splice) before enabling: 22/22
     # fields correct afterward vs 19/22 before, zero regressions found. On: run_extraction and
@@ -107,6 +127,22 @@ class Settings(BaseSettings):
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
 
+    # Which background work THIS process starts (app/core/process_role.py) - for running the app
+    # split over several servers. "all" (the default, and every box today) = one process does
+    # everything, exactly as before. "web" = website/API only; "worker" = mail, extraction
+    # resume, pipeline, large-job lane; "erp" = ERP queue, branch logins, parked browsers.
+    # A split (anything but "all") needs REDIS_URL, so ERP work queued by one process reaches another.
+    process_role: str = "all"
+
+    # Mail queue (app/core/mail_queue.py): the background poller only FINDS mail and queues it
+    # in Redis; mail workers read it. OFF by default (and everywhere today): the poller reads
+    # every mail inside its own cycle, exactly as before. Needs REDIS_URL.
+    mail_queue: bool = False
+    # Extraction queue (app/core/extract_queue.py): every extraction (auto after a mail, Extract,
+    # Re-run, one-document re-read, restart resume) is a Redis queue item, run by the extracting
+    # process through the same shared pool. OFF by default (and everywhere today). Needs REDIS_URL.
+    extract_queue: bool = False
+
     # Phase 2 pipeline (app/pipeline/): Redis stage queues, JSON work files, finalizer. OFF by
     # default and on every box that does not say otherwise - with it off nothing is queued and no
     # worker starts, so the app runs exactly as before. Needs REDIS_URL as well.
@@ -129,6 +165,19 @@ class Settings(BaseSettings):
     parallel_extract_workers: int = 1
     # Ceiling on prefetched AI calls in flight across the whole process.
     parallel_extract_max_total: int = 12
+    # Parallel computed fields (jobs.run_extraction's finishing step): how many of ONE job's AI
+    # computed-field calls run at once - same prompts, same answers, made side by side instead
+    # of one after another. 1 = one at a time, exactly as before (the default everywhere).
+    parallel_computed_workers: int = 1
+    # Money checks (app/core/money_checks.py): the invoice's own numbers must add up (line qty x
+    # price = amount, sum of lines = Product Value, sum of quantities = total). A failed check is
+    # a finding to accept on the verification screen; no value is ever changed. OFF by default.
+    money_checks: bool = False
+    # Super Admin -> API Cost & Usage: collect OpenAI's real daily cost at 11:55 PM IST and
+    # reconcile it the next morning (app/core/api_cost.py). On only where the worker runs on
+    # the production OpenAI account (cargora-ai); off everywhere else, so SIT / dev / tests never
+    # call the Admin API on a schedule.
+    api_cost_recording: bool = False
 
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
@@ -152,3 +201,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def erp_sessions_dir():
+    """Where ERP session files and their lock files live (created if missing)."""
+    from pathlib import Path
+
+    st = get_settings()
+    d = Path(st.erp_sessions_dir) if (st.erp_sessions_dir or "").strip() else Path(st.uploads_dir) / "erp_sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

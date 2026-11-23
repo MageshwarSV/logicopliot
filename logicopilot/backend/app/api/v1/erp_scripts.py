@@ -19,9 +19,7 @@ logger = logging.getLogger(__name__)
 def _park_snapshot(script: ErpScript) -> dict:
     """The plain-dict view of a script that a parked worker needs. No ORM object crosses into
     the browser thread — it would be attached to a session that thread does not own."""
-    from pathlib import Path
-
-    from app.core.config import get_settings
+    from app.core.config import erp_sessions_dir
 
     return {
         "id": script.id,
@@ -31,7 +29,7 @@ def _park_snapshot(script: ErpScript) -> dict:
         "checkpoint_index": script.checkpoint_index,
         "login": ({"username": script.login_username or "", "password": script.login_password or ""}
                   if script.has_login else None),
-        "session_file": Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json",
+        "session_file": erp_sessions_dir() / f"{script.id}.json",
     }
 
 
@@ -195,9 +193,7 @@ def get_shared_session(
     job logs in for itself, and its runs are deliberately serialised, because two logins into
     one ERP account at the same time is what makes SOFTLINK offer to kill the other session.
     """
-    from pathlib import Path
-
-    from app.core.config import get_settings
+    from app.core.config import erp_sessions_dir
     from app.core.erp_session import session_status
 
     script = db.get(ErpScript, script_id)
@@ -205,7 +201,7 @@ def get_shared_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ERP script not found")
     shared = script.checkpoint_index is not None and bool(script.stay_open)
     out = session_status(
-        Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json",
+        erp_sessions_dir() / f"{script.id}.json",
         shared_login=shared,
     )
     out["checkpoint_index"] = script.checkpoint_index
@@ -225,15 +221,13 @@ def refresh_shared_session(
     goes: a job already running keeps the browser it is holding, so this never cuts an entry
     off half way - it decides what the next job starts from, nothing more.
     """
-    from pathlib import Path
-
-    from app.core.config import get_settings
+    from app.core.config import erp_sessions_dir
     from app.core.erp_session import discard_session, session_status
 
     script = db.get(ErpScript, script_id)
     if script is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ERP script not found")
-    path = Path(get_settings().uploads_dir) / "erp_sessions" / f"{script.id}.json"
+    path = erp_sessions_dir() / f"{script.id}.json"
     discarded = discard_session(path)
     shared = script.checkpoint_index is not None and bool(script.stay_open)
     out = session_status(path, shared_login=shared)

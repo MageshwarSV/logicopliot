@@ -192,6 +192,20 @@ export function JobsPage() {
   }
   // Which row's "⋮" menu is open — one at a time, closed by its own backdrop click.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  // Where the row menu opens, in screen coordinates. The table sits in an overflow-x-auto box,
+  // which clips anything absolutely positioned below its last row - with one job on the page
+  // the Delete item was hidden. A fixed-position menu is not clipped by it.
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
+  useEffect(() => {
+    if (!openMenuId) return;
+    const close = () => setOpenMenuId(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [openMenuId]);
   // Mode tabs: a personal-assignment filter, not a general one — only shown for operator/gk2,
   // and only when that user actually has modes assigned (assigned_modes on their own profile,
   // already loaded at login — no extra request). "All" plus one tab per assigned mode.
@@ -957,7 +971,7 @@ export function JobsPage() {
       ),
     },
     {
-      header: "BL No",
+      header: "BL / HAWB",
       render: (j) => (
         <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
       ),
@@ -1043,6 +1057,11 @@ export function JobsPage() {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              const r = e.currentTarget.getBoundingClientRect();
+              const right = window.innerWidth - r.right;
+              setMenuPos(window.innerHeight - r.bottom < 80
+                ? { bottom: window.innerHeight - r.top + 4, right }
+                : { top: r.bottom + 4, right });
               setOpenMenuId((id) => (id === j.id ? null : j.id));
             }}
             title="More"
@@ -1065,7 +1084,8 @@ export function JobsPage() {
                 }}
               />
               <div
-                className="absolute right-0 top-full z-20 mt-1 w-32 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
+                style={menuPos}
+                className="fixed z-20 w-32 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
@@ -1180,7 +1200,7 @@ export function JobsPage() {
               type="search"
               value={jobSearch}
               onChange={(e) => setJobSearch(e.target.value)}
-              placeholder="Search by Job No, BL No or Air Waybill No..."
+              placeholder="Search by Job No or BL / HAWB..."
               className={`${quickField} w-full pl-9`}
               autoComplete="off"
             />

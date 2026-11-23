@@ -41,6 +41,8 @@ import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingPage";
 import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
+import { ExtractionCorrectionsPage } from "../pages/super-admin/ExtractionCorrectionsPage";
+import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
@@ -160,6 +162,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <FilterPagesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/api-cost"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <ApiCostPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/extraction-corrections"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <ExtractionCorrectionsPage />
           </ProtectedRoute>
         }
       />

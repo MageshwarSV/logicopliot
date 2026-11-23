@@ -244,7 +244,7 @@ export function DuplicateEmailsPage() {
       ),
     },
     {
-      header: "BL No",
+      header: "BL / HAWB",
       render: (r) => <span className="font-mono text-slate-700 dark:text-slate-200">{r.bl_number}</span>,
     },
     {
@@ -376,11 +376,11 @@ export function DuplicateEmailsPage() {
             </select>
           </div>
           <div className="min-w-[14rem] flex-1">
-            <label className="mb-1 block text-xs font-medium text-slate-500">BL No</label>
+            <label className="mb-1 block text-xs font-medium text-slate-500">BL / HAWB</label>
             <input
               type="text"
               className={`${FIELD} w-full`}
-              placeholder="Search BL number"
+              placeholder="Search BL / HAWB"
               value={blFilter}
               onChange={(e) => setBlFilter(e.target.value)}
             />

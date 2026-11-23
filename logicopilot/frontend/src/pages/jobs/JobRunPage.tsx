@@ -2927,11 +2927,15 @@ export function JobRunPage() {
         const p = extractProgress;
         const steps = ["text", "ai", "docs", "finishing"] as const;
         const label =
-          p.phase === "text" ? `Reading page text — ${p.done ?? 0} of ${p.total ?? 0} page(s)`
+          p.phase === "text" ? `Loading the OCR text — ${p.done ?? 0} of ${p.total ?? 0} page(s)`
           : p.phase === "ai" ? `AI is reading the documents — ${p.done ?? 0} of ${p.total ?? 0} read(s)`
           : p.phase === "docs" ? `Checking the values — document ${p.done ?? 0} of ${p.total ?? 0}`
-          : "Finishing — CTH codes, computed fields and saving";
-        const pct = p.phase === "finishing" ? 100
+          : (p.total ?? 0) > 0 ? `Computed fields — ${p.done ?? 0} of ${p.total} (CTH, duty, descriptions)`
+          : "Saving the values";
+        // "finishing" carries a count while the computed fields run side by side (the prefetch);
+        // after that it is the save, with no count - a full, pulsing bar.
+        const countless = p.phase === "finishing" && !(p.total ?? 0);
+        const pct = countless ? 100
           : Math.round(((p.done ?? 0) / Math.max(p.total ?? 1, 1)) * 100);
         return (
           <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 dark:border-sky-500/30 dark:bg-sky-500/10">
@@ -2946,13 +2950,13 @@ export function JobRunPage() {
               </span>
             </div>
             <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sky-100 dark:bg-sky-500/20">
-              <div className={`h-full rounded-full bg-sky-500 transition-all ${p.phase === "finishing" ? "animate-pulse" : ""}`}
+              <div className={`h-full rounded-full bg-sky-500 transition-all ${countless ? "animate-pulse" : ""}`}
                 style={{ width: `${pct}%` }} />
             </div>
             <div className="mt-2 flex gap-3 text-[11px] text-sky-600/80 dark:text-sky-300/70">
               {steps.map((s, i) => {
                 const at = steps.indexOf((p.phase ?? "text") as (typeof steps)[number]);
-                const names = { text: "Page text", ai: "AI reading", docs: "Checking values", finishing: "Finishing" };
+                const names = { text: "OCR text", ai: "AI reading", docs: "Checking values", finishing: "Computed fields & save" };
                 return (
                   <span key={s} className={i < at ? "line-through opacity-60" : i === at ? "font-semibold text-sky-800 dark:text-sky-200" : ""}>
                     {i + 1}. {names[s]}

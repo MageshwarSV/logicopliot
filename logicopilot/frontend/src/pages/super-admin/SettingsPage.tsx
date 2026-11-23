@@ -11,6 +11,7 @@ import type { Tenant } from "../../types/tenant";
 import { ReferenceSheetsSection } from "./ReferenceSheetsSection";
 import { ReferenceValuesSection } from "./ReferenceValuesSection";
 import { LargeJobLaneSection } from "./LargeJobLaneSection";
+import { QueuesSection } from "./QueuesSection";
 
 /** Two live kill switches for AI-dependent work - NOT a backend shutdown. Everything else
  *  keeps running: viewing jobs, correcting values already extracted, ERP submission for
@@ -722,6 +723,7 @@ export function SettingsPage() {
           </div>
         )}
 
+        <QueuesSection />
         {settings && <LargeJobLaneSection settings={settings} />}
 
         {settings && (
@@ -729,10 +731,10 @@ export function SettingsPage() {
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Extraction engine</h3>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Which engine production document classification and field extraction use.
-              "Document OCR + GPT-4o-mini" is today's pipeline. "GPT-5-mini Vision" reads the
-              page image directly instead of OCR text for both steps. Takes effect on the
-              very next job, no restart. Never affects the Template Wizard's own training
-              flow, which always stays on OCR text + GPT-4o-mini either way.
+              "AI Vision" reads the page image directly for both steps; "Document OCR + AI
+              text" reads Document AI's OCR text instead. Takes effect on the very next job, no
+              restart. Which AI model runs is set per server in .env (OPENAI_MODEL and
+              VISION_ENGINE_MODEL - e.g. gpt-6-luna).
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="flex-1 sm:max-w-xs">

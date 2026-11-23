@@ -44,3 +44,15 @@ def test_no_seed_is_added_for_a_reasoning_family_model():
     create_chat_completion_with_retry(client=client, model="gpt-5-mini",
                                       messages=[{"role": "user", "content": "x"}])
     assert "seed" not in capture
+
+
+def test_gpt6_gets_the_seed_and_old_parameters_translated():
+    # gpt-6-luna (the model everywhere since 2026-11-22) 400s on max_tokens and temperature=0
+    # and accepts a seed - confirmed live. Callers written for gpt-4o-mini still pass both.
+    capture = {}
+    client = _fake_client(capture)
+    create_chat_completion_with_retry(client=client, model="gpt-6-luna", temperature=0,
+                                      max_tokens=300, messages=[{"role": "user", "content": "x"}])
+    assert capture["seed"] == 7
+    assert "temperature" not in capture and "max_tokens" not in capture
+    assert capture["max_completion_tokens"] == 300 * 6

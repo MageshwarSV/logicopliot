@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
+import { toPng } from "html-to-image";
 import * as jobsApi from "../../api/jobs";
+import * as edocketApi from "../../api/edocket";
+import type { EDocketSaved } from "../../api/edocket";
 import type { JobDetail, JobFieldValue } from "../../types/jobs";
 
 // The physical paper docket's own colour, reproduced exactly - this page IS that form now.
@@ -180,8 +183,17 @@ function docketTitle(mode: string | null | undefined): string {
 
 export function EDocketPage() {
   const { jobId = "" } = useParams();
+  // ?embed=1: Print pages loads this page off-screen to render the two docket sheets
+  // (window.renderEDocketPages below) - no toolbar, no saving, sheets laid out as A4.
+  const [searchParams] = useSearchParams();
+  const embed = searchParams.get("embed") === "1";
   const [job, setJob] = useState<JobDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // What was saved for this job (Job.edocket_state), applied over the automatic values.
+  const [saved, setSaved] = useState<EDocketSaved | null>(null);
+  // True once the automatic values and the saved choices are both on the page.
+  const [filled, setFilled] = useState(false);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
 
   const [jobNo, setJobNo] = useState("");
   const [fclLcl, setFclLcl] = useState<string | null>(null);
@@ -206,9 +218,13 @@ export function EDocketPage() {
   const docketRows = useMemo(() => rows(isExport), [isExport]);
 
   useEffect(() => {
-    jobsApi
-      .getJob(jobId)
-      .then((detail) => {
+    Promise.all([
+      jobsApi.getJob(jobId),
+      // Nothing saved, or the call failing, leaves the page exactly as before: automatic values.
+      edocketApi.getEDocket(jobId).catch(() => ({ state: null, saved_at: null, saved_by: null })),
+    ])
+      .then(([detail, savedState]) => {
+        setSaved(savedState);
         setJob(detail);
         setJobNo(detail.reference);
       })
@@ -378,8 +394,69 @@ export function EDocketPage() {
       }
       return next;
     });
+    // The operator's saved choices win over the automatic values, field by field.
+    const st = (saved?.state ?? null) as Record<string, unknown> | null;
+    if (st) {
+      if (typeof st.jobNo === "string") setJobNo(st.jobNo);
+      if (typeof st.fclLcl === "string" || st.fclLcl === null) setFclLcl(st.fclLcl as string | null);
+      if (Array.isArray(st.categories)) setCategories(new Set(st.categories as string[]));
+      if (typeof st.transactionMode === "string") setTransactionMode(st.transactionMode);
+      if (typeof st.priorityType === "string") setPriorityType(st.priorityType);
+      if (st.values && typeof st.values === "object") {
+        const savedValues = st.values as Record<string, string>;
+        setValues((prev) => ({ ...prev, ...savedValues }));
+      }
+      if (Array.isArray(st.feedback)) setFeedback(st.feedback as string[][]);
+      if (Array.isArray(st.advance)) setAdvance(st.advance as string[][]);
+      if (st.yesNo && typeof st.yesNo === "object") setYesNo(st.yesNo as Record<number, "Yes" | "No" | null>);
+    }
+    setFilled(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job]);
+
+  // Save what the operator changes, a moment after they stop - so the docket prints the same
+  // from here and from Print pages. The state right after loading is the baseline: opening the
+  // page never writes anything by itself.
+  const snapshot = JSON.stringify({
+    jobNo, fclLcl, categories: [...categories].sort(), transactionMode, priorityType,
+    values, feedback, advance, yesNo,
+  });
+  const baseline = useRef<string | null>(null);
+  useEffect(() => {
+    if (!filled || embed) return;
+    if (baseline.current === null) {
+      baseline.current = snapshot;
+      if (saved?.saved_at) setSaveNote(`Saved${saved.saved_by ? ` by ${saved.saved_by}` : ""}`);
+      return;
+    }
+    if (snapshot === baseline.current) return;
+    setSaveNote("Saving…");
+    const t = setTimeout(() => {
+      edocketApi.saveEDocket(jobId, JSON.parse(snapshot))
+        .then(() => { baseline.current = snapshot; setSaveNote(`Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`); })
+        .catch(() => setSaveNote("Not saved - check your connection"));
+    }, 1200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, filled]);
+
+  // For Print pages: render the requested sheets (1 = front, 2 = back) as PNG data URLs.
+  useEffect(() => {
+    if (!embed || !filled) return;
+    const w = window as unknown as { renderEDocketPages?: (pages: number[]) => Promise<string[]> };
+    w.renderEDocketPages = async (pages: number[]) => {
+      await document.fonts?.ready;
+      const sheets = Array.from(document.querySelectorAll<HTMLElement>(".edocket-sheet"));
+      const out: string[] = [];
+      for (const p of pages) {
+        const el = sheets[p - 1];
+        if (el) out.push(await toPng(el, { pixelRatio: 2, backgroundColor: PAGE_BG, cacheBust: true }));
+      }
+      return out;
+    };
+    document.body.dataset.edocketReady = "1";
+    return () => { delete w.renderEDocketPages; delete document.body.dataset.edocketReady; };
+  }, [embed, filled]);
 
   function toggleCategory(cat: string) {
     setCategories((prev) => {
@@ -398,7 +475,7 @@ export function EDocketPage() {
   }
 
   return (
-    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className="edocket-print text-black">
+    <div style={{ background: PAGE_BG, minHeight: "100vh" }} className={`edocket-print text-black ${embed ? "edocket-capture" : ""}`}>
       {/* @page margin 0: the browser prints its own header/footer (date, page title, URL,
           "1/1") INSIDE the page margin - with no margin there is nowhere to put them, so the
           printout carries only the docket. The docket's own spacing comes from .edocket-print. */}
@@ -409,7 +486,11 @@ export function EDocketPage() {
           Page 2's frame is drawn down to the bottom gap, as on the paper docket. */}
       <style>{`@page { size: A4; margin: 0; } @media print { html, body { margin: 0 !important; padding: 0 !important; } .no-print { display: none !important; } .edocket-print { min-height: 0 !important; padding: 0 !important; background: transparent !important; } .edocket-sheet { box-sizing: border-box; width: 210mm; height: 297mm; padding: 12mm 12mm; margin: 0 !important; overflow: hidden; break-after: page; page-break-after: always; } .edocket-sheet:last-child { break-after: auto; page-break-after: auto; } .edocket-page { box-sizing: border-box; width: 100% !important; max-width: none !important; margin: 0 !important; } .edocket-page2 { height: 100%; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } input { border: none !important; outline: none !important; background: transparent !important; } }`}</style>
 
-      <div className="no-print flex justify-end gap-2 p-3">
+      {/* Embedded for Print pages: the same A4 sheet layout as printing, on screen. */}
+      {embed && <style>{`.edocket-capture { min-height: 0 !important; } .edocket-capture .edocket-sheet { box-sizing: border-box; width: 210mm; height: 297mm; padding: 12mm; margin: 0 !important; overflow: hidden; } .edocket-capture .edocket-page { box-sizing: border-box; width: 100% !important; max-width: none !important; margin: 0 !important; } .edocket-capture .edocket-page2 { height: 100%; } .edocket-capture input, .edocket-capture select { border: none !important; outline: none !important; background: transparent !important; }`}</style>}
+
+      <div className={`no-print flex items-center justify-end gap-2 p-3 ${embed ? "hidden" : ""}`}>
+        {saveNote && <span className="mr-2 text-xs text-black/60">{saveNote}</span>}
         <button
           type="button"
           onClick={() => window.print()}
