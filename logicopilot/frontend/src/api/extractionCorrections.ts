@@ -60,9 +60,13 @@ export interface CorrectionEdits {
   jobs: number;
 }
 
-export interface SummaryFilters {
+export interface DateRange {
+  date_from?: string;
+  date_to?: string;
+}
+
+export interface SummaryFilters extends DateRange {
   min_jobs: number;
-  days?: number;
   tenant_id?: string;
   group_id?: string;
   include_operator_fields?: boolean;
@@ -79,13 +83,13 @@ export async function getSummary(filters: SummaryFilters): Promise<CorrectionSum
   return data;
 }
 
-export async function getEdits(field: CorrectedField, days?: number, tenant_id?: string): Promise<CorrectionEdits> {
+export async function getEdits(field: CorrectedField, range: DateRange, tenant_id?: string): Promise<CorrectionEdits> {
   const { data } = await apiClient.get<CorrectionEdits>("/extraction-corrections/edits", {
     params: clean({
       group_id: field.group_id,
       label_name: field.label_name,
       template_document_id: field.template_document_id ?? undefined,
-      days,
+      ...range,
       tenant_id,
     }),
   });

@@ -112,3 +112,26 @@ def test_operator_entry_fields_are_left_out_unless_asked(db_session):
     assert field_edits.summary(db_session)["fields"] == []
     shown = field_edits.summary(db_session, include_operator_fields=True)["fields"]
     assert [f["label_name"] for f in shown] == ["branch_name"]
+
+
+def test_cth_dump_cth_and_combined_description_are_never_listed(db_session):
+    from app.core import field_edits
+
+    tenant = make_tenant(db_session)
+    _group, _tdoc, fvs = _setup(db_session, tenant, n_jobs=3)
+    for label in ("CTH", "Dump CTH Number", "Combined Description"):
+        for fv in fvs:
+            db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=fv.job_id, label_name=label,
+                                         row_index=1, extracted_value="1", corrected_value="2"))
+    db_session.commit()
+    assert field_edits.summary(db_session, include_operator_fields=True)["fields"] == []
+
+
+def test_date_window_is_india_calendar_days():
+    from datetime import date
+
+    from app.api.v1.extraction_corrections import _window
+
+    since, until = _window(date(2026, 11, 23), date(2026, 11, 23))
+    assert since.isoformat() == "2026-11-23T00:00:00+05:30"
+    assert until.isoformat() == "2026-11-24T00:00:00+05:30"

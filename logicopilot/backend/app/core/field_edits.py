@@ -86,7 +86,7 @@ def _names(db: Session, group_ids: set, tdoc_ids: set, tenant_ids: set) -> tuple
 
 
 def _current_corrections(db: Session, tenant_id=None, group_id=None, since: datetime | None = None,
-                         field: tuple | None = None):
+                         field: tuple | None = None, until: datetime | None = None):
     """Live field values whose saved value differs from what the AI read."""
     from app.models.job import Job, JobFieldValue
 
@@ -106,6 +106,8 @@ def _current_corrections(db: Session, tenant_id=None, group_id=None, since: date
         q = q.filter(Job.group_id == group_id)
     if since:
         q = q.filter(JobFieldValue.updated_at >= since)
+    if until:
+        q = q.filter(JobFieldValue.updated_at < until)
     if field:
         g, td, label = field
         q = q.filter(Job.group_id == g, JobFieldValue.label_name == label,
@@ -115,7 +117,7 @@ def _current_corrections(db: Session, tenant_id=None, group_id=None, since: date
 
 
 def _logged_edits(db: Session, tenant_id=None, group_id=None, since: datetime | None = None,
-                  field: tuple | None = None):
+                  field: tuple | None = None, until: datetime | None = None):
     from app.models.field_value_edit import FieldValueEdit as E
 
     q = db.query(E)
@@ -125,6 +127,8 @@ def _logged_edits(db: Session, tenant_id=None, group_id=None, since: datetime | 
         q = q.filter(E.group_id == group_id)
     if since:
         q = q.filter(E.created_at >= since)
+    if until:
+        q = q.filter(E.created_at < until)
     if field:
         g, td, label = field
         q = q.filter(E.group_id == g, E.label_name == label,
@@ -162,7 +166,15 @@ def _operator_field_ids(db: Session, rows) -> set:
                                                           CustomField.kind == "hardcoded").all()}
 
 
+# Never listed (by request): their values come from the reference sheets and the CTH choice on
+# each line, and Combined Description is built from other fields - a correction there is about
+# reference data, not about how a field is read off the document.
+EXCLUDED_LABELS = {"cth", "dump cth number", "combined description"}
+
+
 def _ai_only(db: Session, current, logged, include_operator_fields: bool):
+    current = [r for r in current if (r.label_name or "").strip().lower() not in EXCLUDED_LABELS]
+    logged = [e for e in logged if (e.label_name or "").strip().lower() not in EXCLUDED_LABELS]
     if include_operator_fields:
         return current, logged
     skip = _operator_field_ids(db, list(current) + list(logged))
@@ -171,9 +183,10 @@ def _ai_only(db: Session, current, logged, include_operator_fields: bool):
 
 
 def summary(db: Session, *, min_jobs: int = 3, tenant_id=None, group_id=None,
-            since: datetime | None = None, include_operator_fields: bool = False) -> dict:
-    current = _current_corrections(db, tenant_id, group_id, since)
-    logged = _logged_edits(db, tenant_id, group_id, since)
+            since: datetime | None = None, include_operator_fields: bool = False,
+            until: datetime | None = None) -> dict:
+    current = _current_corrections(db, tenant_id, group_id, since, until=until)
+    logged = _logged_edits(db, tenant_id, group_id, since, until=until)
     current, logged = _ai_only(db, current, logged, include_operator_fields)
 
     # One entry per field (template, document, field name); inside it, one per job line.
@@ -237,12 +250,12 @@ def summary(db: Session, *, min_jobs: int = 3, tenant_id=None, group_id=None,
 
 
 def edits(db: Session, *, group_id: str, label_name: str, template_document_id: str | None = None,
-          tenant_id=None, since: datetime | None = None) -> dict:
+          tenant_id=None, since: datetime | None = None, until: datetime | None = None) -> dict:
     from app.models.job import Job
 
     field = (group_id, template_document_id or None, label_name)
-    logged = _logged_edits(db, tenant_id, None, since, field)
-    current = _current_corrections(db, tenant_id, None, since, field)
+    logged = _logged_edits(db, tenant_id, None, since, field, until=until)
+    current = _current_corrections(db, tenant_id, None, since, field, until=until)
 
     lines: dict[tuple, dict] = {}
     for e in logged:

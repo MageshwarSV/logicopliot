@@ -4,7 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { formatDateTime } from "../../utils/dateTime";
 import * as correctionsApi from "../../api/extractionCorrections";
-import type { CorrectedField, CorrectedLine, CorrectionEdits, CorrectionSummary } from "../../api/extractionCorrections";
+import type { CorrectedField, CorrectedLine, CorrectionEdits, CorrectionSummary, DateRange } from "../../api/extractionCorrections";
 import * as tenantsApi from "../../api/tenants";
 import type { Tenant } from "../../types/tenant";
 
@@ -51,13 +51,41 @@ function Diff({ before, after }: { before: string | null; after: string | null }
   );
 }
 
+type Period = "all" | "today" | "yesterday" | "month" | "custom";
+
+const PERIOD_LABEL: Record<Period, string> = {
+  all: "All time", today: "Today", yesterday: "Yesterday", month: "This month", custom: "Custom range",
+};
+
+/** A calendar day as YYYY-MM-DD in the viewer's own time zone (the server reads it as an
+ *  India calendar day). */
+function ymd(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function rangeFor(period: Period, from: string, to: string): DateRange {
+  const now = new Date();
+  if (period === "today") return { date_from: ymd(now), date_to: ymd(now) };
+  if (period === "yesterday") {
+    const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    return { date_from: ymd(y), date_to: ymd(y) };
+  }
+  if (period === "month") return { date_from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), date_to: ymd(now) };
+  if (period === "custom") return { date_from: from || undefined, date_to: to || undefined };
+  return {};
+}
+
 function fieldKey(f: CorrectedField) {
   return `${f.group_id}|${f.template_document_id ?? ""}|${f.label_name}`;
 }
 
 export function ExtractionCorrectionsPage() {
   const [minJobs, setMinJobs] = useState(3);
-  const [days, setDays] = useState<number | undefined>(undefined);
+  const [period, setPeriod] = useState<Period>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const range = useMemo(() => rangeFor(period, customFrom, customTo), [period, customFrom, customTo]);
+  const rangeKey = `${range.date_from ?? ""}|${range.date_to ?? ""}`;
   const [tenantId, setTenantId] = useState("");
   const [withOperatorFields, setWithOperatorFields] = useState(false);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -77,24 +105,26 @@ export function ExtractionCorrectionsPage() {
     let live = true;
     setLoading(true);
     setError(null);
-    correctionsApi.getSummary({ min_jobs: minJobs, days, tenant_id: tenantId || undefined,
+    correctionsApi.getSummary({ min_jobs: minJobs, ...range, tenant_id: tenantId || undefined,
       include_operator_fields: withOperatorFields || undefined })
       .then((s) => { if (live) setSummary(s); })
       .catch(() => { if (live) setError("Could not load the corrections. Try again in a moment."); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [minJobs, days, tenantId, withOperatorFields]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minJobs, rangeKey, tenantId, withOperatorFields]);
 
   useEffect(() => {
     if (!selected) { setEdits(null); return; }
     let live = true;
     setEditsLoading(true);
-    correctionsApi.getEdits(selected, days, tenantId || undefined)
+    correctionsApi.getEdits(selected, range, tenantId || undefined)
       .then((e) => { if (live) setEdits(e); })
       .catch(() => { if (live) setEdits(null); })
       .finally(() => { if (live) setEditsLoading(false); });
     return () => { live = false; };
-  }, [selected, days, tenantId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, rangeKey, tenantId]);
 
   const fields = summary?.fields ?? [];
   const totals = useMemo(() => ({
@@ -120,13 +150,24 @@ export function ExtractionCorrectionsPage() {
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-500">
             Period
-            <select id="period" value={days ?? ""} onChange={(e) => setDays(e.target.value ? Number(e.target.value) : undefined)} className={FIELD}>
-              <option value="">All time</option>
-              <option value="7">Last 7 days</option>
-              <option value="30">Last 30 days</option>
-              <option value="90">Last 90 days</option>
+            <select id="period" value={period} onChange={(e) => setPeriod(e.target.value as Period)} className={FIELD}>
+              {(Object.keys(PERIOD_LABEL) as Period[]).map((p) => <option key={p} value={p}>{PERIOD_LABEL[p]}</option>)}
             </select>
           </label>
+          {period === "custom" && (
+            <div className="flex items-end gap-2">
+              <label className="grid gap-1 text-xs font-medium text-slate-500">
+                From
+                <input id="range-from" type="date" value={customFrom} max={customTo || undefined}
+                  onChange={(e) => setCustomFrom(e.target.value)} className={FIELD} />
+              </label>
+              <label className="grid gap-1 text-xs font-medium text-slate-500">
+                To
+                <input id="range-to" type="date" value={customTo} min={customFrom || undefined}
+                  onChange={(e) => setCustomTo(e.target.value)} className={FIELD} />
+              </label>
+            </div>
+          )}
           <label className="grid gap-1 text-xs font-medium text-slate-500">
             Customer
             <select id="tenant" value={tenantId} onChange={(e) => { setTenantId(e.target.value); setSelected(null); }} className={FIELD}>
@@ -141,6 +182,7 @@ export function ExtractionCorrectionsPage() {
             Include operator-entry fields
           </label>
           <p className="ml-auto max-w-md text-xs text-slate-500 dark:text-slate-400">
+            CTH, Dump CTH Number and Combined Description are not listed: they come from the reference sheets.{" "}
             {summary?.history_since
               ? `Every edit is recorded since ${formatDateTime(summary.history_since)}. Corrections made before that show as "1+" edits.`
               : 'Edit history starts with the next correction. Earlier corrections show as "1+" edits.'}
@@ -172,7 +214,7 @@ export function ExtractionCorrectionsPage() {
             <tbody>
               {!loading && fields.length === 0 && (
                 <tr><td colSpan={8} className="px-5 py-12 text-center text-sm text-slate-500">
-                  No field has been corrected on {minJobs} or more different jobs{days ? ` in the last ${days} days` : ""}.
+                  No field has been corrected on {minJobs} or more different jobs{period !== "all" ? ` (${PERIOD_LABEL[period].toLowerCase()})` : ""}.
                 </td></tr>
               )}
               {fields.map((f) => {
