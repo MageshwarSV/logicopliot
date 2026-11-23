@@ -40,7 +40,6 @@ import { SettingsPage } from "../pages/super-admin/SettingsPage";
 import { EmailPullerPage } from "../pages/super-admin/EmailPullerPage";
 import { FilterPagesPage } from "../pages/super-admin/FilterPagesPage";
 import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingPage";
-import { SpendAnalyticsPage } from "../pages/super-admin/SpendAnalyticsPage";
 import { ExtractionCorrectionsPage } from "../pages/super-admin/ExtractionCorrectionsPage";
 import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
@@ -185,7 +184,7 @@ export function AppRoutes() {
         path="/super-admin/spend-analytics"
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
-            <SpendAnalyticsPage />
+            <Navigate to="/super-admin/api-cost" replace />
           </ProtectedRoute>
         }
       />

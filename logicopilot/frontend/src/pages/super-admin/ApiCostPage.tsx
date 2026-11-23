@@ -4,6 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { formatDateTime } from "../../utils/dateTime";
 import * as api from "../../api/apiCost";
+import { SpendAnalyticsPanel } from "./SpendAnalyticsPage";
 import type { CostRow, CostTotals, CustomerPages, DayDetail, MonthRow } from "../../api/apiCost";
 
 const FIELD = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900";
@@ -11,11 +12,6 @@ const FIELD = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm d
 const usd = (v: number | null | undefined, digits = 2) => (v == null ? "—" : `$${v.toFixed(digits)}`);
 const inr = (v: number | null | undefined, digits = 2) => (v == null ? "—" : `₹${v.toLocaleString("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`);
 const num = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString("en-IN"));
-
-function thisMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 function Status({ s }: { s: CostRow["status"] }) {
   const style = {
@@ -63,48 +59,60 @@ function CustomerTable({ rows }: { rows: CustomerPages[] }) {
   );
 }
 
+type Period = "today" | "yesterday" | "month" | "custom";
+const PERIODS: [Period, string][] = [["today", "Today"], ["yesterday", "Yesterday"], ["month", "This month"], ["custom", "Custom"]];
+
+function ymd(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function rangeFor(p: Period, from: string, to: string): { from: string; to: string } | null {
+  const now = new Date();
+  if (p === "today") return { from: ymd(now), to: ymd(now) };
+  if (p === "yesterday") { const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1); return { from: ymd(y), to: ymd(y) }; }
+  if (p === "month") return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) };
+  return from && to && from <= to ? { from, to } : null;
+}
+
 export function ApiCostPage() {
-  const [month, setMonth] = useState(thisMonth());
+  // Two views of the same OpenAI account: live from OpenAI with charts (Spend Analytics), and
+  // the day-by-day table - also fetched live when opened, and saved as daily records.
+  const [view, setView] = useState<"live" | "daily">("live");
+  const [period, setPeriod] = useState<Period>("month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [days, setDays] = useState<CostRow[]>([]);
   const [totals, setTotals] = useState<CostTotals | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [months, setMonths] = useState<MonthRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [detail, setDetail] = useState<DayDetail | null>(null);
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [note, setNote] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
+  const range = useMemo(() => rangeFor(period, customFrom, customTo), [period, customFrom, customTo]);
+
+  // Every time the tab opens or the period changes: ask OpenAI now (and save what came back).
   useEffect(() => {
+    if (view !== "daily" || !range) return;
     let live = true;
     setLoading(true);
     setError(null);
-    Promise.all([api.getDaily(month), api.getMonthly()])
-      .then(([d, m]) => { if (!live) return; setDays(d.days); setTotals(d.totals); setMonths(m.months); })
-      .catch(() => { if (live) setError("Could not load API cost records."); })
+    api.live(range.from, range.to)
+      .then((d) => { if (!live) return; setDays(d.days); setTotals(d.totals); setFetchedAt(d.fetched_at); })
+      .catch((e) => { if (live) setError(errorText(e, "Could not get the cost from OpenAI. Try again.")); })
       .finally(() => { if (live) setLoading(false); });
+    api.getMonthly().then((m) => { if (live) setMonths(m.months); }).catch(() => undefined);
     return () => { live = false; };
-  }, [month, reload]);
+  }, [view, range?.from, range?.to, reload]);
 
   useEffect(() => {
     if (!open) { setDetail(null); return; }
     api.getDay(open).then(setDetail).catch(() => setDetail(null));
   }, [open, reload]);
 
-  async function collect(dateFrom: string, dateTo?: string) {
-    setNote(null);
-    try {
-      const r = await api.runDays(dateFrom, dateTo);
-      setNote(`Collecting ${r.days} day(s) from OpenAI in the background. Refresh in a minute.`);
-      setTimeout(() => setReload((n) => n + 1), 20000);
-    } catch (e) {
-      setNote(errorText(e, "Could not start the collection."));
-    }
-  }
-
-  const monthCustomers = useMemo(() => {
+  const customers = useMemo(() => {
     const m = new Map<string, CustomerPages>();
     for (const d of days) for (const c of d.customers ?? []) {
       const x = m.get(c.tenant_id) ?? { ...c, pages_billed: 0, original_pages: 0, rerun_pages: 0, total_jobs: 0 };
@@ -114,49 +122,66 @@ export function ApiCostPage() {
     return [...m.values()].sort((a, b) => b.pages_billed - a.pages_billed);
   }, [days]);
 
+  const periodLabel = PERIODS.find(([k]) => k === period)?.[1] ?? "";
+
   return (
-    <AppShell title="API Cost & Usage" subtitle="OpenAI's real daily cost next to the pages it paid for. Collected every night at 11:55 PM IST and reconciled the next morning.">
+    <AppShell title="API Cost & Usage" subtitle="OpenAI's real cost (Admin API key) next to the jobs and pages it paid for - pulled from OpenAI when you open it.">
+      <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900" role="tablist">
+        {([["live", "Live from OpenAI"], ["daily", "Daily cost & pages"]] as const).map(([k, label]) => (
+          <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium ${view === k ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "live" ? <SpendAnalyticsPanel /> : <>
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-end gap-4">
-          <label className="grid gap-1 text-xs font-medium text-slate-500">Month
-            <input id="cost-month" type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} className={FIELD} />
-          </label>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="grid gap-1 text-xs font-medium text-slate-500">Collect / retry from
-              <input id="run-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={FIELD} />
-            </label>
-            <label className="grid gap-1 text-xs font-medium text-slate-500">to
-              <input id="run-to" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className={FIELD} />
-            </label>
-            <button type="button" disabled={!from} onClick={() => collect(from, to)}
-              className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
-              Collect
-            </button>
+          <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 p-1 dark:border-slate-700">
+            {PERIODS.map(([k, label]) => (
+              <button key={k} type="button" onClick={() => setPeriod(k)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium ${period === k ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-200 dark:ring-indigo-500/30" : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+                {label}
+              </button>
+            ))}
           </div>
+          {period === "custom" && (
+            <div className="flex items-end gap-2">
+              <label className="grid gap-1 text-xs font-medium text-slate-500">From
+                <input id="cost-from" type="date" value={customFrom} max={customTo || undefined} onChange={(e) => setCustomFrom(e.target.value)} className={FIELD} />
+              </label>
+              <label className="grid gap-1 text-xs font-medium text-slate-500">To
+                <input id="cost-to" type="date" value={customTo} min={customFrom || undefined} onChange={(e) => setCustomTo(e.target.value)} className={FIELD} />
+              </label>
+            </div>
+          )}
+          <button type="button" disabled={loading || !range} onClick={() => setReload((n) => n + 1)}
+            className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
+            {loading ? "Getting from OpenAI…" : "Refresh"}
+          </button>
           <p className="ml-auto max-w-md text-xs text-slate-500 dark:text-slate-400">
-            A day is OpenAI's billing day: 05:30 IST to 05:30 IST next day. Cost is all 12 OpenAI projects of this account, never split by customer. Google Document AI is not included.
+            Pulled from OpenAI each time{fetchedAt ? ` (last at ${formatDateTime(fetchedAt)})` : ""} and saved day by day. A day is OpenAI's billing day: 05:30 IST to 05:30 IST next day. All OpenAI projects of this account; Google Document AI not included.
           </p>
         </div>
-        {note && <p className="mt-3 rounded-lg bg-slate-50 p-2 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200">{note}</p>}
       </Card>
 
       {error && <Card className="mb-4 p-4 text-sm text-rose-600">{error}</Card>}
 
       {totals && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Tile label="OpenAI spend this month" value={usd(totals.cost_usd)} sub={inr(totals.cost_inr)} tone="border-indigo-200 bg-indigo-50 text-indigo-900 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100" />
+          <Tile label={`OpenAI spend · ${periodLabel}`} value={usd(totals.cost_usd)} sub={inr(totals.cost_inr)} tone="border-indigo-200 bg-indigo-50 text-indigo-900 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100" />
           <Tile label="Pages billed" value={num(totals.pages_billed)} sub={`${num(totals.original_pages)} original · ${num(totals.rerun_pages)} re-run`} tone="border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100" />
           <Tile label="Cost per page" value={inr(totals.cost_per_page_inr, 3)} sub={usd(totals.cost_per_page_usd, 4)} tone="border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100" />
           <Tile label="Classified / unclassified pages" value={`${num(totals.classified_pages)} / ${num(totals.unclassified_pages)}`}
-            sub={`${num(totals.total_jobs)} jobs${totals.provisional_days ? ` · ${totals.provisional_days} provisional day(s)` : ""}${totals.failed_days ? ` · ${totals.failed_days} failed` : ""}`}
+            sub={`${num(totals.total_jobs)} jobs${totals.provisional_days ? ` · ${totals.provisional_days} day(s) still settling` : ""}`}
             tone="border-slate-200 bg-white text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
         </div>
       )}
 
       <Card className="mb-4">
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
-          <h2 className="font-semibold text-slate-900 dark:text-slate-50">Daily</h2>
-          <span className="text-xs text-slate-500">{loading ? "Loading…" : `${days.length} day(s) recorded`}</span>
+          <h2 className="font-semibold text-slate-900 dark:text-slate-50">Daily · {periodLabel}</h2>
+          <span className="text-xs text-slate-500">{loading ? "Getting from OpenAI…" : `${days.length} day(s)`}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -171,14 +196,11 @@ export function ApiCostPage() {
               <th className="px-3 py-2.5 text-right font-medium">Cost (USD)</th>
               <th className="px-3 py-2.5 text-right font-medium">Cost (INR)</th>
               <th className="px-3 py-2.5 text-right font-medium">Per page</th>
-              <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-5 py-2.5" />
+              <th className="px-5 py-2.5 font-medium">Status</th>
             </tr></thead>
             <tbody>
-              {!loading && days.length === 0 && (
-                <tr><td colSpan={12} className="px-5 py-12 text-center text-sm text-slate-500">
-                  No days recorded for this month yet. Use Collect above to fetch them from OpenAI.
-                </td></tr>
+              {!loading && days.length === 0 && !error && (
+                <tr><td colSpan={11} className="px-5 py-12 text-center text-sm text-slate-500">Nothing for this period yet.</td></tr>
               )}
               {days.map((d) => (
                 <Fragment key={d.usage_date}>
@@ -194,16 +216,12 @@ export function ApiCostPage() {
                     <td className="px-3 py-2.5 text-right tabular-nums">{usd(d.cost_usd, 3)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{inr(d.cost_inr)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{inr(d.cost_per_page_inr, 3)}</td>
-                    <td className="px-3 py-2.5"><Status s={d.status} /></td>
-                    <td className="px-5 py-2.5 text-right">
-                      <button type="button" onClick={(e) => { e.stopPropagation(); collect(d.usage_date); }}
-                        className="text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-300">Retry</button>
-                    </td>
+                    <td className="px-5 py-2.5"><Status s={d.status} /></td>
                   </tr>
                   {open === d.usage_date && (
                     <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-800 dark:bg-slate-800/40">
-                      <td colSpan={12} className="px-5 py-4">
-                        <div className="grid gap-5 lg:grid-cols-3">
+                      <td colSpan={11} className="px-5 py-4">
+                        <div className="grid gap-5 lg:grid-cols-2">
                           <div className="min-w-0">
                             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Cost by OpenAI project</h3>
                             <table className="w-full text-left text-xs"><tbody>
@@ -222,18 +240,6 @@ export function ApiCostPage() {
                             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pages by customer</h3>
                             <CustomerTable rows={d.customers ?? []} />
                           </div>
-                          <div className="min-w-0">
-                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Runs</h3>
-                            <ol className="grid gap-1 text-xs">
-                              {(detail?.runs ?? []).map((r, i) => (
-                                <li key={i} className="flex flex-wrap gap-2">
-                                  <span className="text-slate-500">{formatDateTime(r.started_at)}</span>
-                                  <span className="font-medium">{r.kind}</span>
-                                  <span className={r.status === "ok" ? "text-emerald-600" : r.status === "failed" ? "text-rose-600" : "text-amber-600"}>{r.status}</span>
-                                  {r.error && <span className="w-full break-all text-rose-600">{r.error}</span>}
-                                </li>))}
-                            </ol>
-                          </div>
                         </div>
                       </td>
                     </tr>
@@ -247,7 +253,10 @@ export function ApiCostPage() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <div className="border-b border-slate-200 px-5 py-3 dark:border-slate-800"><h2 className="font-semibold text-slate-900 dark:text-slate-50">Monthly</h2></div>
+          <div className="border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+            <h2 className="font-semibold text-slate-900 dark:text-slate-50">Monthly</h2>
+            <p className="text-xs text-slate-500">From the days saved so far.</p>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800">
@@ -261,7 +270,7 @@ export function ApiCostPage() {
               </tr></thead>
               <tbody>
                 {months.map((m) => (
-                  <tr key={m.month} onClick={() => setMonth(m.month)} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                  <tr key={m.month} className="border-b border-slate-100 dark:border-slate-800">
                     <td className="px-5 py-2.5 font-medium">{m.month}<span className="ml-2 text-xs text-slate-400">{m.days_recorded} day(s)</span></td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{num(m.pages_billed)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{num(m.rerun_pages)}</td>
@@ -271,17 +280,18 @@ export function ApiCostPage() {
                     <td className="px-5 py-2.5 text-right tabular-nums">{inr(m.cost_per_page_inr, 3)}</td>
                   </tr>
                 ))}
-                {!months.length && <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No months recorded yet.</td></tr>}
+                {!months.length && <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No days saved yet.</td></tr>}
               </tbody>
             </table>
           </div>
         </Card>
         <Card className="p-5">
-          <h2 className="mb-3 font-semibold text-slate-900 dark:text-slate-50">Pages by customer · {month}</h2>
-          <CustomerTable rows={monthCustomers} />
+          <h2 className="mb-3 font-semibold text-slate-900 dark:text-slate-50">Pages by customer · {periodLabel}</h2>
+          <CustomerTable rows={customers} />
           <p className="mt-3 text-xs text-slate-500">Pages only. OpenAI cost stays at account level and is not divided between customers.</p>
         </Card>
       </div>
+      </>}
     </AppShell>
   );
 }

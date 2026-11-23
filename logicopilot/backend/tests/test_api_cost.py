@@ -120,3 +120,21 @@ def test_scheduler_times_are_ist(monkeypatch):
     assert started[-1] == ("reconcile", [date(2026, 11, 18), date(2026, 11, 19), date(2026, 11, 20)])
     # 09:00 IST - nothing yet
     assert api_cost.tick(datetime(2026, 11, 21, 3, 30, tzinfo=timezone.utc)) is None
+
+
+def test_live_fetches_a_range_once_saves_each_day_and_returns_it(db_session, data, monkeypatch):
+    calls = []
+    monkeypatch.setattr(api_cost, "openai_range", lambda key, s, e: calls.append((s, e)) or {
+        "2026-11-20": {"p1": {"name": "cargora", "usd": 0.5, "input_tokens": 10, "output_tokens": 2, "requests": 3}},
+        "2026-11-19": {"p1": {"name": "cargora", "usd": 0.2, "input_tokens": 5, "output_tokens": 1, "requests": 1}}})
+    monkeypatch.setattr(api_cost, "rate_series", lambda s, e, db=None: {
+        "2026-11-19": (93.3, "test"), "2026-11-20": (93.0, "test")})
+    out = api_cost.live(db_session, date(2026, 11, 19), date(2026, 11, 20), "key", "sa@example.com")
+    assert calls == [(date(2026, 11, 19), date(2026, 11, 20))]                  # one fetch for the range
+    assert [d["usage_date"] for d in out["days"]] == ["2026-11-19", "2026-11-20"]
+    d20 = out["days"][1]
+    assert d20["cost_usd"] == pytest.approx(0.5) and d20["cost_inr"] == pytest.approx(46.5)
+    assert d20["pages_billed"] == 20 and out["totals"]["cost_usd"] == pytest.approx(0.7)
+    # a second click updates, never duplicates
+    api_cost.live(db_session, date(2026, 11, 20), date(2026, 11, 20), "key")
+    assert db_session.query(ApiCostDaily).filter_by(usage_date=DAY, project_id=TOTAL_PROJECT).count() == 1

@@ -157,12 +157,15 @@ def _status(day: date, old_usd: float | None, new_usd: float, kind: str) -> str:
     return "provisional"
 
 
-def record_day(db: Session, day: date, kind: str, api_key: str) -> dict:
-    """Collect one day and save / update its rows. Raises on an OpenAI failure (the caller logs it)."""
+def record_day(db: Session, day: date, kind: str, api_key: str | None,
+               projects: dict | None = None, rate_source: tuple | None = None) -> dict:
+    """Collect one day and save / update its rows. Raises on an OpenAI failure (the caller logs it).
+    `projects` / `rate_source` are passed in when a range was fetched in one go (live())."""
     from app.models.api_cost import TOTAL_PROJECT, ApiCostDaily, ApiCostDailyCustomer
 
-    projects = openai_day(api_key, day)
-    rate, source = usd_inr_rate(day, db)
+    if projects is None:
+        projects = openai_day(api_key, day)
+    rate, source = rate_source if rate_source is not None else usd_inr_rate(day, db)
     total, per_tenant = page_stats(db, day)
     now = datetime.now(timezone.utc)
     existing = {r.project_id: r for r in db.query(ApiCostDaily).filter(ApiCostDaily.usage_date == day).all()}
@@ -204,6 +207,116 @@ def record_day(db: Session, day: date, kind: str, api_key: str) -> dict:
     db.commit()
     return {"day": day.isoformat(), "usd": usd_total, "inr_rate": rate, "pages": pages, "status": status,
             "projects": len(projects)}
+
+
+# ---------------------------------------------------------------------------- live (on demand)
+
+MAX_LIVE_DAYS = 93
+
+
+def openai_range(api_key: str, start: date, end: date) -> dict[str, dict]:
+    """{iso day: {project_id: {"name","usd","input_tokens","output_tokens","requests"}}} for every
+    OpenAI (UTC) day from start to end - one paged request for costs and one for usage, the same
+    Admin API calls Spend Analytics makes, instead of one round per day."""
+    from app.core.openai_admin import _bucket_day, _paged_buckets, fetch_projects
+
+    names = fetch_projects(api_key)
+    out: dict[str, dict] = {}
+
+    def row(day, pid):
+        return out.setdefault(day, {}).setdefault(pid, {"name": names.get(pid, pid), "usd": 0.0,
+                                                        "input_tokens": 0, "output_tokens": 0, "requests": 0})
+
+    for b in _paged_buckets("/organization/costs", api_key, start, end, group_by=["project_id"]):
+        day = _bucket_day(b["start_time"])
+        for r in b.get("results", []):
+            row(day, r.get("project_id") or "unknown")["usd"] += float((r.get("amount") or {}).get("value") or 0)
+    for b in _paged_buckets("/organization/usage/completions", api_key, start, end, group_by=["project_id"]):
+        day = _bucket_day(b["start_time"])
+        for r in b.get("results", []):
+            x = row(day, r.get("project_id") or "unknown")
+            x["input_tokens"] += int(r.get("input_tokens") or 0)
+            x["output_tokens"] += int(r.get("output_tokens") or 0)
+            x["requests"] += int(r.get("num_model_requests") or 0)
+    return out
+
+
+def rate_series(start: date, end: date, db: Session | None = None) -> dict[str, tuple]:
+    """{iso day: (rate, source)} - the ECB series in ONE call (frankfurter.app), a day without a
+    published rate (weekend, today) taking the last one before it; else usd_inr_rate per range."""
+    out: dict[str, tuple] = {}
+    try:
+        url = f"https://api.frankfurter.app/{(start - timedelta(days=7)).isoformat()}..{end.isoformat()}?from=USD&to=INR"
+        req = urllib.request.Request(url, headers={"User-Agent": "cargora-api-cost/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            series = {d: float(v["INR"]) for d, v in json.loads(r.read()).get("rates", {}).items()}
+        last = None
+        d = start - timedelta(days=7)
+        while d <= end:
+            if d.isoformat() in series:
+                last = series[d.isoformat()]
+            if d >= start and last and 40 < last < 200:
+                out[d.isoformat()] = (last, "frankfurter.app (ECB)")
+            d += timedelta(days=1)
+    except Exception:  # noqa: BLE001
+        logger.warning("USD->INR series failed - falling back to one rate", exc_info=True)
+    if len(out) < (end - start).days + 1:
+        one = usd_inr_rate(end, db)
+        d = start
+        while d <= end:
+            out.setdefault(d.isoformat(), one)
+            d += timedelta(days=1)
+    return out
+
+
+def live(db: Session, start: date, end: date, api_key: str, triggered_by: str | None = None) -> dict:
+    """Fetch OpenAI's cost for the days asked, right now, save them as daily records (so the
+    month builds up without any schedule) and return them with the page figures."""
+    from app.models.api_cost import ApiCostRun
+
+    today = datetime.now(timezone.utc).date()
+    end = min(end, today)
+    days = [start + timedelta(days=i) for i in range((end - start).days + 1)] if end >= start else []
+    log = ApiCostRun(kind="live", usage_dates=f"{start.isoformat()}..{end.isoformat()}", status="running",
+                     started_at=datetime.now(timezone.utc), triggered_by=triggered_by)
+    db.add(log)
+    db.commit()
+    try:
+        fetched = openai_range(api_key, start, end) if days else {}
+        rates = rate_series(start, end, db) if days else {}
+        for d in days:
+            record_day(db, d, "live", None, projects=fetched.get(d.isoformat(), {}),
+                       rate_source=rates.get(d.isoformat()))
+        log.status = "ok"
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log = db.get(ApiCostRun, log.id)
+        log.status, log.error = "failed", str(exc)[:500]
+        log.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        raise
+    log.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    return between(db, start, end) | {"fetched_at": datetime.now(timezone.utc).isoformat()}
+
+
+def between(db: Session, start: date, end: date) -> dict:
+    """The saved records for a date range, with page figures per customer and totals."""
+    from app.models.api_cost import TOTAL_PROJECT, ApiCostDaily, ApiCostDailyCustomer
+
+    rows = (db.query(ApiCostDaily).filter(ApiCostDaily.project_id == TOTAL_PROJECT,
+                                          ApiCostDaily.usage_date >= start, ApiCostDaily.usage_date <= end)
+            .order_by(ApiCostDaily.usage_date).all())
+    by_day: dict[str, list] = {}
+    for c in (db.query(ApiCostDailyCustomer).filter(ApiCostDailyCustomer.usage_date >= start,
+                                                    ApiCostDailyCustomer.usage_date <= end).all()):
+        by_day.setdefault(c.usage_date.isoformat(), []).append(
+            {"tenant_id": c.tenant_id, "tenant_name": c.tenant_name, "pages_billed": c.pages_billed,
+             "original_pages": c.original_pages, "rerun_pages": c.rerun_pages,
+             "classified_pages": c.classified_pages, "unclassified_pages": c.unclassified_pages,
+             "total_jobs": c.total_jobs})
+    days = [_row(r) | {"customers": by_day.get(r.usage_date.isoformat(), [])} for r in rows]
+    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "days": days, "totals": _sum(days)}
 
 
 def _mark_failed(db: Session, day: date, error: str) -> None:
