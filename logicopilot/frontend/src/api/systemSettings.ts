@@ -43,6 +43,15 @@ export interface SystemSettings {
   /** How many pooled keys (see listOpenAIKeyPool) are actually in rotation right now. 0
    *  means every OpenAI call still uses the single key above. */
   openai_key_pool_active_count: number;
+  /** The AI models in use right now (server .env), the same for every template. */
+  ai_models: {
+    /** What reads every document's pages: the vision model when the engine reads page images. */
+    document_model: string;
+    reads_page_images: boolean;
+    /** Text-only calls (some computed fields, small helpers). */
+    text_model: string;
+    vision_model: string;
+  };
 }
 
 export const EXTRACTION_ENGINE_OPTIONS: { value: SystemSettings["extraction_engine"]; label: string }[] = [

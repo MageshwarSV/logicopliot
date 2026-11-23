@@ -95,7 +95,18 @@ def read_system_settings(
     _: User = Depends(require_role(SUPER_ADMIN)),
 ) -> dict:
     row = get_system_settings(db)
+    settings = get_settings()
+    reads_images = row.extraction_engine == "gpt5_mini_vision"
     return {
+        # Which AI model every template's documents are read with right now - per server, from
+        # .env (OPENAI_MODEL / VISION_ENGINE_MODEL), the same on app / ai / erp. Shown on
+        # Template List so nobody has to open a server to know.
+        "ai_models": {
+            "document_model": settings.vision_engine_model if reads_images else settings.openai_model,
+            "reads_page_images": reads_images,
+            "text_model": settings.openai_model,
+            "vision_model": settings.vision_engine_model,
+        },
         "email_pull_paused": row.email_pull_paused,
         # Whether the automatic scheduler can even start on THIS server at all - a separate
         # question from email_pull_paused above. EMAIL_POLL_MINUTES<=0 (an env var, set once
