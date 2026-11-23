@@ -315,7 +315,7 @@ export function SpendAnalyticsPanel() {
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
                 Real spend — from OpenAI
               </p>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
                 <StatCardWithSub
                   label="Actual Spend (USD)"
                   value={`$${realCosts.total_usd.toFixed(2)}`}
@@ -333,6 +333,18 @@ export function SpendAnalyticsPanel() {
                           .join(" · ")
                       : "No jobs in this range"
                   }
+                />
+                {/* What one page cost: OpenAI's real spend over the pages read in the same range, in
+                    rupees at today's rate (the same USD->INR rate as every rupee figure here). */}
+                <StatCardWithSub
+                  label="Cost per page (₹)"
+                  value={data.totals.pages > 0 && rate
+                    ? `₹${((realCosts.total_usd * rate.rate) / data.totals.pages).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`
+                    : "—"}
+                  sub={data.totals.pages > 0
+                    ? [`$${(realCosts.total_usd / data.totals.pages).toFixed(4)}`, `across ${data.totals.pages.toLocaleString()} page${data.totals.pages === 1 ? "" : "s"}`,
+                       rate ? `₹${rate.rate.toFixed(2)}/$` : null].filter(Boolean).join(" · ")
+                    : "No pages in this range"}
                 />
                 <Card className="flex flex-col justify-between gap-2 p-5">
                   <div>
