@@ -52,3 +52,29 @@ def api_cost_run(body: RunBody, user: User = Depends(require_role(SUPER_ADMIN)))
     threading.Thread(target=api_cost.run, args=(days, "manual", user.email), daemon=True,
                      name="api-cost-manual").start()
     return {"started": True, "days": len(days)}
+
+
+class LiveBody(BaseModel):
+    date_from: date
+    date_to: date
+
+
+@router.post("/live")
+def api_cost_live(body: LiveBody, db: Session = Depends(get_db),
+                  user: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Fetch OpenAI's real cost for these days NOW (Admin API key, same calls as the live tab),
+    save them as daily records, and return them with the pages billed. No schedule needed."""
+    from app.core.openai_admin import OpenAIAdminAPIError
+    from app.core.system_settings import get_openai_admin_key
+
+    if body.date_to < body.date_from:
+        raise HTTPException(status_code=400, detail="The start date is after the end date.")
+    if (body.date_to - body.date_from).days + 1 > api_cost.MAX_LIVE_DAYS:
+        raise HTTPException(status_code=400, detail=f"At most {api_cost.MAX_LIVE_DAYS} days at a time.")
+    key = get_openai_admin_key(db)
+    if not key:
+        raise HTTPException(status_code=409, detail="No OpenAI Admin key is saved (Platform Settings), so real cost cannot be read.")
+    try:
+        return api_cost.live(db, body.date_from, body.date_to, key, user.email)
+    except OpenAIAdminAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach OpenAI: {exc}")

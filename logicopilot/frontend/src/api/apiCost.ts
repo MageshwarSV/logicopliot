@@ -85,3 +85,10 @@ export async function runDays(date_from: string, date_to?: string) {
   const { data } = await apiClient.post<{ started: boolean; days: number }>("/api-cost/run", { date_from, date_to: date_to || null });
   return data;
 }
+
+/** Fetch OpenAI's real cost for these days now (and save them as daily records). */
+export async function live(date_from: string, date_to: string) {
+  const { data } = await apiClient.post<{ date_from: string; date_to: string; days: CostRow[]; totals: CostTotals; fetched_at: string }>(
+    "/api-cost/live", { date_from, date_to }, { timeout: 120000 });
+  return data;
+}
