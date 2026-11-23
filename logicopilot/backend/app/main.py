@@ -368,6 +368,23 @@ def create_app() -> FastAPI:
         threading.Thread(target=_go, name="pipeline-start", daemon=True).start()
 
     @app.on_event("startup")
+    def _start_api_cost_scheduler() -> None:
+        """Nightly OpenAI cost collection (app/core/api_cost.py) - worker process only, singleton,
+        and only where API_COST_RECORDING is on."""
+        from app.core.config import get_settings as _gs
+        from app.core.process_role import runs
+        from app.core.worker_lock import am_i_the_singleton_worker
+
+        if not _gs().api_cost_recording or not runs("mail") or not am_i_the_singleton_worker():
+            return
+        try:
+            from app.core.api_cost import start_scheduler
+
+            start_scheduler()
+        except Exception:  # noqa: BLE001 - must never stop the app starting
+            logging.getLogger(__name__).exception("could not start the API cost scheduler")
+
+    @app.on_event("startup")
     def _start_queue_heartbeat() -> None:
         """Each process tells Platform Settings' queue panel which server it is and how many
         workers it runs (app/core/queue_status.py). No-op without Redis."""

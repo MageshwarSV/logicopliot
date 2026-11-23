@@ -30,6 +30,7 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/entry-browser": MonitorIcon,
   "/jobs": BriefcaseIcon,
   "/super-admin/billing": CreditCardIcon,
+  "/super-admin/api-cost": ChartBarIcon,
   "/super-admin/settings": GearIcon,
 };
 

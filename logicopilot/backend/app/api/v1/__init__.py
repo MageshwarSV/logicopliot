@@ -29,6 +29,7 @@ from app.api.v1.master_data_importer import router as master_data_importer_route
 from app.api.v1.master_data_quotation import router as master_data_quotation_router
 from app.api.v1.master_data_cth import router as master_data_cth_router
 from app.api.v1.extraction_corrections import router as extraction_corrections_router
+from app.api.v1.api_cost import router as api_cost_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -62,3 +63,4 @@ api_router.include_router(master_data_quotation_router)
 api_router.include_router(master_data_cth_router)
 api_router.include_router(classifier_test_router)
 api_router.include_router(extraction_corrections_router)
+api_router.include_router(api_cost_router)

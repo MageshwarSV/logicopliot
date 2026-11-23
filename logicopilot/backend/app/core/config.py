@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     # price = amount, sum of lines = Product Value, sum of quantities = total). A failed check is
     # a finding to accept on the verification screen; no value is ever changed. OFF by default.
     money_checks: bool = False
+    # Super Admin -> API Cost & Usage: collect OpenAI's real daily cost at 11:55 PM IST and
+    # reconcile it the next morning (app/core/api_cost.py). On only where the worker runs on
+    # the production OpenAI account (cargora-ai); off everywhere else, so SIT / dev / tests never
+    # call the Admin API on a schedule.
+    api_cost_recording: bool = False
 
     # Razorpay (IDFC FIRST Bank's gateway) - a Tenant Admin pays an invoice with "Pay now"
     # (app/core/razorpay_gateway.py). Empty key id/secret = the button is not offered at all.
