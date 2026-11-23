@@ -72,8 +72,14 @@ def pairing_key(values: dict[str, str | None]) -> str | None:
 # (it names the invoice it belongs to, not a packing-list number of its own) - mirrors
 # email_puller._document_name's own _REF_PATTERNS, kept separate since that one also covers BL
 # and is used for cosmetic file-naming rather than grouping/splitting documents.
+# The second pattern: a boxed caption whose value sits BETWEEN its words. Fabrinet (Thailand,
+# MAA/AI/34955/26-27) prints "COMMERCIAL INVOICE" / "5200152" / "NUMBER" stacked in one box, so
+# the OCR text reads "INVOICE\n5200152\nNUMBER" - neither the first pattern nor the layout read
+# found a number, and a 6-page file of 6 invoices (one per page) stayed ONE invoice.
+_VALUE_INSIDE_CAPTION = r"\bInvoice\s+([A-Z0-9][A-Z0-9\-/]{3,24})\s+(?:No\.?|Number)\b"
 _INVOICE_NUMBER_PATTERNS = {
-    "Invoice": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})"],
+    "Invoice": [r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})",
+                _VALUE_INSIDE_CAPTION],
     # A packing list is tried on its invoice number FIRST, and only then on its delivery
     # number - a second packing list for the same shipment is a different document and has
     # to be split from the first, but plenty of them never print an invoice number at all.
@@ -86,6 +92,7 @@ _INVOICE_NUMBER_PATTERNS = {
     # (see pairing_key and its call sites), so this cannot move anything between sets.
     "PackingList": [
         r"\bInvoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})",
+        _VALUE_INSIDE_CAPTION,
         r"\bDelivery\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,24})",
     ],
 }
