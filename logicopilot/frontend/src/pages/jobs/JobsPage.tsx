@@ -796,10 +796,26 @@ export function JobsPage() {
   // The window actually being applied. Once a range is picked the From/To boxes hold it, so
   // they are the single source of truth and the two can never disagree; rangeFor is the
   // fallback for a filter restored from storage before the boxes were ever filled.
+  //
+  // A preset (Today, Yesterday, Last 7/30 days, This month, Last month) is always worked out
+  // from TODAY's date. Only Custom keeps the dates in the boxes. Found live 23 Nov 2026:
+  // "Today" was restored from the browser with the From/To saved on 21 Nov, so the ERP
+  // Submitted list kept showing 21 Nov and a job submitted on the 23rd was missing.
   const quickRange = useMemo(() => {
     if (quick === "all") return { from: "", to: "" };
+    if (quick !== "custom") return rangeFor(quick);
     if (dateFrom || dateTo) return { from: dateFrom, to: dateTo };
     return rangeFor(quick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quick, dateFrom, dateTo]);
+
+  // Keep the From/To boxes showing the preset's real dates (they may have been restored from
+  // an earlier day), so what is shown is what is applied.
+  useEffect(() => {
+    if (quick === "all" || quick === "custom") return;
+    const r = rangeFor(quick);
+    if (r.from !== dateFrom) setDateFrom(r.from);
+    if (r.to !== dateTo) setDateTo(r.to);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quick, dateFrom, dateTo]);
 
