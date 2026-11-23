@@ -47,6 +47,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ruling_answer: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Cross-doc-link ids the operator explicitly accepted despite a review/mismatch flag.
     accepted_verifications: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # What the operator chose or typed on the E-Docket page (transaction mode, priority type,
+    # FCL/LCL, categories, edited rows, the back page's tables) - saved so the docket prints the
+    # same from the E-Docket page and from Print pages. Null = nothing saved; the page fills
+    # itself from the job's data as before. {"state": {...}, "saved_at": ..., "saved_by": ...}
+    edocket_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The operator pressed "Approved and Proceed" on Data Validation for THIS run of the
     # data. Cleared whenever extraction runs again, since a re-extraction can change the
     # very values that were approved. A job with no cross-doc checks at all would otherwise
