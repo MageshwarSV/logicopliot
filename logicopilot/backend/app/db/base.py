@@ -16,6 +16,7 @@ from app.models.user_template import UserTemplateAssignment  # noqa: F401
 from app.models.erp_access import ErpAccessRequest  # noqa: F401
 from app.models.erp_script import ErpScript  # noqa: F401
 from app.models.erp_branch_session import ErpBranchSession  # noqa: F401
+from app.models.erp_branch_session_user import ErpBranchSessionUser  # noqa: F401
 from app.models.custom_field import CustomField  # noqa: F401
 from app.models.custom_field_reference import CustomFieldReferenceValue  # noqa: F401
 from app.models.composite_consignee_default import CompositeFieldConsigneeDefault  # noqa: F401

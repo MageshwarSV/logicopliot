@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/Button";
 import { RoleBadge, StatusBadge } from "../../components/ui/Badge";
 import { CreateTenantAdminModal } from "./CreateTenantAdminModal";
 import { CreateAppLoginModal } from "./CreateAppLoginModal";
+import { UserBranchAccessModal } from "./UserBranchAccessModal";
 import * as usersApi from "../../api/users";
 import type { User } from "../../types/auth";
 import type { Tenant } from "../../types/tenant";
@@ -32,6 +33,8 @@ export function TenantUsersModal({
   // top-level button that would then have to ask which company it meant.
   const [appModalOpen, setAppModalOpen] = useState(false);
   const [editAppLogin, setEditAppLogin] = useState<User | null>(null);
+  // Which ERP branch logins this user may turn on and off from their own top bar.
+  const [branchUser, setBranchUser] = useState<User | null>(null);
 
   const tenantUsers = tenant ? users.filter((u) => u.tenant_id === tenant.id) : [];
 
@@ -50,7 +53,7 @@ export function TenantUsersModal({
   }
 
   return (
-    <Modal open={tenant !== null} onClose={onClose} title={tenant ? `Users — ${tenant.name}` : "Users"} maxWidth="max-w-lg">
+    <Modal open={tenant !== null} onClose={onClose} title={tenant ? `Users — ${tenant.name}` : "Users"} maxWidth="max-w-2xl">
       {error && (
         <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
           {error}
@@ -75,6 +78,9 @@ export function TenantUsersModal({
             <div className="flex shrink-0 items-center gap-2">
               <RoleBadge role={u.role} />
               <StatusBadge isActive={u.is_active} />
+              <Button size="sm" variant="ghost" onClick={() => setBranchUser(u)}>
+                ERP Branch
+              </Button>
               {u.role === "tenant_admin" && (
                 <Button size="sm" variant="ghost" onClick={() => { setEditAdmin(u); setAdminModalOpen(true); }}>
                   Edit
@@ -101,6 +107,8 @@ export function TenantUsersModal({
       <p className="mt-3 text-xs text-slate-400">
         Deleting a tenant admin also removes the operators they created and all related jobs.
       </p>
+
+      <UserBranchAccessModal user={branchUser} onClose={() => setBranchUser(null)} />
 
       {tenant && (
         <CreateAppLoginModal

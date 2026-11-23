@@ -54,3 +54,48 @@ export async function checkBranchLogin(id: string): Promise<BranchLogin> {
   const { data } = await apiClient.post<BranchLogin>(`/erp-branch-sessions/${id}/relogin`);
   return data;
 }
+
+/** A branch login as a user it was assigned to sees it - never the ERP username or password. */
+export interface BranchSwitch {
+  id: string;
+  branch: string;
+  enabled: boolean;
+  /** starting | logging_in | live | error | off */
+  status: string;
+  status_note: string | null;
+  live_since: string | null;
+}
+
+export interface UserBranchAccess {
+  user_id: string;
+  /** The branch logins this user may turn on and off. */
+  branch_session_ids: string[];
+  /** Every branch login of the user's company, to tick from. */
+  branches: BranchSwitch[];
+}
+
+/** Super Admin: the branch logins of this user's company and which ones the user may switch. */
+export async function getUserBranchAccess(userId: string): Promise<UserBranchAccess> {
+  const { data } = await apiClient.get<UserBranchAccess>(`/erp-branch-sessions/user-access/${userId}`);
+  return data;
+}
+
+/** Super Admin: replace which branch logins this user may switch (empty = none). */
+export async function setUserBranchAccess(userId: string, branchSessionIds: string[]): Promise<UserBranchAccess> {
+  const { data } = await apiClient.put<UserBranchAccess>(`/erp-branch-sessions/user-access/${userId}`, {
+    branch_session_ids: branchSessionIds,
+  });
+  return data;
+}
+
+/** The branch logins the signed-in user may turn on and off (the top-bar "ERP Branch" button). */
+export async function myBranchSwitches(): Promise<BranchSwitch[]> {
+  const { data } = await apiClient.get<BranchSwitch[]>("/erp-branch-sessions/mine");
+  return data;
+}
+
+/** Turn one branch login on or off (a Super Admin, or a user it was assigned to). */
+export async function switchBranchLogin(id: string, enabled: boolean): Promise<BranchSwitch> {
+  const { data } = await apiClient.post<BranchSwitch>(`/erp-branch-sessions/${id}/switch`, { enabled });
+  return data;
+}

@@ -6,6 +6,7 @@ import { superAdminFeatures, SUPER_ADMIN_FEATURE_GROUPS } from "../features/regi
 import * as jobsApi from "../api/jobs";
 import * as duplicateEmailsApi from "../api/duplicateEmails";
 import { NotificationBell } from "./NotificationBell";
+import { ErpBranchButton } from "./ErpBranchButton";
 import { SystemAlertBanner } from "./SystemAlertBanner";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 import { Avatar } from "./ui/Avatar";
@@ -549,6 +550,8 @@ export function AppShell({
               happen to be. Left of the page's own actions so the primary call to action on
               each screen (+ New Job, Submit Entry) stays furthest right where it is expected. */}
           <div className="flex items-center gap-3">
+            {/* Only for users a Super Admin ticked ERP branch logins for - renders nothing otherwise. */}
+            <ErpBranchButton />
             <NotificationBell />
             {actions}
           </div>
