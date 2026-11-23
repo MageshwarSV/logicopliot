@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ExcelSheetModal, UnclassifiedExcelFiles } from "./ExcelPanels";
+import { ExcelSheetModal, ExcelSheetViewer, UnclassifiedExcelFiles } from "./ExcelPanels";
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
 import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
@@ -7965,7 +7965,18 @@ function ExtractionReview({
           {docActionError && (
             <p className="mb-2 text-xs text-rose-600 dark:text-rose-400">{docActionError}</p>
           )}
-          {active && active.is_uploaded && (
+          {active && active.is_uploaded && active.source_kind === "excel" && (
+            <ExcelSheetViewer
+              jobId={jobId}
+              docId={active.id}
+              title={active.original_name ?? "Excel sheet"}
+              updatedAt={active.updated_at}
+              focus={focusedFv && (focusedFv.value ?? "").trim()
+                ? { fieldId: focusedFv.id, value: String(focusedFv.value), rowIndex: focusedFv.row_index ?? null }
+                : null}
+            />
+          )}
+          {active && active.is_uploaded && active.source_kind !== "excel" && (
             <DocViewer jobId={jobId} docId={active.id} pages={active.page_count} updatedAt={active.updated_at} highlight={highlight} />
           )}
           {/* No file for this document, and the template lets it be entered by hand: nothing to
