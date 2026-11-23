@@ -1328,12 +1328,12 @@ export function SettingsPage() {
               <div>
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Spendings</h3>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Jobs, documents, pages, and an estimated token count — platform-wide, with
-                  graphs and a date filter.
+                  OpenAI's real spend from the Admin API key, jobs, pages and tokens -
+                  live for any range, plus the saved daily records.
                 </p>
               </div>
-              <Link to="/super-admin/spend-analytics">
-                <Button size="sm" variant="secondary">Open Spend Analytics →</Button>
+              <Link to="/super-admin/api-cost">
+                <Button size="sm" variant="secondary">Open API Cost &amp; Usage →</Button>
               </Link>
             </div>
           </div>

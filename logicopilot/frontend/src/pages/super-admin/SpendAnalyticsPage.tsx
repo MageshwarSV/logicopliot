@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
 import { Link } from "react-router-dom";
-import { AppShell } from "../../components/AppShell";
 import { Card, StatCard } from "../../components/ui/Card";
 import { Modal } from "../../components/ui/Modal";
 import { Input } from "../../components/ui/Input";
@@ -178,7 +177,10 @@ function StatCardWithSub({ label, value, sub }: { label: string; value: string; 
  *  Settings) and this app's own local counts, including an ESTIMATED token figure that is
  *  clearly labeled as such — the two should never be presented as if they were the same
  *  thing, since they can differ by an order of magnitude. */
-export function SpendAnalyticsPage() {
+/** Live spend straight from OpenAI (the Admin API key in Platform Settings) next to this app's
+ *  own counts, for any date range - shown as the "Live from OpenAI" tab of API Cost & Usage.
+ *  (It was its own Spend Analytics page until 2026-11-23.) */
+export function SpendAnalyticsPanel() {
   const [range, setRange] = useState(() => preset(30));
   const [data, setData] = useState<SpendAnalytics | null>(null);
   const [realCosts, setRealCosts] = useState<OpenAICosts | null>(null);
@@ -259,10 +261,7 @@ export function SpendAnalyticsPage() {
   const activeMetric = METRICS.find((m) => m.value === metric)!;
 
   return (
-    <AppShell
-      title="Spend Analytics"
-      subtitle="Jobs, documents, pages, and token usage — platform-wide, across every tenant."
-    >
+    <>
       <Card className="mb-6 p-5">
         <div className="flex flex-wrap items-end gap-3">
           {[
@@ -484,6 +483,6 @@ export function SpendAnalyticsPage() {
           </div>
         </form>
       </Modal>
-    </AppShell>
+    </>
   );
 }

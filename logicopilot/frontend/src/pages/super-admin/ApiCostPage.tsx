@@ -4,6 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { formatDateTime } from "../../utils/dateTime";
 import * as api from "../../api/apiCost";
+import { SpendAnalyticsPanel } from "./SpendAnalyticsPage";
 import type { CostRow, CostTotals, CustomerPages, DayDetail, MonthRow } from "../../api/apiCost";
 
 const FIELD = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900";
@@ -64,6 +65,9 @@ function CustomerTable({ rows }: { rows: CustomerPages[] }) {
 }
 
 export function ApiCostPage() {
+  // Two views of the same OpenAI account: live from OpenAI for any range (Admin API key), and
+  // the saved nightly records (cost per page, customers, provisional / final).
+  const [view, setView] = useState<"live" | "daily">("live");
   const [month, setMonth] = useState(thisMonth());
   const [days, setDays] = useState<CostRow[]>([]);
   const [totals, setTotals] = useState<CostTotals | null>(null);
@@ -115,7 +119,16 @@ export function ApiCostPage() {
   }, [days]);
 
   return (
-    <AppShell title="API Cost & Usage" subtitle="OpenAI's real daily cost next to the pages it paid for. Collected every night at 11:55 PM IST and reconciled the next morning.">
+    <AppShell title="API Cost & Usage" subtitle="OpenAI's real cost (from the Admin API key) next to the jobs and pages it paid for - live for any range, and saved every night.">
+      <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900" role="tablist">
+        {([["live", "Live from OpenAI"], ["daily", "Daily records"]] as const).map(([k, label]) => (
+          <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium ${view === k ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "live" ? <SpendAnalyticsPanel /> : <>
       <Card className="mb-4 p-4">
         <div className="flex flex-wrap items-end gap-4">
           <label className="grid gap-1 text-xs font-medium text-slate-500">Month
@@ -282,6 +295,7 @@ export function ApiCostPage() {
           <p className="mt-3 text-xs text-slate-500">Pages only. OpenAI cost stays at account level and is not divided between customers.</p>
         </Card>
       </div>
+      </>}
     </AppShell>
   );
 }
