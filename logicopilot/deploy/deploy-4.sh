@@ -24,7 +24,7 @@ set -euo pipefail
 
 SERVERS=(cargora-app cargora-ai cargora-erp)
 REMOTE_DIR="${REMOTE_DIR:-/root/logicopilot}"
-EXPECT_BRANCH="${EXPECT_BRANCH:-dev}"     # dev until the 4-server code is merged into main
+EXPECT_BRANCH="${EXPECT_BRANCH:-production}"   # live servers track production (main = SIT), since 2026-11-23
 MODE="${1:-}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
