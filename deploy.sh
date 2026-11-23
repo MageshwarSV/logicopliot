@@ -78,6 +78,25 @@ cd "$ROOT"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
+# The AI model this server's backend reads documents with - OPENAI_MODEL / VISION_ENGINE_MODEL as
+# the backend itself resolves them (.env first, then the code default). A deploy must never change
+# it by surprise: on 2026-11-22 a code-default change plus a .env without the two lines quietly
+# put production back on gpt-5-mini after it had been tested on gpt-6-luna. Printed before and
+# after, and a missing .env line is called out (the code default would decide).
+ai_models() {
+  (cd "$APP/backend" && PYTHONPATH=. ./venv/bin/python -W ignore -c \
+    'from app.core.config import get_settings as g; s=g(); print(f"OPENAI_MODEL={s.openai_model} VISION_ENGINE_MODEL={s.vision_engine_model}")' \
+    2>/dev/null | tail -n 1) || true
+}
+missing_model_lines() {
+  local f="$APP/backend/.env" k out=""
+  for k in OPENAI_MODEL VISION_ENGINE_MODEL; do
+    grep -qE "^$k=" "$f" 2>/dev/null || out="$out $k"
+  done
+  echo "$out"
+}
+MODELS_BEFORE="$(ai_models)"
+
 say "1/6  fetching origin/$BRANCH"
 git fetch --quiet origin "$BRANCH"
 echo "     remote is at: $(git log --oneline -1 "origin/$BRANCH")"
@@ -110,6 +129,12 @@ WARN
 fi
 
 if [ "$CHECK" = "--check" ]; then
+  say "AI model now: ${MODELS_BEFORE:-unknown}"
+  MISSING="$(missing_model_lines)"
+  [ -n "$MISSING" ] && echo "     *** WARNING: .env has no line for:$MISSING - the code default decides, so a code change could switch the model"
+  if git diff --name-only "HEAD..origin/$BRANCH" | grep -q "backend/app/core/config.py"; then
+    echo "     note: config.py changes in this deploy - check the model defaults are unchanged"
+  fi
   say "what WOULD change (nothing has been touched)"
   git diff --stat "HEAD..origin/$BRANCH" || true
   echo
@@ -208,5 +233,16 @@ if [ "$BUILD_FRONTEND" = "1" ]; then
     && echo "     frontend OK on :$FRONTEND_PORT" \
     || echo "     *** frontend not answering - check: pm2 logs $FRONTEND_APP"
 fi
+
+MODELS_AFTER="$(ai_models)"
+say "AI model: ${MODELS_AFTER:-unknown}"
+if [ -n "$MODELS_BEFORE" ] && [ -n "$MODELS_AFTER" ] && [ "$MODELS_BEFORE" != "$MODELS_AFTER" ]; then
+  printf '\n\033[1;31m%s\033[0m\n' "     *** THE AI MODEL CHANGED WITH THIS DEPLOY"
+  echo "         before: $MODELS_BEFORE"
+  echo "         after:  $MODELS_AFTER"
+  echo "         If that was not intended, set both lines in $APP/backend/.env and restart $BACKEND_APP."
+fi
+MISSING="$(missing_model_lines)"
+[ -n "$MISSING" ] && echo "     *** WARNING: .env has no line for:$MISSING - the code default decides the model"
 
 say "deployed: $(git log --oneline -1)"
