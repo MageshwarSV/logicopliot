@@ -208,6 +208,24 @@ export function AppShell({
     return () => { alive = false; window.clearInterval(t); };
   }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
 
+  // "Fix now · Failed jobs (n)" in the top bar: the logged-in user's OWN ERP-failed jobs (the
+  // ones assigned to them - same rule as the Jobs list's "Assigned To" filter), all dates, so a
+  // failure is never missed whatever screen they are on. Not other people's failures.
+  const [myFailed, setMyFailed] = useState(0);
+  const myName = user?.full_name ?? "";
+  useEffect(() => {
+    if (!showsJobCategories || !myName) return;
+    let alive = true;
+    const load = () => {
+      jobsApi.getJobCategoryCounts({ assignedTo: myName })
+        .then((c) => { if (alive) setMyFailed(c.failed ?? 0); })
+        .catch(() => {});
+    };
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [showsJobCategories, myName]);
+
   // Held pre-alerts. Deliberately unfiltered by the Jobs list's own filters, unlike the
   // counts above: these are not jobs, so a date or customer filter meant for the jobs table
   // has nothing to say about them, and a badge that went to zero because of a filter
@@ -550,6 +568,19 @@ export function AppShell({
               happen to be. Left of the page's own actions so the primary call to action on
               each screen (+ New Job, Submit Entry) stays furthest right where it is expected. */}
           <div className="flex items-center gap-3">
+            {myFailed > 0 && (
+              <Link
+                to="/jobs?category=failed&assignedTo=me&quick=all"
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm ring-2 ring-rose-200 hover:bg-rose-700 dark:ring-rose-500/30"
+                title="Your jobs that did not reach the ERP - open them to see why and run them again"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-white" />
+                </span>
+                Fix now · Failed jobs ({myFailed})
+              </Link>
+            )}
             {/* Only for users a Super Admin ticked ERP branch logins for - renders nothing otherwise. */}
             <ErpBranchButton />
             <NotificationBell />
