@@ -6,6 +6,7 @@ import { formatDateTime } from "../../utils/dateTime";
 import * as correctionsApi from "../../api/extractionCorrections";
 import type { CorrectedField, CorrectedLine, CorrectionEdits, CorrectionSummary, DateRange } from "../../api/extractionCorrections";
 import * as tenantsApi from "../../api/tenants";
+import { FixPromptModal } from "./FixPromptModal";
 import type { Tenant } from "../../types/tenant";
 
 const FIELD = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900";
@@ -96,6 +97,7 @@ export function ExtractionCorrectionsPage() {
   const [edits, setEdits] = useState<CorrectionEdits | null>(null);
   const [editsLoading, setEditsLoading] = useState(false);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
+  const [fixing, setFixing] = useState<CorrectedField | null>(null);
 
   useEffect(() => {
     tenantsApi.listTenants().then(setTenants).catch(() => setTenants([]));
@@ -208,12 +210,13 @@ export function ExtractionCorrectionsPage() {
                 <th className="px-3 py-2.5 text-right font-medium">Rate</th>
                 <th className="px-3 py-2.5 font-medium">Wrong / Missed / Cleared</th>
                 <th className="px-3 py-2.5 font-medium">Latest AI → Saved</th>
-                <th className="px-5 py-2.5 font-medium">Last seen</th>
+                <th className="px-3 py-2.5 font-medium">Last seen</th>
+                <th className="px-5 py-2.5" />
               </tr>
             </thead>
             <tbody>
               {!loading && fields.length === 0 && (
-                <tr><td colSpan={8} className="px-5 py-12 text-center text-sm text-slate-500">
+                <tr><td colSpan={9} className="px-5 py-12 text-center text-sm text-slate-500">
                   No field has been corrected on {minJobs} or more different jobs{period !== "all" ? ` (${PERIOD_LABEL[period].toLowerCase()})` : ""}.
                 </td></tr>
               )}
@@ -240,7 +243,13 @@ export function ExtractionCorrectionsPage() {
                     <td className="max-w-[18rem] px-3 py-3 font-mono text-xs">
                       {ex && <span className="break-all"><span className="text-slate-400">{ex.ai_value || "blank"}</span> → <span className="text-slate-800 dark:text-slate-100">{ex.final_value || "blank"}</span></span>}
                     </td>
-                    <td className="whitespace-nowrap px-5 py-3 text-xs text-slate-500">{formatDateTime(f.last_seen)}</td>
+                    <td className="whitespace-nowrap px-3 py-3 text-xs text-slate-500">{formatDateTime(f.last_seen)}</td>
+                    <td className="px-5 py-3 text-right">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setFixing(f); }}
+                        className="rounded-lg border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/40 dark:text-indigo-300 dark:hover:bg-indigo-500/10">
+                        Fix
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -318,6 +327,7 @@ export function ExtractionCorrectionsPage() {
           </div>
         </Card>
       )}
+      {fixing && <FixPromptModal field={fixing} onClose={() => setFixing(null)} />}
     </AppShell>
   );
 }

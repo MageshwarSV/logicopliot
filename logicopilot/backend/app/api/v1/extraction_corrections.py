@@ -62,3 +62,82 @@ def corrections_edits(
     return field_edits.edits(db, group_id=group_id, label_name=label_name,
                              template_document_id=template_document_id or None,
                              tenant_id=tenant_id, since=since, until=until)
+
+
+# ---------------------------------------------------------------------------- Fix (prompt editor)
+
+from pydantic import BaseModel  # noqa: E402
+
+from app.core import prompt_fix  # noqa: E402
+
+
+class FieldRef(BaseModel):
+    group_id: str
+    template_document_id: str | None = None
+    label_name: str
+
+
+class PromptBody(FieldRef):
+    prompt: str | None = None
+    format_hint: str | None = None
+
+
+class RevertBody(FieldRef):
+    change_id: str
+
+
+@router.get("/fix")
+def fix_info(
+    group_id: str,
+    label_name: str,
+    template_document_id: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    return prompt_fix.info(db, group_id, template_document_id or None, label_name)
+
+
+@router.post("/fix/suggest")
+def fix_suggest(
+    body: PromptBody,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """AI Suggestion - shown on screen, never saved."""
+    return prompt_fix.suggest(db, body.group_id, body.template_document_id or None, body.label_name,
+                              body.prompt, body.format_hint)
+
+
+@router.post("/fix/test")
+def fix_test(
+    body: PromptBody,
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Read the field again with the candidate prompt on the latest corrected jobs. Read-only."""
+    from app.db.session import SessionLocal
+
+    if not (body.prompt or "").strip():
+        raise HTTPException(status_code=400, detail="Write or paste a prompt to test first.")
+    return prompt_fix.test(SessionLocal, body.group_id, body.template_document_id or None,
+                           body.label_name, body.prompt or "", body.format_hint)
+
+
+@router.post("/fix/apply")
+def fix_apply(
+    body: PromptBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Apply Changes - saves the prompt into the template (old one kept in the history)."""
+    return prompt_fix.apply(db, body.group_id, body.template_document_id or None, body.label_name,
+                            body.prompt or "", body.format_hint, user)
+
+
+@router.post("/fix/revert")
+def fix_revert(
+    body: RevertBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    return prompt_fix.revert(db, body.change_id, body.group_id, body.template_document_id or None,
+                             body.label_name, user)
