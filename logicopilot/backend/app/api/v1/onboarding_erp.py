@@ -316,8 +316,6 @@ def update_field(
                 continue
         setattr(f, k, v)
     f.updated_by_name = _who(user)
-    if "category" in updates and wb.status == "complete" and f.category is None and not f.is_custom:
-        wb.status = "draft"      # a column taken out of its bucket: the step is not finished any more
     wb.updated_by_name = _who(user)
     changed = {k: {"from": before[k], "to": getattr(f, k)} for k in updates if before[k] != getattr(f, k)}
     if changed:
@@ -478,17 +476,18 @@ def set_status(
     db: Session = Depends(get_db),
     user: User = Depends(require_write_access(SUPER_ADMIN)),
 ) -> dict:
-    """Save as draft, or finish Step 1 - only when every Excel column is classified."""
+    """Save as draft, or finish Step 1. Columns left unclassified are simply not used (most
+    of an ERP workbook is never filled - 314 of 423 columns in 4S's Sea/Air Import), so they do
+    not block finishing; at least one classified field is needed."""
     wb = _workbook(db, workbook_id)
     if body.status not in ("draft", "complete"):
         raise HTTPException(status_code=422, detail="Status must be draft or complete.")
-    if body.status == "complete":
-        s = _summary(db.query(ErpField).filter(ErpField.workbook_id == wb.id).all())
-        if s["unclassified"]:
-            raise HTTPException(status_code=422,
-                                detail=f"{s['unclassified']} field(s) are not classified yet - every Excel column needs a bucket.")
+    s = _summary(db.query(ErpField).filter(ErpField.workbook_id == wb.id).all())
+    if body.status == "complete" and not s["classified"]:
+        raise HTTPException(status_code=422, detail="Classify at least one field before going on to Step 2.")
     wb.status, wb.updated_by_name = body.status, _who(user)
-    _history(db, wb, user, "complete" if body.status == "complete" else "save_draft")
+    _history(db, wb, user, "complete" if body.status == "complete" else "save_draft",
+             detail={"classified": s["classified"], "left_unclassified": s["unclassified"]})
     db.commit()
     return _workbook_out(db, wb)
 

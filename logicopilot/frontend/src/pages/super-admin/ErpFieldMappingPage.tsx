@@ -509,7 +509,7 @@ export function ErpFieldMappingPage() {
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                 <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
               </div>
-              {wb.summary.unclassified > 0 && <p className="mt-1 text-[11px] text-rose-500">{wb.summary.unclassified} not classified yet</p>}
+              {wb.summary.unclassified > 0 && <p className="mt-1 text-[11px] text-slate-400">{wb.summary.unclassified} left unclassified - not used</p>}
             </div>
           </Card>
 
