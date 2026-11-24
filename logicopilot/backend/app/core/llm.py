@@ -705,8 +705,17 @@ def pick_cth_for_description(
     settings = get_settings()
     if not settings.openai_api_key or not (description or "").strip() or not candidates:
         return ""
-    listing = "\n".join(f"{i}. {d or '(no description)'}  ->  CTH {c}"
-                        for i, (d, c) in enumerate(candidates, start=1))
+    # One choice per CTH, its descriptions together: two rows worded slightly differently but
+    # with the SAME CTH ("DURABLE CONTAINERS- FOR RE-EXPORT ..." twice, both 39231090) were two
+    # equally good rows, and the model rightly refused to pick between them (found on SIT).
+    by_cth: dict[str, list[str]] = {}
+    for d, c in candidates:
+        texts = by_cth.setdefault(c, [])
+        if d and d not in texts and len(texts) < 5:
+            texts.append(d)
+    choices = list(by_cth.items())
+    listing = "\n".join(f"{i}. CTH {c}: " + (" | ".join(ds) or "(no description)")
+                        for i, (c, ds) in enumerate(choices, start=1))
     try:
         resp = create_chat_completion_with_retry(
             timeout=30,
@@ -720,21 +729,22 @@ def pick_cth_for_description(
                     "role": "system",
                     "content": (
                         "A customer's customs classification list (CTH dump) gives one part "
-                        "number several rows, each a different product description with its own "
-                        "CTH. You are given those rows and the description printed on an invoice "
-                        "line for that part number. Pick the ONE row whose description is the "
-                        "same product as the invoice line's - match by meaning (the product "
-                        "type), not by shared generic words like 'TRANSMISSION PARTS'. If no row "
-                        "clearly is the same product, or two rows fit equally well, answer 0 - "
-                        "never guess.\n\n"
-                        'Reply with JSON: {"row": <the row number>} or {"row": 0}.'
+                        "number more than one CTH, each for a different kind of product. You are "
+                        "given the choices - each CTH with the product description(s) the list "
+                        "gives it - and the description printed on an invoice line for that part "
+                        "number. Pick the ONE choice whose descriptions are the same product as "
+                        "the invoice line's - match by meaning (the product type), not by shared "
+                        "generic words like 'TRANSMISSION PARTS'. If no choice clearly is the "
+                        "same product, or two choices fit equally well, answer 0 - never guess."
+                        "\n\n"
+                        'Reply with JSON: {"row": <the choice number>} or {"row": 0}.'
                     ),
                 },
                 {
                     "role": "user",
                     "content": (f"Part number: {part_code}\n"
                                 f"Invoice line description: {description}\n\n"
-                                f"Rows for this part number:\n{listing}"),
+                                f"Choices for this part number:\n{listing}"),
                 },
             ],
         )
@@ -742,8 +752,8 @@ def pick_cth_for_description(
     except Exception as exc:  # noqa: BLE001
         logger.warning("pick_cth_for_description failed for %r: %s", part_code, exc)
         return ""
-    if 1 <= row <= len(candidates):
-        return candidates[row - 1][1]
+    if 1 <= row <= len(choices):
+        return choices[row - 1][0]
     return ""
 
 
