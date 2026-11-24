@@ -147,8 +147,12 @@ def list_customers(
     out = []
     for g in db.query(TemplateGroup).order_by(TemplateGroup.name).all():
         w = wbs.get(g.id)
+        from app.core.excel_entry import sheet_plans
+
         item = {"group_id": g.id, "name": g.name, "tenant": tenants.get(g.tenant_id, ""),
-                "mode": g.mode, "workbook": None}
+                "mode": g.mode, "workbook": None,
+                # Runs on Excel entry already: Step 0 can import its current set-up.
+                "excel_setup": bool(sheet_plans(g.excel_config or {}))}
         if w is not None:
             fields = db.query(ErpField).filter(ErpField.workbook_id == w.id).all()
             item["workbook"] = {"id": w.id, "file_name": w.file_name, "status": w.status,

@@ -19,6 +19,8 @@ export interface ErpCustomer {
   tenant: string;
   mode: string | null;
   workbook: ({ id: string; file_name: string; status: string; sheet_count: number } & ErpSummary) | null;
+  /** The template already runs on Excel entry - Step 0 can import its current set-up. */
+  excel_setup?: boolean;
 }
 
 export interface ErpField {
@@ -228,4 +230,19 @@ export async function setMarkLineItem(fieldId: string, lineItem: boolean): Promi
 
 export async function clearMark(fieldId: string): Promise<void> {
   await apiClient.delete(`/onboarding/erp/fields/${fieldId}/mark`);
+}
+
+export interface ImportResult {
+  classified: number;
+  by_category: Partial<Record<ErpCategory, number>>;
+  left_unclassified: number;
+  boxes: number;
+  samples_used: number;
+  missing_fields: string[];
+}
+
+/** Fill Steps 1, 2 and 4 from the template's own ERP Excel mapping (reads the template only). */
+export async function importCurrent(groupId: string, replace = false): Promise<ImportResult> {
+  const { data } = await apiClient.post<ImportResult>(`/onboarding/erp/groups/${groupId}/import-current`, null, { params: { replace } });
+  return data;
 }

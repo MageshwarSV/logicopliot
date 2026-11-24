@@ -292,3 +292,135 @@ def clear_mark(
         db.delete(m)
         db.commit()
     return {"ok": True}
+
+
+# ---- Import current setup (a template already running on Excel entry) -----------------------
+
+@router.post("/groups/{group_id}/import-current")
+def import_current(
+    group_id: str,
+    replace: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    """Fill Steps 1, 2 and 4 from the template's own ERP Excel mapping and fields: each column's
+    category and document, a box per document field from its existing mark (on the template's
+    own samples), and fixed values / operator settings / AI prompts / formulas. Reads the
+    template only; writes only the onboarding tables. Replaces this customer's onboarding work,
+    so `replace=true` is needed when it already has classified fields."""
+    import io
+
+    from starlette.datastructures import UploadFile
+
+    from app.api.v1.onboarding_erp import set_header_row, upload_workbook, HeaderRowIn
+    from app.api.v1.template_groups import _excel_dir
+    from app.core.erp_field_config import ConfigError, clean_config
+    from app.core.erp_import import classify_column, field_index
+    from app.core.excel_entry import sheet_plans
+    from app.models.custom_field import CustomField
+    from app.models.field_mark import FieldMark
+    from app.models.template_document import TemplateDocument
+    from app.models.template_group import TemplateGroup
+
+    group = db.get(TemplateGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    plans = sheet_plans(group.excel_config or {})
+    stored = next(iter(sorted(_excel_dir(group.id).glob("template.*"))), None)
+    if not plans or stored is None:
+        raise HTTPException(status_code=422, detail="This template has no ERP Excel set-up to import from.")
+    wb = db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group.id).first()
+    if wb is not None and not replace:
+        done = db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.category.isnot(None)).count()
+        if done:
+            raise HTTPException(status_code=409, detail=f"This customer already has {done} classified field(s) - importing replaces them.")
+
+    # The template's own ERP workbook, read exactly as an upload would be.
+    upload_workbook(group.id, file=UploadFile(file=io.BytesIO(stored.read_bytes()),
+                                              filename=f"{group.name} - ERP workbook{stored.suffix}"), db=db, user=user)
+    wb = db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group.id).first()
+    for p in plans:
+        sheet = next((s for s in wb.sheets if s["name"] == p["sheet"]), None)
+        if sheet and sheet["header_row"] != p["header_row"]:
+            set_header_row(wb.id, HeaderRowIn(sheet=p["sheet"], header_row=p["header_row"]), db=db, user=user)
+    db.refresh(wb)
+
+    tdocs = (db.query(TemplateDocument).filter(TemplateDocument.group_id == group.id)
+             .order_by(TemplateDocument.created_at).all())
+    doc_order = [d.id for d in tdocs]
+    doc_names = {d.id: d.name for d in tdocs}
+    wb_doc_ids = {d["id"] for d in _documents(db, wb)}
+    marks = db.query(FieldMark).filter(FieldMark.document_id.in_(doc_order)).order_by(FieldMark.created_at).all() if doc_order else []
+    cfs = db.query(CustomField).filter(CustomField.group_id == group.id).order_by(CustomField.created_at).all()
+    idx = field_index(marks, cfs)
+    columns = {p["sheet"]: p["columns"] for p in plans}
+
+    # Start clean: this import is the whole of Steps 1, 2 and 4 for this customer.
+    db.query(ErpFieldMark).filter(ErpFieldMark.workbook_id == wb.id).delete(synchronize_session=False)
+    fields = db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.is_custom.is_(False)).all()
+    counts: dict[str, int] = {}
+    missing: list[str] = []
+    boxes: list[tuple] = []
+    for f in fields:
+        for k in ("category", "source_document", "formula", "ai_prompt", "erp_master_ref", "config", "description"):
+            setattr(f, k, None)
+        cols = columns.get(f.sheet_name) or []
+        col = next((c for c in cols if (c.get("header") or "").strip() == f.excel_name.strip()), None) \
+            or next((c for c in cols if c.get("column") == f.column_key), None)
+        res = classify_column(col, idx, doc_order, doc_names)
+        if res.get("description"):
+            f.description = res["description"]
+        cat = res["category"]
+        if cat is None:
+            if col and (col.get("field") or "").strip() and not (col.get("field") or "").startswith("#"):
+                missing.append(f"{f.sheet_name} · {f.excel_name} → {col.get('field')}")
+            continue
+        doc = res.get("source_document")
+        f.category = cat
+        f.source_document = doc if doc in wb_doc_ids else None
+        for k in ("formula", "ai_prompt", "erp_master_ref"):
+            if res.get(k):
+                setattr(f, k, res[k])
+        if res.get("display_label"):
+            f.display_label = res["display_label"]
+        if "mandatory" in res:
+            f.mandatory = bool(res["mandatory"])
+        if res.get("config") is not None:
+            try:
+                f.config = clean_config(cat, res["config"])
+            except ConfigError:
+                f.config = None
+            if cat == "fixed" and f.config:
+                f.default_value = f.config.get("value") or None
+        f.updated_by_name = _who(user)
+        counts[cat] = counts.get(cat, 0) + 1
+        if cat == "document" and res.get("mark") is not None and f.source_document:
+            boxes.append((f, res["mark"], bool(res.get("line_item"))))
+    db.commit()
+
+    # Step 2: the template's own samples, and a box per document field from its existing mark.
+    samples_used, made = 0, 0
+    docs_by_id = {d["id"]: d for d in _documents(db, wb)}
+    for doc_id in sorted({f.source_document for f, _m, _l in boxes}):
+        if _sample(db, wb.id, doc_id) is None:
+            src = _template_sample(db, docs_by_id[doc_id])
+            if src is not None:
+                _store_sample(db, wb, docs_by_id[doc_id], f"{docs_by_id[doc_id]['name']} (template sample){src.suffix.lower()}",
+                              None, src, user)
+                samples_used += 1
+    for f, mark, line_item in boxes:
+        s = _sample(db, wb.id, f.source_document)
+        if s is None or mark.page_number > s.page_count:
+            continue
+        db.add(ErpFieldMark(workbook_id=wb.id, field_id=f.id, doc_id=f.source_document, page=mark.page_number,
+                            x=mark.x, y=mark.y, width=mark.width, height=mark.height, line_item=line_item,
+                            detected_value=(mark.example_value or None), anchor=(mark.detected_anchor or None),
+                            updated_by_name=_who(user)))
+        made += 1
+    total = len(fields)
+    _history(db, wb, user, "import_current",
+             detail={"template": group.name, "classified": sum(counts.values()), "by_category": counts,
+                     "left_unclassified": total - sum(counts.values()), "boxes": made, "missing_fields": missing})
+    db.commit()
+    return {"classified": sum(counts.values()), "by_category": counts, "left_unclassified": total - sum(counts.values()),
+            "boxes": made, "samples_used": samples_used, "missing_fields": missing}

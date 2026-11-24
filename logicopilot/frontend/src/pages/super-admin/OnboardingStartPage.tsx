@@ -105,6 +105,40 @@ export function OnboardingStartPage() {
     }
   };
 
+  const LABEL: Record<string, string> = {
+    document: "Document", reference: "Reference", fixed: "Fixed", operator: "Operator Input",
+    ai: "AI-Derived", formula: "Formula / Rule",
+  };
+  const importSetup = async () => {
+    if (!groupId || !customer) return;
+    setBusy("import");
+    const run = async (replace: boolean) => {
+      const r = await erpApi.importCurrent(groupId, replace);
+      const parts = Object.entries(r.by_category).map(([k, n]) => `${n} ${LABEL[k] ?? k}`).join(", ");
+      setMessage({
+        tone: "ok",
+        text: `Imported from ${customer.name}: ${r.classified} columns classified (${parts}), ${r.left_unclassified} left unclassified, `
+          + `${r.boxes} document boxes from the template's marks${r.samples_used ? `, ${r.samples_used} template sample(s) used` : ""}.`
+          + (r.missing_fields.length ? ` ${r.missing_fields.length} column(s) point at fields the template does not have: ${r.missing_fields.join("; ")}.` : ""),
+      });
+    };
+    try {
+      await run(false);
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 409 && window.confirm(`${errorText(err, "This customer already has classified fields.")}\n\nImport anyway and replace them?`)) {
+        try { await run(true); } catch (e2) { setMessage({ tone: "warn", text: errorText(e2, "Could not import.") }); }
+      } else if (status !== 409) {
+        setMessage({ tone: "warn", text: errorText(err, "Could not import.") });
+      }
+    } finally {
+      setBusy(null);
+      await loadCustomers();
+      const fresh = (await erpApi.listCustomers().catch(() => [])).find((c) => c.group_id === groupId);
+      if (fresh?.workbook?.id) setDocs(await erpApi.getDocMapping(fresh.workbook.id).catch(() => null));
+    }
+  };
+
   const addDocument = async () => {
     if (!workbookId) return;
     const name = window.prompt("Document name (e.g. Bill of Lading, Certificate of Origin)");
@@ -179,6 +213,16 @@ export function OnboardingStartPage() {
             <Card className="h-fit p-5">
               <p className="text-base font-semibold text-slate-900 dark:text-slate-50">2. ERP Excel workbook</p>
               <p className="mb-3 text-xs text-slate-500">The customer's ERP import workbook - every worksheet and column is read from it for Step 1. The file itself is never changed.</p>
+              {customer.excel_setup && (
+                <div className="mb-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 dark:border-indigo-500/30 dark:bg-indigo-500/10">
+                  <p className="text-sm font-medium text-indigo-800 dark:text-indigo-200">This template already runs on Excel entry</p>
+                  <p className="mb-2 text-xs text-indigo-700/80 dark:text-indigo-200/80">
+                    Import its current set-up: its ERP workbook, each column's category and document (Step 1), a box per document field from its marks (Step 2),
+                    and fixed values, operator settings, AI prompts and formulas (Step 4). The template itself is only read, never changed.
+                  </p>
+                  <Button size="sm" isLoading={busy === "import"} onClick={() => void importSetup()}>Import current setup</Button>
+                </div>
+              )}
               {customer.workbook ? (
                 <div className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
                   <span className="rounded bg-emerald-600 px-1.5 text-xs font-bold text-white">X</span>
