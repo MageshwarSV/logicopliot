@@ -13,7 +13,7 @@ import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
-  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon,
+  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon, FolderIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -26,6 +26,7 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/template-creation": LayersIcon,
   "/super-admin/data-transformation": ArrowPathIcon,
   "/super-admin/extraction-corrections": PencilIcon,
+  "/super-admin/screen-designer": FolderIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,
   "/super-admin/entry-browser": MonitorIcon,

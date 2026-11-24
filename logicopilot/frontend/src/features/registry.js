@@ -28,6 +28,8 @@ export const superAdminFeatures = [
   // Fields operators keep correcting on many different jobs - where an extraction prompt needs
   // work (app/core/field_edits.py).
   { path: "/super-admin/extraction-corrections", navLabel: "Extraction Corrections", group: "Platform Configuration", order: 5.7 },
+  // Lay out a template document's job screen: sections, order, product card (Screen Designer).
+  { path: "/super-admin/screen-designer", navLabel: "Screen Designer", group: "Platform Configuration", order: 5.8 },
 
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own

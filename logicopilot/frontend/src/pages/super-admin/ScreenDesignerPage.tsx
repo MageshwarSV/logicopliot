@@ -1,0 +1,813 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent, ReactNode } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { AppShell } from "../../components/AppShell";
+import { Card } from "../../components/ui/Card";
+import { Button } from "../../components/ui/Button";
+import * as designerApi from "../../api/screenDesigner";
+import type { DesignerField, DesignerTemplate, RecentJob } from "../../api/screenDesigner";
+import * as jobsApi from "../../api/jobs";
+import type { JobDetail, JobFieldValue, ScreenLayout } from "../../types/jobs";
+import { formatDateTime } from "../../utils/dateTime";
+
+// Super Admin -> Screen Designer. Lays out one template document's job screen: sections and
+// their order, which field sits where, and the product card with its groups. Saves straight
+// away (every save is kept in history). Field properties (label, width, multi-line,
+// mandatory, dropdown list) are saved on the field itself - the same settings the template
+// wizard edits. A document with no layout keeps the job screen's default behaviour.
+
+type Selection =
+  | { kind: "field"; ref: string }
+  | { kind: "section"; id: string }
+  | { kind: "group"; id: string }
+  | null;
+
+type DragItem =
+  | { type: "field"; ref: string }
+  | { type: "section"; id: string }
+  | { type: "group"; id: string };
+
+type FieldTarget =
+  | { container: "section"; id: string; beforeRef?: string }
+  | { container: "card"; beforeRef?: string }
+  | { container: "group"; id: string; beforeRef?: string };
+
+const DRAG_MIME = "application/x-screen-designer";
+
+function newId(prefix: string): string {
+  return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function fieldName(f: DesignerField | undefined, ref: string): string {
+  if (!f) return "(deleted field)";
+  return (f.display_label ?? "").trim() || f.label_name || ref;
+}
+
+function withoutRef(layout: ScreenLayout, ref: string): ScreenLayout {
+  return {
+    sections: layout.sections.map((s) => ({ ...s, fields: s.fields.filter((r) => r !== ref) })),
+    product_card: {
+      fields: layout.product_card.fields.filter((r) => r !== ref),
+      groups: layout.product_card.groups.map((g) => ({ ...g, fields: g.fields.filter((r) => r !== ref) })),
+    },
+  };
+}
+
+function insertAt(list: string[], ref: string, beforeRef?: string): string[] {
+  const out = list.filter((r) => r !== ref);
+  const at = beforeRef ? out.indexOf(beforeRef) : -1;
+  if (at < 0) out.push(ref);
+  else out.splice(at, 0, ref);
+  return out;
+}
+
+function placeField(layout: ScreenLayout, ref: string, target: FieldTarget): ScreenLayout {
+  const next = withoutRef(layout, ref);
+  if (target.container === "section") {
+    next.sections = next.sections.map((s) =>
+      s.id === target.id ? { ...s, fields: insertAt(s.fields, ref, target.beforeRef) } : s);
+  } else if (target.container === "card") {
+    next.product_card = { ...next.product_card, fields: insertAt(next.product_card.fields, ref, target.beforeRef) };
+  } else {
+    next.product_card = {
+      ...next.product_card,
+      groups: next.product_card.groups.map((g) =>
+        g.id === target.id ? { ...g, fields: insertAt(g.fields, ref, target.beforeRef) } : g),
+    };
+  }
+  return next;
+}
+
+function moveInList<T extends { id: string }>(list: T[], id: string, beforeId: string | null): T[] {
+  const item = list.find((x) => x.id === id);
+  if (!item) return list;
+  const out = list.filter((x) => x.id !== id);
+  const at = beforeId ? out.findIndex((x) => x.id === beforeId) : -1;
+  if (at < 0) out.push(item);
+  else out.splice(at, 0, item);
+  return out;
+}
+
+function uniqueTitle(base: string, taken: string[]): string {
+  const lower = new Set(taken.map((t) => t.toLowerCase()));
+  if (!lower.has(base.toLowerCase())) return base;
+  for (let i = 2; ; i += 1) if (!lower.has(`${base} ${i}`.toLowerCase())) return `${base} ${i}`;
+}
+
+function readDrag(e: DragEvent): DragItem | null {
+  try {
+    return JSON.parse(e.dataTransfer.getData(DRAG_MIME)) as DragItem;
+  } catch {
+    return null;
+  }
+}
+
+export function ScreenDesignerPage() {
+  const [params, setParams] = useSearchParams();
+  const [templates, setTemplates] = useState<DesignerTemplate[]>([]);
+  const groupId = params.get("group") ?? "";
+  const docId = params.get("doc") ?? "";
+  const [fields, setFields] = useState<DesignerField[]>([]);
+  const [layout, setLayout] = useState<ScreenLayout | null>(null);
+  const [meta, setMeta] = useState<{ updated_at: string | null; updated_by: string | null }>({ updated_at: null, updated_by: null });
+  const [loading, setLoading] = useState(false);
+  const [jobs, setJobs] = useState<RecentJob[]>([]);
+  const [previewJobId, setPreviewJobId] = useState("");
+  const [previewJob, setPreviewJob] = useState<JobDetail | null>(null);
+  const [selected, setSelected] = useState<Selection>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  const saveSeq = useRef(0);
+
+  const template = templates.find((t) => t.id === groupId) ?? null;
+  const fieldByRef = useMemo(() => new Map(fields.map((f) => [f.ref, f])), [fields]);
+
+  useEffect(() => {
+    designerApi.listTemplates().then(setTemplates).catch(() => setMessage("Could not load the templates."));
+  }, []);
+
+  const setSelection = (group: string, doc: string) => {
+    const next = new URLSearchParams();
+    if (group) next.set("group", group);
+    if (doc) next.set("doc", doc);
+    setParams(next, { replace: true });
+    setSelected(null);
+  };
+
+  // Default to the template's first document.
+  useEffect(() => {
+    if (template && !docId && template.documents.length) setSelection(template.id, template.documents[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, docId]);
+
+  const loadDocument = useCallback(async () => {
+    if (!docId) return;
+    setLoading(true);
+    setMessage(null);
+    try {
+      const [f, l] = await Promise.all([designerApi.listFields(docId), designerApi.getLayout(docId)]);
+      setFields(f.fields);
+      setLayout(l.layout);
+      setMeta({ updated_at: l.updated_at, updated_by: l.updated_by });
+    } catch {
+      setMessage("Could not load this document.");
+    } finally {
+      setLoading(false);
+    }
+  }, [docId]);
+
+  useEffect(() => {
+    void loadDocument();
+  }, [loadDocument]);
+
+  useEffect(() => {
+    if (!groupId) return;
+    designerApi.recentJobs(groupId).then((list) => {
+      setJobs(list);
+      setPreviewJobId((current) => (current && list.some((j) => j.id === current) ? current : list[0]?.id ?? ""));
+    }).catch(() => setJobs([]));
+  }, [groupId]);
+
+  useEffect(() => {
+    if (!previewJobId) {
+      setPreviewJob(null);
+      return;
+    }
+    jobsApi.getJob(previewJobId).then(setPreviewJob).catch(() => setPreviewJob(null));
+  }, [previewJobId]);
+
+  // ---- values from the preview job --------------------------------------------------------
+  const values = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!previewJob) return out;
+    const docJobIds = new Set(previewJob.documents.filter((d) => d.template_document_id === docId).map((d) => d.id));
+    const value = (fv: JobFieldValue) => (fv.value ?? fv.corrected_value ?? fv.extracted_value ?? "").toString();
+    const rows = previewJob.field_values.filter((fv) => fv.row_index != null && fv.job_document_id && docJobIds.has(fv.job_document_id));
+    const firstRow = rows.length ? Math.min(...rows.map((fv) => fv.row_index as number)) : null;
+    for (const fv of previewJob.field_values) {
+      if (fv.mark_id && fv.job_document_id && docJobIds.has(fv.job_document_id)) {
+        const ref = `m:${fv.mark_id}`;
+        if (out.has(ref)) continue;
+        if (fv.row_index == null || fv.row_index === firstRow) out.set(ref, value(fv));
+      } else if (!fv.mark_id && fv.custom_field_id && fv.row_index == null) {
+        const ref = `c:${fv.custom_field_id}`;
+        if (!out.has(ref)) out.set(ref, value(fv));
+      }
+    }
+    return out;
+  }, [previewJob, docId]);
+
+  // ---- saving -----------------------------------------------------------------------------
+  const persist = async (next: ScreenLayout) => {
+    setLayout(next);
+    const seq = ++saveSeq.current;
+    setSaveState("saving");
+    try {
+      const res = await designerApi.saveLayout(docId, next);
+      if (seq !== saveSeq.current) return;
+      setMeta({ updated_at: res.updated_at, updated_by: res.updated_by });
+      setSaveState("saved");
+      if (res.dropped?.length) setMessage(`${res.dropped.length} deleted field(s) were taken out of the layout.`);
+    } catch (err: unknown) {
+      if (seq !== saveSeq.current) return;
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setSaveState("error");
+      setMessage(detail ?? "Could not save - the last saved layout has been reloaded.");
+      void loadDocument();
+    }
+  };
+
+  const createFromCurrent = async () => {
+    setSaveState("saving");
+    try {
+      const res = await designerApi.createFromCurrent(docId);
+      setLayout(res.layout);
+      setMeta({ updated_at: res.updated_at, updated_by: res.updated_by });
+      setSaveState("saved");
+      setTemplates((ts) => ts.map((t) => ({ ...t, documents: t.documents.map((d) => (d.id === docId ? { ...d, has_layout: true } : d)) })));
+    } catch {
+      setSaveState("error");
+      setMessage("Could not create the layout.");
+    }
+  };
+
+  const removeLayout = async () => {
+    if (!window.confirm("Remove this layout? The document goes back to the default job screen. It stays in the history.")) return;
+    await designerApi.removeLayout(docId);
+    setLayout(null);
+    setSelected(null);
+    setMeta({ updated_at: null, updated_by: null });
+    setTemplates((ts) => ts.map((t) => ({ ...t, documents: t.documents.map((d) => (d.id === docId ? { ...d, has_layout: false } : d)) })));
+  };
+
+  // ---- layout edits -----------------------------------------------------------------------
+  const placed = useMemo(() => {
+    const s = new Set<string>();
+    if (!layout) return s;
+    layout.sections.forEach((x) => x.fields.forEach((r) => s.add(r)));
+    layout.product_card.fields.forEach((r) => s.add(r));
+    layout.product_card.groups.forEach((g) => g.fields.forEach((r) => s.add(r)));
+    return s;
+  }, [layout]);
+  const unplaced = fields.filter((f) => !placed.has(f.ref) && (f.place === "card" || f.source === "mark" || f.on_this_tab));
+  const jobLevelOffTab = fields.filter((f) => f.source === "custom" && !f.on_this_tab && !placed.has(f.ref));
+
+  const dropField = (ref: string, target: FieldTarget) => {
+    if (!layout) return;
+    const field = fieldByRef.get(ref);
+    const wantsCard = target.container !== "section";
+    if (field && (field.place === "card") !== wantsCard) {
+      setMessage(field.place === "card"
+        ? "A product-line field can only go on the product card."
+        : "A document field can only go in a section, not on the product card.");
+      return;
+    }
+    setMessage(null);
+    void persist(placeField(layout, ref, target));
+  };
+
+  const addSection = () => {
+    if (!layout) return;
+    const id = newId("s");
+    const title = uniqueTitle("New section", layout.sections.map((s) => s.title));
+    void persist({ ...layout, sections: [...layout.sections, { id, title, fields: [] }] });
+    setSelected({ kind: "section", id });
+  };
+
+  const addGroup = () => {
+    if (!layout) return;
+    const id = newId("g");
+    const title = uniqueTitle("New group", layout.product_card.groups.map((g) => g.title));
+    void persist({ ...layout, product_card: { ...layout.product_card, groups: [...layout.product_card.groups, { id, title, fields: [] }] } });
+    setSelected({ kind: "group", id });
+  };
+
+  const onDragStart = (item: DragItem) => (e: DragEvent) => {
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(item));
+    e.dataTransfer.effectAllowed = "move";
+    e.stopPropagation();
+  };
+
+  const allowDrop = (key: string) => (e: DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragOver !== key) setDragOver(key);
+  };
+
+  const onDropField = (target: FieldTarget) => (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(null);
+    const item = readDrag(e);
+    if (item?.type === "field") dropField(item.ref, target);
+  };
+
+  const onDropSection = (beforeId: string | null) => (e: DragEvent) => {
+    const item = readDrag(e);
+    if (item?.type !== "section" || !layout) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(null);
+    void persist({ ...layout, sections: moveInList(layout.sections, item.id, beforeId) });
+  };
+
+  const onDropGroup = (beforeId: string | null) => (e: DragEvent) => {
+    const item = readDrag(e);
+    if (item?.type !== "group" || !layout) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(null);
+    void persist({ ...layout, product_card: { ...layout.product_card, groups: moveInList(layout.product_card.groups, item.id, beforeId) } });
+  };
+
+  // ---- rendering --------------------------------------------------------------------------
+  const fieldBox = (ref: string, target: FieldTarget) => {
+    const f = fieldByRef.get(ref);
+    const isSel = selected?.kind === "field" && selected.ref === ref;
+    const key = `f:${ref}`;
+    const value = values.get(ref) ?? "";
+    return (
+      <div
+        key={ref}
+        draggable
+        onDragStart={onDragStart({ type: "field", ref })}
+        onDragOver={allowDrop(key)}
+        onDragLeave={() => setDragOver((k) => (k === key ? null : k))}
+        onDrop={onDropField({ ...target, beforeRef: ref } as FieldTarget)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setSelected({ kind: "field", ref });
+        }}
+        className={`cursor-grab rounded-lg border p-2 transition-colors ${f?.full_width ? "sm:col-span-2" : ""} ${
+          isSel ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-500/30" : "border-transparent hover:border-slate-300 dark:hover:border-slate-600"
+        } ${dragOver === key ? "border-t-4 border-t-indigo-500" : ""}`}
+        title="Drag to move - click to edit"
+      >
+        <p className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">
+          {fieldName(f, ref)}
+          {f?.mandatory && <span className="text-rose-500">*</span>}
+          {f?.fixed_options?.length ? <span className="ml-1 text-[10px] text-slate-400">▾ list</span> : null}
+        </p>
+        <div
+          className={`rounded-md border border-sky-200 bg-sky-50/60 px-3 text-sm text-slate-700 dark:border-sky-500/20 dark:bg-sky-500/5 dark:text-slate-200 ${
+            f?.multiline ? "min-h-[4.5rem] whitespace-pre-wrap py-2" : "truncate py-2"
+          }`}
+        >
+          {value || <span className="italic text-slate-400">{previewJob ? "empty on this job" : "no preview job"}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const fieldGrid = (refs: string[], target: FieldTarget, emptyText: string) => {
+    const endKey = `end:${target.container}:${"id" in target ? target.id : "card"}`;
+    return (
+      <div className="grid gap-x-3 gap-y-1 sm:grid-cols-2">
+        {refs.map((ref) => fieldBox(ref, target))}
+        <div
+          onDragOver={allowDrop(endKey)}
+          onDragLeave={() => setDragOver((k) => (k === endKey ? null : k))}
+          onDrop={onDropField(target)}
+          className={`rounded-lg border-2 border-dashed px-3 py-2 text-center text-xs sm:col-span-2 ${
+            dragOver === endKey ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10" : "border-slate-200 text-slate-400 dark:border-slate-700"
+          }`}
+        >
+          {refs.length ? "Drop here to add at the end" : emptyText}
+        </div>
+      </div>
+    );
+  };
+
+  const sectionHeader = (title: string, isSel: boolean, onSelect: () => void, dragItem: DragItem, controls: ReactNode) => (
+    <div
+      draggable
+      onDragStart={onDragStart(dragItem)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+      className={`mb-2 flex cursor-grab items-center justify-between gap-2 rounded-md px-2 py-1 ${isSel ? "bg-indigo-50 dark:bg-indigo-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+      title="Drag to move the whole section - click to rename"
+    >
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">⠿ {title}</p>
+      <div className="flex items-center gap-1">{controls}</div>
+    </div>
+  );
+
+  const smallBtn = (label: string, onClick: () => void, disabled = false, danger = false) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`rounded px-1.5 py-0.5 text-xs ${danger ? "text-rose-500 hover:bg-rose-50" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"} disabled:opacity-30`}
+    >
+      {label}
+    </button>
+  );
+
+  const docName = template?.documents.find((d) => d.id === docId)?.name ?? "";
+
+  return (
+    <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card. Changes save straight away.">
+      {/* Pickers */}
+      <Card className="mb-4 flex flex-wrap items-end gap-4 p-4">
+        <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
+          Template
+          <select
+            value={groupId}
+            onChange={(e) => setSelection(e.target.value, "")}
+            className="min-w-[14rem] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <option value="">Pick a template…</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.documents.some((d) => d.has_layout) ? " ●" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {template && (
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-500">Document</span>
+            <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 p-1 dark:border-slate-700">
+              {template.documents.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setSelection(template.id, d.id)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium ${d.id === docId ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"}`}
+                >
+                  {d.name}{d.has_layout ? " ●" : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {template && (
+          <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Preview job
+            <select
+              value={previewJobId}
+              onChange={(e) => setPreviewJobId(e.target.value)}
+              className="min-w-[16rem] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            >
+              {!jobs.length && <option value="">No jobs on this template yet</option>}
+              {jobs.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {j.reference} · {j.created_at ? formatDateTime(j.created_at) : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {previewJobId && (
+          <Link to={`/jobs/${previewJobId}`} target="_blank" className="pb-2 text-sm text-indigo-600 hover:underline">
+            Open this job ↗
+          </Link>
+        )}
+        <div className="ml-auto pb-2 text-xs text-slate-400">
+          {saveState === "saving" && "Saving…"}
+          {saveState === "saved" && meta.updated_at && `Saved ${formatDateTime(meta.updated_at)}${meta.updated_by ? ` by ${meta.updated_by}` : ""}`}
+          {saveState === "idle" && meta.updated_at && `Last saved ${formatDateTime(meta.updated_at)}${meta.updated_by ? ` by ${meta.updated_by}` : ""}`}
+          {saveState === "error" && <span className="text-rose-500">Not saved</span>}
+        </div>
+      </Card>
+
+      {message && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          {message}
+          <button type="button" className="ml-3 text-xs underline" onClick={() => setMessage(null)}>dismiss</button>
+        </div>
+      )}
+
+      {!template && <Card className="p-8 text-center text-sm text-slate-500">Pick a template to start.</Card>}
+
+      {template && docId && !loading && !layout && (
+        <Card className="p-8 text-center">
+          <p className="text-base font-semibold text-slate-800 dark:text-slate-100">{docName} uses the default job screen.</p>
+          <p className="mt-1 text-sm text-slate-500">Create a layout from what operators see today, then rearrange it here. Nothing changes on the job screen until you do.</p>
+          <Button className="mt-4" onClick={() => void createFromCurrent()}>Create layout from current screen</Button>
+        </Card>
+      )}
+
+      {template && layout && (
+        <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)_18rem]">
+          {/* Left: fields not placed */}
+          <Card className="h-fit p-4 lg:sticky lg:top-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Not placed</p>
+            <p className="mb-2 text-[11px] text-slate-400">Shown under "Other" on the job screen. Drag one into a section.</p>
+            <div className="flex flex-col gap-1">
+              {unplaced.length === 0 && <p className="text-xs text-emerald-600">Every field is placed.</p>}
+              {unplaced.map((f) => (
+                <div
+                  key={f.ref}
+                  draggable
+                  onDragStart={onDragStart({ type: "field", ref: f.ref })}
+                  onClick={() => setSelected({ kind: "field", ref: f.ref })}
+                  className={`cursor-grab rounded-md border px-2 py-1 text-xs ${selected?.kind === "field" && selected.ref === f.ref ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10" : "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"}`}
+                >
+                  ⚠ {fieldName(f, f.ref)} <span className="text-[10px] text-slate-400">{f.place === "card" ? "product line" : ""}</span>
+                </div>
+              ))}
+            </div>
+            {jobLevelOffTab.length > 0 && (
+              <>
+                <p className="mt-4 text-xs font-semibold uppercase tracking-wider text-slate-500">Job-level fields</p>
+                <p className="mb-2 text-[11px] text-slate-400">Not on this tab today. Drag one into a section to show it here.</p>
+                <div className="flex flex-col gap-1">
+                  {jobLevelOffTab.map((f) => (
+                    <div
+                      key={f.ref}
+                      draggable
+                      onDragStart={onDragStart({ type: "field", ref: f.ref })}
+                      onClick={() => setSelected({ kind: "field", ref: f.ref })}
+                      className="cursor-grab rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                    >
+                      {fieldName(f, f.ref)}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </Card>
+
+          {/* Centre: the screen */}
+          <div onClick={() => setSelected(null)}>
+            <Card className="p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Extracted Data · {docName}</p>
+                <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); addSection(); }}>+ Add section</Button>
+              </div>
+              {layout.sections.map((s, i) => (
+                <div
+                  key={s.id}
+                  onDragOver={allowDrop(`sec:${s.id}`)}
+                  onDrop={onDropSection(s.id)}
+                  className={`mb-5 rounded-xl border p-3 ${dragOver === `sec:${s.id}` ? "border-indigo-300" : "border-slate-100 dark:border-slate-800"}`}
+                >
+                  {sectionHeader(
+                    s.title,
+                    selected?.kind === "section" && selected.id === s.id,
+                    () => setSelected({ kind: "section", id: s.id }),
+                    { type: "section", id: s.id },
+                    <>
+                      {smallBtn("↑", () => void persist({ ...layout, sections: moveInList(layout.sections, s.id, layout.sections[i - 1]?.id ?? null) }), i === 0)}
+                      {smallBtn("↓", () => void persist({ ...layout, sections: moveInList(layout.sections, s.id, layout.sections[i + 2]?.id ?? null) }), i === layout.sections.length - 1)}
+                    </>,
+                  )}
+                  {fieldGrid(s.fields, { container: "section", id: s.id }, "Empty section - drop fields here")}
+                </div>
+              ))}
+              <div onDragOver={allowDrop("sec:end")} onDrop={onDropSection(null)} className={`h-3 ${dragOver === "sec:end" ? "bg-indigo-100" : ""}`} />
+
+              {/* Product card */}
+              {(layout.product_card.fields.length > 0 || layout.product_card.groups.length > 0 || fields.some((f) => f.place === "card")) && (
+                <div className="mt-6 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-500">PRODUCT CARD · Product 1 of the preview job</p>
+                    <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); addGroup(); }}>+ Add group</Button>
+                  </div>
+                  {fieldGrid(layout.product_card.fields, { container: "card" }, "Drop product-line fields here")}
+                  {layout.product_card.groups.map((g, i) => (
+                    <div
+                      key={g.id}
+                      onDragOver={allowDrop(`grp:${g.id}`)}
+                      onDrop={onDropGroup(g.id)}
+                      className="mt-3 rounded-md border border-indigo-100 bg-indigo-50/40 p-3 dark:border-indigo-500/20 dark:bg-indigo-500/5"
+                    >
+                      {sectionHeader(
+                        g.title,
+                        selected?.kind === "group" && selected.id === g.id,
+                        () => setSelected({ kind: "group", id: g.id }),
+                        { type: "group", id: g.id },
+                        <>
+                          {smallBtn("↑", () => void persist({ ...layout, product_card: { ...layout.product_card, groups: moveInList(layout.product_card.groups, g.id, layout.product_card.groups[i - 1]?.id ?? null) } }), i === 0)}
+                          {smallBtn("↓", () => void persist({ ...layout, product_card: { ...layout.product_card, groups: moveInList(layout.product_card.groups, g.id, layout.product_card.groups[i + 2]?.id ?? null) } }), i === layout.product_card.groups.length - 1)}
+                        </>,
+                      )}
+                      {fieldGrid(g.fields, { container: "group", id: g.id }, "Empty group - drop product-line fields here")}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); void removeLayout(); }}>
+                Remove layout (back to default screen)
+              </Button>
+            </div>
+          </div>
+
+          {/* Right: properties */}
+          <Card className="h-fit p-4 lg:sticky lg:top-4">
+            <PropertiesPanel
+              selected={selected}
+              layout={layout}
+              fieldByRef={fieldByRef}
+              onLayout={(next) => void persist(next)}
+              onFieldSaved={(ref, patch) => setFields((fs) => fs.map((f) => (f.ref === ref ? { ...f, ...patch } : f)))}
+              onDeselect={() => setSelected(null)}
+              onError={setMessage}
+            />
+          </Card>
+        </div>
+      )}
+      {loading && <Card className="p-8 text-center text-sm text-slate-500">Loading…</Card>}
+    </AppShell>
+  );
+}
+
+function PropertiesPanel({
+  selected, layout, fieldByRef, onLayout, onFieldSaved, onDeselect, onError,
+}: {
+  selected: Selection;
+  layout: ScreenLayout;
+  fieldByRef: Map<string, DesignerField>;
+  onLayout: (next: ScreenLayout) => void;
+  onFieldSaved: (ref: string, patch: Partial<DesignerField>) => void;
+  onDeselect: () => void;
+  onError: (msg: string) => void;
+}) {
+  if (!selected) {
+    return (
+      <div className="text-sm text-slate-500">
+        <p className="mb-2 font-semibold text-slate-700 dark:text-slate-200">Properties</p>
+        <p>Click a field, a section heading or a product-card group to edit it.</p>
+        <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-slate-400">
+          <li>Drag fields between sections, or onto another field to put it before that one.</li>
+          <li>Drag a section heading to move the whole section.</li>
+          <li>Every change saves straight away.</li>
+        </ul>
+      </div>
+    );
+  }
+
+  if (selected.kind === "section" || selected.kind === "group") {
+    const isSection = selected.kind === "section";
+    const list = isSection ? layout.sections : layout.product_card.groups;
+    const item = list.find((x) => x.id === selected.id);
+    if (!item) return null;
+    const rename = (title: string) => {
+      const clean = title.trim();
+      if (!clean || clean === item.title) return;
+      if (list.some((x) => x.id !== item.id && x.title.toLowerCase() === clean.toLowerCase())) {
+        onError(`There is already a ${isSection ? "section" : "group"} called '${clean}'.`);
+        return;
+      }
+      const renamed = list.map((x) => (x.id === item.id ? { ...x, title: clean } : x));
+      onLayout(isSection ? { ...layout, sections: renamed as ScreenLayout["sections"] }
+        : { ...layout, product_card: { ...layout.product_card, groups: renamed } });
+    };
+    const remove = () => {
+      if (!window.confirm(`Delete "${item.title}"? Its ${item.fields.length} field(s) go back to "Not placed".`)) return;
+      onLayout(isSection ? { ...layout, sections: layout.sections.filter((x) => x.id !== item.id) }
+        : { ...layout, product_card: { ...layout.product_card, groups: layout.product_card.groups.filter((x) => x.id !== item.id) } });
+      onDeselect();
+    };
+    return (
+      <div className="flex flex-col gap-3 text-sm">
+        <p className="font-semibold text-slate-700 dark:text-slate-200">{isSection ? "Section" : "Product-card group"}</p>
+        <label className="flex flex-col gap-1 text-xs text-slate-500">
+          Name
+          <input
+            key={item.id + item.title}
+            defaultValue={item.title}
+            onBlur={(e) => rename(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          />
+        </label>
+        <p className="text-xs text-slate-400">{item.fields.length} field(s)</p>
+        <Button size="sm" variant="danger" onClick={remove}>Delete {isSection ? "section" : "group"}</Button>
+      </div>
+    );
+  }
+
+  const field = fieldByRef.get(selected.ref);
+  if (!field) return <p className="text-sm text-slate-500">This field no longer exists.</p>;
+  return (
+    <FieldProperties
+      key={field.ref}
+      field={field}
+      layout={layout}
+      onLayout={onLayout}
+      onFieldSaved={onFieldSaved}
+      onError={onError}
+    />
+  );
+}
+
+function FieldProperties({
+  field, layout, onLayout, onFieldSaved, onError,
+}: {
+  field: DesignerField;
+  layout: ScreenLayout;
+  onLayout: (next: ScreenLayout) => void;
+  onFieldSaved: (ref: string, patch: Partial<DesignerField>) => void;
+  onError: (msg: string) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+
+  const save = async (patch: designerApi.FieldPatch, local: Partial<DesignerField>) => {
+    setSaving(true);
+    try {
+      await designerApi.patchField(field, patch);
+      onFieldSaved(field.ref, local);
+    } catch {
+      onError(`Could not save ${field.display_label || field.label_name}.`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inLayout = layout.sections.some((s) => s.fields.includes(field.ref))
+    || layout.product_card.fields.includes(field.ref)
+    || layout.product_card.groups.some((g) => g.fields.includes(field.ref));
+
+  const optionsText = (field.fixed_options ?? []).join("\n");
+
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <div>
+        <p className="font-semibold text-slate-700 dark:text-slate-200">Field</p>
+        <p className="font-mono text-[11px] text-slate-400">{field.label_name}</p>
+        <p className="text-[11px] text-slate-400">
+          {field.source === "custom" ? `Job-level field (${field.kind})` : field.place === "card" ? "One per product line" : "Read off this document"}
+        </p>
+      </div>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        Label on the screen
+        <input
+          defaultValue={field.display_label ?? ""}
+          placeholder={field.label_name}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v !== (field.display_label ?? "")) void save({ display_label: v || null }, { display_label: v || null });
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+        />
+      </label>
+      <div className="flex flex-col gap-1 text-xs text-slate-500">
+        Width
+        <div className="flex gap-1">
+          {[false, true].map((full) => (
+            <button
+              key={String(full)}
+              type="button"
+              onClick={() => field.full_width !== full && void save({ full_width: full }, { full_width: full })}
+              className={`flex-1 rounded-md border px-2 py-1 text-xs ${field.full_width === full ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+            >
+              {full ? "Full row" : "Half row"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+        <input type="checkbox" checked={field.multiline} onChange={(e) => void save({ multiline: e.target.checked }, { multiline: e.target.checked })} />
+        Multi-line box (addresses, long text)
+      </label>
+      <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+        <input type="checkbox" checked={field.mandatory} onChange={(e) => void save({ ask_operator_required: e.target.checked }, { mandatory: e.target.checked })} />
+        Mandatory (blocks approval when empty)
+      </label>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        Dropdown choices (one per line - empty = a text box)
+        <textarea
+          defaultValue={optionsText}
+          rows={4}
+          onBlur={(e) => {
+            const list = e.target.value.split("\n").map((x) => x.trim()).filter(Boolean);
+            if (list.join("\n") !== optionsText) void save({ fixed_options: list.length ? list : null }, { fixed_options: list.length ? list : null });
+          }}
+          className="rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+        />
+      </label>
+      {field.fixed_options?.length ? (
+        <label className="flex flex-col gap-1 text-xs text-slate-500">
+          Dropdown style
+          <select
+            value={field.dropdown_style ?? "plain"}
+            onChange={(e) => void save({ dropdown_style: e.target.value }, { dropdown_style: e.target.value })}
+            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+          >
+            <option value="plain">Plain list</option>
+            <option value="search">Search, pick only</option>
+            <option value="search_free">Search, or type anything</option>
+          </select>
+        </label>
+      ) : null}
+      {inLayout && (
+        <Button size="sm" variant="secondary" onClick={() => onLayout(withoutRef(layout, field.ref))}>
+          Take out of the layout
+        </Button>
+      )}
+      <p className="text-[11px] text-slate-400">{saving ? "Saving…" : "Label, width, multi-line, mandatory and dropdown are saved on the field itself (the same settings as the template wizard)."}</p>
+    </div>
+  );
+}

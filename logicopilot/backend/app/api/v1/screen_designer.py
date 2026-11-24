@@ -141,6 +141,43 @@ def remove_layout(
     return _out(None)
 
 
+@router.get("/documents/{document_id}/fields")
+def list_fields(
+    document_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """Every field the designer can place for this document, with the properties its panel
+    edits. place = "section" (one value per document, or a job-level field) or "card" (one
+    per product line). Edits go to the field itself (PATCH /marks/{id}, /custom-fields/{id})."""
+    from app.core.screen_layout import custom_ref, header_marks, mark_ref, product_marks
+
+    doc = _document(db, document_id)
+    marks, cfs = _fields(db, doc)
+
+    def common(obj) -> dict:
+        return {"id": obj.id, "label_name": obj.label_name, "display_label": obj.display_label,
+                "full_width": bool(obj.full_width), "multiline": bool(obj.multiline),
+                "mandatory": bool(obj.ask_operator_required),
+                "fixed_options": obj.fixed_options, "dropdown_style": obj.dropdown_style}
+
+    fields = []
+    for m in sorted(header_marks(marks), key=lambda m: m.created_at):
+        fields.append({**common(m), "ref": mark_ref(m.id), "source": "mark", "place": "section",
+                       "on_document": bool(m.width and m.height)})
+    for m in sorted(product_marks(marks), key=lambda m: m.created_at):
+        fields.append({**common(m), "ref": mark_ref(m.id), "source": "mark", "place": "card",
+                       "on_document": bool(m.width and m.height)})
+    for c in sorted(cfs, key=lambda c: c.created_at):
+        if c.per_row or c.hidden_from_capture:
+            continue
+        fields.append({**common(c), "ref": custom_ref(c.id), "source": "custom", "place": "section",
+                       "kind": c.kind, "on_this_tab": c.display_document_id == doc.id})
+    return {"document": {"id": doc.id, "name": doc.name, "doc_type": doc.doc_type,
+                         "group_id": doc.group_id},
+            "fields": fields}
+
+
 @router.get("/groups/{group_id}/recent-jobs")
 def recent_jobs(
     group_id: str,
