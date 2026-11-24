@@ -1576,7 +1576,11 @@ def _fuzzy_pick(value: str, options: list) -> str | None:
         return s
 
     def bare(s: str) -> str:
-        return re.sub(r"[^\w\s]+", " ", norm(s)).strip()
+        # Punctuation becomes a space, then the spaces collapse. Without that second step
+        # "SHANGHAI , CHINA" bares to three spaces where "SHANGHAI, CHINA" bares to two, so
+        # the "exact ignoring punctuation" rung below could never fire on its own example -
+        # it fell through to substring and answered "SHANGHAI".
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]+", " ", norm(s))).strip()
 
     def toks(s: str) -> set:
         return {t for t in bare(s).split(" ") if t}
@@ -1592,10 +1596,29 @@ def _fuzzy_pick(value: str, options: list) -> str | None:
     for o, ol in low:                       # exact ignoring punctuation too
         if bare(ol) == bare(v):
             return o
-    subs = [o for o, ol in low if v in ol or ol in v]  # substring either direction
+    # Substring - but the two directions are NOT equally good. An option that CONTAINS
+    # everything asked for keeps all of it; an option the value merely STARTS WITH drops the
+    # rest, and for a branch the rest is the whole point.
+    #
+    # Found live 2026-11-24: the ERP lists "KANCHIPURAM 19 (19)" and plain "KANCHIPURAM" for
+    # the same importer. Asked for "KANCHIPURAM 19" both matched - one holding it, one held by
+    # it - and the old rule then scored them on closeness of LENGTH alone:
+    #     "KANCHIPURAM 19 (19)"  19 chars vs 14  -> 5
+    #     "KANCHIPURAM"          11 chars vs 14  -> 3   picked, wrong branch
+    # The entry was filed against the wrong branch and the log said only "select ok".
+    #
+    # So: the options that hold the whole value first, closest length among THOSE; only when
+    # none holds it do the shorter, lossy ones come into play.
+    holds = [(o, ol) for o, ol in low if v in ol]
+    if holds:
+        return min(holds, key=lambda p: abs(len(p[1]) - len(v)))[0]
+    subs = [o for o, ol in low if ol in v]
     if subs:
         return min(subs, key=lambda o: abs(len(norm(o)) - len(v)))
-    subs = [o for o, ol in low if bare(v) in bare(ol) or bare(ol) in bare(v)]
+    holds = [(o, ol) for o, ol in low if bare(v) in bare(ol)]
+    if holds:
+        return min(holds, key=lambda p: abs(len(bare(p[0])) - len(bare(v))))[0]
+    subs = [o for o, ol in low if bare(ol) in bare(v)]
     if subs:
         return min(subs, key=lambda o: abs(len(bare(o)) - len(bare(v))))
     # WORD OVERLAP, before falling back to character similarity. An extractor can hand back

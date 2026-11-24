@@ -233,6 +233,22 @@ function fieldLabelOverride(
   }
   return docType ? FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[docType]?.[label] : undefined;
 }
+// The Combined Description Configuration modal lists its source fields by label_name
+// (item_material_code, item_po_no, ...). This gives each one the name the product card on this
+// screen shows it under ("Item Material Code", "Purchase Order Number", ...). Display only: the
+// option's value - and so every saved format, the combined text, the Excel and the ERP - stays
+// the label_name. A label this screen has no other name for is shown as it is.
+function compositeFieldNamer(job: JobDetail | null): (label: string) => string {
+  const docTypeById = new Map((job?.documents ?? []).map((d) => [d.id, d.doc_type]));
+  const names = new Map<string, string>();
+  for (const fv of job?.field_values ?? []) {
+    if (names.has(fv.label_name)) continue;
+    const docType = (fv.job_document_id && docTypeById.get(fv.job_document_id)) || "Invoice";
+    const name = fieldLabelOverride(fv.display_label, job?.group_id, docType, fv.label_name);
+    if (name) names.set(fv.label_name, name);
+  }
+  return (label) => names.get(label) ?? fieldLabelOverride(undefined, job?.group_id, "Invoice", label) ?? label;
+}
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
 const FIELD_HINTS: Record<string, string> = {
@@ -8691,6 +8707,7 @@ function ExtractionReview({
         defaultConsignee={jobConsignee}
         jobId={jobId}
         productCount={lineRows.length}
+        fieldName={compositeFieldNamer(job)}
         onSaved={() => { void reload(); }}
       />
       <ProductQuantityUnitsModal

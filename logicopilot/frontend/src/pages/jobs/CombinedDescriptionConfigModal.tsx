@@ -92,12 +92,17 @@ interface Props {
   /** How many product lines the open job has. Without it there is nothing to range over, so
    *  the per-set line ranges and the "add another set" button are not offered at all. */
   productCount?: number;
+  /** The name a source field is SHOWN under in the field dropdown (e.g. "Item Material Code"
+   *  for item_material_code) - the job screen passes the same names its product cards use.
+   *  Display only: the option value, and so what is saved, stays the field's label_name. */
+  fieldName?: (label: string) => string;
   onSaved?: (fieldValues: jobsApi.CompositeFieldConfigSaveResult["field_values"]) => void;
 }
 
 export function CombinedDescriptionConfigModal({
-  open, onClose, groupId, defaultConsignee, jobId, productCount, onSaved,
+  open, onClose, groupId, defaultConsignee, jobId, productCount, fieldName, onSaved,
 }: Props) {
+  const nameOf = fieldName ?? ((label: string) => label);
   const [consignees, setConsignees] = useState<string[]>([]);
   const [consignee, setConsignee] = useState("");
   const [labelName, setLabelName] = useState("Combined Description");
@@ -485,12 +490,12 @@ export function CombinedDescriptionConfigModal({
                                     >
                                       <option value="__fixed__">Fixed Text</option>
                                       {row.kind === "field" && row.fieldLabel && !availableLabels.includes(row.fieldLabel) && (
-                                        <option value={row.fieldLabel}>{row.fieldLabel}</option>
+                                        <option value={row.fieldLabel}>{nameOf(row.fieldLabel)}</option>
                                       )}
                                       {availableLabels
                                         .filter((l) => l === row.fieldLabel || !used.includes(l))
                                         .map((l) => (
-                                          <option key={l} value={l}>{l}</option>
+                                          <option key={l} value={l}>{nameOf(l)}</option>
                                         ))}
                                     </select>
                                     {row.kind === "fixed" && (
