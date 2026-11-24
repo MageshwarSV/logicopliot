@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -108,7 +108,9 @@ export function ScreenDesignerPage() {
   // Opened as Step 3 of Customer Onboarding: show the onboarding step bar.
   const inOnboarding = useLocation().pathname.includes("/onboarding/");
   const [templates, setTemplates] = useState<DesignerTemplate[]>([]);
-  const groupId = params.get("group") ?? "";
+  // As Step 3 of Customer Onboarding the template is the one chosen in Step 0.
+  const onboardingGroup = useOnboardingCustomer("group");
+  const groupId = params.get("group") ?? (inOnboarding ? onboardingGroup : "");
   const docId = params.get("doc") ?? "";
   const [fields, setFields] = useState<DesignerField[]>([]);
   const [layout, setLayout] = useState<ScreenLayout | null>(null);
@@ -476,7 +478,12 @@ export function ScreenDesignerPage() {
       {inOnboarding && <OnboardingSteps current={3} groupId={groupId} />}
       {/* Pickers */}
       <Card className="mb-4 flex flex-wrap items-end gap-4 p-4">
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
+        {inOnboarding && (
+          <div className="pb-2">
+            <OnboardingCustomer name={template?.name} groupId={groupId} />
+          </div>
+        )}
+        <label className={`flex flex-col gap-1 text-xs font-medium text-slate-500 ${inOnboarding ? "hidden" : ""}`}>
           Template
           <select
             value={groupId}

@@ -27,6 +27,7 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/data-transformation": ArrowPathIcon,
   "/super-admin/extraction-corrections": PencilIcon,
   "/super-admin/screen-designer": FolderIcon,
+  "/super-admin/onboarding/start": LayersIcon,
   "/super-admin/onboarding/erp-fields": DatabaseIcon,
   "/super-admin/onboarding/document-mapping": DocumentIcon,
   "/super-admin/onboarding/screen-designer": FolderIcon,

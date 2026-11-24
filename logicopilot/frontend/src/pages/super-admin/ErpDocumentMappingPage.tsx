@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
-import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -157,9 +157,9 @@ function SampleCanvas({
 const TONE = { match: "#16a34a", differs: "#d97706", "no-excel": "#4f46e5", "no-read": "#dc2626" } as const;
 
 export function ErpDocumentMappingPage() {
-  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const groupId = params.get("customer") ?? "";
+  // Chosen in Step 0 (Choose Template) and carried here.
+  const groupId = useOnboardingCustomer("customer");
   const [customers, setCustomers] = useState<ErpCustomer[]>([]);
   const [data, setData] = useState<DocMapping | null>(null);
   const [loading, setLoading] = useState(false);
@@ -167,10 +167,8 @@ export function ErpDocumentMappingPage() {
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(100);
   const [selected, setSelected] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
 
   const customer = customers.find((c) => c.group_id === groupId) ?? null;
   const workbookId = customer?.workbook?.id ?? "";
@@ -213,37 +211,6 @@ export function ErpDocumentMappingPage() {
   const replaceField = (id: string, patch: Partial<DocMappingField>) =>
     setData((d) => (d ? { ...d, fields: d.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } : d));
 
-  const upload = async (file: File) => {
-    if (!data || !doc) return;
-    if (doc.sample && docFields.some((f) => f.mark)) {
-      // The page cannot show a confirm dialog everywhere; say it plainly instead.
-      setMessage({ tone: "warn", text: `The ${doc.name} boxes were drawn on the old sample, so they were cleared - draw them again on the new one.` });
-    }
-    setBusy(true);
-    try {
-      setData(await erpApi.uploadSample(data.workbook.id, doc.id, file));
-      setPage(1);
-    } catch (err) {
-      setMessage({ tone: "warn", text: errorText(err, "Could not read that file.") });
-    } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
-
-  const useTemplateSample = async () => {
-    if (!data || !doc) return;
-    setBusy(true);
-    try {
-      setData(await erpApi.sampleFromTemplate(data.workbook.id, doc.id));
-      setPage(1);
-    } catch (err) {
-      setMessage({ tone: "warn", text: errorText(err, "Could not use the template's sample.") });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const draw = async (b: { x: number; y: number; width: number; height: number }) => {
     if (!selectedField) return;
     const lineDefault = selectedField.mark?.line_item ?? /item|line|product/i.test(selectedField.sheet_name);
@@ -268,24 +235,7 @@ export function ErpDocumentMappingPage() {
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
         <OnboardingSteps current={2} groupId={groupId} />
         <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
-          <label className="flex items-center gap-2 text-sm text-slate-500">
-            Customer:
-            <select
-              value={groupId}
-              onChange={(e) => {
-                const next = new URLSearchParams();
-                if (e.target.value) next.set("customer", e.target.value);
-                setParams(next, { replace: true });
-                setDocId("");
-              }}
-              className="min-w-[14rem] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-            >
-              <option value="">Pick a customer template…</option>
-              {customers.filter((c) => c.workbook).map((c) => (
-                <option key={c.group_id} value={c.group_id}>{c.name}{c.tenant ? ` · ${c.tenant}` : ""}</option>
-              ))}
-            </select>
-          </label>
+          <OnboardingCustomer name={customer?.name} tenant={customer?.tenant} groupId={groupId} />
           {customer?.workbook && <span className="text-xs text-slate-400">Step 1: {customer.workbook.file_name} · {customer.workbook.percent}% classified</span>}
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={() => setFullScreen((v) => !v)}>{fullScreen ? "✕ Close full screen" : "⛶ Full screen"}</Button>
@@ -301,7 +251,11 @@ export function ErpDocumentMappingPage() {
           </div>
         )}
 
-        {!groupId && <Card className="p-10 text-center text-sm text-slate-500">Pick a customer whose ERP fields were classified in Step 1.</Card>}
+        {!groupId && (
+          <Card className="p-10 text-center text-sm text-slate-500">
+            No customer template chosen yet. <Link className="text-indigo-600 underline" to="/super-admin/onboarding/start">Choose one in Step 0</Link>.
+          </Card>
+        )}
         {groupId && !customer?.workbook && customers.length > 0 && (
           <Card className="p-10 text-center text-sm text-slate-500">
             This customer has no ERP workbook yet. <Link className="text-indigo-600 underline" to={`/super-admin/onboarding/erp-fields?customer=${groupId}`}>Do Step 1 first</Link>.
@@ -376,24 +330,15 @@ export function ErpDocumentMappingPage() {
                           <button type="button" onClick={() => setZoom(100)} className="rounded px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800">Fit</button>
                         </div>
                       )}
-                      {doc.sample && <Button size="sm" variant="secondary" isLoading={busy} onClick={() => fileInput.current?.click()}>Replace sample</Button>}
+                      {doc.sample && <Link to={`/super-admin/onboarding/start?customer=${groupId}`} className="rounded-lg px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" title="Samples are uploaded and replaced in Step 0">Replace in Step 0</Link>}
                     </div>
                   </div>
-                  <input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden"
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
 
                   {!doc.sample ? (
-                    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-300 p-12 text-center dark:border-slate-700"
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void upload(f); }}>
-                      <p className="text-base font-semibold text-slate-800 dark:text-slate-100">Upload a sample {doc.name}</p>
-                      <p className="text-sm text-slate-500">PDF, PNG or JPG - drop it here or choose a file. One sample per document.</p>
-                      <div className="flex gap-2">
-                        <Button isLoading={busy} onClick={() => fileInput.current?.click()}>Choose file</Button>
-                        {doc.template_sample_available && (
-                          <Button variant="secondary" isLoading={busy} onClick={() => void useTemplateSample()}>Use the template's sample</Button>
-                        )}
-                      </div>
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-300 p-12 text-center dark:border-slate-700">
+                      <p className="text-base font-semibold text-slate-800 dark:text-slate-100">No sample {doc.name} yet</p>
+                      <p className="text-sm text-slate-500">Samples are uploaded in Step 0, together with the ERP Excel.</p>
+                      <Link to={`/super-admin/onboarding/start?customer=${groupId}`} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Upload it in Step 0</Link>
                     </div>
                   ) : (
                     <>

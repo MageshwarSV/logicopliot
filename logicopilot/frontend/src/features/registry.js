@@ -36,6 +36,7 @@ export const superAdminFeatures = [
   // "New User" form.
   // Customer Onboarding (2026-11-24): the new step-by-step onboarding, built alongside the
   // existing wizard (which stays untouched until this replaces it). Step 1 - ERP fields.
+  { path: "/super-admin/onboarding/start", navLabel: "Step 0 - Choose Template", group: "Customer Onboarding", order: 5.94 },
   { path: "/super-admin/onboarding/erp-fields", navLabel: "Step 1 - ERP Field Mapping", group: "Customer Onboarding", order: 5.95 },
   { path: "/super-admin/onboarding/document-mapping", navLabel: "Step 2 - Document Mapping", group: "Customer Onboarding", order: 5.96 },
   // Step 3 is the Screen Designer itself, reached from the onboarding flow.

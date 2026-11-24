@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
 import { formatDateTime } from "../../utils/dateTime";
-import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 1: ERP Field Classification.
 // The customer's ERP Excel workbook is read sheet by sheet; every column is dragged into one of
@@ -64,13 +64,13 @@ function errorText(err: unknown, fallback: string): string {
 }
 
 export function ErpFieldMappingPage() {
-  const [params, setParams] = useSearchParams();
+
   const navigate = useNavigate();
-  const groupId = params.get("customer") ?? "";
+  // Chosen in Step 0 (Choose Template) and carried here.
+  const groupId = useOnboardingCustomer("customer");
   const [customers, setCustomers] = useState<ErpCustomer[]>([]);
   const [wb, setWb] = useState<ErpWorkbook | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [sheet, setSheet] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [search, setSearch] = useState("");
@@ -90,7 +90,6 @@ export function ErpFieldMappingPage() {
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   // Which document tab of the Document bucket is open; NO_DOC = Document fields not assigned yet.
   const [docTab, setDocTab] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -237,24 +236,6 @@ export function ErpFieldMappingPage() {
     }
   };
 
-  const upload = async (file: File) => {
-    if (!groupId) return;
-    setUploading(true);
-    setMessage(null);
-    try {
-      const w = await erpApi.uploadWorkbook(groupId, file);
-      setWb(w);
-      setSheet(w.sheets[0]?.name ?? "");
-      setOpen(w.sheets[0] ? { [w.sheets[0].name]: true } : {});
-      setMessage({ tone: "ok", text: `${w.file_name}: ${w.sheets.length} worksheet(s), ${w.summary.total} column(s) read.` });
-      erpApi.listCustomers().then(setCustomers).catch(() => undefined);
-    } catch (err) {
-      setMessage({ tone: "warn", text: errorText(err, "That workbook could not be read.") });
-    } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
 
   const saveDraft = async () => {
     if (!wb) return;
@@ -352,49 +333,16 @@ export function ErpFieldMappingPage() {
       {/* Header */}
       <OnboardingSteps current={1} groupId={groupId} />
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
-        <label className="flex items-center gap-2 text-sm text-slate-500">
-          Customer:
-          <select
-            value={groupId}
-            onChange={(e) => {
-              const next = new URLSearchParams();
-              if (e.target.value) next.set("customer", e.target.value);
-              setParams(next, { replace: true });
-              setSheet("");
-              setOpen({});
-              setDocTab("");
-            }}
-            className="min-w-[14rem] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-          >
-            <option value="">Pick a customer template…</option>
-            {customers.map((c) => (
-              <option key={c.group_id} value={c.group_id}>
-                {c.name}{c.tenant ? ` · ${c.tenant}` : ""}{c.workbook ? ` (${c.workbook.percent}%)` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
+        <OnboardingCustomer name={customer?.name} tenant={customer?.tenant} groupId={groupId} />
         {wb && (
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            title="Upload a new version - classifications of columns that still exist are kept"
-            className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          <span
+            title="Replace the workbook in Step 0 - Choose Template"
+            className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200"
           >
             <span className="rounded bg-emerald-600 px-1.5 text-xs font-bold text-white">X</span>
             {wb.file_name} ({wb.sheets.length} sheet{wb.sheets.length === 1 ? "" : "s"})
-          </button>
+          </span>
         )}
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".xlsx,.xlsm"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void upload(f);
-          }}
-        />
         <div className="ml-auto flex items-center gap-2">
           {wb?.updated_at && <span className="text-xs text-slate-400">Saved {formatDateTime(wb.updated_at)}{wb.updated_by ? ` by ${wb.updated_by}` : ""}</span>}
           <Button size="sm" variant="ghost" onClick={() => setFullScreen((v) => !v)} title={fullScreen ? "Close full screen (Esc)" : "Open full screen"}>
@@ -412,14 +360,18 @@ export function ErpFieldMappingPage() {
         </div>
       )}
 
-      {!groupId && <Card className="p-10 text-center text-sm text-slate-500">Pick the customer template to onboard.</Card>}
+      {!groupId && (
+        <Card className="p-10 text-center text-sm text-slate-500">
+          No customer template chosen yet. <Link className="text-indigo-600 underline" to="/super-admin/onboarding/start">Choose one in Step 0</Link>.
+        </Card>
+      )}
       {loading && <Card className="p-10 text-center text-sm text-slate-500">Loading…</Card>}
 
       {groupId && !loading && !wb && (
         <Card className="p-10 text-center">
-          <p className="text-base font-semibold text-slate-800 dark:text-slate-100">Upload {customer?.name ?? "the customer"}'s ERP Excel workbook</p>
-          <p className="mt-1 text-sm text-slate-500">Every worksheet and column is read from the file. The file itself is never changed.</p>
-          <Button className="mt-4" isLoading={uploading} onClick={() => fileInput.current?.click()}>Upload ERP Excel (.xlsx)</Button>
+          <p className="text-base font-semibold text-slate-800 dark:text-slate-100">{customer?.name ?? "This customer"} has no ERP Excel workbook yet</p>
+          <p className="mt-1 text-sm text-slate-500">Upload it in Step 0, together with the sample documents.</p>
+          <Link to={`/super-admin/onboarding/start?customer=${groupId}`} className="mt-4 inline-block rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Go to Step 0 - Choose Template</Link>
         </Card>
       )}
 
