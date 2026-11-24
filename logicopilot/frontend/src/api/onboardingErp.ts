@@ -38,7 +38,15 @@ export interface ErpField {
   formula: string | null;
   erp_master_ref: string | null;
   contact_ref: string | null;
+  /** Document fields: which of the workbook's documents it is read from (null = not assigned). */
+  source_document: string | null;
   samples: string[];
+}
+
+export interface ErpDocument {
+  id: string;
+  name: string;
+  template_document_id: string | null;
 }
 
 export interface ErpWorkbook {
@@ -47,6 +55,7 @@ export interface ErpWorkbook {
   customer: string;
   file_name: string;
   status: "draft" | "complete" | string;
+  documents: ErpDocument[];
   sheets: { name: string; header_row: number; column_count: number }[];
   fields: ErpField[];
   summary: ErpSummary;
@@ -56,7 +65,7 @@ export interface ErpWorkbook {
 
 export type ErpFieldPatch = Partial<Pick<ErpField,
   "category" | "position" | "display_label" | "data_type" | "description" | "mandatory" |
-  "default_value" | "validation" | "formula" | "erp_master_ref" | "contact_ref">>;
+  "default_value" | "validation" | "formula" | "erp_master_ref" | "contact_ref" | "source_document">>;
 
 export async function listCustomers(): Promise<ErpCustomer[]> {
   const { data } = await apiClient.get<ErpCustomer[]>("/onboarding/erp/customers");
@@ -89,11 +98,27 @@ export async function updateField(fieldId: string, patch: ErpFieldPatch): Promis
   return data;
 }
 
-export async function addCustomField(workbookId: string, sheet: string, name: string, category: ErpCategory): Promise<ErpField> {
+export async function addCustomField(workbookId: string, sheet: string, name: string, category: ErpCategory,
+  sourceDocument: string | null = null): Promise<ErpField> {
   const { data } = await apiClient.post<{ field: ErpField }>(`/onboarding/erp/workbooks/${workbookId}/fields`, {
-    sheet, name, category,
+    sheet, name, category, source_document: sourceDocument,
   });
   return data.field;
+}
+
+export async function addDocument(workbookId: string, name: string): Promise<ErpWorkbook> {
+  const { data } = await apiClient.post<ErpWorkbook>(`/onboarding/erp/workbooks/${workbookId}/documents`, { name });
+  return data;
+}
+
+export async function renameDocument(workbookId: string, docId: string, name: string): Promise<ErpWorkbook> {
+  const { data } = await apiClient.patch<ErpWorkbook>(`/onboarding/erp/workbooks/${workbookId}/documents/${docId}`, { name });
+  return data;
+}
+
+export async function removeDocument(workbookId: string, docId: string): Promise<ErpWorkbook> {
+  const { data } = await apiClient.delete<ErpWorkbook>(`/onboarding/erp/workbooks/${workbookId}/documents/${docId}`);
+  return data;
 }
 
 export async function deleteCustomField(fieldId: string): Promise<void> {

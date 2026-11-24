@@ -27,7 +27,7 @@ router = APIRouter(prefix="/onboarding/erp", tags=["onboarding: erp fields"])
 
 MAX_BYTES = 20 * 1024 * 1024
 CONFIG_FIELDS = ("display_label", "data_type", "description", "mandatory", "default_value",
-                 "validation", "formula", "erp_master_ref", "contact_ref")
+                 "validation", "formula", "erp_master_ref", "contact_ref", "source_document")
 
 
 def _who(user: User) -> str:
@@ -59,12 +59,26 @@ def _summary(fields: list[ErpField]) -> dict:
             "percent": round(done * 100 / total) if total else 0}
 
 
+def _documents(db: Session, wb: ErpWorkbook) -> list[dict]:
+    """The customer's documents (Document bucket tabs). Seeded from the template's own
+    documents the first time; after that the admin's list."""
+    if wb.documents is None:
+        from app.models.template_document import TemplateDocument
+
+        docs = (db.query(TemplateDocument).filter(TemplateDocument.group_id == wb.group_id)
+                .order_by(TemplateDocument.created_at).all())
+        wb.documents = [{"id": d.id, "name": d.name, "template_document_id": d.id} for d in docs]
+        db.commit()
+    return wb.documents or []
+
+
 def _workbook_out(db: Session, wb: ErpWorkbook) -> dict:
+    documents = _documents(db, wb)
     fields = (db.query(ErpField).filter(ErpField.workbook_id == wb.id)
               .order_by(ErpField.sheet_name, ErpField.position, ErpField.column_index).all())
     group = db.get(TemplateGroup, wb.group_id)
     return {"id": wb.id, "group_id": wb.group_id, "customer": group.name if group else "",
-            "file_name": wb.file_name, "status": wb.status,
+            "file_name": wb.file_name, "status": wb.status, "documents": documents,
             "sheets": [{"name": s["name"], "header_row": s["header_row"],
                         "column_count": len(s["columns"])} for s in wb.sheets],
             "fields": [_field_out(f) for f in fields], "summary": _summary(fields),
@@ -252,6 +266,7 @@ class FieldPatch(BaseModel):
     formula: str | None = None
     erp_master_ref: str | None = None
     contact_ref: str | None = None
+    source_document: str | None = None
 
 
 def _check(updates: dict) -> None:
@@ -275,6 +290,12 @@ def update_field(
     wb = _workbook(db, f.workbook_id)
     updates = body.model_dump(exclude_unset=True)
     _check(updates)
+    if updates.get("source_document") and updates["source_document"] not in {
+            d["id"] for d in _documents(db, wb)}:
+        raise HTTPException(status_code=422, detail="That document is not in this customer's list.")
+    # Only a Document field is read from a document.
+    if "category" in updates and updates["category"] != "document":
+        updates["source_document"] = None
     before = {k: getattr(f, k) for k in updates}
     for k, v in updates.items():
         if isinstance(v, str) and k != "category":
@@ -299,6 +320,7 @@ class CustomFieldIn(BaseModel):
     sheet: str
     name: str
     category: str
+    source_document: str | None = None
 
 
 @router.post("/workbooks/{workbook_id}/fields")
@@ -322,13 +344,90 @@ def add_custom_field(
         raise HTTPException(status_code=422, detail=f"'{name}' already exists on {body.sheet}.")
     f = ErpField(workbook_id=wb.id, group_id=wb.group_id, sheet_name=body.sheet, excel_name=name,
                  is_custom=True, category=body.category, position=10_000,
-                 display_label=suggest_label(name), data_type="text", updated_by_name=_who(user))
+                 display_label=suggest_label(name), data_type="text", updated_by_name=_who(user),
+                 source_document=body.source_document if body.category == "document" else None)
     db.add(f)
     db.flush()
     _history(db, wb, user, "add_custom_field", field_id=f.id,
              detail={"field": name, "sheet": body.sheet, "category": body.category})
     db.commit()
     return {"field": _field_out(f)}
+
+
+class DocumentIn(BaseModel):
+    name: str
+
+
+def _doc_name(db: Session, wb: ErpWorkbook, name: str, skip_id: str | None = None) -> str:
+    clean = " ".join(name.split())
+    if not clean:
+        raise HTTPException(status_code=422, detail="Give the document a name.")
+    if len(clean) > 100:
+        raise HTTPException(status_code=422, detail="Document name is too long (max 100).")
+    if any(d["name"].lower() == clean.lower() and d["id"] != skip_id for d in _documents(db, wb)):
+        raise HTTPException(status_code=422, detail=f"There is already a document called '{clean}'.")
+    return clean
+
+
+@router.post("/workbooks/{workbook_id}/documents")
+def add_document(
+    workbook_id: str,
+    body: DocumentIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    """A document tab in the Document bucket (e.g. a Bill of Lading the template lacks)."""
+    import uuid
+
+    wb = _workbook(db, workbook_id)
+    name = _doc_name(db, wb, body.name)
+    doc = {"id": str(uuid.uuid4()), "name": name, "template_document_id": None}
+    wb.documents = [*_documents(db, wb), doc]
+    _history(db, wb, user, "add_document", detail={"document": name})
+    db.commit()
+    return _workbook_out(db, wb)
+
+
+@router.patch("/workbooks/{workbook_id}/documents/{doc_id}")
+def rename_document(
+    workbook_id: str,
+    doc_id: str,
+    body: DocumentIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    wb = _workbook(db, workbook_id)
+    docs = _documents(db, wb)
+    if not any(d["id"] == doc_id for d in docs):
+        raise HTTPException(status_code=404, detail="Document not found")
+    name = _doc_name(db, wb, body.name, skip_id=doc_id)
+    wb.documents = [{**d, "name": name} if d["id"] == doc_id else d for d in docs]
+    _history(db, wb, user, "rename_document", detail={"document": name})
+    db.commit()
+    return _workbook_out(db, wb)
+
+
+@router.delete("/workbooks/{workbook_id}/documents/{doc_id}")
+def remove_document(
+    workbook_id: str,
+    doc_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    """Removes the tab; its fields stay Document fields, with no document assigned."""
+    wb = _workbook(db, workbook_id)
+    docs = _documents(db, wb)
+    doc = next((d for d in docs if d["id"] == doc_id), None)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    moved = 0
+    for f in db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.source_document == doc_id):
+        f.source_document = None
+        moved += 1
+    wb.documents = [d for d in docs if d["id"] != doc_id]
+    _history(db, wb, user, "remove_document", detail={"document": doc["name"], "fields_unassigned": moved})
+    db.commit()
+    return _workbook_out(db, wb)
 
 
 @router.delete("/fields/{field_id}")

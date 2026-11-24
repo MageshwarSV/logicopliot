@@ -32,6 +32,7 @@ const BUCKETS: {
 ];
 
 const DRAG_MIME = "application/x-erp-field";
+const NO_DOC = "__none__";
 
 function label(f: ErpField): string {
   return f.excel_name;
@@ -63,7 +64,17 @@ export function ErpFieldMappingPage() {
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [adding, setAdding] = useState<ErpCategory | null>(null);
+  const [fullScreen, setFullScreen] = useState(false);
+  // Which document tab of the Document bucket is open; NO_DOC = Document fields not assigned yet.
+  const [docTab, setDocTab] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!fullScreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullScreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullScreen]);
 
   useEffect(() => {
     erpApi.listCustomers().then(setCustomers).catch(() => setMessage({ tone: "warn", text: "Could not load the customers." }));
@@ -111,8 +122,16 @@ export function ErpFieldMappingPage() {
     !q || s.name.toLowerCase().includes(q) || sheetFields(s.name).some((f) => f.excel_name.toLowerCase().includes(q)));
 
   const current = fields.filter((f) => f.sheet_name === sheet);
+  const documents = wb?.documents ?? [];
+  const docIds = new Set(documents.map((d) => d.id));
+  const hasUnassigned = current.some((f) => f.category === "document" && (!f.source_document || !docIds.has(f.source_document)));
+  const activeDoc = docTab === NO_DOC ? NO_DOC
+    : documents.some((d) => d.id === docTab) ? docTab
+    : documents[0]?.id ?? NO_DOC;
+  const docOf = (f: ErpField) => (f.source_document && docIds.has(f.source_document) ? f.source_document : NO_DOC);
   const inBucket = (key: ErpCategory) =>
-    current.filter((f) => f.category === key).sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
+    current.filter((f) => f.category === key && (key !== "document" || docOf(f) === activeDoc))
+      .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
   const unclassified = current
     .filter((f) => !f.category && (!q || f.excel_name.toLowerCase().includes(q)))
     .sort((a, b) => (a.column_index ?? 0) - (b.column_index ?? 0));
@@ -128,7 +147,7 @@ export function ErpFieldMappingPage() {
       status: status ?? w.status,
     } : w));
 
-  const moveTo = async (fieldId: string, category: ErpCategory | null, beforeId?: string) => {
+  const moveTo = async (fieldId: string, category: ErpCategory | null, beforeId?: string, targetDoc?: string) => {
     if (!wb) return;
     const field = wb.fields.find((f) => f.id === fieldId);
     if (!field) return;
@@ -142,9 +161,14 @@ export function ErpFieldMappingPage() {
       }
       return;
     }
-    // New order of the target bucket, the moved field included, renumbered 10, 20, ...
+    // A Document field goes into the document tab it was dropped on (or the open one).
+    const doc = category === "document" ? (targetDoc ?? activeDoc) : null;
+    const sourceDocument = doc && doc !== NO_DOC ? doc : null;
+    // New order of the target bucket (for Document fields, of that document), the moved field
+    // included, renumbered 10, 20, ...
     const others = wb.fields
-      .filter((f) => f.sheet_name === field.sheet_name && f.category === category && f.id !== fieldId)
+      .filter((f) => f.sheet_name === field.sheet_name && f.category === category && f.id !== fieldId
+        && (category !== "document" || (f.source_document ?? null) === sourceDocument))
       .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
     const at = beforeId ? others.findIndex((f) => f.id === beforeId) : -1;
     const order = [...others];
@@ -157,12 +181,16 @@ export function ErpFieldMappingPage() {
       ...w,
       fields: w.fields.map((f) => {
         const c = changes.find((x) => x.f.id === f.id);
-        return c ? { ...f, position: c.pos, category: f.id === fieldId ? category : f.category } : f;
+        return c ? {
+          ...f, position: c.pos,
+          category: f.id === fieldId ? category : f.category,
+          source_document: f.id === fieldId ? sourceDocument : f.source_document,
+        } : f;
       }),
     } : w));
     try {
       const results = await Promise.all(changes.map(({ f, pos }) =>
-        erpApi.updateField(f.id, f.id === fieldId ? { category, position: pos } : { position: pos })));
+        erpApi.updateField(f.id, f.id === fieldId ? { category, position: pos, source_document: sourceDocument } : { position: pos })));
       const last = results[results.length - 1];
       setWb((w) => (w ? {
         ...w,
@@ -245,7 +273,7 @@ export function ErpFieldMappingPage() {
     e.stopPropagation();
     if (dragOver !== key) setDragOver(key);
   };
-  const drop = (category: ErpCategory | null, beforeId?: string) => (e: DragEvent) => {
+  const drop = (category: ErpCategory | null, beforeId?: string, targetDoc?: string) => (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(null);
@@ -253,13 +281,29 @@ export function ErpFieldMappingPage() {
     if (!id) return;
     const f = fields.find((x) => x.id === id);
     if (f && f.sheet_name !== sheet) setSheet(f.sheet_name);
-    void moveTo(id, category, beforeId);
+    void moveTo(id, category, beforeId, targetDoc);
+    if (targetDoc) setDocTab(targetDoc);
+  };
+
+  const docAction = async (fn: () => Promise<ErpWorkbook>, okText?: string) => {
+    try {
+      setWb(await fn());
+      if (okText) setMessage({ tone: "ok", text: okText });
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not save the document list.") });
+    }
+  };
+  const addDocument = () => {
+    if (!wb) return;
+    const name = window.prompt("Document name (e.g. Bill of Lading, Certificate of Origin)");
+    if (name?.trim()) void docAction(() => erpApi.addDocument(wb.id, name.trim()));
   };
 
   const complete = wb?.status === "complete";
 
   return (
     <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
+      <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
       {/* Header */}
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
         <label className="flex items-center gap-2 text-sm text-slate-500">
@@ -306,6 +350,9 @@ export function ErpFieldMappingPage() {
         />
         <div className="ml-auto flex items-center gap-2">
           {wb?.updated_at && <span className="text-xs text-slate-400">Saved {formatDateTime(wb.updated_at)}{wb.updated_by ? ` by ${wb.updated_by}` : ""}</span>}
+          <Button size="sm" variant="ghost" onClick={() => setFullScreen((v) => !v)} title={fullScreen ? "Close full screen (Esc)" : "Open full screen"}>
+            {fullScreen ? "✕ Close full screen" : "⛶ Full screen"}
+          </Button>
           {wb && <Button size="sm" variant="secondary" onClick={() => void saveDraft()}>Save as Draft</Button>}
           {wb && <Button size="sm" onClick={() => void next()}>Next: Document Mapping →</Button>}
         </div>
@@ -434,16 +481,17 @@ export function ErpFieldMappingPage() {
               </span>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
               {BUCKETS.map((b) => {
                 const items = inBucket(b.key);
+                const isDoc = b.key === "document";
                 return (
                   <div
                     key={b.key}
                     onDragOver={over(`b:${b.key}`)}
                     onDragLeave={() => setDragOver((k) => (k === `b:${b.key}` ? null : k))}
                     onDrop={drop(b.key)}
-                    className={`flex min-h-[18rem] flex-col rounded-xl border-2 border-dashed p-3 ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
+                    className={`flex min-h-[18rem] flex-col rounded-xl border-2 border-dashed p-3 ${isDoc ? "md:col-span-2" : ""} ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
                   >
                     <div className="flex items-center gap-2">
                       <span className={`text-lg ${b.head}`}>{b.icon}</span>
@@ -451,6 +499,63 @@ export function ErpFieldMappingPage() {
                       <span className={`ml-auto rounded-full px-2 text-xs font-semibold ${b.badge}`}>{items.length}</span>
                     </div>
                     <p className="mb-2 text-xs text-slate-500">{b.help}</p>
+                    {isDoc && (
+                      <div className="mb-2 flex flex-wrap items-center gap-1 border-b border-blue-100 pb-2 dark:border-blue-500/20">
+                        {documents.map((d) => {
+                          const count = current.filter((f) => f.category === "document" && docOf(f) === d.id).length;
+                          const on = activeDoc === d.id;
+                          return (
+                            <div
+                              key={d.id}
+                              onDragOver={over(`t:${d.id}`)}
+                              onDragLeave={() => setDragOver((k) => (k === `t:${d.id}` ? null : k))}
+                              onDrop={drop("document", undefined, d.id)}
+                              className={`group flex items-center rounded-md text-xs font-medium ${on
+                                ? "bg-blue-600 text-white"
+                                : "bg-white text-blue-700 hover:bg-blue-50 dark:bg-slate-900 dark:text-blue-300"} ${dragOver === `t:${d.id}` ? "ring-2 ring-indigo-400" : ""}`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setDocTab(d.id)}
+                                onDoubleClick={() => {
+                                  const name = window.prompt("Rename document", d.name);
+                                  if (name?.trim() && name.trim() !== d.name && wb) void docAction(() => erpApi.renameDocument(wb.id, d.id, name.trim()));
+                                }}
+                                className="px-2.5 py-1"
+                                title="Click to open · double-click to rename · drop a field here to put it on this document"
+                              >
+                                {d.name} <span className={on ? "text-blue-100" : "text-blue-400"}>({count})</span>
+                              </button>
+                              <button
+                                type="button"
+                                title="Remove this document tab (its fields stay Document fields, unassigned)"
+                                onClick={() => {
+                                  if (!wb || !window.confirm(`Remove the "${d.name}" tab? Its fields stay Document fields, with no document.`)) return;
+                                  void docAction(() => erpApi.removeDocument(wb.id, d.id));
+                                }}
+                                className={`pr-1.5 opacity-0 group-hover:opacity-100 ${on ? "text-blue-100" : "text-slate-400"}`}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                        {(hasUnassigned || documents.length === 0) && (
+                          <button
+                            type="button"
+                            onClick={() => setDocTab(NO_DOC)}
+                            onDragOver={over(`t:${NO_DOC}`)}
+                            onDrop={drop("document", undefined, NO_DOC)}
+                            className={`rounded-md px-2.5 py-1 text-xs font-medium ${activeDoc === NO_DOC ? "bg-amber-500 text-white" : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}
+                          >
+                            No document ({current.filter((f) => f.category === "document" && docOf(f) === NO_DOC).length})
+                          </button>
+                        )}
+                        <button type="button" onClick={addDocument} className="rounded-md px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-300">
+                          + Add document
+                        </button>
+                      </div>
+                    )}
                     <div className="flex flex-1 flex-col gap-2">
                       {items.map((f) => (
                         <div
@@ -458,7 +563,7 @@ export function ErpFieldMappingPage() {
                           draggable
                           onDragStart={dragStart(f.id)}
                           onDragOver={over(`c:${f.id}`)}
-                          onDrop={drop(b.key, f.id)}
+                          onDrop={drop(b.key, f.id, isDoc ? activeDoc : undefined)}
                           onClick={() => setEditing(f)}
                           className={`flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
                         >
@@ -472,7 +577,9 @@ export function ErpFieldMappingPage() {
                       {items.length === 0 && (
                         <div className="flex flex-1 flex-col items-center justify-center text-center text-xs text-slate-400">
                           <span className="text-2xl">+</span>
-                          Drag fields here
+                          {isDoc
+                            ? activeDoc === NO_DOC ? "Drag document fields here" : `Drag fields read from ${documents.find((d) => d.id === activeDoc)?.name ?? "this document"} here`
+                            : "Drag fields here"}
                         </div>
                       )}
                     </div>
@@ -483,7 +590,7 @@ export function ErpFieldMappingPage() {
                           e.preventDefault();
                           const name = String(new FormData(e.currentTarget).get("name") ?? "").trim();
                           if (!name || !wb) return;
-                          erpApi.addCustomField(wb.id, sheet, name, b.key)
+                          erpApi.addCustomField(wb.id, sheet, name, b.key, isDoc && activeDoc !== NO_DOC ? activeDoc : null)
                             .then((f) => {
                               setWb((w) => (w ? { ...w, fields: [...w.fields, f] } : w));
                               setAdding(null);
@@ -560,16 +667,19 @@ export function ErpFieldMappingPage() {
             setEditing(null);
           }}
           onError={(text) => setMessage({ tone: "warn", text })}
+          documents={documents}
         />
       )}
+      </div>
     </AppShell>
   );
 }
 
 function FieldConfigModal({
-  field, onClose, onSaved, onDeleted, onError,
+  field, onClose, onSaved, onDeleted, onError, documents,
 }: {
   field: ErpField;
+  documents: erpApi.ErpDocument[];
   onClose: () => void;
   onSaved: (f: ErpField, summary: erpApi.ErpSummary, status: string) => void;
   onDeleted: (id: string) => void;
@@ -593,6 +703,7 @@ function FieldConfigModal({
         formula: draft.formula,
         erp_master_ref: draft.erp_master_ref,
         contact_ref: draft.contact_ref,
+        source_document: draft.category === "document" ? draft.source_document : null,
       });
       onSaved(res.field, res.summary, res.status);
     } catch (err) {
@@ -645,6 +756,11 @@ function FieldConfigModal({
             {row("Default value", <input className={input} value={draft.default_value ?? ""} onChange={(e) => set("default_value", e.target.value)} />)}
             {row("Validation rules", <input className={input} value={draft.validation ?? ""} onChange={(e) => set("validation", e.target.value)} placeholder="e.g. 8 digits" />)}
           </div>
+          {draft.category === "document" && row("Read from document",
+            <select className={input} value={draft.source_document ?? ""} onChange={(e) => set("source_document", e.target.value || null)}>
+              <option value="">Not assigned yet</option>
+              {documents.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>)}
           {draft.category === "calculated" && row("Formula",
             <input className={input} value={draft.formula ?? ""} onChange={(e) => set("formula", e.target.value)} placeholder="e.g. QTY × Unit_Price" />)}
           {draft.category === "erp" && row("ERP master reference",

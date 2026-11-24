@@ -26,6 +26,10 @@ class ErpWorkbook(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     stored_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     sheets: Mapped[list] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    # The customer's documents - tabs in the Document bucket: [{"id", "name",
+    # "template_document_id"}]. Seeded from the template's own documents the first time the
+    # workbook is opened; the admin can add more (a Bill of Lading not in the template yet).
+    documents: Mapped[list | None] = mapped_column(JSON, nullable=True)
     uploaded_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     updated_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -48,6 +52,9 @@ class ErpField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_custom: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     category: Mapped[str | None] = mapped_column(String(20), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)     # order inside its bucket
+    # Document fields only: which of the workbook's documents (ErpWorkbook.documents id) it is
+    # read from. None = not assigned to a document yet.
+    source_document: Mapped[str | None] = mapped_column(String(36), nullable=True)
     display_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     data_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)          # expected value
