@@ -1,0 +1,677 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent } from "react";
+import { useSearchParams } from "react-router-dom";
+import { AppShell } from "../../components/AppShell";
+import { Card } from "../../components/ui/Card";
+import { Button } from "../../components/ui/Button";
+import * as erpApi from "../../api/onboardingErp";
+import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
+import { formatDateTime } from "../../utils/dateTime";
+
+// Customer Onboarding - Step 1: ERP Field Classification.
+// The customer's ERP Excel workbook is read sheet by sheet; every column is dragged into one of
+// four buckets. Sheet and column names always come from the uploaded file. Every change saves
+// as it is made (a draft); "Next" finishes the step once every column is classified.
+
+const BUCKETS: {
+  key: ErpCategory; title: string; help: string; icon: string;
+  head: string; badge: string; box: string; card: string;
+}[] = [
+  { key: "document", title: "Document Fields", help: "Values read from source documents.", icon: "📄",
+    head: "text-blue-700 dark:text-blue-300", badge: "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200",
+    box: "border-blue-200 bg-blue-50/40 dark:border-blue-500/20 dark:bg-blue-500/5", card: "border-blue-100" },
+  { key: "calculated", title: "Calculated Fields", help: "Derived using rules or formulas.", icon: "ƒx",
+    head: "text-emerald-700 dark:text-emerald-300", badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200",
+    box: "border-emerald-200 bg-emerald-50/40 dark:border-emerald-500/20 dark:bg-emerald-500/5", card: "border-emerald-100" },
+  { key: "erp", title: "ERP Fields", help: "ERP master or fixed values.", icon: "🗄",
+    head: "text-violet-700 dark:text-violet-300", badge: "bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-200",
+    box: "border-violet-200 bg-violet-50/40 dark:border-violet-500/20 dark:bg-violet-500/5", card: "border-violet-100" },
+  { key: "contact", title: "Contact Fields", help: "Customer / partner related fields.", icon: "👤",
+    head: "text-orange-700 dark:text-orange-300", badge: "bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-200",
+    box: "border-orange-200 bg-orange-50/40 dark:border-orange-500/20 dark:bg-orange-500/5", card: "border-orange-100" },
+];
+
+const DRAG_MIME = "application/x-erp-field";
+
+function label(f: ErpField): string {
+  return f.excel_name;
+}
+
+function subtitle(f: ErpField): string | null {
+  if (f.category === "calculated" && f.formula) return `= ${f.formula}`;
+  if (f.category === "erp" && f.erp_master_ref) return f.erp_master_ref;
+  if (f.category === "contact" && f.contact_ref) return f.contact_ref;
+  if (f.is_custom) return "custom field";
+  return null;
+}
+
+function errorText(err: unknown, fallback: string): string {
+  return (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? fallback;
+}
+
+export function ErpFieldMappingPage() {
+  const [params, setParams] = useSearchParams();
+  const groupId = params.get("customer") ?? "";
+  const [customers, setCustomers] = useState<ErpCustomer[]>([]);
+  const [wb, setWb] = useState<ErpWorkbook | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [sheet, setSheet] = useState("");
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<ErpField | null>(null);
+  const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  const [adding, setAdding] = useState<ErpCategory | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    erpApi.listCustomers().then(setCustomers).catch(() => setMessage({ tone: "warn", text: "Could not load the customers." }));
+  }, []);
+
+  useEffect(() => {
+    if (!groupId) {
+      setWb(null);
+      return;
+    }
+    setLoading(true);
+    setMessage(null);
+    erpApi.getWorkbook(groupId)
+      .then((w) => {
+        setWb(w);
+        if (w?.sheets.length) {
+          setSheet((s) => (w.sheets.some((x) => x.name === s) ? s : w.sheets[0].name));
+          setOpen((o) => (Object.keys(o).length ? o : { [w.sheets[0].name]: true }));
+        }
+      })
+      .catch(() => setMessage({ tone: "warn", text: "Could not load this customer's workbook." }))
+      .finally(() => setLoading(false));
+  }, [groupId]);
+
+  const customer = customers.find((c) => c.group_id === groupId) ?? null;
+  const fields = useMemo(() => wb?.fields ?? [], [wb]);
+
+  const perSheet = useMemo(() => {
+    const m = new Map<string, { total: number; done: number }>();
+    for (const f of fields) {
+      if (f.is_custom) continue;
+      const e = m.get(f.sheet_name) ?? { total: 0, done: 0 };
+      e.total += 1;
+      if (f.category) e.done += 1;
+      m.set(f.sheet_name, e);
+    }
+    return m;
+  }, [fields]);
+
+  const q = search.trim().toLowerCase();
+  const sheetFields = (name: string) =>
+    fields.filter((f) => f.sheet_name === name)
+      .sort((a, b) => (a.column_index ?? 9999) - (b.column_index ?? 9999));
+  const visibleSheets = (wb?.sheets ?? []).filter((s) =>
+    !q || s.name.toLowerCase().includes(q) || sheetFields(s.name).some((f) => f.excel_name.toLowerCase().includes(q)));
+
+  const current = fields.filter((f) => f.sheet_name === sheet);
+  const inBucket = (key: ErpCategory) =>
+    current.filter((f) => f.category === key).sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
+  const unclassified = current
+    .filter((f) => !f.category && (!q || f.excel_name.toLowerCase().includes(q)))
+    .sort((a, b) => (a.column_index ?? 0) - (b.column_index ?? 0));
+  const sheetStat = perSheet.get(sheet) ?? { total: 0, done: 0 };
+  const sheetInfo = wb?.sheets.find((s) => s.name === sheet);
+
+  // ---- saving ----------------------------------------------------------------------------
+  const applyField = (updated: ErpField, summary?: erpApi.ErpSummary, status?: string) =>
+    setWb((w) => (w ? {
+      ...w,
+      fields: w.fields.map((f) => (f.id === updated.id ? updated : f)),
+      summary: summary ?? w.summary,
+      status: status ?? w.status,
+    } : w));
+
+  const moveTo = async (fieldId: string, category: ErpCategory | null, beforeId?: string) => {
+    if (!wb) return;
+    const field = wb.fields.find((f) => f.id === fieldId);
+    if (!field) return;
+    if (category === null) {
+      if (!field.category) return;
+      try {
+        const res = await erpApi.updateField(fieldId, { category: null });
+        applyField(res.field, res.summary, res.status);
+      } catch (err) {
+        setMessage({ tone: "warn", text: errorText(err, "Could not save.") });
+      }
+      return;
+    }
+    // New order of the target bucket, the moved field included, renumbered 10, 20, ...
+    const others = wb.fields
+      .filter((f) => f.sheet_name === field.sheet_name && f.category === category && f.id !== fieldId)
+      .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
+    const at = beforeId ? others.findIndex((f) => f.id === beforeId) : -1;
+    const order = [...others];
+    order.splice(at < 0 ? order.length : at, 0, field);
+    const changes = order
+      .map((f, i) => ({ f, pos: (i + 1) * 10 }))
+      .filter(({ f, pos }) => f.id === fieldId || f.position !== pos);
+    // Optimistic: the card moves at once; the server confirms.
+    setWb((w) => (w ? {
+      ...w,
+      fields: w.fields.map((f) => {
+        const c = changes.find((x) => x.f.id === f.id);
+        return c ? { ...f, position: c.pos, category: f.id === fieldId ? category : f.category } : f;
+      }),
+    } : w));
+    try {
+      const results = await Promise.all(changes.map(({ f, pos }) =>
+        erpApi.updateField(f.id, f.id === fieldId ? { category, position: pos } : { position: pos })));
+      const last = results[results.length - 1];
+      setWb((w) => (w ? {
+        ...w,
+        fields: w.fields.map((f) => results.find((r) => r.field.id === f.id)?.field ?? f),
+        summary: last?.summary ?? w.summary,
+        status: last?.status ?? w.status,
+      } : w));
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not save - reloading.") });
+      const fresh = await erpApi.getWorkbook(groupId);
+      setWb(fresh);
+    }
+  };
+
+  const upload = async (file: File) => {
+    if (!groupId) return;
+    setUploading(true);
+    setMessage(null);
+    try {
+      const w = await erpApi.uploadWorkbook(groupId, file);
+      setWb(w);
+      setSheet(w.sheets[0]?.name ?? "");
+      setOpen(w.sheets[0] ? { [w.sheets[0].name]: true } : {});
+      setMessage({ tone: "ok", text: `${w.file_name}: ${w.sheets.length} worksheet(s), ${w.summary.total} column(s) read.` });
+      erpApi.listCustomers().then(setCustomers).catch(() => undefined);
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "That workbook could not be read.") });
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  };
+
+  const saveDraft = async () => {
+    if (!wb) return;
+    try {
+      const w = await erpApi.setStatus(wb.id, "draft");
+      setWb(w);
+      setMessage({ tone: "ok", text: "Saved as draft." });
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not save.") });
+    }
+  };
+
+  const next = async () => {
+    if (!wb) return;
+    try {
+      const w = await erpApi.setStatus(wb.id, "complete");
+      setWb(w);
+      const count = (k: ErpCategory) => w.fields.filter((f) => f.category === k).length;
+      setMessage({
+        tone: "ok",
+        text: `Step 1 complete: ${count("document")} document, ${count("calculated")} calculated, ${count("erp")} ERP and ${count("contact")} contact fields are ready for Step 2 - Document Mapping.`,
+      });
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not finish the step.") });
+    }
+  };
+
+  const changeHeaderRow = async () => {
+    if (!wb || !sheetInfo) return;
+    const raw = window.prompt(`Which row holds the column headings on "${sheet}"?`, String(sheetInfo.header_row));
+    const n = Number(raw);
+    if (!raw || !Number.isInteger(n) || n < 1) return;
+    try {
+      setWb(await erpApi.setHeaderRow(wb.id, sheet, n));
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not read that row.") });
+    }
+  };
+
+  // ---- drag and drop ---------------------------------------------------------------------
+  const dragStart = (fieldId: string) => (e: DragEvent) => {
+    e.dataTransfer.setData(DRAG_MIME, fieldId);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const over = (key: string) => (e: DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragOver !== key) setDragOver(key);
+  };
+  const drop = (category: ErpCategory | null, beforeId?: string) => (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(null);
+    const id = e.dataTransfer.getData(DRAG_MIME);
+    if (!id) return;
+    const f = fields.find((x) => x.id === id);
+    if (f && f.sheet_name !== sheet) setSheet(f.sheet_name);
+    void moveTo(id, category, beforeId);
+  };
+
+  const complete = wb?.status === "complete";
+
+  return (
+    <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
+      {/* Header */}
+      <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
+        <label className="flex items-center gap-2 text-sm text-slate-500">
+          Customer:
+          <select
+            value={groupId}
+            onChange={(e) => {
+              const next = new URLSearchParams();
+              if (e.target.value) next.set("customer", e.target.value);
+              setParams(next, { replace: true });
+              setSheet("");
+              setOpen({});
+            }}
+            className="min-w-[14rem] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <option value="">Pick a customer template…</option>
+            {customers.map((c) => (
+              <option key={c.group_id} value={c.group_id}>
+                {c.name}{c.tenant ? ` · ${c.tenant}` : ""}{c.workbook ? ` (${c.workbook.percent}%)` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {wb && (
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            title="Upload a new version - classifications of columns that still exist are kept"
+            className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <span className="rounded bg-emerald-600 px-1.5 text-xs font-bold text-white">X</span>
+            {wb.file_name} ({wb.sheets.length} sheet{wb.sheets.length === 1 ? "" : "s"})
+          </button>
+        )}
+        <input
+          ref={fileInput}
+          type="file"
+          accept=".xlsx,.xlsm"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void upload(f);
+          }}
+        />
+        <div className="ml-auto flex items-center gap-2">
+          {wb?.updated_at && <span className="text-xs text-slate-400">Saved {formatDateTime(wb.updated_at)}{wb.updated_by ? ` by ${wb.updated_by}` : ""}</span>}
+          {wb && <Button size="sm" variant="secondary" onClick={() => void saveDraft()}>Save as Draft</Button>}
+          {wb && <Button size="sm" onClick={() => void next()}>Next: Document Mapping →</Button>}
+        </div>
+      </Card>
+
+      {message && (
+        <div className={`mb-4 rounded-lg border px-4 py-2 text-sm ${message.tone === "ok"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
+          : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
+          {message.text}
+          <button type="button" className="ml-3 text-xs underline" onClick={() => setMessage(null)}>dismiss</button>
+        </div>
+      )}
+
+      {!groupId && <Card className="p-10 text-center text-sm text-slate-500">Pick the customer template to onboard.</Card>}
+      {loading && <Card className="p-10 text-center text-sm text-slate-500">Loading…</Card>}
+
+      {groupId && !loading && !wb && (
+        <Card className="p-10 text-center">
+          <p className="text-base font-semibold text-slate-800 dark:text-slate-100">Upload {customer?.name ?? "the customer"}'s ERP Excel workbook</p>
+          <p className="mt-1 text-sm text-slate-500">Every worksheet and column is read from the file. The file itself is never changed.</p>
+          <Button className="mt-4" isLoading={uploading} onClick={() => fileInput.current?.click()}>Upload ERP Excel (.xlsx)</Button>
+        </Card>
+      )}
+
+      {wb && (
+        <div className="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
+          {/* Left: ERP Excel structure */}
+          <Card className="h-fit p-4">
+            <div className="flex items-center gap-2">
+              <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
+                ERP Excel Structure{complete ? " (Mapped)" : ""}
+              </p>
+              {complete && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-xs text-white">✓</span>}
+            </div>
+            <p className="mb-3 text-xs text-slate-500">
+              {complete ? "Mapping completed for all sheets and columns from the ERP Excel." : "Every column needs a bucket before the step is complete."}
+            </p>
+            <div className="mb-3 grid grid-cols-4 gap-1 text-center">
+              {[
+                ["Total", wb.summary.total, "text-slate-800 dark:text-slate-100"],
+                ["Classified", wb.summary.classified, "text-emerald-600"],
+                ["Unclassified", wb.summary.unclassified, wb.summary.unclassified ? "text-rose-600" : "text-slate-400"],
+                ["Done", `${wb.summary.percent}%`, "text-indigo-600"],
+              ].map(([k, v, tone]) => (
+                <div key={k as string} className="rounded-lg bg-slate-50 py-1.5 dark:bg-slate-800/60">
+                  <p className={`text-sm font-semibold ${tone}`}>{v}</p>
+                  <p className="text-[10px] text-slate-400">{k}</p>
+                </div>
+              ))}
+            </div>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search sheet or column…"
+              className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+            />
+            <div className="max-h-[70vh] overflow-y-auto">
+              {visibleSheets.map((s) => {
+                const stat = perSheet.get(s.name) ?? { total: 0, done: 0 };
+                const isOpen = open[s.name] || !!q;
+                const done = stat.total > 0 && stat.done === stat.total;
+                return (
+                  <div key={s.name}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSheet(s.name);
+                        setOpen((o) => ({ ...o, [s.name]: !o[s.name] || s.name !== sheet }));
+                      }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ${s.name === sheet ? "bg-indigo-50 dark:bg-indigo-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+                    >
+                      <span className="w-3 text-slate-400">{isOpen ? "▾" : "▸"}</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">{s.name}</span>
+                      <span className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium ${done
+                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                        : "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-300"}`}>
+                        {done ? "✓ Mapped" : "Mapped"} ({stat.done}/{stat.total})
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="mb-1 ml-6">
+                        {sheetFields(s.name)
+                          .filter((f) => !q || s.name.toLowerCase().includes(q) || f.excel_name.toLowerCase().includes(q))
+                          .map((f) => (
+                            <div
+                              key={f.id}
+                              draggable
+                              onDragStart={dragStart(f.id)}
+                              onClick={() => {
+                                setSheet(s.name);
+                                setEditing(f);
+                              }}
+                              className="flex cursor-grab items-center gap-2 rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                              title={f.category ? `Classified: ${f.category}` : "Not classified yet - drag it into a bucket"}
+                            >
+                              {f.category
+                                ? <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white">✓</span>
+                                : <span className="h-3 w-3 shrink-0 rounded-full bg-rose-500" />}
+                              <span className="truncate">{label(f)}</span>
+                              {f.is_custom && <span className="text-[10px] text-slate-400">custom</span>}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Right: four buckets */}
+          <Card className="p-5">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <p className="text-lg font-semibold text-slate-900 dark:text-slate-50">Map Fields for Sheet:</p>
+              <span className="rounded-lg bg-indigo-50 px-3 py-1 text-lg font-semibold text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">{sheet}</span>
+              {sheetInfo && (
+                <button type="button" onClick={() => void changeHeaderRow()} className="text-xs text-slate-400 hover:text-indigo-600 hover:underline">
+                  headings on row {sheetInfo.header_row} · change
+                </button>
+              )}
+              <span className={`ml-auto rounded-full px-3 py-1 text-sm font-medium ${sheetStat.total && sheetStat.done === sheetStat.total
+                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}>
+                {sheetStat.total && sheetStat.done === sheetStat.total ? "✓ " : ""}{sheetStat.done} of {sheetStat.total} fields mapped
+              </span>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {BUCKETS.map((b) => {
+                const items = inBucket(b.key);
+                return (
+                  <div
+                    key={b.key}
+                    onDragOver={over(`b:${b.key}`)}
+                    onDragLeave={() => setDragOver((k) => (k === `b:${b.key}` ? null : k))}
+                    onDrop={drop(b.key)}
+                    className={`flex min-h-[18rem] flex-col rounded-xl border-2 border-dashed p-3 ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`text-lg ${b.head}`}>{b.icon}</span>
+                      <p className={`font-semibold ${b.head}`}>{b.title}</p>
+                      <span className={`ml-auto rounded-full px-2 text-xs font-semibold ${b.badge}`}>{items.length}</span>
+                    </div>
+                    <p className="mb-2 text-xs text-slate-500">{b.help}</p>
+                    <div className="flex flex-1 flex-col gap-2">
+                      {items.map((f) => (
+                        <div
+                          key={f.id}
+                          draggable
+                          onDragStart={dragStart(f.id)}
+                          onDragOver={over(`c:${f.id}`)}
+                          onDrop={drop(b.key, f.id)}
+                          onClick={() => setEditing(f)}
+                          className={`flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
+                        >
+                          <span className="mt-0.5 text-slate-300">⠿</span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">{label(f)}{f.mandatory && <span className="text-rose-500">*</span>}</p>
+                            {subtitle(f) && <p className="truncate text-xs text-slate-500">{subtitle(f)}</p>}
+                          </div>
+                        </div>
+                      ))}
+                      {items.length === 0 && (
+                        <div className="flex flex-1 flex-col items-center justify-center text-center text-xs text-slate-400">
+                          <span className="text-2xl">+</span>
+                          Drag fields here
+                        </div>
+                      )}
+                    </div>
+                    {adding === b.key ? (
+                      <form
+                        className="mt-2 flex gap-1"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const name = String(new FormData(e.currentTarget).get("name") ?? "").trim();
+                          if (!name || !wb) return;
+                          erpApi.addCustomField(wb.id, sheet, name, b.key)
+                            .then((f) => {
+                              setWb((w) => (w ? { ...w, fields: [...w.fields, f] } : w));
+                              setAdding(null);
+                            })
+                            .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not add the field.") }));
+                        }}
+                      >
+                        <input name="name" autoFocus placeholder="New field name" className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900" />
+                        <button type="submit" className="rounded bg-indigo-600 px-2 text-xs text-white">Add</button>
+                        <button type="button" onClick={() => setAdding(null)} className="px-1 text-xs text-slate-400">✕</button>
+                      </form>
+                    ) : (
+                      <button type="button" onClick={() => setAdding(b.key)} className="mt-2 text-left text-xs text-slate-400 hover:text-indigo-600">
+                        + Add new field
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Unclassified columns of this sheet */}
+            <div
+              onDragOver={over("tray")}
+              onDragLeave={() => setDragOver((k) => (k === "tray" ? null : k))}
+              onDrop={drop(null)}
+              className={`mt-5 rounded-xl border bg-slate-50 p-5 dark:border-slate-700 dark:bg-slate-800/40 ${dragOver === "tray" ? "ring-2 ring-indigo-300" : "border-slate-200"}`}
+            >
+              {unclassified.length > 0 ? (
+                <>
+                  <p className="mb-3 text-sm font-medium text-slate-700 dark:text-slate-200">
+                    Not classified yet ({unclassified.length}) - drag each into the right bucket
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {unclassified.map((f) => (
+                      <div
+                        key={f.id}
+                        draggable
+                        onDragStart={dragStart(f.id)}
+                        onClick={() => setEditing(f)}
+                        className="flex cursor-grab items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm dark:border-rose-500/30 dark:bg-slate-900 dark:text-slate-200"
+                        title={f.samples.length ? `e.g. ${f.samples.join(" · ")}` : undefined}
+                      >
+                        <span className="h-2 w-2 rounded-full bg-rose-500" />
+                        {label(f)}
+                        <span className="text-[10px] text-slate-400">{f.column_key}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="text-center text-sm text-slate-500">
+                  <p className="text-2xl">🖱</p>
+                  Drag and drop fields from any worksheet into the appropriate bucket (Document, Calculated, ERP or Contact).
+                  <br />
+                  Drop a field here to take it out of its bucket.
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {editing && wb && (
+        <FieldConfigModal
+          field={fields.find((f) => f.id === editing.id) ?? editing}
+          onClose={() => setEditing(null)}
+          onSaved={(f, summary, status) => {
+            applyField(f, summary, status);
+            setEditing(null);
+          }}
+          onDeleted={(id) => {
+            setWb((w) => (w ? { ...w, fields: w.fields.filter((f) => f.id !== id) } : w));
+            setEditing(null);
+          }}
+          onError={(text) => setMessage({ tone: "warn", text })}
+        />
+      )}
+    </AppShell>
+  );
+}
+
+function FieldConfigModal({
+  field, onClose, onSaved, onDeleted, onError,
+}: {
+  field: ErpField;
+  onClose: () => void;
+  onSaved: (f: ErpField, summary: erpApi.ErpSummary, status: string) => void;
+  onDeleted: (id: string) => void;
+  onError: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState<ErpField>(field);
+  const [saving, setSaving] = useState(false);
+  const set = <K extends keyof ErpField>(k: K, v: ErpField[K]) => setDraft((d) => ({ ...d, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await erpApi.updateField(field.id, {
+        category: draft.category,
+        display_label: draft.display_label,
+        data_type: draft.data_type,
+        description: draft.description,
+        mandatory: draft.mandatory,
+        default_value: draft.default_value,
+        validation: draft.validation,
+        formula: draft.formula,
+        erp_master_ref: draft.erp_master_ref,
+        contact_ref: draft.contact_ref,
+      });
+      onSaved(res.field, res.summary, res.status);
+    } catch (err) {
+      onError(errorText(err, "Could not save the field."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const input = "w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100";
+  const row = (title: string, el: React.ReactNode, hint?: string) => (
+    <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
+      {title}
+      {el}
+      {hint && <span className="text-[11px] font-normal text-slate-400">{hint}</span>}
+    </label>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <p className="text-base font-semibold text-slate-900 dark:text-slate-50">Field configuration</p>
+            <p className="text-xs text-slate-400">{field.sheet_name}{field.column_key ? ` · column ${field.column_key}` : " · custom field"}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+        <div className="flex flex-col gap-3">
+          {row("Excel field name", <input className={`${input} bg-slate-50 dark:bg-slate-800`} value={field.excel_name} readOnly />,
+            field.samples.length ? `Values in the file: ${field.samples.join(" · ")}` : undefined)}
+          {row("Display label", <input className={input} value={draft.display_label ?? ""} onChange={(e) => set("display_label", e.target.value)} />)}
+          <div className="grid grid-cols-2 gap-3">
+            {row("Classification",
+              <select className={input} value={draft.category ?? ""} onChange={(e) => set("category", (e.target.value || null) as ErpCategory | null)}>
+                <option value="">Not classified</option>
+                {BUCKETS.map((b) => <option key={b.key} value={b.key}>{b.title}</option>)}
+              </select>)}
+            {row("Data type",
+              <select className={input} value={draft.data_type} onChange={(e) => set("data_type", e.target.value)}>
+                {erpApi.ERP_DATA_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>, "Suggested from the values in the file")}
+          </div>
+          {row("Expected value / description", <textarea className={input} rows={2} value={draft.description ?? ""} onChange={(e) => set("description", e.target.value)} placeholder="What this field should hold" />)}
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" checked={draft.mandatory} onChange={(e) => set("mandatory", e.target.checked)} />
+            Mandatory
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            {row("Default value", <input className={input} value={draft.default_value ?? ""} onChange={(e) => set("default_value", e.target.value)} />)}
+            {row("Validation rules", <input className={input} value={draft.validation ?? ""} onChange={(e) => set("validation", e.target.value)} placeholder="e.g. 8 digits" />)}
+          </div>
+          {draft.category === "calculated" && row("Formula",
+            <input className={input} value={draft.formula ?? ""} onChange={(e) => set("formula", e.target.value)} placeholder="e.g. QTY × Unit_Price" />)}
+          {draft.category === "erp" && row("ERP master reference",
+            <input className={input} value={draft.erp_master_ref ?? ""} onChange={(e) => set("erp_master_ref", e.target.value)} placeholder="e.g. Auto Number (ERP), Branch master" />)}
+          {draft.category === "contact" && row("Contact reference",
+            <input className={input} value={draft.contact_ref ?? ""} onChange={(e) => set("contact_ref", e.target.value)} placeholder="e.g. Consignee contact person" />)}
+        </div>
+        <div className="mt-5 flex items-center gap-2">
+          {field.is_custom && (
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                if (!window.confirm(`Delete the custom field "${field.excel_name}"?`)) return;
+                erpApi.deleteCustomField(field.id).then(() => onDeleted(field.id))
+                  .catch((err) => onError(errorText(err, "Could not delete.")));
+              }}
+            >
+              Delete
+            </Button>
+          )}
+          <div className="ml-auto flex gap-2">
+            <Button size="sm" variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button size="sm" isLoading={saving} onClick={() => void save()}>Save</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

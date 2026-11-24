@@ -34,6 +34,10 @@ export const superAdminFeatures = [
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
   // "New User" form.
+  // Customer Onboarding (2026-11-24): the new step-by-step onboarding, built alongside the
+  // existing wizard (which stays untouched until this replaces it). Step 1 - ERP fields.
+  { path: "/super-admin/onboarding/erp-fields", navLabel: "Step 1 - ERP Field Mapping", group: "Customer Onboarding", order: 5.95 },
+
   { path: "/super-admin/email-puller", navLabel: "Email Puller", group: "Integrations & Automation", order: 6 },
   { path: "/super-admin/erp-scripts", navLabel: "ERP Script Management", group: "Integrations & Automation", order: 7 },
   { path: "/super-admin/entry-browser", navLabel: "Entry Browser", group: "Integrations & Automation", order: 8 },
@@ -53,6 +57,7 @@ export const superAdminFeatures = [
 export const SUPER_ADMIN_FEATURE_GROUPS = [
   "Customer Management",
   "Platform Configuration",
+  "Customer Onboarding",
   "Integrations & Automation",
   "Operations",
   "Finance & System",
