@@ -423,11 +423,13 @@ export function ScreenDesignerPage() {
           onDragOver={allowDrop(endKey)}
           onDragLeave={() => setDragOver((k) => (k === endKey ? null : k))}
           onDrop={onDropField(target)}
-          className={`rounded-lg border-2 border-dashed px-3 py-2 text-center text-xs sm:col-span-2 ${
-            dragOver === endKey ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10" : "border-slate-200 text-slate-400 dark:border-slate-700"
+          className={`rounded-md border border-dashed text-center sm:col-span-2 ${
+            dragOver === endKey
+              ? "border-indigo-400 bg-indigo-50 py-2 text-xs text-indigo-600 dark:bg-indigo-500/10"
+              : refs.length ? "border-transparent py-0.5 text-[10px] text-transparent hover:border-slate-200 hover:text-slate-400" : "border-slate-200 py-2 text-xs text-slate-400 dark:border-slate-700"
           }`}
         >
-          {refs.length ? "Drop here to add at the end" : emptyText}
+          {refs.length ? "drop here to add at the end" : emptyText}
         </div>
       </div>
     );
@@ -553,7 +555,7 @@ export function ScreenDesignerPage() {
       )}
 
       {template && layout && (
-        <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)_18rem]">
+        <div className="grid gap-4 xl:grid-cols-[13rem_minmax(0,1fr)_16rem]">
           {/* Left: fields not placed */}
           <Card className="h-fit p-4 lg:sticky lg:top-4">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Not placed</p>
@@ -594,9 +596,9 @@ export function ScreenDesignerPage() {
           </Card>
 
           {/* Centre: the screen, as the operator sees it - Document Preview beside Extracted Data */}
-          <div onClick={() => setSelected(null)} className={`grid min-w-0 gap-4 ${showDoc && previewJobDoc ? "2xl:grid-cols-2" : ""}`}>
+          <div onClick={() => setSelected(null)} className={`grid min-w-0 items-start gap-4 ${showDoc && previewJobDoc ? "lg:grid-cols-2" : ""}`}>
             {showDoc && previewJobDoc && previewJob && (
-              <Card className="h-fit min-w-0 p-5 2xl:sticky 2xl:top-4">
+              <Card className="h-fit min-w-0 p-5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-auto">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Document Preview</p>
                   {previewJobDoc.page_count > 1 && (
