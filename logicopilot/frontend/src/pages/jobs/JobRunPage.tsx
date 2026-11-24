@@ -8506,6 +8506,58 @@ function ExtractionReview({
                       // warn about once nothing is ever translated. Still never shown as its own
                       // box on screen.
                       const visibleCells = cells.filter((fv) => fv.label_name !== "Product Description Language");
+                      // A product card follows the template's own order (FieldMark.field_order)
+                      // when EVERY field on it has one - otherwise the order values were saved in,
+                      // which an edit changes: a corrected field was saved again and jumped to the
+                      // end of the card (Scheme Code below its own DBK fields, Sea Export,
+                      // 24 Nov 2026). Cards with no configured order are unchanged.
+                      //
+                      // A field with a heading of its own (standalone_group_heading - on a product
+                      // line it names a group, e.g. "Scheme Details") sits in a box of its own
+                      // under the card's other fields. Standalone tables (Container Detail) use
+                      // that heading as the table's own name, so they are left exactly as before.
+                      const orderedCells =
+                        !docIsStandalone && visibleCells.length > 0 && visibleCells.every((fv) => fv.field_order != null)
+                          ? [...visibleCells].sort((a, b) => (a.field_order as number) - (b.field_order as number))
+                          : visibleCells;
+                      const plainCells = docIsStandalone
+                        ? orderedCells
+                        : orderedCells.filter((fv) => !(fv.standalone_group_heading ?? "").trim());
+                      const cellGroups: { heading: string; items: JobFieldValue[] }[] = [];
+                      if (!docIsStandalone) {
+                        for (const fv of orderedCells) {
+                          const heading = (fv.standalone_group_heading ?? "").trim();
+                          if (!heading) continue;
+                          let group = cellGroups.find((g) => g.heading === heading);
+                          if (!group) {
+                            group = { heading, items: [] };
+                            cellGroups.push(group);
+                          }
+                          group.items.push(fv);
+                        }
+                      }
+                      const renderCell = (fv: JobFieldValue) => (
+                        <ExtractedField
+                          key={fv.id}
+                          id={`field-${fv.id}`}
+                          fv={fv}
+                          readOnly={readOnly}
+                          reload={reload}
+                          small
+                          tone="document"
+                          onFocusField={setFocusedFv}
+                          labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
+                          // A product-line field with its own list of choices (a
+                          // quantity unit) is picked, not typed - see fixedChoiceProps.
+                          {...fixedChoiceProps(fv)}
+                          flagged={missingRequiredIds.has(fv.id)}
+                          flagNote={
+                            missingRequiredIds.has(fv.id)
+                              ? "Mandatory — needs a value before this document can be approved."
+                              : undefined
+                          }
+                        />
+                      );
                       return (
                         <div
                           key={n}
@@ -8534,28 +8586,7 @@ function ExtractionReview({
                             )}
                           </div>
                           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                            {visibleCells.map((fv) => (
-                              <ExtractedField
-                                key={fv.id}
-                                id={`field-${fv.id}`}
-                                fv={fv}
-                                readOnly={readOnly}
-                                reload={reload}
-                                small
-                                tone="document"
-                                onFocusField={setFocusedFv}
-                                labelOverride={active ? fieldLabelOverride(fv.display_label, job?.group_id, active.doc_type, fv.label_name) : undefined}
-                                // A product-line field with its own list of choices (a
-                                // quantity unit) is picked, not typed - see fixedChoiceProps.
-                                {...fixedChoiceProps(fv)}
-                                flagged={missingRequiredIds.has(fv.id)}
-                                flagNote={
-                                  missingRequiredIds.has(fv.id)
-                                    ? "Mandatory — needs a value before this document can be approved."
-                                    : undefined
-                                }
-                              />
-                            ))}
+                            {plainCells.map(renderCell)}
                             {/* Looked up in the customer's own reference sheet by the part
                                 code on this same line - left blank rather than guessed when
                                 the sheet does not carry it, same as everywhere else this
@@ -8600,6 +8631,19 @@ function ExtractionReview({
                               />
                             ))}
                           </div>
+                          {cellGroups.map((group) => (
+                            <div
+                              key={group.heading}
+                              className="mt-3 rounded-md border border-indigo-100 bg-indigo-50/40 p-3 dark:border-indigo-500/20 dark:bg-indigo-500/5"
+                            >
+                              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                                {group.heading}
+                              </p>
+                              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                                {group.items.map(renderCell)}
+                              </div>
+                            </div>
+                          ))}
                           {pairs.length > 0 && (
                             <div className="mt-3 flex flex-col gap-3">
                               {pairs.map(({ primary, other, syncTargets }) => (

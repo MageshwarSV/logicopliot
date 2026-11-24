@@ -277,6 +277,9 @@ export interface SpendAnalyticsTotals {
   characters: number;
   estimated_tokens: number;
   zero_result_jobs: number;
+  /** Every page billed in the range (billing ledger), re-runs included - what the invoice counts. */
+  billed_pages: number;
+  billed_rerun_pages: number;
 }
 
 export interface SpendAnalytics {

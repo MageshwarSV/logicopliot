@@ -519,6 +519,12 @@ class SpendAnalyticsTotals(BaseModel):
     characters: int
     estimated_tokens: int
     zero_result_jobs: int
+    # From the billing ledger (billable_page_events) - every page the AI read in the range,
+    # the same count the invoice bills: pages later left unattached / removed, pages of jobs
+    # deleted since, and re-runs included. `pages` above only counts pages still attached to
+    # a surviving job's documents, so it is lower (24 Nov 2026 on production: 120 vs 168).
+    billed_pages: int = 0
+    billed_rerun_pages: int = 0
 
 
 class SpendAnalyticsOut(BaseModel):
@@ -622,6 +628,19 @@ def spend_analytics(
         estimated_tokens=sum(d.estimated_tokens for d in days),
         zero_result_jobs=sum(d.zero_result_jobs for d in days),
     )
+    # Billed pages: the billing ledger itself, by when each page was read - the same window and
+    # the same source the invoice uses, so Cost per page is OpenAI's spend over what was billed.
+    from sqlalchemy import func
+
+    from app.models.billable_page_event import BillablePageEvent
+
+    billed, billed_rerun = db.query(
+        func.coalesce(func.sum(BillablePageEvent.page_count), 0),
+        func.coalesce(func.sum(BillablePageEvent.page_count)
+                      .filter(BillablePageEvent.is_rerun.is_(True)), 0),
+    ).filter(BillablePageEvent.created_at >= start_dt, BillablePageEvent.created_at < end_dt).one()
+    totals.billed_pages = int(billed or 0)
+    totals.billed_rerun_pages = int(billed_rerun or 0)
     return SpendAnalyticsOut(
         start=start_date.isoformat(), end=end_inclusive.isoformat(), totals=totals, days=days,
     )
