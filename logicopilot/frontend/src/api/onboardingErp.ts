@@ -50,6 +50,8 @@ export interface ErpDocument {
   id: string;
   name: string;
   template_document_id: string | null;
+  /** Additional Details: always there, cannot be renamed or removed. */
+  fixed?: boolean;
 }
 
 export interface ErpWorkbook {

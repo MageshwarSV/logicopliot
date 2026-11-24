@@ -26,6 +26,10 @@ from app.models.user import SUPER_ADMIN, User
 router = APIRouter(prefix="/onboarding/erp", tags=["onboarding: erp fields"])
 
 MAX_BYTES = 20 * 1024 * 1024
+# The always-present tab for values sent to the ERP that are not read off any document
+# (operator input, fixed values, reference data, rules) - the job screen's Additional Details.
+ADDITIONAL_ID = "additional-details"
+ADDITIONAL = {"id": ADDITIONAL_ID, "name": "Additional Details", "template_document_id": None, "fixed": True}
 CONFIG_FIELDS = ("display_label", "data_type", "description", "mandatory", "default_value",
                  "validation", "formula", "ai_prompt", "erp_master_ref", "contact_ref", "source_document")
 
@@ -69,7 +73,13 @@ def _documents(db: Session, wb: ErpWorkbook) -> list[dict]:
                 .order_by(TemplateDocument.created_at).all())
         wb.documents = [{"id": d.id, "name": d.name, "template_document_id": d.id} for d in docs]
         db.commit()
-    return wb.documents or []
+    docs = list(wb.documents or [])
+    # Additional Details is always there, always last.
+    if not any(d["id"] == ADDITIONAL_ID for d in docs):
+        wb.documents = [*docs, ADDITIONAL]
+        db.commit()
+        docs = list(wb.documents)
+    return [d for d in docs if d["id"] != ADDITIONAL_ID] + [ADDITIONAL]
 
 
 def _workbook_out(db: Session, wb: ErpWorkbook) -> dict:
@@ -384,7 +394,8 @@ def add_document(
     wb = _workbook(db, workbook_id)
     name = _doc_name(db, wb, body.name)
     doc = {"id": str(uuid.uuid4()), "name": name, "template_document_id": None}
-    wb.documents = [*_documents(db, wb), doc]
+    docs = _documents(db, wb)
+    wb.documents = [*docs[:-1], doc, docs[-1]]      # new documents go before Additional Details
     _history(db, wb, user, "add_document", detail={"document": name})
     db.commit()
     return _workbook_out(db, wb)
@@ -402,6 +413,8 @@ def rename_document(
     docs = _documents(db, wb)
     if not any(d["id"] == doc_id for d in docs):
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc_id == ADDITIONAL_ID:
+        raise HTTPException(status_code=422, detail="Additional Details is always there and keeps its name.")
     name = _doc_name(db, wb, body.name, skip_id=doc_id)
     wb.documents = [{**d, "name": name} if d["id"] == doc_id else d for d in docs]
     _history(db, wb, user, "rename_document", detail={"document": name})
@@ -422,6 +435,8 @@ def remove_document(
     doc = next((d for d in docs if d["id"] == doc_id), None)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc_id == ADDITIONAL_ID:
+        raise HTTPException(status_code=422, detail="Additional Details cannot be removed.")
     moved = 0
     for f in db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.source_document == doc_id):
         f.source_document = None

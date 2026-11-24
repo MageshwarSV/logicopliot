@@ -318,6 +318,7 @@ export function ErpFieldMappingPage() {
   const docName = (id: string) => (id === NO_DOC ? "No document" : documents.find((d) => d.id === id)?.name ?? "");
   const docIcon = (name: string) => {
     const n = name.toLowerCase();
+    if (n === "additional details") return "📋";
     if (n.includes("lading") || n === "bl" || n.includes("waybill")) return "⚓";
     if (n.includes("packing") || n.includes("paackage") || n.includes("package")) return "📦";
     if (n.includes("invoice")) return "🧾";
@@ -518,19 +519,22 @@ export function ErpFieldMappingPage() {
                       type="button"
                       onClick={() => setDocTab(d.id)}
                       onDoubleClick={() => {
+                        if (d.fixed) return;
                         const name = window.prompt("Rename document", d.name);
                         if (name?.trim() && name.trim() !== d.name && wb) void docAction(() => erpApi.renameDocument(wb.id, d.id, name.trim()));
                       }}
-                      title="Click to open · double-click to rename"
+                      title={d.fixed ? "Values sent to the ERP that are not read off any document - operator input, fixed values, reference data, rules" : "Click to open · double-click to rename"}
                       className="flex flex-1 items-center gap-3 px-4 py-2 text-left"
                     >
                       <span className="text-xl">{docIcon(d.name)}</span>
                       <span>
                         <span className={`block text-sm font-semibold ${on ? "text-indigo-700 dark:text-indigo-300" : "text-slate-700 dark:text-slate-200"}`}>{d.name}</span>
-                        <span className="block text-xs text-slate-400">{tabCount(d.id)} field{tabCount(d.id) === 1 ? "" : "s"}</span>
+                        <span className="block text-xs text-slate-400">
+                          {tabCount(d.id)} field{tabCount(d.id) === 1 ? "" : "s"}{d.fixed ? " · not from a document" : ""}
+                        </span>
                       </span>
                     </button>
-                    <button
+                    {!d.fixed && <button
                       type="button"
                       title="Remove this document (its fields go back to No document)"
                       onClick={() => {
@@ -540,7 +544,7 @@ export function ErpFieldMappingPage() {
                       className="absolute right-1 top-1 rounded px-1 text-xs text-slate-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"
                     >
                       ✕
-                    </button>
+                    </button>}
                     {on && <span className="absolute inset-x-3 -bottom-1 h-0.5 rounded bg-indigo-600" />}
                   </div>
                 );
@@ -577,7 +581,9 @@ export function ErpFieldMappingPage() {
                       <span className={`ml-auto rounded-full px-2 text-xs font-semibold ${b.badge}`}>{items.length}</span>
                     </div>
                     <p className="mb-2 text-xs text-slate-500">
-                      {b.key === "document" && activeDoc !== NO_DOC ? `Values read from the ${docName(activeDoc)} document.` : b.help}
+                      {b.key === "document" && documents.find((d) => d.id === activeDoc)?.fixed
+                        ? "Not for Additional Details - a value read off a document goes on that document's tab."
+                        : b.key === "document" && activeDoc !== NO_DOC ? `Values read from the ${docName(activeDoc)} document.` : b.help}
                     </p>
                     <div className="flex flex-1 flex-col gap-2">
                       {items.map((f) => (
