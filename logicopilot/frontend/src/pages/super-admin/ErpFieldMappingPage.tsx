@@ -73,6 +73,15 @@ export function ErpFieldMappingPage() {
   const [sheet, setSheet] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [search, setSearch] = useState("");
+  // Hide worksheets the uploaded Excel has no values in (INBOND_EXBOND, LICENSE, ...), the same
+  // option as the ERP Excel editor. Remembered per browser; on by default.
+  const [onlyWithData, setOnlyWithData] = useState<boolean>(() => {
+    try { return window.localStorage.getItem("erpMapping.onlyWithData") !== "0"; } catch { return true; }
+  });
+  const toggleOnlyWithData = (v: boolean) => {
+    setOnlyWithData(v);
+    try { window.localStorage.setItem("erpMapping.onlyWithData", v ? "1" : "0"); } catch { /* convenience only */ }
+  };
   const [editing, setEditing] = useState<ErpField | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -131,8 +140,15 @@ export function ErpFieldMappingPage() {
   const sheetFields = (name: string) =>
     fields.filter((f) => f.sheet_name === name)
       .sort((a, b) => (a.column_index ?? 9999) - (b.column_index ?? 9999));
-  const visibleSheets = (wb?.sheets ?? []).filter((s) =>
-    !q || s.name.toLowerCase().includes(q) || sheetFields(s.name).some((f) => f.excel_name.toLowerCase().includes(q)));
+  // A sheet "has data" when any of its columns has a value in the Excel - or when something on
+  // it is already classified, so work done never disappears from the list.
+  const sheetHasData = (name: string) =>
+    fields.some((f) => f.sheet_name === name && (f.samples.length > 0 || !!f.category));
+  const allSheets = wb?.sheets ?? [];
+  const hiddenSheets = onlyWithData ? allSheets.filter((s) => !sheetHasData(s.name)).length : 0;
+  const visibleSheets = allSheets.filter((s) =>
+    (!onlyWithData || sheetHasData(s.name)) &&
+    (!q || s.name.toLowerCase().includes(q) || sheetFields(s.name).some((f) => f.excel_name.toLowerCase().includes(q))));
 
   const current = fields.filter((f) => f.sheet_name === sheet);
   const documents = wb?.documents ?? [];
@@ -420,6 +436,11 @@ export function ErpFieldMappingPage() {
               placeholder="Search sheet or column…"
               className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
             />
+            <label className="mb-2 flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <input type="checkbox" checked={onlyWithData} onChange={(e) => toggleOnlyWithData(e.target.checked)} />
+              Only sheets with data
+              {hiddenSheets > 0 && <span className="text-slate-400">({hiddenSheets} empty sheet{hiddenSheets === 1 ? "" : "s"} hidden)</span>}
+            </label>
             <div className="max-h-[62vh] overflow-y-auto">
               {visibleSheets.map((s) => {
                 const stat = perSheet.get(s.name) ?? { total: 0, done: 0 };
