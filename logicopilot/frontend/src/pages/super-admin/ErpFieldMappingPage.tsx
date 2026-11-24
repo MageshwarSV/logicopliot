@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -64,6 +64,7 @@ function errorText(err: unknown, fallback: string): string {
 
 export function ErpFieldMappingPage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const groupId = params.get("customer") ?? "";
   const [customers, setCustomers] = useState<ErpCustomer[]>([]);
   const [wb, setWb] = useState<ErpWorkbook | null>(null);
@@ -259,6 +260,7 @@ export function ErpFieldMappingPage() {
         tone: "ok",
         text: `Step 1 complete - ready for Step 2, Document Mapping: ${BUCKETS.map((b) => `${count(b.key)} ${b.title}`).join(", ")}.`,
       });
+      navigate(`/super-admin/onboarding/document-mapping?customer=${groupId}`);
     } catch (err) {
       setMessage({ tone: "warn", text: errorText(err, "Could not finish the step.") });
     }

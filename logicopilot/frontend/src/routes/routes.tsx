@@ -43,6 +43,7 @@ import { DocumentProcessingPage } from "../pages/super-admin/DocumentProcessingP
 import { ExtractionCorrectionsPage } from "../pages/super-admin/ExtractionCorrectionsPage";
 import { ScreenDesignerPage } from "../pages/super-admin/ScreenDesignerPage";
 import { ErpFieldMappingPage } from "../pages/super-admin/ErpFieldMappingPage";
+import { ErpDocumentMappingPage } from "../pages/super-admin/ErpDocumentMappingPage";
 import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
@@ -195,6 +196,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <ErpFieldMappingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/onboarding/document-mapping"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <ErpDocumentMappingPage />
           </ProtectedRoute>
         }
       />

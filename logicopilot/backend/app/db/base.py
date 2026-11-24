@@ -43,7 +43,7 @@ from app.models.archive_password import ArchivePassword  # noqa: F401
 from app.models.invoice_settings import InvoiceSettings  # noqa: F401
 from app.models.invoice_payment import InvoicePayment  # noqa: F401
 from app.models.screen_layout import ScreenLayout, ScreenLayoutHistory  # noqa: F401
-from app.models.erp_mapping import ErpField, ErpMappingHistory, ErpWorkbook  # noqa: F401
+from app.models.erp_mapping import ErpDocSample, ErpField, ErpFieldMark, ErpMappingHistory, ErpWorkbook  # noqa: F401
 
 # Importing this installs the before_flush listener that writes a job's history. It
 # lives here so every entry point that touches the database gets it - the API, the

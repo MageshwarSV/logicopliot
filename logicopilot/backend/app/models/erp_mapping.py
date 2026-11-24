@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -81,3 +81,42 @@ class ErpMappingHistory(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     action: Mapped[str] = mapped_column(String(40), nullable=False)
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class ErpDocSample(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Customer Onboarding, Step 2: the one sample file of a customer document (an
+    ErpWorkbook.documents id), with its pages rendered for drawing field boxes on."""
+
+    __tablename__ = "erp_doc_samples"
+    __table_args__ = (UniqueConstraint("workbook_id", "doc_id", name="uq_erp_doc_samples_workbook_doc"),)
+
+    workbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("erp_workbooks.id", ondelete="CASCADE"), nullable=False, index=True)
+    doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_dir: Mapped[str] = mapped_column(String(1024), nullable=False)    # original.* + pages/
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uploaded_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class ErpFieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Step 2: where a Document field sits on its document's sample - one box per field,
+    normalised 0-1 coordinates, plus what was read inside it when it was drawn."""
+
+    __tablename__ = "erp_field_marks"
+
+    workbook_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("erp_workbooks.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("erp_fields.id", ondelete="CASCADE"), nullable=False, unique=True)
+    doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    x: Mapped[float] = mapped_column(Float, nullable=False)
+    y: Mapped[float] = mapped_column(Float, nullable=False)
+    width: Mapped[float] = mapped_column(Float, nullable=False)
+    height: Mapped[float] = mapped_column(Float, nullable=False)
+    # A line-item field: the box is drawn around the value on the FIRST product row.
+    line_item: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    detected_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    anchor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -134,3 +134,84 @@ export async function setStatus(workbookId: string, status: "draft" | "complete"
   const { data } = await apiClient.post<ErpWorkbook>(`/onboarding/erp/workbooks/${workbookId}/status`, { status });
   return data;
 }
+
+// ---- Step 2: Document Mapping ----------------------------------------------------------------
+
+export interface DocMark {
+  field_id: string;
+  doc_id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  line_item: boolean;
+  detected_value: string | null;
+  anchor: string | null;
+}
+
+export interface DocMappingField {
+  id: string;
+  sheet_name: string;
+  column_key: string | null;
+  excel_name: string;
+  display_label: string | null;
+  source_document: string | null;
+  samples: string[];
+  data_type: string;
+  mandatory: boolean;
+  mark: DocMark | null;
+}
+
+export interface DocMappingDocument {
+  id: string;
+  name: string;
+  sample: { file_name: string; page_count: number; uploaded_by: string | null; updated_at: string | null } | null;
+  template_sample_available: boolean;
+}
+
+export interface DocMapping {
+  workbook: { id: string; file_name: string; status: string };
+  documents: DocMappingDocument[];
+  fields: DocMappingField[];
+}
+
+export async function getDocMapping(workbookId: string): Promise<DocMapping> {
+  const { data } = await apiClient.get<DocMapping>(`/onboarding/erp/workbooks/${workbookId}/doc-mapping`);
+  return data;
+}
+
+export async function uploadSample(workbookId: string, docId: string, file: File): Promise<DocMapping> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<DocMapping>(`/onboarding/erp/workbooks/${workbookId}/documents/${docId}/sample`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function sampleFromTemplate(workbookId: string, docId: string): Promise<DocMapping> {
+  const { data } = await apiClient.post<DocMapping>(`/onboarding/erp/workbooks/${workbookId}/documents/${docId}/sample/from-template`);
+  return data;
+}
+
+export async function fetchSamplePageUrl(workbookId: string, docId: string, page: number): Promise<string> {
+  const { data } = await apiClient.get<Blob>(`/onboarding/erp/workbooks/${workbookId}/documents/${docId}/sample/pages/${page}`, {
+    responseType: "blob",
+  });
+  return URL.createObjectURL(data);
+}
+
+export async function saveMark(fieldId: string, box: { page: number; x: number; y: number; width: number; height: number; line_item: boolean }): Promise<DocMark> {
+  const { data } = await apiClient.put<{ mark: DocMark }>(`/onboarding/erp/fields/${fieldId}/mark`, box);
+  return data.mark;
+}
+
+export async function setMarkLineItem(fieldId: string, lineItem: boolean): Promise<DocMark> {
+  const { data } = await apiClient.patch<{ mark: DocMark }>(`/onboarding/erp/fields/${fieldId}/mark`, { line_item: lineItem });
+  return data.mark;
+}
+
+export async function clearMark(fieldId: string): Promise<void> {
+  await apiClient.delete(`/onboarding/erp/fields/${fieldId}/mark`);
+}

@@ -28,6 +28,7 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/extraction-corrections": PencilIcon,
   "/super-admin/screen-designer": FolderIcon,
   "/super-admin/onboarding/erp-fields": DatabaseIcon,
+  "/super-admin/onboarding/document-mapping": DocumentIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,
   "/super-admin/entry-browser": MonitorIcon,
