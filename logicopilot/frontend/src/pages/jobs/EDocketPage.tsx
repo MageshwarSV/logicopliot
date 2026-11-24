@@ -30,6 +30,12 @@ const ADVANCE_COLUMNS = ["Sl.No.", "Remarks", "Cheque Favour", "Amount", "Cheque
 const ADVANCE_WIDTHS = ["7%", "13%", "28%", "12%", "13%", "13%", "14%"];
 // ADVANCE DETAILS rows 1 and 2: their Cheque Favour is this fixed label + Yes / No tick boxes.
 const ADVANCE_PRESET = ["Free Do", "CFS Charges On Forwarders Scope"];
+// Filled from the Bill of Lading, not by a label pattern - one constant so the row and
+// the value put into it can never drift apart (the same reasoning as CONTAINER_ROW).
+const MOTHER_VESSEL_ROW = "Mother Vessel Name";
+// The second box on the Weight (Gross) row. Its stored key is built the way every paired
+// row's is: "<pair label>\u0000<row label>".
+const NET_WEIGHT_LABEL = "Net Weight";
 const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
 const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
@@ -117,7 +123,10 @@ function partyRow(isExport: boolean): DocketRow {
     : { label: "Name of the Importer", patterns: [/^consignee$/i, /\bbuyer\b/i, /importer/i] };
 }
 
-function rows(isExport: boolean): DocketRow[] {
+/** The AIR docket, exactly as it has always been. The client has revised only the SEA
+ *  dockets so far (see seaRows), and air must not shift under them while they are still
+ *  deciding what they want on it. */
+function airRows(isExport: boolean): DocketRow[] {
   return [
     partyRow(isExport),
     // "ERP Quotation Name" (Additional Details' "Erp Entry Name" field) - the reference-
@@ -177,6 +186,84 @@ function rows(isExport: boolean): DocketRow[] {
   ];
 }
 
+/** The SEA docket, as the client revised it on 2026-11-24 (marked up in
+ *  "Cargora Docket - for review.docx" and confirmed row by row).
+ *
+ *  Against the air list: "Vessel Name / Voyage No" becomes Mother + FEEDER Vessel Name,
+ *  "Inward Date / IGM Date" becomes the split "IGM No / IGM Date", Cartons becomes Pkgs,
+ *  Weight (Gross) gains its own Net Weight box, Chargeable Weight is gone, CFS / Charges
+ *  becomes CFS / Terminal, and OOC Date is new (with Transporter Name moved below Docket
+ *  Closed on).
+ *
+ *  Three of the new boxes are typed by hand, by the client's own choice: FEEDER Vessel Name,
+ *  OOC Date, and the IGM NUMBER (its Date half still fills itself, exactly as the old Inward
+ *  Date / IGM Date row did - that was never asked to stop). A row with no `patterns` is a
+ *  typed one; nothing silently guesses a value into it.
+ */
+function seaRows(isExport: boolean): DocketRow[] {
+  return [
+    partyRow(isExport),
+    { label: "Quotation Name", patterns: [/^erp entry name$/i] },
+    { label: "Documents Received on" },
+    { label: HAWB_ROW },
+    { label: MAWB_ROW },
+    // Filled from the Bill of Lading's own vessel_name below - the same reading the old
+    // "Vessel Name / Voyage No" row showed, minus the voyage number, which now has nowhere
+    // of its own to go. Say so if the voyage should ride along with it.
+    { label: MOTHER_VESSEL_ROW },
+    { label: "FEEDER Vessel Name" },
+    {
+      // The NUMBER is typed; the Date half keeps the old row's own sources.
+      label: "IGM No / IGM Date",
+      pairWith: {
+        label: "Date",
+        patterns: [/^igm date\.?$/i, /\bigm\b/i, /inward\s*date/i, /arrival\s*date/i, /eta/i],
+      },
+    },
+    {
+      label: "No. of Pkgs (Cartons / Pallet / Drum)",
+      patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
+    },
+    { label: CONTAINER_ROW, patterns: [/container/i] },
+    {
+      label: "Weight (Gross)",
+      docName: "Bill of lading",
+      patterns: [/^gross wt\.?$/i, /gross\s*weight/i, /\bweight\b/i],
+      // Net Weight is the Packing List's own, joined with its unit below.
+      pairWith: { label: NET_WEIGHT_LABEL },
+    },
+    {
+      label: "Bill of Entry No.",
+      patterns: [/bill\s*of\s*entry\s*(no|number)/i, /\bboe\s*(no|number)\b/i],
+      pairWith: { label: "Date", patterns: [/bill\s*of\s*entry\s*date/i, /\bboe\s*date\b/i] },
+    },
+    {
+      label: "Ass. Value / Invoice Value",
+      patterns: [/assessable\s*value/i, /ass(essment)?\.?\s*value/i],
+    },
+    { label: "Duty" },
+    { label: "F.F / Consol / Liner Name" },
+    {
+      label: "INCO Terms",
+      docName: "Invoice",
+      patterns: [/^toi$/i, /incoterm/i, /terms\s*of\s*(delivery|payment)/i],
+    },
+    { label: "Name of the CFS / Terminal" },
+    { label: "Cleared on" },
+    { label: "OOC Date" },
+    { label: "Docket Closed on" },
+    { label: "Transporter Name" },
+    { label: "Billed on" },
+    { label: "Bill No." },
+  ];
+}
+
+/** Sea and air no longer print the same rows - see seaRows. */
+function rows(mode: string | null | undefined): DocketRow[] {
+  const isExport = /export/i.test(mode ?? "");
+  return /sea/i.test(mode ?? "") ? seaRows(isExport) : airRows(isExport);
+}
+
 function docketTitle(mode: string | null | undefined): string {
   return mode ? `${mode.toUpperCase()} DOCKET` : "IMPORT / EXPORT DOCKET";
 }
@@ -196,6 +283,11 @@ export function EDocketPage() {
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
   const [jobNo, setJobNo] = useState("");
+  // The ERP's OWN job number (e.g. "MAA/SI/03867/26-27"), read back off the entry the ERP
+  // accepted - job.erp_captured["ERP_Job_No"], the same capture the Job page shows. Blank
+  // until the job has actually been submitted, which is correct: there is no ERP job number
+  // before the ERP has given one.
+  const [erpJobNo, setErpJobNo] = useState("");
   const [fclLcl, setFclLcl] = useState<string | null>(null);
   const [categories, setCategories] = useState<Set<string>>(new Set());
   const [transactionMode, setTransactionMode] = useState<string>(TRANSACTION_MODES[0]);
@@ -214,8 +306,7 @@ export function EDocketPage() {
       (j === 0 && i < ADVANCE_PRESET.length ? String(i + 1) : ""))));
   const [yesNo, setYesNo] = useState<Record<number, "Yes" | "No" | null>>({});
 
-  const isExport = /export/i.test(job?.mode ?? "");
-  const docketRows = useMemo(() => rows(isExport), [isExport]);
+  const docketRows = useMemo(() => rows(job?.mode), [job?.mode]);
 
   useEffect(() => {
     Promise.all([
@@ -266,6 +357,31 @@ export function EDocketPage() {
       .map((v) => (v ?? "").trim())
       .filter(Boolean)
       .join(" / ");
+    // The sea docket's "Mother Vessel Name" is that same vessel reading on its own - the row
+    // was renamed, not re-sourced, so a job that showed a vessel before still shows it.
+    const motherVessel = (vesselName?.value ?? "").trim();
+    // "Net Weight" - the Packing List's own "Net Weight" + "Net Weight Unit" (e.g.
+    // "4251.84 KGS"). Job-level, never a per-line row. Empty when the packing list gave none,
+    // which is the wanted behaviour: an empty box, not a guess.
+    const netWeightValue = job.field_values.find(
+      (f) => f.row_index == null && f.label_name.toLowerCase() === "net weight",
+    );
+    const netWeightUnit = job.field_values.find(
+      (f) => f.row_index == null && f.label_name.toLowerCase() === "net weight unit",
+    );
+    const netWeight = [netWeightValue?.value, netWeightUnit?.value]
+      .map((v) => (v ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    // The ERP's own job number, off the accepted entry.
+    const erpCapturedJobNo = job.erp_captured?.["ERP_Job_No"];
+    const erpJobNoValue = (
+      typeof erpCapturedJobNo === "object" && erpCapturedJobNo
+        ? erpCapturedJobNo.value ?? ""
+        : typeof erpCapturedJobNo === "string"
+          ? erpCapturedJobNo
+          : ""
+    ).trim();
     // "No. of Cartons / Pallet / Drum" - the Bill of Lading's OWN "Package Count" and
     // "Package Unit" together (e.g. "4 CTN"), not a document-text guess. package_count is a
     // mark on three documents (Packing List, Bill of lading, Fright Certificate) - document_name
@@ -351,7 +467,7 @@ export function EDocketPage() {
       const next = { ...prev };
       if (!(HAWB_ROW in prev) && hawbLine) next[HAWB_ROW] = hawbLine;
       if (!(MAWB_ROW in prev) && mawbLine) next[MAWB_ROW] = mawbLine;
-      for (const row of rows(isExport)) {
+      for (const row of rows(job.mode)) {
         if (!(row.label in next)) next[row.label] = bestValue(job.field_values, row.patterns, row.docName);
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
           next[row.pairWith.label + "\u0000" + row.label] = bestValue(job.field_values, row.pairWith.patterns);
@@ -362,6 +478,13 @@ export function EDocketPage() {
       }
       if (!("Vessel Name / Voyage No" in prev) && vesselVoyage) {
         next["Vessel Name / Voyage No"] = vesselVoyage;
+      }
+      if (!(MOTHER_VESSEL_ROW in prev) && motherVessel) {
+        next[MOTHER_VESSEL_ROW] = motherVessel;
+      }
+      const netWeightKey = NET_WEIGHT_LABEL + "\u0000" + "Weight (Gross)";
+      if (!(netWeightKey in prev) && netWeight) {
+        next[netWeightKey] = netWeight;
       }
       if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
         next["No. of Cartons / Pallet / Drum"] = cartons;
@@ -375,16 +498,9 @@ export function EDocketPage() {
         const num = Number(next["Weight (Gross)"].replace(/[^0-9.]/g, ""));
         if (!Number.isNaN(num)) next["Weight (Gross)"] = `${num.toFixed(3)} KG`;
       }
-      // "Chargeable Weight" on a sea docket shows the Bill of lading's own MEASUREMENT (its
-      // "CBM Measurement" field, by request 2026-11-19), e.g. "1.460 CBM"; "NA" only when the
-      // B/L gives none. Air keeps whatever its own fields read.
-      if (!("Chargeable Weight" in prev) && /sea/i.test(job.mode ?? "")) {
-        const cbm = exact("CBM Measurement");
-        const cbmNum = Number(cbm.replace(/[^0-9.]/g, ""));
-        next["Chargeable Weight"] = cbm
-          ? (/cbm|m3|cu/i.test(cbm) || Number.isNaN(cbmNum) ? cbm : `${cbm} CBM`)
-          : "NA";
-      }
+      // The sea docket's old "Chargeable Weight" row (which showed the B/L's CBM Measurement)
+      // was removed by the client on 2026-11-24 - its Net Weight box replaces it. Air still has
+      // a Chargeable Weight row and fills it from its own patterns, as it always did.
       if (!("Ass. Value / Invoice Value" in prev) && invoiceValueDisplay) {
         const assValue = next["Ass. Value / Invoice Value"] ?? "";
         next["Ass. Value / Invoice Value"] = `${assValue} / ${invoiceValueDisplay}`;
@@ -394,10 +510,12 @@ export function EDocketPage() {
       }
       return next;
     });
+    if (erpJobNoValue) setErpJobNo((prev) => prev || erpJobNoValue);
     // The operator's saved choices win over the automatic values, field by field.
     const st = (saved?.state ?? null) as Record<string, unknown> | null;
     if (st) {
       if (typeof st.jobNo === "string") setJobNo(st.jobNo);
+      if (typeof st.erpJobNo === "string") setErpJobNo(st.erpJobNo);
       if (typeof st.fclLcl === "string" || st.fclLcl === null) setFclLcl(st.fclLcl as string | null);
       if (Array.isArray(st.categories)) setCategories(new Set(st.categories as string[]));
       if (typeof st.transactionMode === "string") setTransactionMode(st.transactionMode);
@@ -418,7 +536,7 @@ export function EDocketPage() {
   // from here and from Print pages. The state right after loading is the baseline: opening the
   // page never writes anything by itself.
   const snapshot = JSON.stringify({
-    jobNo, fclLcl, categories: [...categories].sort(), transactionMode, priorityType,
+    jobNo, erpJobNo, fclLcl, categories: [...categories].sort(), transactionMode, priorityType,
     values, feedback, advance, yesNo,
   });
   const baseline = useRef<string | null>(null);
@@ -578,7 +696,7 @@ export function EDocketPage() {
         {/* RMS/GROUP-FCA + FCL/LCL/B.B row, JOB No. row, and the tall checkbox column beside both */}
         <div
           className="mb-2 grid gap-1.5"
-          style={{ gridTemplateColumns: "1fr 190px", gridTemplateRows: "repeat(2, auto)" }}
+          style={{ gridTemplateColumns: "1fr 190px", gridTemplateRows: "repeat(3, auto)" }}
         >
           <div className="flex gap-1.5" style={{ gridColumn: "1", gridRow: "1" }}>
             <div className="flex border-2 border-black text-xs font-semibold">
@@ -615,9 +733,22 @@ export function EDocketPage() {
               className="ml-1.5 flex-1 bg-transparent font-mono text-sm font-bold"
             />
           </div>
+          {/* The ERP's own job number, under our job number - added 2026-11-24 by request.
+              Same box, same border, one row down; the tick-box column beside it grew to match. */}
+          <div
+            className="flex items-center border-2 border-black px-2.5 py-1.5 font-bold"
+            style={{ gridColumn: "1", gridRow: "3" }}
+          >
+            ERP JOB No.&nbsp;:
+            <input
+              value={erpJobNo}
+              onChange={(e) => setErpJobNo(e.target.value)}
+              className="ml-1.5 flex-1 bg-transparent font-mono text-sm font-bold"
+            />
+          </div>
           <div
             className="flex flex-col border-2 border-black"
-            style={{ gridColumn: "2", gridRow: "1 / span 2" }}
+            style={{ gridColumn: "2", gridRow: "1 / span 3" }}
           >
             {CATEGORY_OPTIONS.map((o, i) => (
               <button
