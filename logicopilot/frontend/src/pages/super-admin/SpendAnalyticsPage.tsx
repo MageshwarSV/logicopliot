@@ -334,17 +334,20 @@ export function SpendAnalyticsPanel() {
                       : "No jobs in this range"
                   }
                 />
-                {/* What one page cost: OpenAI's real spend over the pages read in the same range, in
-                    rupees at today's rate (the same USD->INR rate as every rupee figure here). */}
+                {/* What one BILLED page cost: OpenAI's real spend over the pages billed in the same
+                    range (the billing ledger - what the invoice counts), in rupees at today's rate.
+                    It used the pages still attached to documents, which leaves out pages read and
+                    then left unattached, deleted jobs and re-runs - on 24 Nov 2026 that was 120 of
+                    168 billed pages, and the cost per page read 40% too high. */}
                 <StatCardWithSub
-                  label="Cost per page (₹)"
-                  value={data.totals.pages > 0 && rate
-                    ? `₹${((realCosts.total_usd * rate.rate) / data.totals.pages).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`
+                  label="Cost per billed page (₹)"
+                  value={data.totals.billed_pages > 0 && rate
+                    ? `₹${((realCosts.total_usd * rate.rate) / data.totals.billed_pages).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`
                     : "—"}
-                  sub={data.totals.pages > 0
-                    ? [`$${(realCosts.total_usd / data.totals.pages).toFixed(4)}`, `across ${data.totals.pages.toLocaleString()} page${data.totals.pages === 1 ? "" : "s"}`,
+                  sub={data.totals.billed_pages > 0
+                    ? [`$${(realCosts.total_usd / data.totals.billed_pages).toFixed(4)}`, `across ${data.totals.billed_pages.toLocaleString()} billed page${data.totals.billed_pages === 1 ? "" : "s"}`,
                        rate ? `₹${rate.rate.toFixed(2)}/$` : null].filter(Boolean).join(" · ")
-                    : "No pages in this range"}
+                    : "No billed pages in this range"}
                 />
                 <Card className="flex flex-col justify-between gap-2 p-5">
                   <div>
@@ -393,10 +396,23 @@ export function SpendAnalyticsPanel() {
           <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
             This app's own counts (estimate)
           </p>
-          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="Jobs Created" value={data.totals.jobs.toLocaleString()} />
             <StatCard label="Documents Uploaded" value={data.totals.documents.toLocaleString()} />
-            <StatCard label="Total Pages" value={data.totals.pages.toLocaleString()} />
+            {/* Billed Pages is the invoice's own count; Pages on Documents is what is still attached
+                to the documents of jobs that still exist, so it is lower. */}
+            <StatCardWithSub
+              label="Billed Pages"
+              value={data.totals.billed_pages.toLocaleString()}
+              sub={data.totals.billed_rerun_pages > 0
+                ? `incl. ${data.totals.billed_rerun_pages.toLocaleString()} re-run`
+                : "what the invoice counts"}
+            />
+            <StatCardWithSub
+              label="Pages on Documents"
+              value={data.totals.pages.toLocaleString()}
+              sub="still attached to a job's documents"
+            />
             <StatCard label="Characters Read" value={data.totals.characters.toLocaleString()} />
             <StatCard label="Est. Tokens Spent" value={data.totals.estimated_tokens.toLocaleString()} />
           </div>
