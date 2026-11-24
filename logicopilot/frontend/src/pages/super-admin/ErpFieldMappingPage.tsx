@@ -161,14 +161,18 @@ export function ErpFieldMappingPage() {
   const docIds = new Set(documents.map((d) => d.id));
   // Every classified field belongs to a document tab; one classified before documents existed
   // shows under "No document" until it is moved onto one.
-  const hasUnassigned = current.some((f) => f.category && (!f.source_document || !docIds.has(f.source_document)));
+  // The buckets show the selected document's fields from EVERY worksheet (a Bill of Lading
+  // field on GENERAL and on SHIPMENT alike); the left tree and the tray stay per worksheet.
+  const sheetOrder = new Map((wb?.sheets ?? []).map((sh, i) => [sh.name, i] as const));
+  const hasUnassigned = fields.some((f) => f.category && (!f.source_document || !docIds.has(f.source_document)));
   const activeDoc = docTab === NO_DOC ? NO_DOC
     : documents.some((d) => d.id === docTab) ? docTab
     : documents[0]?.id ?? NO_DOC;
   const docOf = (f: ErpField) => (f.source_document && docIds.has(f.source_document) ? f.source_document : NO_DOC);
   const inBucket = (key: ErpCategory) =>
-    current.filter((f) => f.category === key && docOf(f) === activeDoc)
-      .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
+    fields.filter((f) => f.category === key && docOf(f) === activeDoc)
+      .sort((a, b) => (sheetOrder.get(a.sheet_name) ?? 0) - (sheetOrder.get(b.sheet_name) ?? 0)
+        || a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
   const unclassified = current
     .filter((f) => !f.category && (!onlyWithData || colHasData(f)) && (!q || f.excel_name.toLowerCase().includes(q)))
     .sort((a, b) => (a.column_index ?? 0) - (b.column_index ?? 0));
@@ -330,7 +334,7 @@ export function ErpFieldMappingPage() {
     if (n.includes("invoice")) return "🧾";
     return "📄";
   };
-  const tabCount = (id: string) => current.filter((f) => f.category && docOf(f) === id).length;
+  const tabCount = (id: string) => fields.filter((f) => f.category && docOf(f) === id).length;
   // Progress over the columns that matter: with "Only ... with data" on, the columns the Excel
   // fills (or that are classified); otherwise every column of the workbook.
   const counted = fields.filter((f) => !f.is_custom && (!onlyWithData || colHasData(f)));
@@ -488,7 +492,7 @@ export function ErpFieldMappingPage() {
               <span className={`ml-auto rounded-full px-3 py-1 text-sm font-medium ${sheetStat.total && sheetStat.done === sheetStat.total
                 ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
                 : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}>
-                {sheetStat.total && sheetStat.done === sheetStat.total ? "✓ " : ""}{sheetStat.done} of {sheetStat.total} fields mapped
+                {sheetStat.total && sheetStat.done === sheetStat.total ? "✓ " : ""}{sheet}: {sheetStat.done} of {sheetStat.total} mapped
               </span>
             </div>
 
@@ -590,6 +594,7 @@ export function ErpFieldMappingPage() {
                           <span className="mt-0.5 text-slate-300">⠿</span>
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">{label(f)}{f.mandatory && <span className="text-rose-500">*</span>}</p>
+                            <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-400">{f.sheet_name}{f.column_key ? ` · ${f.column_key}` : ""}</p>
                             {subtitle(f) && <p className="truncate text-xs text-slate-500">{subtitle(f)}</p>}
                             {sampleLine(f) && <p className="truncate font-mono text-[11px] text-slate-400" title={f.samples.join(" · ")}>e.g. {sampleLine(f)}</p>}
                           </div>
