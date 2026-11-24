@@ -54,9 +54,10 @@ function subtitle(f: ErpField): string | null {
   return null;
 }
 
-/** The values found under the column in the uploaded Excel, for mapping at a glance. */
-function sampleLine(f: ErpField, max = 3): string | null {
-  return f.samples.length ? f.samples.slice(0, max).join(" · ") : null;
+/** The column's value in the uploaded Excel, from its first row only (a sheet with many rows -
+ *  ITEMS, INVOICES - shows the first item, not every row). The field popup lists them all. */
+function sampleLine(f: ErpField, _max = 1): string | null {
+  return f.samples.length ? f.samples[0] : null;
 }
 
 function errorText(err: unknown, fallback: string): string {
@@ -124,17 +125,22 @@ export function ErpFieldMappingPage() {
   const customer = customers.find((c) => c.group_id === groupId) ?? null;
   const fields = useMemo(() => wb?.fields ?? [], [wb]);
 
+  // A column "has data" when the uploaded Excel has a value under it - or it is already
+  // classified, so work done never disappears. With "Only ... with data" on, every count, list
+  // and the progress use only these columns: most of an ERP workbook is never filled.
+  const colHasData = (f: ErpField) => f.samples.length > 0 || !!f.category || f.is_custom;
   const perSheet = useMemo(() => {
     const m = new Map<string, { total: number; done: number }>();
     for (const f of fields) {
       if (f.is_custom) continue;
+      if (onlyWithData && !(f.samples.length > 0 || !!f.category)) continue;
       const e = m.get(f.sheet_name) ?? { total: 0, done: 0 };
       e.total += 1;
       if (f.category) e.done += 1;
       m.set(f.sheet_name, e);
     }
     return m;
-  }, [fields]);
+  }, [fields, onlyWithData]);
 
   const q = search.trim().toLowerCase();
   const sheetFields = (name: string) =>
@@ -164,7 +170,7 @@ export function ErpFieldMappingPage() {
     current.filter((f) => f.category === key && docOf(f) === activeDoc)
       .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
   const unclassified = current
-    .filter((f) => !f.category && (!q || f.excel_name.toLowerCase().includes(q)))
+    .filter((f) => !f.category && (!onlyWithData || colHasData(f)) && (!q || f.excel_name.toLowerCase().includes(q)))
     .sort((a, b) => (a.column_index ?? 0) - (b.column_index ?? 0));
   const sheetStat = perSheet.get(sheet) ?? { total: 0, done: 0 };
   const sheetInfo = wb?.sheets.find((s) => s.name === sheet);
@@ -325,7 +331,11 @@ export function ErpFieldMappingPage() {
     return "📄";
   };
   const tabCount = (id: string) => current.filter((f) => f.category && docOf(f) === id).length;
-  const progress = wb?.summary.percent ?? 0;
+  // Progress over the columns that matter: with "Only ... with data" on, the columns the Excel
+  // fills (or that are classified); otherwise every column of the workbook.
+  const counted = fields.filter((f) => !f.is_custom && (!onlyWithData || colHasData(f)));
+  const countedDone = counted.filter((f) => f.category).length;
+  const progress = counted.length ? Math.round((countedDone * 100) / counted.length) : 0;
 
   return (
     <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
@@ -392,7 +402,7 @@ export function ErpFieldMappingPage() {
             />
             <label className="mb-2 flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
               <input type="checkbox" checked={onlyWithData} onChange={(e) => toggleOnlyWithData(e.target.checked)} />
-              Only sheets with data
+              Only sheets and columns with data
               {hiddenSheets > 0 && <span className="text-slate-400">({hiddenSheets} empty sheet{hiddenSheets === 1 ? "" : "s"} hidden)</span>}
             </label>
             <div className="max-h-[62vh] overflow-y-auto">
@@ -425,6 +435,7 @@ export function ErpFieldMappingPage() {
                           headings on row {s.header_row} · change
                         </button>
                         {sheetFields(s.name)
+                          .filter((f) => !onlyWithData || colHasData(f))
                           .filter((f) => !q || s.name.toLowerCase().includes(q) || f.excel_name.toLowerCase().includes(q))
                           .map((f) => (
                             <div
@@ -457,13 +468,16 @@ export function ErpFieldMappingPage() {
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40">
               <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mapping Progress</p>
               <div className="mt-1 flex items-baseline justify-between text-sm">
-                <span className="text-slate-600 dark:text-slate-300"><b>{wb.summary.classified} / {wb.summary.total}</b> fields mapped</span>
+                <span className="text-slate-600 dark:text-slate-300"><b>{countedDone} / {counted.length}</b> {onlyWithData ? "columns with data mapped" : "fields mapped"}</span>
                 <span className="font-semibold text-slate-800 dark:text-slate-100">{progress}%</span>
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                 <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
               </div>
-              {wb.summary.unclassified > 0 && <p className="mt-1 text-[11px] text-slate-400">{wb.summary.unclassified} left unclassified - not used</p>}
+              <p className="mt-1 text-[11px] text-slate-400">
+                {counted.length - countedDone > 0 ? `${counted.length - countedDone} with data still unclassified · ` : ""}
+                {onlyWithData ? `${wb.summary.total} columns in the workbook in all` : `${wb.summary.unclassified} left unclassified - not used`}
+              </p>
             </div>
           </Card>
 
