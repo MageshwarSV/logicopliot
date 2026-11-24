@@ -4586,9 +4586,15 @@ def list_custom_field_reference_options(
     # `country` is the importer country picked on the job. It is only ever read by the GSTIN
     # rule below (the branch table itself carries no country), so every caller that does not
     # send it gets exactly what it always got.
-    return _reference_options_payload(
+    payload = _reference_options_payload(
         db, custom_field_id, key=key, country=country,
         gstin=gstin_rule(db, db.get(TemplateGroup, job.group_id), cf))
+    if (cf.label_name or "").strip().lower() == ERP_ENTRY_LABEL:
+        master = _quotation_master_names(db, job.group_id)
+        if master is not None:
+            payload["options"] = [o for o in payload["options"]
+                                  if _quotation_name_key(o.get("value")) in master]
+    return payload
 
 
 def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None,
@@ -9254,6 +9260,40 @@ def unlock_held_job(
     return _build_detail(db, job)
 
 
+ERP_ENTRY_LABEL = "erp entry name"
+QUOTATION_ADDRESS_LABEL = "quotation_address"
+
+
+def _quotation_name_key(value: str | None) -> str:
+    """The Quotation Master's own comparison: upper case, single spaces, no trailing , or ."""
+    return " ".join(str(value or "").split()).upper().strip(" ,.")
+
+
+def _quotation_master_names(db: Session, group_id: str | None) -> set[str] | None:
+    """Every ERP Quotation Name in this template's Quotation Master (Tenant Admin -> ERP Master
+    Data - Quotation: name + branch + address rows), or None when the template has no master
+    (no quotation_address field, or no active rows) - then nothing is narrowed, as before.
+
+    "ERP Quotation Name" (label Erp Entry Name) used to offer, and auto-fill, any name an
+    operator had ever typed - "EXPEDITORS INTERNATIONAL OCEAN" among them - though only names in
+    the master have a branch and an address; picking another left ERP Quotation Branch "not
+    found" (JOB-DD47BB, 24 Nov 2026). The master is now the one list of usable names."""
+    from app.models.custom_field import CustomField
+    from app.models.custom_field_reference import CustomFieldReferenceValue as Ref
+
+    if not group_id:
+        return None
+    cf = (db.query(CustomField)
+          .filter(CustomField.group_id == group_id,
+                  func.lower(CustomField.label_name) == QUOTATION_ADDRESS_LABEL)
+          .first())
+    if cf is None:
+        return None
+    names = {_quotation_name_key(v) for (v,) in db.query(Ref.match_value_1)
+             .filter(Ref.custom_field_id == cf.id, Ref.is_active.is_(True)).all() if v}
+    return names or None
+
+
 def _resolve_target_value(
     db: Session, job_id: str, cf, value: str | None,
 ) -> tuple[str | None, str | None]:
@@ -9320,6 +9360,12 @@ def _resolve_target_value(
                 resolved = lookup_reference(
                     db, custom_field_id=cf.id, match_values=key_values, fuzzy=True,
                 )
+        if resolved and (getattr(cf, "label_name", "") or "").strip().lower() == ERP_ENTRY_LABEL:
+            master = _quotation_master_names(db, getattr(cf, "group_id", None))
+            if master is not None and _quotation_name_key(resolved) not in master:
+                # Not in the Quotation Master: it has no branch or address, so the entry could
+                # not use it. Left empty for the operator to pick a master name instead.
+                resolved = None
         return (resolved or None), "||".join(key_values)
     if not value:
         return value, value
