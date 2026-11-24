@@ -10668,7 +10668,7 @@ def run_extraction(
     # The customer's material master, if they have uploaded one. Loaded once for the whole job
     # rather than per line: it is the same file for every line and every field that looks
     # something up in it.
-    from app.core.material_master import load_master, lookup_cth, material_from
+    from app.core.material_master import load_master, lookup_cth, material_from, part_candidates
     from app.core.reference_cache import lookup_reference
 
     def _line_values(label: str) -> dict[tuple[int, int], str]:
@@ -10857,7 +10857,22 @@ def run_extraction(
                         # typed this exact material/description once before, on this job or an
                         # earlier one, and that answer was kept rather than asked for twice.
                         cached = lookup_reference(db, cf.id, [material, desc])
-                        if not cached and desc:
+                        # A part number the dump lists with SEVERAL CTHs (one per description):
+                        # the AI picks among just that part's rows by the line's description,
+                        # and the answer is remembered on part + description like an operator's.
+                        rows_of_part = part_candidates(material, master)
+                        if not cached and rows_of_part and desc:
+                            from app.core.llm import pick_cth_for_description
+                            from app.core.reference_cache import remember_reference
+
+                            cached = pick_cth_for_description(material, desc, rows_of_part,
+                                                              tenant_id=job.tenant_id)
+                            if cached:
+                                remember_reference(db, cf.id, [material, desc], cached)
+                                logger.info("%r on job %s: part %s has %d CTH rows - AI picked %s "
+                                            "for %r", cf.label_name, job.reference, material,
+                                            len(rows_of_part), cached, desc[:80])
+                        if not cached and desc and not rows_of_part:
                             # material ALONE, when the two-key match found nothing. A field
                             # keyed on something other than a product line (a container type,
                             # say) still gets handed whatever product happens to share its row
@@ -11947,7 +11962,7 @@ def _recompute_per_row_custom_field(
     # on something other than a product - see the identical field_keys in run_extraction.
     field_keys = line_keys
     if cf.kind == "lookup":
-        from app.core.material_master import load_master, lookup_cth, material_from
+        from app.core.material_master import load_master, lookup_cth, material_from, part_candidates
         from app.core.reference_cache import lookup_reference
 
         standalone_mark_labels = _standalone_mark_labels(db.get(TemplateGroup, job.group_id))
@@ -11979,9 +11994,19 @@ def _recompute_per_row_custom_field(
             if not code and (material or desc):
                 # material+desc first, then material ALONE, then (if opted in) an AI classifier
                 # - see the identical fallbacks (and their full reasoning) in run_extraction's
-                # own per-row lookup block above.
+                # own per-row lookup block above. A part with several CTHs in the dump: the AI
+                # picks among just its rows, and material alone is never used for it.
                 code = lookup_reference(db, cf.id, [material, desc]) or ""
-                if not code and desc:
+                rows_of_part = part_candidates(material, master)
+                if not code and rows_of_part and desc:
+                    from app.core.llm import pick_cth_for_description
+                    from app.core.reference_cache import remember_reference
+
+                    code = pick_cth_for_description(material, desc, rows_of_part,
+                                                    tenant_id=job.tenant_id) or ""
+                    if code:
+                        remember_reference(db, cf.id, [material, desc], code)
+                if not code and desc and not rows_of_part:
                     code = lookup_reference(db, cf.id, [material]) or ""
                 if not code and material and getattr(cf, "lookup_ai_fallback", False):
                     from app.core.llm import classify_container_type_code

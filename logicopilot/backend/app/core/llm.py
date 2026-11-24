@@ -693,6 +693,60 @@ _CONTAINER_TYPE_CODE_OPTIONS = """
 """.strip()
 
 
+def pick_cth_for_description(
+    part_code: str, description: str, candidates: list[tuple[str, str]],
+    tenant_id: str | None = None,
+) -> str:
+    """The CTH for an invoice line whose part number the customer's CTH dump lists SEVERAL
+    times with different descriptions and CTHs (material_master.part_candidates). The model
+    sees ONLY those rows - never the whole dump - and picks the row whose description is the
+    same product as the line's. "" when none clearly is: a wrong CTH is a wrong customs
+    declaration, so an unclear line goes to the operator rather than to a guess."""
+    settings = get_settings()
+    if not settings.openai_api_key or not (description or "").strip() or not candidates:
+        return ""
+    listing = "\n".join(f"{i}. {d or '(no description)'}  ->  CTH {c}"
+                        for i, (d, c) in enumerate(candidates, start=1))
+    try:
+        resp = create_chat_completion_with_retry(
+            timeout=30,
+            tenant_id=tenant_id,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=60,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "A customer's customs classification list (CTH dump) gives one part "
+                        "number several rows, each a different product description with its own "
+                        "CTH. You are given those rows and the description printed on an invoice "
+                        "line for that part number. Pick the ONE row whose description is the "
+                        "same product as the invoice line's - match by meaning (the product "
+                        "type), not by shared generic words like 'TRANSMISSION PARTS'. If no row "
+                        "clearly is the same product, or two rows fit equally well, answer 0 - "
+                        "never guess.\n\n"
+                        'Reply with JSON: {"row": <the row number>} or {"row": 0}.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (f"Part number: {part_code}\n"
+                                f"Invoice line description: {description}\n\n"
+                                f"Rows for this part number:\n{listing}"),
+                },
+            ],
+        )
+        row = int(json.loads(resp.choices[0].message.content or "{}").get("row", 0) or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pick_cth_for_description failed for %r: %s", part_code, exc)
+        return ""
+    if 1 <= row <= len(candidates):
+        return candidates[row - 1][1]
+    return ""
+
+
 def classify_container_type_code(raw_value: str, tenant_id: str | None = None) -> str:
     """"40HC" -> "45G0", "20'GP" -> "22G0", "40 Reefer High-Cube" -> "45R1" - whatever a
     document's own container-type text actually says, translated to the ISO 6346 size/type
