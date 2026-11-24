@@ -5,6 +5,7 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
+import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -265,6 +266,7 @@ export function ErpDocumentMappingPage() {
   return (
     <AppShell title="Document Mapping" subtitle="Customer Onboarding · Step 2 of 4 - mark where each document field sits on the sample">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
+        <OnboardingSteps current={2} groupId={groupId} />
         <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
           <label className="flex items-center gap-2 text-sm text-slate-500">
             Customer:

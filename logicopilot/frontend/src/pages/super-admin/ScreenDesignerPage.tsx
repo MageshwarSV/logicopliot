@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -104,6 +105,8 @@ function readDrag(e: DragEvent): DragItem | null {
 
 export function ScreenDesignerPage() {
   const [params, setParams] = useSearchParams();
+  // Opened as Step 3 of Customer Onboarding: show the onboarding step bar.
+  const inOnboarding = useLocation().pathname.includes("/onboarding/");
   const [templates, setTemplates] = useState<DesignerTemplate[]>([]);
   const groupId = params.get("group") ?? "";
   const docId = params.get("doc") ?? "";
@@ -470,6 +473,7 @@ export function ScreenDesignerPage() {
   return (
     <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card. Changes save straight away.">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
+      {inOnboarding && <OnboardingSteps current={3} groupId={groupId} />}
       {/* Pickers */}
       <Card className="mb-4 flex flex-wrap items-end gap-4 p-4">
         <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">

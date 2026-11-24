@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
 import { formatDateTime } from "../../utils/dateTime";
+import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 1: ERP Field Classification.
 // The customer's ERP Excel workbook is read sheet by sheet; every column is dragged into one of
@@ -349,6 +350,7 @@ export function ErpFieldMappingPage() {
     <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
       {/* Header */}
+      <OnboardingSteps current={1} groupId={groupId} />
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
         <label className="flex items-center gap-2 text-sm text-slate-500">
           Customer:
