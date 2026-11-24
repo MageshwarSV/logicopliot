@@ -43,7 +43,21 @@ export interface ErpField {
   contact_ref: string | null;
   /** Document fields: which of the workbook's documents it is read from (null = not assigned). */
   source_document: string | null;
+  /** Step 4: the category's own configuration - see FixedConfig / OperatorConfig. */
+  config: Record<string, unknown> | null;
   samples: string[];
+}
+
+export interface FixedConfig {
+  value: string;
+  per_importer: { importer: string; value: string }[];
+  hidden: boolean;
+}
+
+export interface OperatorConfig {
+  input_type: "text" | "number" | "date" | "dropdown";
+  choices: string[];
+  default: string;
 }
 
 export interface ErpDocument {
@@ -70,7 +84,7 @@ export interface ErpWorkbook {
 
 export type ErpFieldPatch = Partial<Pick<ErpField,
   "category" | "position" | "display_label" | "data_type" | "description" | "mandatory" |
-  "default_value" | "validation" | "formula" | "ai_prompt" | "erp_master_ref" | "contact_ref" | "source_document">>;
+  "default_value" | "validation" | "formula" | "ai_prompt" | "erp_master_ref" | "contact_ref" | "source_document" | "config">>;
 
 export async function listCustomers(): Promise<ErpCustomer[]> {
   const { data } = await apiClient.get<ErpCustomer[]>("/onboarding/erp/customers");

@@ -55,6 +55,8 @@ class ErpField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Which of the customer's documents (ErpWorkbook.documents id) the field belongs to - the
     # document tab it was classified on, whatever its bucket. None = not on a document yet.
     source_document: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Step 4: the category's own configuration (app.core.erp_field_config).
+    config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     display_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     data_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)          # expected value

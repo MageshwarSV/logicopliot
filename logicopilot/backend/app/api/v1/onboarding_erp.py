@@ -31,7 +31,7 @@ MAX_BYTES = 20 * 1024 * 1024
 ADDITIONAL_ID = "additional-details"
 ADDITIONAL = {"id": ADDITIONAL_ID, "name": "Additional Details", "template_document_id": None, "fixed": True}
 CONFIG_FIELDS = ("display_label", "data_type", "description", "mandatory", "default_value",
-                 "validation", "formula", "ai_prompt", "erp_master_ref", "contact_ref", "source_document")
+                 "validation", "formula", "ai_prompt", "erp_master_ref", "contact_ref", "source_document", "config")
 
 
 def _who(user: User) -> str:
@@ -278,6 +278,7 @@ class FieldPatch(BaseModel):
     erp_master_ref: str | None = None
     contact_ref: str | None = None
     source_document: str | None = None
+    config: dict | None = None
 
 
 def _check(updates: dict) -> None:
@@ -308,9 +309,19 @@ def update_field(
     # taken out of its bucket, it belongs to none.
     if "category" in updates and updates["category"] is None:
         updates["source_document"] = None
+    if "config" in updates:
+        from app.core.erp_field_config import ConfigError, clean_config
+
+        try:
+            updates["config"] = clean_config(updates.get("category", f.category), updates["config"])
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        # A Fixed field's value is also its default value (what earlier screens show).
+        if updates.get("category", f.category) == "fixed" and updates["config"]:
+            updates["default_value"] = updates["config"]["value"] or None
     before = {k: getattr(f, k) for k in updates}
     for k, v in updates.items():
-        if isinstance(v, str) and k != "category":
+        if isinstance(v, str) and k not in ("category",):
             v = v.strip() or None
             if k == "data_type" and v is None:
                 continue

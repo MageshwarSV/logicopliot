@@ -47,7 +47,7 @@ const STEPS = [
   { n: 1, label: "ERP Field Mapping", path: "/super-admin/onboarding/erp-fields", param: "customer" },
   { n: 2, label: "Document Mapping", path: "/super-admin/onboarding/document-mapping", param: "customer" },
   { n: 3, label: "Screen Designer", path: "/super-admin/onboarding/screen-designer", param: "group" },
-  { n: 4, label: "AI Prompts & Validation", path: null, param: "" },
+  { n: 4, label: "Field Configuration", path: "/super-admin/onboarding/field-config", param: "customer" },
 ] as const;
 
 export function OnboardingSteps({ current, groupId }: { current: 0 | 1 | 2 | 3 | 4; groupId: string }) {
