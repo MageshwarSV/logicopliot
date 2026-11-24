@@ -112,7 +112,11 @@ function bestValue(
  *  the docket is identical either way. */
 function partyRow(isExport: boolean): DocketRow {
   return isExport
-    ? { label: "Name of the Exporter", patterns: [/exporter/i, /shipper/i, /consignor/i] }
+    // Sea Export splits the party into "EXPORTER NAME" + "EXPORTER ADDRESS" (24 Nov 2026):
+    // the name field first, then an older single "EXPORTER" field. Never an "... ADDRESS"
+    // field, which a loose /exporter/i would also match.
+    ? { label: "Name of the Exporter",
+        patterns: [/^exporter name$/i, /^exporter$/i, /exporter(?!.*address)/i, /shipper(?!.*address)/i, /consignor(?!.*address)/i] }
     // The real field is exactly "Consignee" - matched exactly, not by substring. A loose
     // /consignee/i also matches "consignee_name" (a stale mark, wrong value on at least one
     // real job), "consignee_full_name" (a known duplicate, already hidden elsewhere) and
@@ -120,7 +124,8 @@ function partyRow(isExport: boolean): DocketRow {
     // explicit order, so whichever of those happened to come back first silently won.
     // "ERP Importer Address / Branch Code" (a branch/address picker, unrelated to the party
     // name) also matches /importer/i by coincidence of its own label, so that stays last.
-    : { label: "Name of the Importer", patterns: [/^consignee$/i, /\bbuyer\b/i, /importer/i] };
+    // "CONSIGNEE NAME" is the split field (Sea Export, 24 Nov 2026) - also exact.
+    : { label: "Name of the Importer", patterns: [/^consignee$/i, /^consignee name$/i, /\bbuyer\b/i, /importer/i] };
 }
 
 /** The AIR docket, exactly as it has always been. The client has revised only the SEA
