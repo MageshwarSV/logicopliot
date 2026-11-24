@@ -4586,9 +4586,15 @@ def list_custom_field_reference_options(
     # `country` is the importer country picked on the job. It is only ever read by the GSTIN
     # rule below (the branch table itself carries no country), so every caller that does not
     # send it gets exactly what it always got.
-    return _reference_options_payload(
+    payload = _reference_options_payload(
         db, custom_field_id, key=key, country=country,
         gstin=gstin_rule(db, db.get(TemplateGroup, job.group_id), cf))
+    if (cf.label_name or "").strip().lower() == ERP_ENTRY_LABEL:
+        master = _quotation_master_names(db, job.group_id)
+        if master is not None:
+            payload["options"] = [o for o in payload["options"]
+                                  if _quotation_name_key(o.get("value")) in master]
+    return payload
 
 
 def _reference_options_payload(db: Session, custom_field_id: str, *, key: str | None = None,
@@ -9254,6 +9260,40 @@ def unlock_held_job(
     return _build_detail(db, job)
 
 
+ERP_ENTRY_LABEL = "erp entry name"
+QUOTATION_ADDRESS_LABEL = "quotation_address"
+
+
+def _quotation_name_key(value: str | None) -> str:
+    """The Quotation Master's own comparison: upper case, single spaces, no trailing , or ."""
+    return " ".join(str(value or "").split()).upper().strip(" ,.")
+
+
+def _quotation_master_names(db: Session, group_id: str | None) -> set[str] | None:
+    """Every ERP Quotation Name in this template's Quotation Master (Tenant Admin -> ERP Master
+    Data - Quotation: name + branch + address rows), or None when the template has no master
+    (no quotation_address field, or no active rows) - then nothing is narrowed, as before.
+
+    "ERP Quotation Name" (label Erp Entry Name) used to offer, and auto-fill, any name an
+    operator had ever typed - "EXPEDITORS INTERNATIONAL OCEAN" among them - though only names in
+    the master have a branch and an address; picking another left ERP Quotation Branch "not
+    found" (JOB-DD47BB, 24 Nov 2026). The master is now the one list of usable names."""
+    from app.models.custom_field import CustomField
+    from app.models.custom_field_reference import CustomFieldReferenceValue as Ref
+
+    if not group_id:
+        return None
+    cf = (db.query(CustomField)
+          .filter(CustomField.group_id == group_id,
+                  func.lower(CustomField.label_name) == QUOTATION_ADDRESS_LABEL)
+          .first())
+    if cf is None:
+        return None
+    names = {_quotation_name_key(v) for (v,) in db.query(Ref.match_value_1)
+             .filter(Ref.custom_field_id == cf.id, Ref.is_active.is_(True)).all() if v}
+    return names or None
+
+
 def _resolve_target_value(
     db: Session, job_id: str, cf, value: str | None,
 ) -> tuple[str | None, str | None]:
@@ -9320,6 +9360,12 @@ def _resolve_target_value(
                 resolved = lookup_reference(
                     db, custom_field_id=cf.id, match_values=key_values, fuzzy=True,
                 )
+        if resolved and (getattr(cf, "label_name", "") or "").strip().lower() == ERP_ENTRY_LABEL:
+            master = _quotation_master_names(db, getattr(cf, "group_id", None))
+            if master is not None and _quotation_name_key(resolved) not in master:
+                # Not in the Quotation Master: it has no branch or address, so the entry could
+                # not use it. Left empty for the operator to pick a master name instead.
+                resolved = None
         return (resolved or None), "||".join(key_values)
     if not value:
         return value, value
@@ -10622,7 +10668,7 @@ def run_extraction(
     # The customer's material master, if they have uploaded one. Loaded once for the whole job
     # rather than per line: it is the same file for every line and every field that looks
     # something up in it.
-    from app.core.material_master import load_master, lookup_cth, material_from
+    from app.core.material_master import load_master, lookup_cth, material_from, part_candidates
     from app.core.reference_cache import lookup_reference
 
     def _line_values(label: str) -> dict[tuple[int, int], str]:
@@ -10811,7 +10857,22 @@ def run_extraction(
                         # typed this exact material/description once before, on this job or an
                         # earlier one, and that answer was kept rather than asked for twice.
                         cached = lookup_reference(db, cf.id, [material, desc])
-                        if not cached and desc:
+                        # A part number the dump lists with SEVERAL CTHs (one per description):
+                        # the AI picks among just that part's rows by the line's description,
+                        # and the answer is remembered on part + description like an operator's.
+                        rows_of_part = part_candidates(material, master)
+                        if not cached and rows_of_part and desc:
+                            from app.core.llm import pick_cth_for_description
+                            from app.core.reference_cache import remember_reference
+
+                            cached = pick_cth_for_description(material, desc, rows_of_part,
+                                                              tenant_id=job.tenant_id)
+                            if cached:
+                                remember_reference(db, cf.id, [material, desc], cached)
+                                logger.info("%r on job %s: part %s has %d CTH rows - AI picked %s "
+                                            "for %r", cf.label_name, job.reference, material,
+                                            len(rows_of_part), cached, desc[:80])
+                        if not cached and desc and not rows_of_part:
                             # material ALONE, when the two-key match found nothing. A field
                             # keyed on something other than a product line (a container type,
                             # say) still gets handed whatever product happens to share its row
@@ -11901,7 +11962,7 @@ def _recompute_per_row_custom_field(
     # on something other than a product - see the identical field_keys in run_extraction.
     field_keys = line_keys
     if cf.kind == "lookup":
-        from app.core.material_master import load_master, lookup_cth, material_from
+        from app.core.material_master import load_master, lookup_cth, material_from, part_candidates
         from app.core.reference_cache import lookup_reference
 
         standalone_mark_labels = _standalone_mark_labels(db.get(TemplateGroup, job.group_id))
@@ -11933,9 +11994,19 @@ def _recompute_per_row_custom_field(
             if not code and (material or desc):
                 # material+desc first, then material ALONE, then (if opted in) an AI classifier
                 # - see the identical fallbacks (and their full reasoning) in run_extraction's
-                # own per-row lookup block above.
+                # own per-row lookup block above. A part with several CTHs in the dump: the AI
+                # picks among just its rows, and material alone is never used for it.
                 code = lookup_reference(db, cf.id, [material, desc]) or ""
-                if not code and desc:
+                rows_of_part = part_candidates(material, master)
+                if not code and rows_of_part and desc:
+                    from app.core.llm import pick_cth_for_description
+                    from app.core.reference_cache import remember_reference
+
+                    code = pick_cth_for_description(material, desc, rows_of_part,
+                                                    tenant_id=job.tenant_id) or ""
+                    if code:
+                        remember_reference(db, cf.id, [material, desc], code)
+                if not code and desc and not rows_of_part:
                     code = lookup_reference(db, cf.id, [material]) or ""
                 if not code and material and getattr(cf, "lookup_ai_fallback", False):
                     from app.core.llm import classify_container_type_code

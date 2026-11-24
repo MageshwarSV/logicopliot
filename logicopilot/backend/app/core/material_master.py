@@ -27,6 +27,7 @@ and the ERP wants 85177990.
 
 import bisect
 import difflib
+import json
 import logging
 from pathlib import Path
 
@@ -39,8 +40,17 @@ MASTER_DIR = "material_master"
 
 # Bump when the SHAPE of the persisted copy changes. The stamp only notices a changed FILE, so
 # without this a code change that stores something different keeps reading the old layout back
-# and nobody can tell why. v1 stored the raw header row, empty cells and all.
-_CACHE_VERSION = 2
+# and nobody can tell why. v1 stored the raw header row, empty cells and all. v3: part codes
+# with several CTHs are stored as candidate rows (PART_ROWS_PREFIX), not first-row-wins.
+_CACHE_VERSION = 3
+
+# Key prefix for a part code the list gives several CTHs: value = JSON [[description, cth], ...].
+# No spaces and a control character, so it can never equal a real normalised key, and every
+# scan over the mapping (squashed, stem, fuzzy-description) passes it by.
+PART_ROWS_PREFIX = "\x01parts\x01"
+# A part listed under more distinct descriptions than this is cut to its first rows - the AI
+# pick gets a short list, never a page of them.
+MAX_PART_ROWS = 40
 
 _MATERIAL_HINTS = ("material", "part", "item code", "itemcode")
 _CODE_HINTS = ("comm", "imp", "code", "cth", "hsn", "hs code", "tariff")
@@ -415,7 +425,13 @@ def load_master(group_id: str, match_columns: list | None = None,
         # MODULE" is one of five. Matching those on the description would pick whichever row
         # came first and file 4% of lines under a classification chosen by sort order. Part
         # numbers have no such problem: all 19,611 of them are unique.
-        materials: dict[str, str] = {}
+        # A part number that the list gives SEVERAL different CTHs (Allison Transmission's dump:
+        # 312 of 534 part codes, e.g. 29547630 is "HOUSING-TRANSMISSION ..." 87089300 and
+        # "DURABLE CONTAINERS ..." 39231090) used to resolve to whichever row came first. Now
+        # such a part keeps its rows - description + CTH - as a short candidate list under
+        # PART_ROWS_PREFIX, and the line's own description decides (lookup_cth_with_source,
+        # then the extraction's AI pick among just these rows - see part_candidates).
+        part_rows: dict[str, list] = {}
         desc_codes: dict[str, set] = {}
         for row in rows:
             if code_i >= len(row):
@@ -426,13 +442,32 @@ def load_master(group_id: str, match_columns: list | None = None,
             if mat_i is not None and mat_i < len(row):
                 key = _norm(row[mat_i])
                 if key:
-                    materials.setdefault(key, code)
+                    text = str(row[desc_i] or "").strip() if desc_i is not None and desc_i < len(row) else ""
+                    part_rows.setdefault(key, []).append((text, code))
             if desc_i is not None and desc_i < len(row):
                 key = _norm(row[desc_i])
                 if key:
                     desc_codes.setdefault(key, set()).add(code)
 
+        materials: dict[str, str] = {}
+        multi_parts: dict[str, str] = {}
+        for key, rows_of_part in part_rows.items():
+            if len({c for _, c in rows_of_part}) == 1:
+                materials[key] = rows_of_part[0][1]
+                continue
+            seen, kept = set(), []
+            for text, code in rows_of_part:
+                mark = (_norm(text), code)
+                if mark not in seen:
+                    seen.add(mark)
+                    kept.append([text, code])
+            multi_parts[PART_ROWS_PREFIX + key] = json.dumps(kept[:MAX_PART_ROWS], ensure_ascii=False)
+        if multi_parts:
+            logger.info("material master for %s: %s part code(s) carry more than one CTH - the "
+                        "line's description picks among their rows", group_id, len(multi_parts))
+
         out: dict[str, str] = dict(materials)
+        out.update(multi_parts)
         ambiguous = 0
         for key, codes in desc_codes.items():
             if len(codes) > 1:
@@ -670,6 +705,18 @@ def lookup_accel_for(group_id: str, stamp: tuple | None, master: dict[str, str])
     return accel
 
 
+def part_candidates(material: str, master: dict[str, str]) -> list[tuple[str, str]]:
+    """The rows - (description, CTH) - of a part number the list gives SEVERAL CTHs; [] for any
+    other part. Only these few rows go to the AI pick, never the whole list."""
+    raw = master.get(PART_ROWS_PREFIX + _norm(material)) if material else None
+    if not raw:
+        return []
+    try:
+        return [(str(d), str(c)) for d, c in json.loads(raw)]
+    except (ValueError, TypeError):
+        return []
+
+
 def lookup_cth(
     material: str, master: dict[str, str], description: str = "",
     accel: LookupAccel | None = None,
@@ -705,6 +752,21 @@ def lookup_cth_with_source(
             continue
         if key in master:
             return master[key], source
+        if source == CTH_SOURCE_PART_CODE and (PART_ROWS_PREFIX + key) in master:
+            # This part number carries several CTHs. The line's own description settles it when
+            # it is exactly one of the part's rows; otherwise nothing is guessed here - the
+            # extraction asks the AI to pick among just these rows (part_candidates).
+            want = _norm(description)
+            rows_of_part = part_candidates(material, master)
+            hits = {c for d, c in rows_of_part if want and _norm(d) == want}
+            if len(hits) == 1:
+                return hits.pop(), source
+            # The description elsewhere in the list counts only when it lands on one of THIS
+            # part's own CTHs - a part never takes a code its own rows do not have.
+            by_desc = master.get(want) if want else None
+            if by_desc and by_desc in {c for _, c in rows_of_part}:
+                return by_desc, CTH_SOURCE_DESCRIPTION
+            return "", ""
         squashed = key.replace(" ", "")
         if accel is not None:
             found_squashed = accel.squashed_index.get(squashed)
