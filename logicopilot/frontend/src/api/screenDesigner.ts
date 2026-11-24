@@ -89,3 +89,21 @@ export async function patchField(field: DesignerField, patch: FieldPatch): Promi
   const url = field.source === "mark" ? `/marks/${field.id}` : `/custom-fields/${field.id}`;
   await apiClient.patch(url, patch);
 }
+
+/** Where a field's parameter (internal) name is used, and whether a safe rename is possible. */
+export interface FieldUsage {
+  name: string;
+  auto: string[];
+  blocks: string[];
+  allowed: boolean;
+}
+
+export async function fieldUsage(groupId: string, ref: string): Promise<FieldUsage> {
+  const { data } = await apiClient.get<FieldUsage>("/screen-designer/fields/usage", { params: { group_id: groupId, ref } });
+  return data;
+}
+
+export async function renameParameter(groupId: string, ref: string, newName: string): Promise<{ name: string; renamed: number; excel_updated?: number }> {
+  const { data } = await apiClient.post("/screen-designer/fields/rename", { group_id: groupId, ref, new_name: newName });
+  return data;
+}

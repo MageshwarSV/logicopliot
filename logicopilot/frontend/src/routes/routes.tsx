@@ -200,6 +200,14 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/super-admin/onboarding/screen-designer"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <ScreenDesignerPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/super-admin/onboarding/document-mapping"
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>

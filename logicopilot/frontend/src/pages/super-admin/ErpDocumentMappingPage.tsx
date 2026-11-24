@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -157,6 +157,7 @@ const TONE = { match: "#16a34a", differs: "#d97706", "no-excel": "#4f46e5", "no-
 
 export function ErpDocumentMappingPage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const groupId = params.get("customer") ?? "";
   const [customers, setCustomers] = useState<ErpCustomer[]>([]);
   const [data, setData] = useState<DocMapping | null>(null);
@@ -473,7 +474,7 @@ export function ErpDocumentMappingPage() {
               </div>
               <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
                 <Link to={`/super-admin/onboarding/erp-fields?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">← Step 1</Link>
-                <Button size="sm" onClick={() => setMessage({ tone: "ok", text: `Saved: ${totals.done} of ${totals.total} document fields marked. Step 3 - Layout & Positioning is next.` })}>
+                <Button size="sm" onClick={() => navigate(`/super-admin/onboarding/screen-designer?group=${groupId}`)}>
                   Next: Layout →
                 </Button>
               </div>

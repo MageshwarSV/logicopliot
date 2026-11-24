@@ -118,7 +118,18 @@ export function ScreenDesignerPage() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [showDoc, setShowDoc] = useState(true);
+  const [docPage, setDocPage] = useState(1);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const saveSeq = useRef(0);
+
+  useEffect(() => {
+    if (!fullScreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullScreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullScreen]);
 
   const template = templates.find((t) => t.id === groupId) ?? null;
   const fieldByRef = useMemo(() => new Map(fields.map((f) => [f.ref, f])), [fields]);
@@ -197,6 +208,9 @@ export function ScreenDesignerPage() {
     }
     return out;
   }, [previewJob, docId]);
+
+  const previewJobDoc = previewJob?.documents.find((d) => d.template_document_id === docId && (d.page_count ?? 0) > 0) ?? null;
+  useEffect(() => { setDocPage(1); }, [docId, previewJobId]);
 
   // ---- saving -----------------------------------------------------------------------------
   const persist = async (next: ScreenLayout) => {
@@ -323,6 +337,28 @@ export function ScreenDesignerPage() {
   };
 
   // ---- rendering --------------------------------------------------------------------------
+  // The operator screen's colour language (see JobRunPage's ColourKey): blue read off a
+  // document, green from a reference sheet, violet worked out, red blank.
+  const toneFor = (f: DesignerField | undefined, value: string) => {
+    if (!value) return "border-rose-300 bg-rose-50/60 dark:border-rose-500/40 dark:bg-rose-500/10";
+    if (!f || f.source === "mark") return "border-sky-200 bg-sky-50 dark:border-sky-500/30 dark:bg-sky-500/10";
+    if (f.kind === "lookup") return "border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10";
+    if (f.kind === "ai" || f.kind === "composite") return "border-violet-200 bg-violet-50 dark:border-violet-500/30 dark:bg-violet-500/10";
+    return "border-slate-200 bg-slate-50 dark:border-slate-600 dark:bg-slate-800/50";
+  };
+
+  const saveLabel = async (f: DesignerField, raw: string) => {
+    setEditingLabel(null);
+    const v = raw.trim();
+    if (v === (f.display_label ?? "").trim() || (!v && !f.display_label)) return;
+    try {
+      await designerApi.patchField(f, { display_label: v || null });
+      setFields((fs) => fs.map((x) => (x.ref === f.ref ? { ...x, display_label: v || null } : x)));
+    } catch {
+      setMessage(`Could not save the label of ${f.label_name}.`);
+    }
+  };
+
   const fieldBox = (ref: string, target: FieldTarget) => {
     const f = fieldByRef.get(ref);
     const isSel = selected?.kind === "field" && selected.ref === ref;
@@ -343,19 +379,36 @@ export function ScreenDesignerPage() {
         className={`cursor-grab rounded-lg border p-2 transition-colors ${f?.full_width ? "sm:col-span-2" : ""} ${
           isSel ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-500/30" : "border-transparent hover:border-slate-300 dark:hover:border-slate-600"
         } ${dragOver === key ? "border-t-4 border-t-indigo-500" : ""}`}
-        title="Drag to move - click to edit"
+        title="Drag to move - click to edit - double-click the label to rename it"
       >
-        <p className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">
-          {fieldName(f, ref)}
-          {f?.mandatory && <span className="text-rose-500">*</span>}
-          {f?.fixed_options?.length ? <span className="ml-1 text-[10px] text-slate-400">▾ list</span> : null}
-        </p>
+        {editingLabel === ref && f ? (
+          <input
+            autoFocus
+            defaultValue={f.display_label ?? f.label_name}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => void saveLabel(f, e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") setEditingLabel(null);
+            }}
+            className="mb-1.5 w-full rounded border border-indigo-400 px-1.5 py-0.5 text-sm font-medium text-slate-800 dark:bg-slate-900 dark:text-slate-100"
+          />
+        ) : (
+          <p
+            className="mb-1.5 text-sm font-medium text-slate-800 dark:text-slate-100"
+            onDoubleClick={(e) => { e.stopPropagation(); setEditingLabel(ref); }}
+          >
+            {fieldName(f, ref)}
+            {f?.mandatory && <span className="text-rose-500">*</span>}
+            {f?.fixed_options?.length ? <span className="ml-1 text-[10px] text-slate-400">▾ list</span> : null}
+          </p>
+        )}
         <div
-          className={`rounded-md border border-sky-200 bg-sky-50/60 px-3 text-sm text-slate-700 dark:border-sky-500/20 dark:bg-sky-500/5 dark:text-slate-200 ${
-            f?.multiline ? "min-h-[4.5rem] whitespace-pre-wrap py-2" : "truncate py-2"
+          className={`rounded-lg border px-3 text-sm text-slate-800 dark:text-slate-100 ${toneFor(f, value)} ${
+            f?.multiline ? "min-h-[4.5rem] whitespace-pre-wrap py-2" : "truncate py-2.5"
           }`}
         >
-          {value || <span className="italic text-slate-400">{previewJob ? "empty on this job" : "no preview job"}</span>}
+          {value || <span className="italic text-rose-400">{previewJob ? "not found" : "no preview job"}</span>}
         </div>
       </div>
     );
@@ -414,6 +467,7 @@ export function ScreenDesignerPage() {
 
   return (
     <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card. Changes save straight away.">
+      <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
       {/* Pickers */}
       <Card className="mb-4 flex flex-wrap items-end gap-4 p-4">
         <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
@@ -470,6 +524,9 @@ export function ScreenDesignerPage() {
             Open this job ↗
           </Link>
         )}
+        <Button size="sm" variant="ghost" className="mb-1" onClick={() => setFullScreen((v) => !v)}>
+          {fullScreen ? "✕ Close full screen" : "⛶ Full screen"}
+        </Button>
         <div className="ml-auto pb-2 text-xs text-slate-400">
           {saveState === "saving" && "Saving…"}
           {saveState === "saved" && meta.updated_at && `Saved ${formatDateTime(meta.updated_at)}${meta.updated_by ? ` by ${meta.updated_by}` : ""}`}
@@ -536,19 +593,45 @@ export function ScreenDesignerPage() {
             )}
           </Card>
 
-          {/* Centre: the screen */}
-          <div onClick={() => setSelected(null)}>
-            <Card className="p-5">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Extracted Data · {docName}</p>
-                <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); addSection(); }}>+ Add section</Button>
+          {/* Centre: the screen, as the operator sees it - Document Preview beside Extracted Data */}
+          <div onClick={() => setSelected(null)} className={`grid min-w-0 gap-4 ${showDoc && previewJobDoc ? "2xl:grid-cols-2" : ""}`}>
+            {showDoc && previewJobDoc && previewJob && (
+              <Card className="h-fit min-w-0 p-5 2xl:sticky 2xl:top-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Document Preview</p>
+                  {previewJobDoc.page_count > 1 && (
+                    <div className="flex items-center gap-1 text-xs text-slate-500">
+                      <button type="button" disabled={docPage <= 1} onClick={(e) => { e.stopPropagation(); setDocPage((p) => p - 1); }} className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800">‹</button>
+                      page {docPage} of {previewJobDoc.page_count}
+                      <button type="button" disabled={docPage >= previewJobDoc.page_count} onClick={(e) => { e.stopPropagation(); setDocPage((p) => p + 1); }} className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800">›</button>
+                    </div>
+                  )}
+                </div>
+                <JobPagePreview jobId={previewJob.id} jobDocumentId={previewJobDoc.id} page={Math.min(docPage, previewJobDoc.page_count || 1)} />
+              </Card>
+            )}
+            <Card className="min-w-0 p-5">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Extracted Data</p>
+                <div className="flex items-center gap-2">
+                  {previewJobDoc && (
+                    <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setShowDoc((v) => !v); }}>
+                      {showDoc ? "Hide document" : "Show document"}
+                    </Button>
+                  )}
+                  <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); addSection(); }}>+ Add section</Button>
+                </div>
               </div>
+              <p className="mb-2 text-xs text-slate-500">
+                {docName} · as the operator sees it, with the preview job's values. Drag fields and section headings; double-click a label to rename it.
+              </p>
+              <ColourKeyPreview />
               {layout.sections.map((s, i) => (
                 <div
                   key={s.id}
                   onDragOver={allowDrop(`sec:${s.id}`)}
                   onDrop={onDropSection(s.id)}
-                  className={`mb-5 rounded-xl border p-3 ${dragOver === `sec:${s.id}` ? "border-indigo-300" : "border-slate-100 dark:border-slate-800"}`}
+                  className={`mt-4 rounded-xl border p-2 ${dragOver === `sec:${s.id}` ? "border-indigo-300" : "border-transparent hover:border-slate-200 dark:hover:border-slate-700"}`}
                 >
                   {sectionHeader(
                     s.title,
@@ -613,17 +696,20 @@ export function ScreenDesignerPage() {
               onFieldSaved={(ref, patch) => setFields((fs) => fs.map((f) => (f.ref === ref ? { ...f, ...patch } : f)))}
               onDeselect={() => setSelected(null)}
               onError={setMessage}
+              groupId={groupId}
+              onRenamed={() => void loadDocument()}
             />
           </Card>
         </div>
       )}
       {loading && <Card className="p-8 text-center text-sm text-slate-500">Loading…</Card>}
+      </div>
     </AppShell>
   );
 }
 
 function PropertiesPanel({
-  selected, layout, fieldByRef, onLayout, onFieldSaved, onDeselect, onError,
+  selected, layout, fieldByRef, onLayout, onFieldSaved, onDeselect, onError, groupId, onRenamed,
 }: {
   selected: Selection;
   layout: ScreenLayout;
@@ -632,6 +718,8 @@ function PropertiesPanel({
   onFieldSaved: (ref: string, patch: Partial<DesignerField>) => void;
   onDeselect: () => void;
   onError: (msg: string) => void;
+  groupId: string;
+  onRenamed: () => void;
 }) {
   if (!selected) {
     return (
@@ -698,20 +786,52 @@ function PropertiesPanel({
       onLayout={onLayout}
       onFieldSaved={onFieldSaved}
       onError={onError}
+      groupId={groupId}
+      onRenamed={onRenamed}
     />
   );
 }
 
 function FieldProperties({
-  field, layout, onLayout, onFieldSaved, onError,
+  field, layout, onLayout, onFieldSaved, onError, groupId, onRenamed,
 }: {
   field: DesignerField;
   layout: ScreenLayout;
   onLayout: (next: ScreenLayout) => void;
   onFieldSaved: (ref: string, patch: Partial<DesignerField>) => void;
   onError: (msg: string) => void;
+  groupId: string;
+  onRenamed: () => void;
 }) {
   const [saving, setSaving] = useState(false);
+  // Parameter (internal) name: a safe rename - the server refuses it, with the reason, when
+  // anything that cannot follow depends on the name.
+  const [paramOpen, setParamOpen] = useState(false);
+  const [paramName, setParamName] = useState(field.label_name);
+  const [usage, setUsage] = useState<designerApi.FieldUsage | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const openParam = async () => {
+    setParamOpen(true);
+    setParamName(field.label_name);
+    setUsage(null);
+    try { setUsage(await designerApi.fieldUsage(groupId, field.ref)); } catch { onError("Could not check where this name is used."); }
+  };
+  const doRename = async () => {
+    const name = paramName.trim();
+    if (!name || name === field.label_name) { setParamOpen(false); return; }
+    setRenaming(true);
+    try {
+      const res = await designerApi.renameParameter(groupId, field.ref, name);
+      onFieldSaved(field.ref, { label_name: res.name });
+      setParamOpen(false);
+      onRenamed();
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      onError(detail ?? "Could not rename the parameter.");
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   const save = async (patch: designerApi.FieldPatch, local: Partial<DesignerField>) => {
     setSaving(true);
@@ -735,7 +855,37 @@ function FieldProperties({
     <div className="flex flex-col gap-3 text-sm">
       <div>
         <p className="font-semibold text-slate-700 dark:text-slate-200">Field</p>
-        <p className="font-mono text-[11px] text-slate-400">{field.label_name}</p>
+        <p className="font-mono text-[11px] text-slate-400">
+          {field.label_name}
+          <button type="button" onClick={() => void openParam()} className="ml-2 font-sans text-indigo-600 hover:underline">rename parameter</button>
+        </p>
+        {paramOpen && (
+          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800/50">
+            <p className="text-[11px] text-slate-500">Parameter name - the internal name the ERP Excel, scripts and saved values use.</p>
+            <input
+              value={paramName}
+              onChange={(e) => setParamName(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
+            />
+            {!usage && <p className="mt-1 text-[11px] text-slate-400">Checking where it is used…</p>}
+            {usage && usage.blocks.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-[11px] text-rose-600">
+                {usage.blocks.map((b) => <li key={b}>{b}</li>)}
+              </ul>
+            )}
+            {usage && usage.auto.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-[11px] text-emerald-700 dark:text-emerald-300">
+                {usage.auto.map((a) => <li key={a}>{a}</li>)}
+              </ul>
+            )}
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" disabled={!usage?.allowed} isLoading={renaming} onClick={() => void doRename()}>
+                {usage && !usage.allowed ? "Cannot rename" : "Rename"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setParamOpen(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
         <p className="text-[11px] text-slate-400">
           {field.source === "custom" ? `Job-level field (${field.kind})` : field.place === "card" ? "One per product line" : "Read off this document"}
         </p>
@@ -810,4 +960,44 @@ function FieldProperties({
       <p className="text-[11px] text-slate-400">{saving ? "Saving…" : "Label, width, multi-line, mandatory and dropdown are saved on the field itself (the same settings as the template wizard)."}</p>
     </div>
   );
+}
+
+/** The operator screen's colour key, so the preview reads the same way. */
+function ColourKeyPreview() {
+  const items: { cls: string; label: string }[] = [
+    { cls: "border-sky-200 bg-sky-50 dark:border-sky-500/30 dark:bg-sky-500/10", label: "read off a document" },
+    { cls: "border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10", label: "from the reference sheet" },
+    { cls: "border-violet-200 bg-violet-50 dark:border-violet-500/30 dark:bg-violet-500/10", label: "worked out from a document" },
+    { cls: "border-slate-200 bg-slate-50 dark:border-slate-600 dark:bg-slate-800/50", label: "fixed / operator" },
+    { cls: "border-rose-300 bg-rose-50/60 dark:border-rose-500/40 dark:bg-rose-500/10", label: "blank - nothing found" },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+      {items.map((i) => (
+        <span key={i.label} className="flex items-center gap-1.5">
+          <span className={`h-3 w-3 rounded-sm border ${i.cls}`} />
+          {i.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** One page of the preview job's document, as on the operator's Document Preview. */
+function JobPagePreview({ jobId, jobDocumentId, page }: { jobId: string; jobDocumentId: string; page: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let made: string | null = null;
+    let cancelled = false;
+    setUrl(null);
+    setFailed(false);
+    jobsApi.jobDocPageUrl(jobId, jobDocumentId, page)
+      .then((u) => { if (cancelled) URL.revokeObjectURL(u); else { made = u; setUrl(u); } })
+      .catch(() => !cancelled && setFailed(true));
+    return () => { cancelled = true; if (made) URL.revokeObjectURL(made); };
+  }, [jobId, jobDocumentId, page]);
+  if (failed) return <p className="text-sm text-slate-500">Could not load this page.</p>;
+  if (!url) return <p className="text-sm text-slate-400">Loading page…</p>;
+  return <img src={url} alt={`Page ${page}`} className="block w-full rounded-lg border border-slate-200 dark:border-slate-700" />;
 }

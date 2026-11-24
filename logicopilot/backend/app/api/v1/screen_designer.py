@@ -192,6 +192,164 @@ def recent_jobs(
              "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]
 
 
+# ---- Safe rename of a field's parameter (internal) name ------------------------------------
+#
+# The parameter name is what the ERP Excel mapping, ERP scripts, formulas, lookups and every
+# job's saved values use. A rename is allowed only when nothing that cannot be updated with it
+# depends on it: the Excel mapping's plain column links are rewritten automatically; anything
+# else (an ERP script step, another field's formula/lookup, a column's rule/fallback/
+# placeholder, special screen behaviour, a job still in progress) refuses it, with the reason.
+
+# Field names the operator screen / backend treat specially (combo boxes, the quotation trio,
+# insurance, CTH, consignee lookups ...). Renaming one would silently switch that behaviour off.
+PROTECTED_NAMES = {
+    "AdvancePriorNormal", "BETypeCode", "Combined Description", "Consignee", "Consignment Type",
+    "CTH", "Currency_type", "CustomsHouseCode", "ERP Branch Address", "ERP Consignee Country",
+    "ERP Consignee Name", "ERP Importer Address / Branch Code", "Erp Entry Name", "Frt_Currency",
+    "Gross Weight Unit", "HBL Date", "IGM No", "Ins_Currency", "MBL Date", "MBL No",
+    "Misc_Charge_Currency", "Package Unit", "Payment Method", "PortOfShipmentCode",
+    "Product Description Language", "Product Value", "Quotation Name", "Shipment City",
+    "Shipment Country", "Shipment Port Code", "Shipper Address", "Supplier Address",
+    "TransportModeCode", "branch_name", "consignee_full_name", "container_number",
+    "insurance_amount", "insurance_mode", "insurance_percentage", "mode_of_transport",
+    "product_description", "quotation_address",
+}
+MAX_NAME = 100
+
+
+class RenameIn(BaseModel):
+    group_id: str
+    ref: str
+    new_name: str
+
+
+def _ref_target(db: Session, group_id: str, ref: str) -> tuple[str, list[FieldMark], CustomField | None]:
+    """(current name, the marks carrying it on every document of the template, or the custom field)."""
+    kind, _, rid = ref.partition(":")
+    if kind == "m":
+        mark = db.get(FieldMark, rid)
+        if mark is None:
+            raise HTTPException(status_code=404, detail="Field not found")
+        doc_ids = [d for (d,) in db.query(TemplateDocument.id).filter(TemplateDocument.group_id == group_id)]
+        if mark.document_id not in doc_ids:
+            raise HTTPException(status_code=404, detail="Field is not on this template")
+        same = (db.query(FieldMark).filter(FieldMark.document_id.in_(doc_ids),
+                                           FieldMark.label_name == mark.label_name).all())
+        return mark.label_name, same, None
+    if kind == "c":
+        cf = db.get(CustomField, rid)
+        if cf is None or cf.group_id != group_id:
+            raise HTTPException(status_code=404, detail="Field not found")
+        return cf.label_name, [], cf
+    raise HTTPException(status_code=422, detail="Unknown field reference")
+
+
+def _usage(db: Session, group_id: str, name: str) -> dict:
+    """Everywhere the template depends on this name, split into what a rename updates
+    automatically and what blocks it."""
+    import json
+    import re
+
+    from app.api.v1.jobs import _job_category
+    from app.core.excel_entry import sheet_plans
+    from app.models.erp_script import ErpScript
+    from app.models.job import JobFieldValue
+
+    group = db.get(TemplateGroup, group_id)
+    auto, blocks = [], []
+    if name in PROTECTED_NAMES:
+        blocks.append("The operator screen has special behaviour for this exact name (it would stop working).")
+    for p in sheet_plans((group.excel_config if group else None) or {}):
+        for c in p["columns"]:
+            where = f"{p['sheet']} · {c.get('header') or c.get('column')}"
+            if (c.get("field") or "").strip() == name:
+                auto.append(f"ERP Excel column {where} (updated with the rename)")
+            pick = c.get("pick_by") or {}
+            if pick and (pick.get("field") == name or name in (pick.get("options") or {}).values()):
+                blocks.append(f"ERP Excel column {where} chooses between fields by this name.")
+            if name in (c.get("fallback_fields") or []):
+                blocks.append(f"ERP Excel column {where} falls back to this field.")
+            for v in (c.get("values") or [c.get("value")]):
+                if f"[[{name}]]" in str(v or ""):
+                    blocks.append(f"ERP Excel column {where} inserts this field's value.")
+    for script in db.query(ErpScript).all():
+        if group_id not in (script.template_ids or []):
+            continue
+        text = json.dumps(script.steps or [])
+        if re.search(r'"field_labels?"\s*:\s*(\[[^\]]*)?"' + re.escape(name) + '"', text) \
+                or (script.branch_field or "") == name:
+            blocks.append(f"ERP script '{script.name}' types this field.")
+    for c in db.query(CustomField).filter(CustomField.group_id == group_id).all():
+        if c.label_name == name:
+            continue
+        pieces = [p for p in (c.composite_source_labels or []) if isinstance(p, str)]
+        keys = [k.strip() for k in (c.lookup_key_label or "").split(",") if k.strip()]
+        if name in pieces:
+            blocks.append(f"Field '{c.label_name}' joins this field into its value.")
+        if name in keys:
+            blocks.append(f"Field '{c.label_name}' looks values up by this field.")
+    in_progress = 0
+    job_ids = {j for (j,) in db.query(JobFieldValue.job_id).filter(JobFieldValue.label_name == name).distinct()}
+    if job_ids:
+        for job in db.query(Job).filter(Job.group_id == group_id, Job.id.in_(job_ids)).all():
+            if _job_category(job) != "submitted":
+                in_progress += 1
+    if in_progress:
+        blocks.append(f"{in_progress} job(s) of this template still in progress have values saved under this name.")
+    return {"name": name, "auto": auto, "blocks": blocks, "allowed": not blocks}
+
+
+@router.get("/fields/usage")
+def field_usage(
+    group_id: str,
+    ref: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    name, _marks, _cf = _ref_target(db, group_id, ref)
+    return _usage(db, group_id, name)
+
+
+@router.post("/fields/rename")
+def rename_parameter(
+    body: RenameIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    """Rename a field's parameter name - only when nothing that cannot follow depends on it.
+    Every copy of a document field across the template's documents is renamed together, and
+    the ERP Excel mapping's column links are rewritten in the same transaction."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.excel_entry import rename_field_in_excel_config
+
+    old, marks, cf = _ref_target(db, body.group_id, body.ref)
+    new = " ".join(body.new_name.split())
+    if not new:
+        raise HTTPException(status_code=422, detail="Give the parameter a name.")
+    if len(new) > MAX_NAME:
+        raise HTTPException(status_code=422, detail=f"Parameter names are at most {MAX_NAME} characters.")
+    if new == old:
+        return {"name": old, "renamed": 0}
+    doc_ids = [d for (d,) in db.query(TemplateDocument.id).filter(TemplateDocument.group_id == body.group_id)]
+    taken = {m for (m,) in db.query(FieldMark.label_name).filter(FieldMark.document_id.in_(doc_ids))}
+    taken |= {c for (c,) in db.query(CustomField.label_name).filter(CustomField.group_id == body.group_id)}
+    if new in taken or new in PROTECTED_NAMES:
+        raise HTTPException(status_code=422, detail=f"'{new}' is already used on this template.")
+    usage = _usage(db, body.group_id, old)
+    if not usage["allowed"]:
+        raise HTTPException(status_code=409, detail="Not renamed: " + " ".join(usage["blocks"]))
+    for m in marks:
+        m.label_name = new
+    if cf is not None:
+        cf.label_name = new
+    group = db.get(TemplateGroup, body.group_id)
+    if group is not None and group.excel_config and rename_field_in_excel_config(group.excel_config, old, new):
+        flag_modified(group, "excel_config")
+    db.commit()
+    return {"name": new, "renamed": len(marks) + (1 if cf is not None else 0), "excel_updated": len(usage["auto"])}
+
+
 def layouts_for_group(db: Session, group_id: str) -> dict[str, dict]:
     """{template_document_id: layout} for a template's documents that have one - sent with the
     job detail so the job screen can use it."""

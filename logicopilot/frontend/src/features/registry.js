@@ -38,6 +38,8 @@ export const superAdminFeatures = [
   // existing wizard (which stays untouched until this replaces it). Step 1 - ERP fields.
   { path: "/super-admin/onboarding/erp-fields", navLabel: "Step 1 - ERP Field Mapping", group: "Customer Onboarding", order: 5.95 },
   { path: "/super-admin/onboarding/document-mapping", navLabel: "Step 2 - Document Mapping", group: "Customer Onboarding", order: 5.96 },
+  // Step 3 is the Screen Designer itself, reached from the onboarding flow.
+  { path: "/super-admin/onboarding/screen-designer", navLabel: "Step 3 - Screen Designer", group: "Customer Onboarding", order: 5.97 },
 
   { path: "/super-admin/email-puller", navLabel: "Email Puller", group: "Integrations & Automation", order: 6 },
   { path: "/super-admin/erp-scripts", navLabel: "ERP Script Management", group: "Integrations & Automation", order: 7 },
