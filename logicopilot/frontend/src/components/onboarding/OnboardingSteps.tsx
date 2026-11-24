@@ -1,4 +1,23 @@
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
+
+const FULL_SCREEN_KEY = "onboarding.fullScreen";
+
+/** Full screen, shared by every onboarding step: moving to another step through the step bar
+ *  keeps it on, until Close full screen / Esc. Kept for this browser tab only. */
+export function useOnboardingFullScreen(): [boolean, (v: boolean | ((cur: boolean) => boolean)) => void] {
+  const [on, setOn] = useState<boolean>(() => {
+    try { return window.sessionStorage.getItem(FULL_SCREEN_KEY) === "1"; } catch { return false; }
+  });
+  const set = useCallback((v: boolean | ((cur: boolean) => boolean)) => {
+    setOn((cur) => {
+      const next = typeof v === "function" ? v(cur) : v;
+      try { window.sessionStorage.setItem(FULL_SCREEN_KEY, next ? "1" : "0"); } catch { /* convenience only */ }
+      return next;
+    });
+  }, []);
+  return [on, set];
+}
 
 // The Customer Onboarding steps, shown at the top of each onboarding page - the same step bar as
 // the template wizard (1 Declare → 2 Upload → ...). Steps before the current one read as done.

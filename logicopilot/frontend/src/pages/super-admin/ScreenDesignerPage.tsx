@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -123,7 +123,7 @@ export function ScreenDesignerPage() {
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [showDoc, setShowDoc] = useState(true);
   const [docPage, setDocPage] = useState(1);
-  const [fullScreen, setFullScreen] = useState(false);
+  const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const saveSeq = useRef(0);
 

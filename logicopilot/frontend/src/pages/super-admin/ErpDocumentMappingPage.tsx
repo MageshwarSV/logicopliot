@@ -5,7 +5,7 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
-import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -168,7 +168,7 @@ export function ErpDocumentMappingPage() {
   const [zoom, setZoom] = useState(100);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [fullScreen, setFullScreen] = useState(false);
+  const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 

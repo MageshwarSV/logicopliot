@@ -7,7 +7,7 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
 import { formatDateTime } from "../../utils/dateTime";
-import { OnboardingSteps } from "../../components/onboarding/OnboardingSteps";
+import { OnboardingSteps, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 1: ERP Field Classification.
 // The customer's ERP Excel workbook is read sheet by sheet; every column is dragged into one of
@@ -87,7 +87,7 @@ export function ErpFieldMappingPage() {
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [adding, setAdding] = useState<ErpCategory | null>(null);
-  const [fullScreen, setFullScreen] = useState(false);
+  const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   // Which document tab of the Document bucket is open; NO_DOC = Document fields not assigned yet.
   const [docTab, setDocTab] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
