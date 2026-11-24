@@ -7,6 +7,13 @@ Plain dicts, checked here so the shape stays predictable for Go Live:
   operator: {"input_type": "text" | "number" | "date" | "dropdown", "choices": ["A", "P"],
              "default": "A"}        (question = display_label, hint = description,
                                      mandatory = the field's own flag)
+  reference: {"source": "quotation_master" | "importer_master" | "own_table",
+             "level": "name" | "branch" | "address"   (a master only),
+             "depends_on": "Erp Entry Name",           (the field it is picked within)
+             "fills": "quotation_address",             (filled from it once picked)
+             "key_field": "Quotation Name",            (own table: the field it is looked up by)
+             "pick": "operator" | "auto"}              (operator picks from the list / filled
+                                                        when one row matches)
   other categories: kept as given (configured in later rounds), size-limited.
 """
 from __future__ import annotations
@@ -14,6 +21,9 @@ from __future__ import annotations
 import json
 
 INPUT_TYPES = ("text", "number", "date", "dropdown")
+REFERENCE_SOURCES = ("quotation_master", "importer_master", "own_table")
+MASTER_LEVELS = ("name", "branch", "address")
+PICK_MODES = ("operator", "auto")
 MAX_CONFIG_BYTES = 20_000
 
 
@@ -64,6 +74,19 @@ def clean_config(category: str | None, config) -> dict | None:
         if input_type == "dropdown" and default and default not in choices:
             raise ConfigError(f"The default '{default}' is not one of the choices.")
         return {"input_type": input_type, "choices": choices if input_type == "dropdown" else [], "default": default}
+    if category == "reference":
+        source = config.get("source") or ""
+        if source not in REFERENCE_SOURCES:
+            raise ConfigError("Pick where the value comes from: Quotation Master, Importer Master or the field's own table.")
+        level = config.get("level") or ""
+        if source != "own_table" and level not in MASTER_LEVELS:
+            raise ConfigError("Pick which part of the master it is: name, branch or address.")
+        pick = config.get("pick") or "operator"
+        if pick not in PICK_MODES:
+            raise ConfigError("Pick must be operator or auto.")
+        return {"source": source, "level": level if source != "own_table" else "",
+                "depends_on": _text(config.get("depends_on"), 255), "fills": _text(config.get("fills"), 255),
+                "key_field": _text(config.get("key_field"), 255) if source == "own_table" else "", "pick": pick}
     return config
 
 
@@ -73,4 +96,6 @@ def is_configured(category: str | None, config: dict | None, field) -> bool:
         return bool(config and (config.get("value") or config.get("per_importer")))
     if category == "operator":
         return bool(config and config.get("input_type"))
+    if category == "reference":
+        return bool(config and config.get("source"))
     return False

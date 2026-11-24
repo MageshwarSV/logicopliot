@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.deps import get_db, require_role, require_write_access
+from app.core.erp_ui_fields import ERP_UI_SHEET
 from app.core.erp_workbook import CATEGORIES, DATA_TYPES, read_workbook, suggest_label
 from app.models.erp_mapping import ErpField, ErpMappingHistory, ErpWorkbook
 from app.models.template_group import TemplateGroup
@@ -89,8 +90,11 @@ def _workbook_out(db: Session, wb: ErpWorkbook) -> dict:
     group = db.get(TemplateGroup, wb.group_id)
     return {"id": wb.id, "group_id": wb.group_id, "customer": group.name if group else "",
             "file_name": wb.file_name, "status": wb.status, "documents": documents,
-            "sheets": [{"name": s["name"], "header_row": s["header_row"],
-                        "column_count": len(s["columns"])} for s in wb.sheets],
+            "sheets": [*({"name": s["name"], "header_row": s["header_row"],
+                          "column_count": len(s["columns"])} for s in wb.sheets),
+                       # Always last: the fields the ERP UI script fills that are not Excel columns.
+                       {"name": ERP_UI_SHEET, "header_row": 0, "erp_ui": True,
+                        "column_count": sum(1 for f in fields if f.sheet_name == ERP_UI_SHEET)}],
             "fields": [_field_out(f) for f in fields], "summary": _summary(fields),
             "updated_at": wb.updated_at.isoformat() if wb.updated_at else None,
             "updated_by": wb.updated_by_name}
@@ -109,7 +113,7 @@ def _sync_fields(db: Session, wb: ErpWorkbook, sheets: list[dict], previous: lis
     custom fields of a sheet that still exists are kept. Returns how many were carried over."""
     old = {(f.sheet_name, f.excel_name.strip().lower()): f for f in previous if not f.is_custom}
     carried = 0
-    sheet_names = {s["name"] for s in sheets}
+    sheet_names = {s["name"] for s in sheets} | {ERP_UI_SHEET}
     for s in sheets:
         for col in s["columns"]:
             name = col["name"] or f"(no heading) {col['key']}"
@@ -360,7 +364,8 @@ def add_custom_field(
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Give the field a name.")
-    if body.sheet not in [s["name"] for s in wb.sheets]:
+    erp_ui = body.sheet == ERP_UI_SHEET
+    if not erp_ui and body.sheet not in [s["name"] for s in wb.sheets]:
         raise HTTPException(status_code=404, detail="No such worksheet in this workbook.")
     _check({"category": body.category})
     taken = {f.excel_name.lower() for f in db.query(ErpField).filter(
@@ -370,7 +375,9 @@ def add_custom_field(
     f = ErpField(workbook_id=wb.id, group_id=wb.group_id, sheet_name=body.sheet, excel_name=name,
                  is_custom=True, category=body.category, position=10_000,
                  display_label=suggest_label(name), data_type="text", updated_by_name=_who(user),
-                 source_document=body.source_document)
+                 source_document=body.source_document,
+                 # The ERP UI script cannot run without it: required unless the admin says not.
+                 mandatory=erp_ui)
     db.add(f)
     db.flush()
     _history(db, wb, user, "add_custom_field", field_id=f.id,
@@ -458,6 +465,132 @@ def remove_document(
     _history(db, wb, user, "remove_document", detail={"document": doc["name"], "fields_unassigned": moved})
     db.commit()
     return _workbook_out(db, wb)
+
+
+# ---- ERP UI fields: picked on the ERP screen by the script, not ERP Excel columns -------------
+
+def _scripts_for(db: Session, wb: ErpWorkbook) -> list:
+    from app.models.erp_script import ErpScript
+
+    return (db.query(ErpScript).filter(ErpScript.tenant_id == wb.tenant_id)
+            .order_by(ErpScript.name).all())
+
+
+def add_script_fields(db: Session, wb: ErpWorkbook, group: TemplateGroup, scripts: list, user: User) -> dict:
+    """Adds, on the ERP UI sheet, every job field these ERP scripts use that the template's Excel
+    mapping does not carry - each classified and configured as the template runs it today
+    (app/core/erp_import.classify_column), and required. A field already on the sheet is left
+    as it is. Reads the template and the scripts only. Caller commits."""
+    from app.core.erp_field_config import ConfigError, clean_config
+    from app.core.erp_import import classify_column, field_index
+    from app.core.erp_ui_fields import excel_labels, script_labels, with_parents
+    from app.models.custom_field import CustomField
+    from app.models.field_mark import FieldMark
+    from app.models.template_document import TemplateDocument
+
+    tdocs = (db.query(TemplateDocument).filter(TemplateDocument.group_id == group.id)
+             .order_by(TemplateDocument.created_at).all())
+    doc_order = [d.id for d in tdocs]
+    doc_names = {d.id: d.name for d in tdocs}
+    marks = (db.query(FieldMark).filter(FieldMark.document_id.in_(doc_order))
+             .order_by(FieldMark.created_at).all()) if doc_order else []
+    cfs = db.query(CustomField).filter(CustomField.group_id == group.id).order_by(CustomField.created_at).all()
+    idx = field_index(marks, cfs)
+    in_excel = excel_labels(group.excel_config)
+    used_by: dict[str, list[str]] = {}
+    for sc in scripts:
+        for label in script_labels(sc.steps, sc.branch_field):
+            used_by.setdefault(label, []).append(sc.name)
+    wanted = with_parents(list(used_by), set(idx))
+    current = db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.sheet_name == ERP_UI_SHEET).all()
+    existing = {f.excel_name.strip().lower() for f in current}
+    pos = max((f.position for f in current), default=0)
+    wb_doc_ids = {d["id"] for d in _documents(db, wb)}
+    out: dict[str, list[str]] = {"added": [], "in_excel": [], "already": [], "not_in_template": []}
+    for label in wanted:
+        if label in in_excel:
+            out["in_excel"].append(label)
+            continue
+        if label.lower() in existing:
+            out["already"].append(label)
+            continue
+        if label not in idx:
+            out["not_in_template"].append(label)
+            continue
+        res = classify_column({"field": label}, idx, doc_order, doc_names)
+        cat = res["category"]
+        doc = res.get("source_document")
+        pos += 10
+        why = (f"Picked on the ERP screen by the script {', '.join(used_by[label])} - not in the ERP Excel."
+               if label in used_by else "Needed to pick the field below it on the ERP screen - not in the ERP Excel.")
+        f = ErpField(workbook_id=wb.id, group_id=wb.group_id, sheet_name=ERP_UI_SHEET, excel_name=label,
+                     is_custom=True, category=cat, position=pos, data_type="text", mandatory=True,
+                     display_label=res.get("display_label") or suggest_label(label),
+                     source_document=(doc if doc in wb_doc_ids else ADDITIONAL_ID) if cat else None,
+                     description=res.get("description") or why, updated_by_name=_who(user))
+        for k in ("formula", "ai_prompt", "erp_master_ref"):
+            if res.get(k):
+                setattr(f, k, res[k])
+        if cat and res.get("config") is not None:
+            try:
+                f.config = clean_config(cat, res["config"])
+            except ConfigError:
+                f.config = None
+            if cat == "fixed" and f.config:
+                f.default_value = f.config.get("value") or None
+        db.add(f)
+        existing.add(label.lower())
+        out["added"].append(label)
+    _history(db, wb, user, "erp_ui_from_script",
+             detail={"scripts": [sc.name for sc in scripts], **{k: v for k, v in out.items() if v}})
+    return out
+
+
+@router.get("/workbooks/{workbook_id}/erp-scripts")
+def list_erp_scripts(
+    workbook_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> list[dict]:
+    """This customer's ERP scripts, the ones linked to the template first, with how many job
+    fields each uses that the ERP Excel does not carry."""
+    from app.core.erp_ui_fields import excel_labels, script_labels
+
+    wb = _workbook(db, workbook_id)
+    group = db.get(TemplateGroup, wb.group_id)
+    in_excel = excel_labels(group.excel_config if group else None)
+    out = []
+    for sc in _scripts_for(db, wb):
+        labels = script_labels(sc.steps, sc.branch_field)
+        out.append({"id": sc.id, "name": sc.name, "status": sc.status,
+                    "linked": wb.group_id in (sc.template_ids or []),
+                    "fields": len(labels), "not_in_excel": [l for l in labels if l not in in_excel]})
+    out.sort(key=lambda x: (not x["linked"], x["name"].lower()))
+    return out
+
+
+class FromScriptIn(BaseModel):
+    script_id: str
+
+
+@router.post("/workbooks/{workbook_id}/erp-ui/from-script")
+def erp_ui_from_script(
+    workbook_id: str,
+    body: FromScriptIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_write_access(SUPER_ADMIN)),
+) -> dict:
+    """Pick up the ERP UI fields of one of this customer's ERP scripts (a copied template is
+    linked to no script, so the admin names the one it will run with)."""
+    wb = _workbook(db, workbook_id)
+    sc = next((s for s in _scripts_for(db, wb) if s.id == body.script_id), None)
+    if sc is None:
+        raise HTTPException(status_code=404, detail="That ERP script is not one of this customer's.")
+    group = db.get(TemplateGroup, wb.group_id)
+    out = add_script_fields(db, wb, group, [sc], user)
+    wb.updated_by_name = _who(user)
+    db.commit()
+    return {**out, "workbook": _workbook_out(db, wb)}
 
 
 @router.delete("/fields/{field_id}")

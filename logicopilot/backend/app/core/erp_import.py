@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from app.core.erp_ui_fields import master_of, reference_config
+
 ADDITIONAL_ID = "additional-details"
 
 
@@ -105,7 +107,8 @@ def classify_column(col: dict | None, idx: dict, doc_order: list[str], doc_names
         if transform:
             return done("formula", formula=f"{transform}({field})", **common)
         if getattr(mark, "is_target_value", False):
-            return done("reference", erp_master_ref=f"Reads '{field}' off the document, then matches it in its reference table", **common)
+            return done("reference", erp_master_ref=f"Reads '{field}' off the document, then matches it in its reference table",
+                        config=reference_config(field, mark), **common)
         if getattr(mark, "ask_operator", False):
             return done("operator", mandatory=bool(getattr(mark, "ask_operator_required", False)),
                         description=getattr(mark, "ask_operator_hint", None) or None, config=_operator_config(mark), **common)
@@ -114,7 +117,8 @@ def classify_column(col: dict | None, idx: dict, doc_order: list[str], doc_names
 
     cf = entry["cf"]
     kind = cf.kind
-    common = {"display_label": getattr(cf, "display_label", None) or None}
+    master = master_of(field)
+    common = {"display_label": getattr(cf, "display_label", None) or (master["display"] if master else None)}
     if transform:
         return done("formula", formula=f"{transform}({field})", **common)
     if kind == "composite":
@@ -123,10 +127,12 @@ def classify_column(col: dict | None, idx: dict, doc_order: list[str], doc_names
             pieces.append(f'"{piece.get("fixed", "")}"' if isinstance(piece, dict) else piece)
         return done("formula", formula=" + ".join(pieces) or field, **common)
     if kind == "lookup":
-        return done("reference", erp_master_ref=f"Looks '{field}' up by {cf.lookup_key_label or 'part code'} in the customer's master / reference table", **common)
+        return done("reference", erp_master_ref=f"Looks '{field}' up by {cf.lookup_key_label or 'part code'} in the customer's master / reference table",
+                    config=reference_config(field, cf), **common)
     if kind == "ai":
         if getattr(cf, "is_target_value", False):
-            return done("reference", ai_prompt=cf.ai_prompt, erp_master_ref="The AI reads it, then its reference table resolves it", **common)
+            return done("reference", ai_prompt=cf.ai_prompt, erp_master_ref="The AI reads it, then its reference table resolves it",
+                        config=reference_config(field, cf), **common)
         if getattr(cf, "ask_operator", False) and not cf.ai_prompt:
             return done("operator", mandatory=bool(cf.ask_operator_required), description=cf.ask_operator_hint or None,
                         config=_operator_config(cf), **common)
@@ -137,7 +143,11 @@ def classify_column(col: dict | None, idx: dict, doc_order: list[str], doc_names
         how = ("The AI decides, then its reference table" if cf.ai_prompt else "Reference table") + keys
         if cf.ask_operator:
             how += "; the operator picks or confirms"
-        return done("reference", erp_master_ref=how, ai_prompt=cf.ai_prompt or None, **common)
+        if master:
+            how = {"quotation_master": "Quotation Master", "importer_master": "Importer Master"}[master["source"]] \
+                + f" ({master['level']})" + (f", within {master['depends_on']}" if master.get("depends_on") else "")
+        return done("reference", erp_master_ref=how, ai_prompt=cf.ai_prompt or None,
+                    config=reference_config(field, cf), **common)
     if cf.ask_operator:
         return done("operator", mandatory=bool(cf.ask_operator_required), description=cf.ask_operator_hint or None,
                     config=_operator_config(cf), **common)

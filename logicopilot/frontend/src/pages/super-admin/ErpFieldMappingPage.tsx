@@ -5,7 +5,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
-import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
+import type { ErpCategory, ErpCustomer, ErpField, ErpScriptOption, ErpWorkbook } from "../../api/onboardingErp";
 import { formatDateTime } from "../../utils/dateTime";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
@@ -40,6 +40,8 @@ const BUCKETS: {
 
 const DRAG_MIME = "application/x-erp-field";
 const NO_DOC = "__none__";
+// The pseudo-sheet the backend always lists last (app/core/erp_ui_fields.ERP_UI_SHEET).
+const ERP_UI = "ERP UI (not in Excel)";
 
 function label(f: ErpField): string {
   return f.excel_name;
@@ -50,6 +52,7 @@ function subtitle(f: ErpField): string | null {
   if (f.category === "reference" && f.erp_master_ref) return f.erp_master_ref;
   if (f.category === "fixed" && f.default_value) return `= ${f.default_value}`;
   if (f.category === "ai" && f.ai_prompt) return `AI: ${f.ai_prompt}`;
+  if (f.is_custom && f.sheet_name === ERP_UI) return "picked on the ERP screen - not in the Excel";
   if (f.is_custom) return "custom field";
   return null;
 }
@@ -148,7 +151,7 @@ export function ErpFieldMappingPage() {
       .sort((a, b) => (a.column_index ?? 9999) - (b.column_index ?? 9999));
   // A sheet "has data" when any of its columns has a value in the Excel - or when something on
   // it is already classified, so work done never disappears from the list.
-  const sheetHasData = (name: string) =>
+  const sheetHasData = (name: string) => name === ERP_UI ||
     fields.some((f) => f.sheet_name === name && (f.samples.length > 0 || !!f.category));
   const allSheets = wb?.sheets ?? [];
   const hiddenSheets = onlyWithData ? allSheets.filter((s) => !sheetHasData(s.name)).length : 0;
@@ -324,6 +327,8 @@ export function ErpFieldMappingPage() {
   };
 
   const complete = wb?.status === "complete";
+  const realSheets = (wb?.sheets ?? []).filter((x) => !x.erp_ui).length;
+  const erpUiCount = fields.filter((f) => f.sheet_name === ERP_UI).length;
 
   const docName = (id: string) => (id === NO_DOC ? "No document" : documents.find((d) => d.id === id)?.name ?? "");
   const docIcon = (name: string) => {
@@ -354,7 +359,7 @@ export function ErpFieldMappingPage() {
             className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200"
           >
             <span className="rounded bg-emerald-600 px-1.5 text-xs font-bold text-white">X</span>
-            {wb.file_name} ({wb.sheets.length} sheet{wb.sheets.length === 1 ? "" : "s"})
+            {wb.file_name} ({realSheets} sheet{realSheets === 1 ? "" : "s"})
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -425,19 +430,33 @@ export function ErpFieldMappingPage() {
                       }}
                       className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ${isSel ? "bg-indigo-50 dark:bg-indigo-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
                     >
-                      <span className="text-slate-400">▦</span>
+                      <span className="text-slate-400">{s.erp_ui ? "🖥" : "▦"}</span>
                       <span className="truncate font-semibold text-slate-800 dark:text-slate-100">{s.name}</span>
-                      <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${done
-                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                        : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
-                        {stat.done} / {stat.total}{done ? " ✓" : ""}
-                      </span>
+                      {s.erp_ui ? (
+                        <span className="ml-auto shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">
+                          {erpUiCount} field{erpUiCount === 1 ? "" : "s"}
+                        </span>
+                      ) : (
+                        <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${done
+                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+                          {stat.done} / {stat.total}{done ? " ✓" : ""}
+                        </span>
+                      )}
                     </button>
                     {isOpen && (
                       <div className="mb-2 ml-5 border-l border-slate-100 pl-2 dark:border-slate-800">
-                        <button type="button" onClick={() => void changeHeaderRow()} className="mb-1 px-2 text-[11px] text-slate-400 hover:text-indigo-600 hover:underline">
-                          headings on row {s.header_row} · change
-                        </button>
+                        {s.erp_ui ? (
+                          <ErpUiPicker
+                            workbookId={wb.id}
+                            onAdded={(w, text) => { setWb(w); setMessage({ tone: "ok", text }); }}
+                            onError={(text) => setMessage({ tone: "warn", text })}
+                          />
+                        ) : (
+                          <button type="button" onClick={() => void changeHeaderRow()} className="mb-1 px-2 text-[11px] text-slate-400 hover:text-indigo-600 hover:underline">
+                            headings on row {s.header_row} · change
+                          </button>
+                        )}
                         {sheetFields(s.name)
                           .filter((f) => !onlyWithData || colHasData(f))
                           .filter((f) => !q || s.name.toLowerCase().includes(q) || f.excel_name.toLowerCase().includes(q))
@@ -492,7 +511,9 @@ export function ErpFieldMappingPage() {
               <span className={`ml-auto rounded-full px-3 py-1 text-sm font-medium ${sheetStat.total && sheetStat.done === sheetStat.total
                 ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
                 : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}>
-                {sheetStat.total && sheetStat.done === sheetStat.total ? "✓ " : ""}{sheet}: {sheetStat.done} of {sheetStat.total} mapped
+                {sheet === ERP_UI
+                  ? `${ERP_UI}: ${erpUiCount} field${erpUiCount === 1 ? "" : "s"}`
+                  : <>{sheetStat.total && sheetStat.done === sheetStat.total ? "✓ " : ""}{sheet}: {sheetStat.done} of {sheetStat.total} mapped</>}
               </span>
             </div>
 
@@ -646,6 +667,7 @@ export function ErpFieldMappingPage() {
               className={`mt-5 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 dark:border-indigo-500/20 dark:bg-indigo-500/5 ${dragOver === "tray" ? "ring-2 ring-indigo-300" : ""}`}
             >
               <p className="mb-2 text-center text-sm text-slate-600 dark:text-slate-300">
+                {sheet === ERP_UI && <>ⓘ <b>ERP UI</b> holds fields the ERP UI script picks on the ERP screen that are not Excel columns (ERP Quotation Name / Branch, ERP Importer Name / Branch …). Pick them up from the ERP script on the left, or use "+ Add new field" in a bucket. </>}
                 ⓘ Drag and drop fields of the <b>{sheet}</b> worksheet into the appropriate bucket of the selected document
                 {activeDoc !== NO_DOC ? <> (<b>{docName(activeDoc)}</b>)</> : null}. Drop a field here to take it out of its bucket.
               </p>
@@ -826,6 +848,71 @@ function FieldConfigModal({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/** On the ERP UI sheet: add the fields an ERP script picks on screen that the Excel does not
+ *  carry. A copied template is linked to no script, so the admin picks the one it will run
+ *  with; the template's own scripts are listed first. */
+function ErpUiPicker({ workbookId, onAdded, onError }: {
+  workbookId: string;
+  onAdded: (w: ErpWorkbook, text: string) => void;
+  onError: (text: string) => void;
+}) {
+  const [scripts, setScripts] = useState<ErpScriptOption[] | null>(null);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    erpApi.listErpScripts(workbookId)
+      .then((list) => { setScripts(list); setPick((p) => p || list[0]?.id || ""); })
+      .catch(() => setScripts([]));
+  }, [workbookId]);
+
+  const chosen = scripts?.find((x) => x.id === pick);
+  const run = async () => {
+    if (!pick) return;
+    setBusy(true);
+    try {
+      const r = await erpApi.erpUiFromScript(workbookId, pick);
+      const parts = [
+        r.added.length ? `added ${r.added.join(", ")}` : "nothing new to add",
+        r.already.length ? `already here: ${r.already.join(", ")}` : "",
+        r.in_excel.length ? `${r.in_excel.length} already in the Excel` : "",
+        r.not_in_template.length ? `not on this template (skipped): ${r.not_in_template.join(", ")}` : "",
+      ].filter(Boolean);
+      onAdded(r.workbook, `${chosen?.name ?? "Script"}: ${parts.join(" · ")}.`);
+    } catch (err) {
+      onError(errorText(err, "Could not read the ERP script."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-2 text-[11px] text-slate-600 dark:border-indigo-500/20 dark:bg-indigo-500/5 dark:text-slate-300">
+      <p className="mb-1">Fields the ERP UI script picks on screen, not in the Excel.</p>
+      {scripts === null && <p className="text-slate-400">Loading scripts…</p>}
+      {scripts?.length === 0 && <p className="text-slate-400">This customer has no ERP script yet - add fields with "+ Add new field".</p>}
+      {scripts && scripts.length > 0 && (
+        <>
+          <select value={pick} onChange={(e) => setPick(e.target.value)}
+            className="mb-1 w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs dark:border-slate-700 dark:bg-slate-900">
+            {scripts.map((x) => (
+              <option key={x.id} value={x.id}>{x.name}{x.linked ? " (this template)" : ""} - {x.not_in_excel.length} not in Excel</option>
+            ))}
+          </select>
+          {chosen && chosen.not_in_excel.length > 0 && (
+            <p className="mb-1 truncate text-slate-400" title={chosen.not_in_excel.join(", ")}>Uses: {chosen.not_in_excel.join(", ")}</p>
+          )}
+          <button type="button" disabled={busy || !pick} onClick={() => void run()}
+            className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+            {busy ? "Reading…" : "Pick up from ERP script"}
+          </button>
+        </>
+      )}
     </div>
   );
 }

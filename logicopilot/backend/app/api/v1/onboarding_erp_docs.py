@@ -417,10 +417,17 @@ def import_current(
                             detected_value=(mark.example_value or None), anchor=(mark.detected_anchor or None),
                             updated_by_name=_who(user)))
         made += 1
+    # The fields the template's ERP scripts pick on the ERP screen, not in the Excel (ERP
+    # Quotation Name / Branch, ERP Importer Name / Branch ...): the ERP UI sheet.
+    from app.api.v1.onboarding_erp import _scripts_for, add_script_fields
+
+    linked = [sc for sc in _scripts_for(db, wb) if group.id in (sc.template_ids or [])]
+    erp_ui = add_script_fields(db, wb, group, linked, user) if linked else None
     total = len(fields)
     _history(db, wb, user, "import_current",
              detail={"template": group.name, "classified": sum(counts.values()), "by_category": counts,
                      "left_unclassified": total - sum(counts.values()), "boxes": made, "missing_fields": missing})
     db.commit()
     return {"classified": sum(counts.values()), "by_category": counts, "left_unclassified": total - sum(counts.values()),
-            "boxes": made, "samples_used": samples_used, "missing_fields": missing}
+            "boxes": made, "samples_used": samples_used, "missing_fields": missing,
+            "erp_ui_scripts": [sc.name for sc in linked], "erp_ui_added": (erp_ui or {}).get("added", [])}

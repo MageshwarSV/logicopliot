@@ -70,6 +70,46 @@ export interface ErpDocument {
   fixed?: boolean;
 }
 
+export interface ErpSheet {
+  name: string;
+  header_row: number;
+  column_count: number;
+  erp_ui?: boolean;
+}
+
+/** Step 4 Reference: where the value is picked from. */
+export interface ReferenceConfig {
+  source: "quotation_master" | "importer_master" | "own_table";
+  /** A master only: which part of the name -> branch -> address chain. */
+  level: "name" | "branch" | "address" | "";
+  /** The field it is picked within (a branch within its name). */
+  depends_on: string;
+  /** Filled from it once picked (the address from name + branch). */
+  fills: string;
+  /** Own table: the field it is looked up by. */
+  key_field: string;
+  /** operator = picked from the list; auto = filled when exactly one row matches. */
+  pick: "operator" | "auto";
+}
+
+export interface ErpScriptOption {
+  id: string;
+  name: string;
+  status: string;
+  /** The template is one of the script's templates. */
+  linked: boolean;
+  fields: number;
+  not_in_excel: string[];
+}
+
+export interface FromScriptResult {
+  added: string[];
+  in_excel: string[];
+  already: string[];
+  not_in_template: string[];
+  workbook: ErpWorkbook;
+}
+
 export interface ErpWorkbook {
   id: string;
   group_id: string;
@@ -77,7 +117,9 @@ export interface ErpWorkbook {
   file_name: string;
   status: "draft" | "complete" | string;
   documents: ErpDocument[];
-  sheets: { name: string; header_row: number; column_count: number }[];
+  /** The worksheets, then always last the ERP UI pseudo-sheet (erp_ui: true) - fields the ERP
+   *  UI script picks on screen that are not Excel columns. */
+  sheets: ErpSheet[];
   fields: ErpField[];
   summary: ErpSummary;
   updated_at: string | null;
@@ -239,6 +281,20 @@ export interface ImportResult {
   boxes: number;
   samples_used: number;
   missing_fields: string[];
+  /** The template's linked ERP scripts, and the ERP UI fields picked up from them. */
+  erp_ui_scripts: string[];
+  erp_ui_added: string[];
+}
+
+export async function listErpScripts(workbookId: string): Promise<ErpScriptOption[]> {
+  const { data } = await apiClient.get<ErpScriptOption[]>(`/onboarding/erp/workbooks/${workbookId}/erp-scripts`);
+  return data;
+}
+
+/** Add the ERP UI fields one ERP script uses (fields it picks on screen, not in the Excel). */
+export async function erpUiFromScript(workbookId: string, scriptId: string): Promise<FromScriptResult> {
+  const { data } = await apiClient.post<FromScriptResult>(`/onboarding/erp/workbooks/${workbookId}/erp-ui/from-script`, { script_id: scriptId });
+  return data;
 }
 
 /** Fill Steps 1, 2 and 4 from the template's own ERP Excel mapping (reads the template only). */

@@ -70,7 +70,7 @@ export function OnboardingStartPage() {
     setBusy("excel");
     try {
       const w = await erpApi.uploadWorkbook(groupId, file);
-      setMessage({ tone: "ok", text: `${w.file_name}: ${w.sheets.length} worksheet(s), ${w.summary.total} column(s) read.` });
+      setMessage({ tone: "ok", text: `${w.file_name}: ${w.sheets.filter((x) => !x.erp_ui).length} worksheet(s), ${w.summary.total} column(s) read.` });
       await loadCustomers();
     } catch (err) {
       setMessage({ tone: "warn", text: errorText(err, "That workbook could not be read.") });
@@ -119,7 +119,10 @@ export function OnboardingStartPage() {
         tone: "ok",
         text: `Imported from ${customer.name}: ${r.classified} columns classified (${parts}), ${r.left_unclassified} left unclassified, `
           + `${r.boxes} document boxes from the template's marks${r.samples_used ? `, ${r.samples_used} template sample(s) used` : ""}.`
-          + (r.missing_fields.length ? ` ${r.missing_fields.length} column(s) point at fields the template does not have: ${r.missing_fields.join("; ")}.` : ""),
+          + (r.missing_fields.length ? ` ${r.missing_fields.length} column(s) point at fields the template does not have: ${r.missing_fields.join("; ")}.` : "")
+          + (r.erp_ui_scripts.length
+            ? ` ERP UI fields from ${r.erp_ui_scripts.join(", ")}: ${r.erp_ui_added.length ? r.erp_ui_added.join(", ") : "none new"}.`
+            : " No ERP script is linked to this template - pick one on the ERP UI sheet in Step 1 to add the fields it selects on screen."),
       });
     };
     try {
