@@ -429,6 +429,9 @@ class JobDetailOut(BaseModel):
     # path instead has no verifier to show here).
     erp_verified_at: datetime | None = None
     erp_verified_by_name: str | None = None
+    # Screen Designer layouts for this job's template documents that have one:
+    # {template_document_id: layout}. A document missing here uses the default screen.
+    screen_layouts: dict | None = None
 
 
 class FieldValueCorrect(BaseModel):

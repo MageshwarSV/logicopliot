@@ -24,6 +24,7 @@ import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal
 import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
 import { useAuth } from "../../auth/useAuth";
 import type { JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
+import { screenLayoutRef } from "../../types/jobs";
 
 // The operator's stages, as the customs desk actually works through a job. The backend still
 // tracks four (Documents / Verification / ERP Entry / Completed) — these seven are how the
@@ -7691,9 +7692,50 @@ function ExtractionReview({
   // document - content and order come from what the admin actually configured, not a mix of
   // two sources of truth. A document where nothing has been set this way yet (every template
   // that hasn't adopted it) runs the exact old hardcoded-map code, byte-for-byte unchanged.
+  // Super Admin -> Screen Designer layout for the document on screen, if one was saved. Only
+  // documents that have one use it (the Sea Export pilot); every other document keeps the code
+  // below exactly as it was.
+  const activeLayout = active ? job.screen_layouts?.[active.template_document_id] ?? null : null;
+
   const groupedDocFields = useMemo(() => {
     if (!active) return null;
     const all = [...visibleFields, ...relocatedFields];
+    if (activeLayout) {
+      // Sections and their order straight from the layout. A placed job-level field (a custom
+      // field with no box on any document) is shown here even when it is not otherwise on this
+      // tab - placing it is how an admin moves it here. Anything on this tab the layout does
+      // not place lands in "Other" at the bottom - never silently hidden.
+      const byRef = new Map<string, JobFieldValue>();
+      for (const fv of all) {
+        const ref = screenLayoutRef(fv);
+        if (ref && !byRef.has(ref)) byRef.set(ref, fv);
+      }
+      for (const fv of job.field_values) {
+        if (fv.row_index != null || fv.mark_id || !fv.custom_field_id || fv.hidden_from_capture) continue;
+        const ref = screenLayoutRef(fv);
+        if (ref && !byRef.has(ref)) byRef.set(ref, fv);
+      }
+      const placed = new Set<string>();
+      const sections = activeLayout.sections
+        .map((section) => {
+          const items: JobFieldValue[] = [];
+          for (const ref of section.fields) {
+            const fv = byRef.get(ref);
+            if (fv && !placed.has(ref)) {
+              items.push(fv);
+              placed.add(ref);
+            }
+          }
+          return { heading: section.title, items };
+        })
+        .filter((section) => section.items.length > 0);
+      const leftover = all.filter((fv) => {
+        const ref = screenLayoutRef(fv);
+        return !ref || !placed.has(ref);
+      });
+      if (leftover.length) sections.push({ heading: "Other", items: leftover });
+      return sections;
+    }
     const hasCustomHeadings = all.some((fv) => (fv.standalone_group_heading ?? "").trim());
     if (hasCustomHeadings) {
       const order: string[] = [];
@@ -7757,7 +7799,7 @@ function ExtractionReview({
     const leftover = all.filter((fv) => !used.has(fv.label_name));
     if (leftover.length) sections.push({ heading: "Other", items: leftover });
     return sections;
-  }, [active, visibleFields, relocatedFields]);
+  }, [active, visibleFields, relocatedFields, activeLayout, job.field_values]);
 
   const lineRows = useMemo(() => {
     if (!active) return [];
@@ -8520,11 +8562,40 @@ function ExtractionReview({
                         !docIsStandalone && visibleCells.length > 0 && visibleCells.every((fv) => fv.field_order != null)
                           ? [...visibleCells].sort((a, b) => (a.field_order as number) - (b.field_order as number))
                           : visibleCells;
-                      const plainCells = docIsStandalone
+                      let plainCells = docIsStandalone
                         ? orderedCells
                         : orderedCells.filter((fv) => !(fv.standalone_group_heading ?? "").trim());
                       const cellGroups: { heading: string; items: JobFieldValue[] }[] = [];
-                      if (!docIsStandalone) {
+                      // A Screen Designer layout (only documents that have one) decides the card:
+                      // its fields in order, then its groups. A line field it does not place still
+                      // shows, at the end of the main grid - never hidden.
+                      const cardLayout = !docIsStandalone ? activeLayout?.product_card : undefined;
+                      if (cardLayout) {
+                        const byRef = new Map<string, JobFieldValue>();
+                        for (const fv of visibleCells) {
+                          const ref = screenLayoutRef(fv);
+                          if (ref) byRef.set(ref, fv);
+                        }
+                        const used = new Set<string>();
+                        const pick = (refs: string[]) =>
+                          refs.flatMap((ref) => {
+                            const fv = byRef.get(ref);
+                            if (!fv || used.has(ref)) return [];
+                            used.add(ref);
+                            return [fv];
+                          });
+                        plainCells = pick(cardLayout.fields);
+                        for (const group of cardLayout.groups) {
+                          const items = pick(group.fields);
+                          if (items.length) cellGroups.push({ heading: group.title, items });
+                        }
+                        plainCells = plainCells.concat(
+                          visibleCells.filter((fv) => {
+                            const ref = screenLayoutRef(fv);
+                            return !ref || !used.has(ref);
+                          }),
+                        );
+                      } else if (!docIsStandalone) {
                         for (const fv of orderedCells) {
                           const heading = (fv.standalone_group_heading ?? "").trim();
                           if (!heading) continue;

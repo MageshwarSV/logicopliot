@@ -4519,7 +4519,20 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         category=_job_category(job),
         erp_verified_at=job.erp_verified_at,
         erp_verified_by_name=_verified_by_name(db, job),
+        screen_layouts=_screen_layouts(db, job),
     )
+
+
+def _screen_layouts(db: Session, job: Job) -> dict | None:
+    """Screen Designer layouts for the job's template (None when it has none) - never worth
+    failing the job screen over."""
+    try:
+        from app.api.v1.screen_designer import layouts_for_group
+
+        return layouts_for_group(db, job.group_id) or None
+    except Exception:  # noqa: BLE001
+        logger.exception("screen layouts could not be read for job %s", job.id)
+        return None
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailOut)

@@ -346,6 +346,28 @@ export interface JobDetail {
    *  a job completed via the direct Submit Entry path has no verifier to show here). */
   erp_verified_at?: string | null;
   erp_verified_by_name?: string | null;
+  /** Super Admin -> Screen Designer layouts, {template_document_id: layout}, for the documents
+   *  of this job's template that have one. A document not listed keeps the default screen. */
+  screen_layouts?: Record<string, ScreenLayout> | null;
+}
+
+/** "m:<FieldMark id>" (a field on the document) or "c:<CustomField id>" (a job-level field). */
+export type ScreenLayoutRef = string;
+
+/** Placement only - a field's own label/width/multi-line stay on the field. */
+export interface ScreenLayout {
+  sections: { id: string; title: string; fields: ScreenLayoutRef[] }[];
+  product_card: {
+    fields: ScreenLayoutRef[];
+    groups: { id: string; title: string; fields: ScreenLayoutRef[] }[];
+  };
+}
+
+/** The layout ref of one job field value - which placed field it is. */
+export function screenLayoutRef(fv: { mark_id?: string | null; custom_field_id?: string | null }): ScreenLayoutRef | null {
+  if (fv.mark_id) return `m:${fv.mark_id}`;
+  if (fv.custom_field_id) return `c:${fv.custom_field_id}`;
+  return null;
 }
 
 /** One thing picked out of the ERP during entry, shown on the operator's completed screen. */
