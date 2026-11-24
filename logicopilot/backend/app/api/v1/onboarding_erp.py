@@ -293,8 +293,9 @@ def update_field(
     if updates.get("source_document") and updates["source_document"] not in {
             d["id"] for d in _documents(db, wb)}:
         raise HTTPException(status_code=422, detail="That document is not in this customer's list.")
-    # Only a Document field is read from a document.
-    if "category" in updates and updates["category"] != "document":
+    # Every classified field belongs to one of the customer's documents (the tab it sits on);
+    # taken out of its bucket, it belongs to none.
+    if "category" in updates and updates["category"] is None:
         updates["source_document"] = None
     before = {k: getattr(f, k) for k in updates}
     for k, v in updates.items():
@@ -345,7 +346,7 @@ def add_custom_field(
     f = ErpField(workbook_id=wb.id, group_id=wb.group_id, sheet_name=body.sheet, excel_name=name,
                  is_custom=True, category=body.category, position=10_000,
                  display_label=suggest_label(name), data_type="text", updated_by_name=_who(user),
-                 source_document=body.source_document if body.category == "document" else None)
+                 source_document=body.source_document)
     db.add(f)
     db.flush()
     _history(db, wb, user, "add_custom_field", field_id=f.id,

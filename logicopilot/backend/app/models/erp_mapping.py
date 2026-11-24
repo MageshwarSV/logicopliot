@@ -52,8 +52,8 @@ class ErpField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_custom: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     category: Mapped[str | None] = mapped_column(String(20), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)     # order inside its bucket
-    # Document fields only: which of the workbook's documents (ErpWorkbook.documents id) it is
-    # read from. None = not assigned to a document yet.
+    # Which of the customer's documents (ErpWorkbook.documents id) the field belongs to - the
+    # document tab it was classified on, whatever its bucket. None = not on a document yet.
     source_document: Mapped[str | None] = mapped_column(String(36), nullable=True)
     display_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     data_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")

@@ -124,13 +124,15 @@ export function ErpFieldMappingPage() {
   const current = fields.filter((f) => f.sheet_name === sheet);
   const documents = wb?.documents ?? [];
   const docIds = new Set(documents.map((d) => d.id));
-  const hasUnassigned = current.some((f) => f.category === "document" && (!f.source_document || !docIds.has(f.source_document)));
+  // Every classified field belongs to a document tab; one classified before documents existed
+  // shows under "No document" until it is moved onto one.
+  const hasUnassigned = current.some((f) => f.category && (!f.source_document || !docIds.has(f.source_document)));
   const activeDoc = docTab === NO_DOC ? NO_DOC
     : documents.some((d) => d.id === docTab) ? docTab
     : documents[0]?.id ?? NO_DOC;
   const docOf = (f: ErpField) => (f.source_document && docIds.has(f.source_document) ? f.source_document : NO_DOC);
   const inBucket = (key: ErpCategory) =>
-    current.filter((f) => f.category === key && (key !== "document" || docOf(f) === activeDoc))
+    current.filter((f) => f.category === key && docOf(f) === activeDoc)
       .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
   const unclassified = current
     .filter((f) => !f.category && (!q || f.excel_name.toLowerCase().includes(q)))
@@ -161,14 +163,14 @@ export function ErpFieldMappingPage() {
       }
       return;
     }
-    // A Document field goes into the document tab it was dropped on (or the open one).
-    const doc = category === "document" ? (targetDoc ?? activeDoc) : null;
-    const sourceDocument = doc && doc !== NO_DOC ? doc : null;
-    // New order of the target bucket (for Document fields, of that document), the moved field
-    // included, renumbered 10, 20, ...
+    // The field goes onto the document tab it was dropped on, or the open one.
+    const doc = targetDoc ?? activeDoc;
+    const sourceDocument = doc !== NO_DOC ? doc : null;
+    // New order of the target bucket of that document, the moved field included, renumbered
+    // 10, 20, ...
     const others = wb.fields
       .filter((f) => f.sheet_name === field.sheet_name && f.category === category && f.id !== fieldId
-        && (category !== "document" || (f.source_document ?? null) === sourceDocument))
+        && (f.source_document ?? null) === sourceDocument)
       .sort((a, b) => a.position - b.position || (a.column_index ?? 0) - (b.column_index ?? 0));
     const at = beforeId ? others.findIndex((f) => f.id === beforeId) : -1;
     const order = [...others];
@@ -301,6 +303,17 @@ export function ErpFieldMappingPage() {
 
   const complete = wb?.status === "complete";
 
+  const docName = (id: string) => (id === NO_DOC ? "No document" : documents.find((d) => d.id === id)?.name ?? "");
+  const docIcon = (name: string) => {
+    const n = name.toLowerCase();
+    if (n.includes("lading") || n === "bl" || n.includes("waybill")) return "⚓";
+    if (n.includes("packing") || n.includes("paackage") || n.includes("package")) return "📦";
+    if (n.includes("invoice")) return "🧾";
+    return "📄";
+  };
+  const tabCount = (id: string) => current.filter((f) => f.category && docOf(f) === id).length;
+  const progress = wb?.summary.percent ?? 0;
+
   return (
     <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
@@ -316,6 +329,7 @@ export function ErpFieldMappingPage() {
               setParams(next, { replace: true });
               setSheet("");
               setOpen({});
+              setDocTab("");
             }}
             className="min-w-[14rem] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
           >
@@ -353,8 +367,6 @@ export function ErpFieldMappingPage() {
           <Button size="sm" variant="ghost" onClick={() => setFullScreen((v) => !v)} title={fullScreen ? "Close full screen (Esc)" : "Open full screen"}>
             {fullScreen ? "✕ Close full screen" : "⛶ Full screen"}
           </Button>
-          {wb && <Button size="sm" variant="secondary" onClick={() => void saveDraft()}>Save as Draft</Button>}
-          {wb && <Button size="sm" onClick={() => void next()}>Next: Document Mapping →</Button>}
         </div>
       </Card>
 
@@ -379,41 +391,25 @@ export function ErpFieldMappingPage() {
       )}
 
       {wb && (
-        <div className="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
-          {/* Left: ERP Excel structure */}
-          <Card className="h-fit p-4">
+        <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
+          {/* Left: worksheets */}
+          <Card className="flex h-fit flex-col p-4">
             <div className="flex items-center gap-2">
-              <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
-                ERP Excel Structure{complete ? " (Mapped)" : ""}
-              </p>
+              <p className="text-base font-semibold text-slate-900 dark:text-slate-50">ERP Excel Structure</p>
               {complete && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-xs text-white">✓</span>}
             </div>
-            <p className="mb-3 text-xs text-slate-500">
-              {complete ? "Mapping completed for all sheets and columns from the ERP Excel." : "Every column needs a bucket before the step is complete."}
-            </p>
-            <div className="mb-3 grid grid-cols-4 gap-1 text-center">
-              {[
-                ["Total", wb.summary.total, "text-slate-800 dark:text-slate-100"],
-                ["Classified", wb.summary.classified, "text-emerald-600"],
-                ["Unclassified", wb.summary.unclassified, wb.summary.unclassified ? "text-rose-600" : "text-slate-400"],
-                ["Done", `${wb.summary.percent}%`, "text-indigo-600"],
-              ].map(([k, v, tone]) => (
-                <div key={k as string} className="rounded-lg bg-slate-50 py-1.5 dark:bg-slate-800/60">
-                  <p className={`text-sm font-semibold ${tone}`}>{v}</p>
-                  <p className="text-[10px] text-slate-400">{k}</p>
-                </div>
-              ))}
-            </div>
+            <p className="mb-3 text-xs text-slate-500">Select a worksheet, then drag its columns into the buckets of a document.</p>
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search sheet or column…"
               className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
             />
-            <div className="max-h-[70vh] overflow-y-auto">
+            <div className="max-h-[62vh] overflow-y-auto">
               {visibleSheets.map((s) => {
                 const stat = perSheet.get(s.name) ?? { total: 0, done: 0 };
-                const isOpen = open[s.name] || !!q;
+                const isSel = s.name === sheet;
+                const isOpen = (open[s.name] && isSel) || !!q;
                 const done = stat.total > 0 && stat.done === stat.total;
                 return (
                   <div key={s.name}>
@@ -421,20 +417,23 @@ export function ErpFieldMappingPage() {
                       type="button"
                       onClick={() => {
                         setSheet(s.name);
-                        setOpen((o) => ({ ...o, [s.name]: !o[s.name] || s.name !== sheet }));
+                        setOpen((o) => ({ ...o, [s.name]: isSel ? !o[s.name] : true }));
                       }}
-                      className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ${s.name === sheet ? "bg-indigo-50 dark:bg-indigo-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+                      className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ${isSel ? "bg-indigo-50 dark:bg-indigo-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
                     >
-                      <span className="w-3 text-slate-400">{isOpen ? "▾" : "▸"}</span>
-                      <span className="font-semibold text-slate-800 dark:text-slate-100">{s.name}</span>
-                      <span className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium ${done
+                      <span className="text-slate-400">▦</span>
+                      <span className="truncate font-semibold text-slate-800 dark:text-slate-100">{s.name}</span>
+                      <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${done
                         ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                        : "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-300"}`}>
-                        {done ? "✓ Mapped" : "Mapped"} ({stat.done}/{stat.total})
+                        : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+                        {stat.done} / {stat.total}{done ? " ✓" : ""}
                       </span>
                     </button>
                     {isOpen && (
-                      <div className="mb-1 ml-6">
+                      <div className="mb-2 ml-5 border-l border-slate-100 pl-2 dark:border-slate-800">
+                        <button type="button" onClick={() => void changeHeaderRow()} className="mb-1 px-2 text-[11px] text-slate-400 hover:text-indigo-600 hover:underline">
+                          headings on row {s.header_row} · change
+                        </button>
                         {sheetFields(s.name)
                           .filter((f) => !q || s.name.toLowerCase().includes(q) || f.excel_name.toLowerCase().includes(q))
                           .map((f) => (
@@ -447,13 +446,13 @@ export function ErpFieldMappingPage() {
                                 setEditing(f);
                               }}
                               className="flex cursor-grab items-center gap-2 rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
-                              title={f.category ? `Classified: ${f.category}` : "Not classified yet - drag it into a bucket"}
+                              title={f.category ? `${f.category} · ${docName(docOf(f))}` : "Not classified yet - drag it into a bucket"}
                             >
                               {f.category
                                 ? <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white">✓</span>
                                 : <span className="h-3 w-3 shrink-0 rounded-full bg-rose-500" />}
                               <span className="truncate">{label(f)}</span>
-                              {f.is_custom && <span className="text-[10px] text-slate-400">custom</span>}
+                              {f.category && <span className="ml-auto shrink-0 text-[10px] text-slate-400">{docName(docOf(f))}</span>}
                             </div>
                           ))}
                       </div>
@@ -462,18 +461,23 @@ export function ErpFieldMappingPage() {
                 );
               })}
             </div>
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40">
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mapping Progress</p>
+              <div className="mt-1 flex items-baseline justify-between text-sm">
+                <span className="text-slate-600 dark:text-slate-300"><b>{wb.summary.classified} / {wb.summary.total}</b> fields mapped</span>
+                <span className="font-semibold text-slate-800 dark:text-slate-100">{progress}%</span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+              </div>
+              {wb.summary.unclassified > 0 && <p className="mt-1 text-[11px] text-rose-500">{wb.summary.unclassified} not classified yet</p>}
+            </div>
           </Card>
 
-          {/* Right: four buckets */}
+          {/* Right: documents and buckets */}
           <Card className="p-5">
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <p className="text-lg font-semibold text-slate-900 dark:text-slate-50">Map Fields for Sheet:</p>
-              <span className="rounded-lg bg-indigo-50 px-3 py-1 text-lg font-semibold text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">{sheet}</span>
-              {sheetInfo && (
-                <button type="button" onClick={() => void changeHeaderRow()} className="text-xs text-slate-400 hover:text-indigo-600 hover:underline">
-                  headings on row {sheetInfo.header_row} · change
-                </button>
-              )}
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <p className="text-lg font-semibold text-slate-900 dark:text-slate-50">📄 Map Fields for Document</p>
               <span className={`ml-auto rounded-full px-3 py-1 text-sm font-medium ${sheetStat.total && sheetStat.done === sheetStat.total
                 ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
                 : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}>
@@ -481,81 +485,85 @@ export function ErpFieldMappingPage() {
               </span>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            {/* Document tabs */}
+            <div className="mb-4 flex flex-wrap items-stretch gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-800/40">
+              {documents.map((d) => {
+                const on = activeDoc === d.id;
+                return (
+                  <div
+                    key={d.id}
+                    onDragOver={over(`t:${d.id}`)}
+                    onDragLeave={() => setDragOver((k) => (k === `t:${d.id}` ? null : k))}
+                    onDrop={drop(null, undefined, d.id)}
+                    className={`group relative flex min-w-[10rem] flex-1 items-center rounded-lg ${on
+                      ? "bg-white shadow-sm ring-1 ring-indigo-200 dark:bg-slate-900 dark:ring-indigo-500/30"
+                      : "hover:bg-white/70 dark:hover:bg-slate-900/60"} ${dragOver === `t:${d.id}` ? "ring-2 ring-indigo-400" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setDocTab(d.id)}
+                      onDoubleClick={() => {
+                        const name = window.prompt("Rename document", d.name);
+                        if (name?.trim() && name.trim() !== d.name && wb) void docAction(() => erpApi.renameDocument(wb.id, d.id, name.trim()));
+                      }}
+                      title="Click to open · double-click to rename"
+                      className="flex flex-1 items-center gap-3 px-4 py-2 text-left"
+                    >
+                      <span className="text-xl">{docIcon(d.name)}</span>
+                      <span>
+                        <span className={`block text-sm font-semibold ${on ? "text-indigo-700 dark:text-indigo-300" : "text-slate-700 dark:text-slate-200"}`}>{d.name}</span>
+                        <span className="block text-xs text-slate-400">{tabCount(d.id)} field{tabCount(d.id) === 1 ? "" : "s"}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      title="Remove this document (its fields go back to No document)"
+                      onClick={() => {
+                        if (!wb || !window.confirm(`Remove "${d.name}"? Its fields stay classified, under "No document".`)) return;
+                        void docAction(() => erpApi.removeDocument(wb.id, d.id));
+                      }}
+                      className="absolute right-1 top-1 rounded px-1 text-xs text-slate-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"
+                    >
+                      ✕
+                    </button>
+                    {on && <span className="absolute inset-x-3 -bottom-1 h-0.5 rounded bg-indigo-600" />}
+                  </div>
+                );
+              })}
+              {(hasUnassigned || documents.length === 0) && (
+                <button
+                  type="button"
+                  onClick={() => setDocTab(NO_DOC)}
+                  className={`rounded-lg px-4 py-2 text-left text-sm ${activeDoc === NO_DOC ? "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200" : "text-amber-700 hover:bg-amber-50 dark:text-amber-300"}`}
+                >
+                  <span className="block font-semibold">No document</span>
+                  <span className="block text-xs opacity-70">{tabCount(NO_DOC)} field{tabCount(NO_DOC) === 1 ? "" : "s"} to move</span>
+                </button>
+              )}
+              <button type="button" onClick={addDocument} className="rounded-lg px-4 py-2 text-sm font-medium text-indigo-600 hover:bg-white dark:text-indigo-300 dark:hover:bg-slate-900">
+                + Add document
+              </button>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {BUCKETS.map((b) => {
                 const items = inBucket(b.key);
-                const isDoc = b.key === "document";
                 return (
                   <div
                     key={b.key}
                     onDragOver={over(`b:${b.key}`)}
                     onDragLeave={() => setDragOver((k) => (k === `b:${b.key}` ? null : k))}
-                    onDrop={drop(b.key)}
-                    className={`flex min-h-[18rem] flex-col rounded-xl border-2 border-dashed p-3 ${isDoc ? "md:col-span-2" : ""} ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
+                    onDrop={drop(b.key, undefined, activeDoc)}
+                    className={`flex min-h-[18rem] flex-col rounded-xl border-2 border-dashed p-3 ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
                   >
                     <div className="flex items-center gap-2">
                       <span className={`text-lg ${b.head}`}>{b.icon}</span>
                       <p className={`font-semibold ${b.head}`}>{b.title}</p>
                       <span className={`ml-auto rounded-full px-2 text-xs font-semibold ${b.badge}`}>{items.length}</span>
                     </div>
-                    <p className="mb-2 text-xs text-slate-500">{b.help}</p>
-                    {isDoc && (
-                      <div className="mb-2 flex flex-wrap items-center gap-1 border-b border-blue-100 pb-2 dark:border-blue-500/20">
-                        {documents.map((d) => {
-                          const count = current.filter((f) => f.category === "document" && docOf(f) === d.id).length;
-                          const on = activeDoc === d.id;
-                          return (
-                            <div
-                              key={d.id}
-                              onDragOver={over(`t:${d.id}`)}
-                              onDragLeave={() => setDragOver((k) => (k === `t:${d.id}` ? null : k))}
-                              onDrop={drop("document", undefined, d.id)}
-                              className={`group flex items-center rounded-md text-xs font-medium ${on
-                                ? "bg-blue-600 text-white"
-                                : "bg-white text-blue-700 hover:bg-blue-50 dark:bg-slate-900 dark:text-blue-300"} ${dragOver === `t:${d.id}` ? "ring-2 ring-indigo-400" : ""}`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => setDocTab(d.id)}
-                                onDoubleClick={() => {
-                                  const name = window.prompt("Rename document", d.name);
-                                  if (name?.trim() && name.trim() !== d.name && wb) void docAction(() => erpApi.renameDocument(wb.id, d.id, name.trim()));
-                                }}
-                                className="px-2.5 py-1"
-                                title="Click to open · double-click to rename · drop a field here to put it on this document"
-                              >
-                                {d.name} <span className={on ? "text-blue-100" : "text-blue-400"}>({count})</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Remove this document tab (its fields stay Document fields, unassigned)"
-                                onClick={() => {
-                                  if (!wb || !window.confirm(`Remove the "${d.name}" tab? Its fields stay Document fields, with no document.`)) return;
-                                  void docAction(() => erpApi.removeDocument(wb.id, d.id));
-                                }}
-                                className={`pr-1.5 opacity-0 group-hover:opacity-100 ${on ? "text-blue-100" : "text-slate-400"}`}
-                              >
-                                ×
-                              </button>
-                            </div>
-                          );
-                        })}
-                        {(hasUnassigned || documents.length === 0) && (
-                          <button
-                            type="button"
-                            onClick={() => setDocTab(NO_DOC)}
-                            onDragOver={over(`t:${NO_DOC}`)}
-                            onDrop={drop("document", undefined, NO_DOC)}
-                            className={`rounded-md px-2.5 py-1 text-xs font-medium ${activeDoc === NO_DOC ? "bg-amber-500 text-white" : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}
-                          >
-                            No document ({current.filter((f) => f.category === "document" && docOf(f) === NO_DOC).length})
-                          </button>
-                        )}
-                        <button type="button" onClick={addDocument} className="rounded-md px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-300">
-                          + Add document
-                        </button>
-                      </div>
-                    )}
+                    <p className="mb-2 text-xs text-slate-500">
+                      {b.key === "document" && activeDoc !== NO_DOC ? `Values read from the ${docName(activeDoc)} document.` : b.help}
+                    </p>
                     <div className="flex flex-1 flex-col gap-2">
                       {items.map((f) => (
                         <div
@@ -563,7 +571,7 @@ export function ErpFieldMappingPage() {
                           draggable
                           onDragStart={dragStart(f.id)}
                           onDragOver={over(`c:${f.id}`)}
-                          onDrop={drop(b.key, f.id, isDoc ? activeDoc : undefined)}
+                          onDrop={drop(b.key, f.id, activeDoc)}
                           onClick={() => setEditing(f)}
                           className={`flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
                         >
@@ -575,11 +583,11 @@ export function ErpFieldMappingPage() {
                         </div>
                       ))}
                       {items.length === 0 && (
-                        <div className="flex flex-1 flex-col items-center justify-center text-center text-xs text-slate-400">
+                        <div className="flex flex-1 flex-col items-center justify-center rounded-lg text-center text-xs text-slate-400">
                           <span className="text-2xl">+</span>
-                          {isDoc
-                            ? activeDoc === NO_DOC ? "Drag document fields here" : `Drag fields read from ${documents.find((d) => d.id === activeDoc)?.name ?? "this document"} here`
-                            : "Drag fields here"}
+                          Drag fields here
+                          {activeDoc !== NO_DOC && <><br />from the {docName(activeDoc)} document</>}
+                          <br />or add new
                         </div>
                       )}
                     </div>
@@ -590,7 +598,7 @@ export function ErpFieldMappingPage() {
                           e.preventDefault();
                           const name = String(new FormData(e.currentTarget).get("name") ?? "").trim();
                           if (!name || !wb) return;
-                          erpApi.addCustomField(wb.id, sheet, name, b.key, isDoc && activeDoc !== NO_DOC ? activeDoc : null)
+                          erpApi.addCustomField(wb.id, sheet, name, b.key, activeDoc !== NO_DOC ? activeDoc : null)
                             .then((f) => {
                               setWb((w) => (w ? { ...w, fields: [...w.fields, f] } : w));
                               setAdding(null);
@@ -612,43 +620,40 @@ export function ErpFieldMappingPage() {
               })}
             </div>
 
-            {/* Unclassified columns of this sheet */}
+            {/* Not classified yet (selected worksheet) */}
             <div
               onDragOver={over("tray")}
               onDragLeave={() => setDragOver((k) => (k === "tray" ? null : k))}
               onDrop={drop(null)}
-              className={`mt-5 rounded-xl border bg-slate-50 p-5 dark:border-slate-700 dark:bg-slate-800/40 ${dragOver === "tray" ? "ring-2 ring-indigo-300" : "border-slate-200"}`}
+              className={`mt-5 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 dark:border-indigo-500/20 dark:bg-indigo-500/5 ${dragOver === "tray" ? "ring-2 ring-indigo-300" : ""}`}
             >
-              {unclassified.length > 0 ? (
-                <>
-                  <p className="mb-3 text-sm font-medium text-slate-700 dark:text-slate-200">
-                    Not classified yet ({unclassified.length}) - drag each into the right bucket
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {unclassified.map((f) => (
-                      <div
-                        key={f.id}
-                        draggable
-                        onDragStart={dragStart(f.id)}
-                        onClick={() => setEditing(f)}
-                        className="flex cursor-grab items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm dark:border-rose-500/30 dark:bg-slate-900 dark:text-slate-200"
-                        title={f.samples.length ? `e.g. ${f.samples.join(" · ")}` : undefined}
-                      >
-                        <span className="h-2 w-2 rounded-full bg-rose-500" />
-                        {label(f)}
-                        <span className="text-[10px] text-slate-400">{f.column_key}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="text-center text-sm text-slate-500">
-                  <p className="text-2xl">🖱</p>
-                  Drag and drop fields from any worksheet into the appropriate bucket (Document, Calculated, ERP or Contact).
-                  <br />
-                  Drop a field here to take it out of its bucket.
+              <p className="mb-2 text-center text-sm text-slate-600 dark:text-slate-300">
+                ⓘ Drag and drop fields of the <b>{sheet}</b> worksheet into the appropriate bucket of the selected document
+                {activeDoc !== NO_DOC ? <> (<b>{docName(activeDoc)}</b>)</> : null}. Drop a field here to take it out of its bucket.
+              </p>
+              {unclassified.length > 0 && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  {unclassified.map((f) => (
+                    <div
+                      key={f.id}
+                      draggable
+                      onDragStart={dragStart(f.id)}
+                      onClick={() => setEditing(f)}
+                      className="flex cursor-grab items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm dark:border-rose-500/30 dark:bg-slate-900 dark:text-slate-200"
+                      title={f.samples.length ? `e.g. ${f.samples.join(" · ")}` : undefined}
+                    >
+                      <span className="h-2 w-2 rounded-full bg-rose-500" />
+                      {label(f)}
+                      <span className="text-[10px] text-slate-400">{f.column_key}</span>
+                    </div>
+                  ))}
                 </div>
               )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+              <Button variant="secondary" onClick={() => void saveDraft()}>Save as Draft</Button>
+              <Button onClick={() => void next()}>Next: Document Mapping →</Button>
             </div>
           </Card>
         </div>
@@ -703,7 +708,7 @@ function FieldConfigModal({
         formula: draft.formula,
         erp_master_ref: draft.erp_master_ref,
         contact_ref: draft.contact_ref,
-        source_document: draft.category === "document" ? draft.source_document : null,
+        source_document: draft.category ? draft.source_document : null,
       });
       onSaved(res.field, res.summary, res.status);
     } catch (err) {
@@ -756,7 +761,7 @@ function FieldConfigModal({
             {row("Default value", <input className={input} value={draft.default_value ?? ""} onChange={(e) => set("default_value", e.target.value)} />)}
             {row("Validation rules", <input className={input} value={draft.validation ?? ""} onChange={(e) => set("validation", e.target.value)} placeholder="e.g. 8 digits" />)}
           </div>
-          {draft.category === "document" && row("Read from document",
+          {draft.category && row("Document",
             <select className={input} value={draft.source_document ?? ""} onChange={(e) => set("source_document", e.target.value || null)}>
               <option value="">Not assigned yet</option>
               {documents.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
