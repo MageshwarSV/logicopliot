@@ -1,8 +1,8 @@
 """Customer Onboarding - Step 1: ERP Field Classification (Super Admin).
 
 Upload a customer's ERP Excel workbook; every worksheet and column is read from the file; the
-admin classifies each column into Document / Calculated / ERP / Contact fields and configures
-it. Saved as it changes (a draft) until the admin finishes the step with every column
+admin classifies each column by its value source (Document, Reference, Fixed, Operator Input,
+AI-Derived, Formula / Rule) and configures it. Saved as it changes (a draft) until the admin finishes the step with every column
 classified. New tables only - the older Excel entry setup (TemplateGroup.excel_config and its
 upload) is not touched."""
 from __future__ import annotations
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/onboarding/erp", tags=["onboarding: erp fields"])
 
 MAX_BYTES = 20 * 1024 * 1024
 CONFIG_FIELDS = ("display_label", "data_type", "description", "mandatory", "default_value",
-                 "validation", "formula", "erp_master_ref", "contact_ref", "source_document")
+                 "validation", "formula", "ai_prompt", "erp_master_ref", "contact_ref", "source_document")
 
 
 def _who(user: User) -> str:
@@ -264,6 +264,7 @@ class FieldPatch(BaseModel):
     default_value: str | None = None
     validation: str | None = None
     formula: str | None = None
+    ai_prompt: str | None = None
     erp_master_ref: str | None = None
     contact_ref: str | None = None
     source_document: str | None = None

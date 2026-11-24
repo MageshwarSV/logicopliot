@@ -37,7 +37,7 @@ class ErpWorkbook(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class ErpField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """One ERP field: an Excel column of the workbook (sheet + column key + heading), or a
     custom field the admin added to a sheet (is_custom, no column). category is None while
-    unclassified, else document | calculated | erp | contact - one bucket only. The rest is the
+    unclassified, else document | reference | fixed | operator | ai | formula - one bucket only. The rest is the
     field's configuration, passed on to the next onboarding steps."""
 
     __tablename__ = "erp_fields"
@@ -61,7 +61,8 @@ class ErpField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     validation: Mapped[str | None] = mapped_column(Text, nullable=True)
-    formula: Mapped[str | None] = mapped_column(Text, nullable=True)              # calculated
+    formula: Mapped[str | None] = mapped_column(Text, nullable=True)              # formula / rule
+    ai_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)            # AI-derived: the instruction
     erp_master_ref: Mapped[str | None] = mapped_column(Text, nullable=True)       # erp
     contact_ref: Mapped[str | None] = mapped_column(Text, nullable=True)          # contact
     samples: Mapped[list | None] = mapped_column(JSON, nullable=True)

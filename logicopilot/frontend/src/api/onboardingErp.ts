@@ -2,7 +2,8 @@ import { apiClient } from "./client";
 
 // Customer Onboarding - Step 1: ERP Field Classification.
 
-export type ErpCategory = "document" | "calculated" | "erp" | "contact";
+// The value source of an ERP field - one bucket each in Step 1.
+export type ErpCategory = "document" | "reference" | "fixed" | "operator" | "ai" | "formula";
 export const ERP_DATA_TYPES = ["text", "number", "decimal", "date", "boolean"] as const;
 
 export interface ErpSummary {
@@ -36,6 +37,8 @@ export interface ErpField {
   default_value: string | null;
   validation: string | null;
   formula: string | null;
+  /** AI-derived fields: the instruction the AI follows. */
+  ai_prompt: string | null;
   erp_master_ref: string | null;
   contact_ref: string | null;
   /** Document fields: which of the workbook's documents it is read from (null = not assigned). */
@@ -65,7 +68,7 @@ export interface ErpWorkbook {
 
 export type ErpFieldPatch = Partial<Pick<ErpField,
   "category" | "position" | "display_label" | "data_type" | "description" | "mandatory" |
-  "default_value" | "validation" | "formula" | "erp_master_ref" | "contact_ref" | "source_document">>;
+  "default_value" | "validation" | "formula" | "ai_prompt" | "erp_master_ref" | "contact_ref" | "source_document">>;
 
 export async function listCustomers(): Promise<ErpCustomer[]> {
   const { data } = await apiClient.get<ErpCustomer[]>("/onboarding/erp/customers");

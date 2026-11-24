@@ -3,7 +3,7 @@
 Nothing here is hardcoded to a customer: sheet names and column headings come from the file.
 The workbook is read, never written. Suggestions (a readable label, a data type from the values
 under the heading) are only suggestions - the admin reviews them. Classification into
-Document / Calculated / ERP / Contact is always the admin's choice, never guessed from a name.
+its value source (Document, Reference, Fixed, Operator Input, AI-Derived, Formula) is always the admin's choice, never guessed from a name.
 """
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from pathlib import Path
 HEADER_SCAN_ROWS = 15     # the heading row is looked for in the first rows (titles/notes above it)
 SAMPLE_ROWS = 5           # values under the heading used to suggest a data type
 DATA_TYPES = ("text", "number", "decimal", "date", "boolean")
-CATEGORIES = ("document", "calculated", "erp", "contact")
+# Value source of an ERP field (Step 1 buckets): read off a document, from master data, a
+# constant, typed by the operator, worked out by the AI, or a formula / rule.
+CATEGORIES = ("document", "reference", "fixed", "operator", "ai", "formula")
 
 
 def _openpyxl():
@@ -93,7 +95,9 @@ def sheet_columns(rows: list[list], header_row: int) -> list[dict]:
             "key": column_letter(idx),
             "index": idx,
             "name": _text(value),
-            "samples": [_sample_text(s) for s in samples if s not in (None, "")][:3],
+            # The values under the heading, shown while mapping so the admin sees what the
+            # column really holds - distinct, up to SAMPLE_ROWS.
+            "samples": list(dict.fromkeys(_sample_text(s) for s in samples if s not in (None, "")))[:SAMPLE_ROWS],
             "suggested_type": suggest_type(samples),
         })
     while cols and not cols[-1]["name"]:
