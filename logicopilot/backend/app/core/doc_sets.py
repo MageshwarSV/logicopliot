@@ -163,6 +163,16 @@ def invoice_number_from_tokens(doc_type: str, tokens: list[dict] | None) -> str 
             got = _value_under_label(words, head, tails)
             if got:
                 return got
+        # Nothing carried a TWO-word label. Some suppliers label the number with the single
+        # word "Invoice" and print it straight after: Allison Transmission's "COMMERCIAL
+        # INVOICE AND PACKING LIST" reads "Invoice  94286287", so neither the two-word layout
+        # rule nor the line-based text patterns could ever see it, the number came back None,
+        # and the same invoice was filed as Invoice 1 AND Invoice 2 (production JOB-41EF33).
+        # Tried LAST so a page that does carry "Invoice No" is read exactly as it was before.
+        for head, _tails in labels:
+            got = _value_beside_bare_label(words, head)
+            if got:
+                return got
     except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency: a token
         # dict missing a coordinate must cost the layout read, not the classification.
         pass
@@ -211,6 +221,59 @@ def _value_under_label(words: list[dict], head: str, tails: frozenset) -> str | 
                         return key
     except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency: a token
         # dict missing a coordinate must cost the layout read, not the classification.
+        pass
+    return None
+
+
+# Words that turn a bare "Invoice" into a DIFFERENT label. "Invoice Date" sits in the same
+# little header table as "Invoice", and the value beside IT is the date - reading that would
+# hand every page of every supplier the same wrong key, which is worse than reading nothing.
+_NOT_THE_NUMBER = frozenset({"date", "dt", "dated", "value", "total", "amount", "currency",
+                             "to", "from", "address", "type"})
+
+
+def _value_beside_bare_label(words: list[dict], head: str) -> str | None:
+    """The number printed beside - or under - a ONE-word label, e.g. "Invoice  94286287".
+
+    Only ever reached once every two-word label has failed (see invoice_number_from_tokens),
+    so a page carrying "Invoice No" keeps reading exactly as it did. `right` is tried before
+    `below` here, the opposite of the two-word rule: a one-word label is almost always a
+    table cell with its value in the next cell across, not a heading with a column under it.
+
+    looks_like_invoice_number does the rest of the work - it is what stops the date beside
+    "Invoice Date", or the word after the title "COMMERCIAL INVOICE AND PACKING LIST", being
+    taken for a number.
+    """
+    try:
+        for i, tok in enumerate(words):
+            if (tok.get("text") or "").strip().lower().rstrip(":.") != head:
+                continue
+            nxt = words[i + 1] if i + 1 < len(words) else None
+            if nxt is not None and (
+                    (nxt.get("text") or "").strip().lower().rstrip(":.") in _NOT_THE_NUMBER):
+                continue
+            lx0, lx1 = tok["x0"], tok["x1"]
+            ly0, ly1 = tok["y0"], tok["y1"]
+
+            def right(c: dict) -> bool:
+                # Same band, just after the label, and CLOSE - far enough away and it is the
+                # next column's value answering for this one.
+                return abs(c["y0"] - ly0) < 0.012 and lx1 <= c["x0"] <= lx1 + 0.15
+
+            def below(c: dict) -> bool:
+                return (ly1 - 0.004 <= c["y0"] <= ly1 + 0.06
+                        and c["x0"] < lx1 + 0.02 and c["x1"] > lx0 - 0.02)
+
+            for pick in (right, below):
+                hits = [c for c in words
+                        if c is not tok
+                        and looks_like_invoice_number(c.get("text", "")) and pick(c)]
+                if hits:
+                    hits.sort(key=lambda c: (round(c["y0"], 3), c["x0"]))
+                    key = normalise_key(hits[0]["text"].strip().strip(":,;."))
+                    if len(key) >= MIN_KEY_LEN:
+                        return key
+    except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency.
         pass
     return None
 
