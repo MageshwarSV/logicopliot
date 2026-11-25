@@ -27,9 +27,10 @@ import type { CorrectedField } from "../../api/extractionCorrections";
 // saved through the same routes. Opened from Customer Onboarding Steps 1, 2 and 4.
 
 type Draft = Record<string, unknown>;
-type Section =
+export type TemplateFieldSection =
   | "name" | "reading" | "kind" | "value" | "operator" | "table" | "reference"
   | "crosscheck" | "pairing" | "screen" | "history";
+type Section = TemplateFieldSection;
 
 type ValidationMode = "none" | "letters" | "digits" | "number" | "alnum" | "custom";
 const CHAR_CLASS: Record<"letters" | "digits" | "alnum", string> = { letters: "A-Za-z", digits: "0-9", alnum: "A-Za-z0-9" };
@@ -88,6 +89,7 @@ export function TemplateFieldEditor({
   onClose,
   onSaved,
   heading,
+  initialSection,
 }: {
   groupId: string;
   fieldRef: FieldRef | null;
@@ -96,6 +98,8 @@ export function TemplateFieldEditor({
   onSaved?: () => void;
   /** Shown under the title, e.g. which ERP Excel column this field fills. */
   heading?: ReactNode;
+  /** Open on this section (e.g. "crosscheck" from Add a cross-document check). */
+  initialSection?: TemplateFieldSection;
 }) {
   const [group, setGroup] = useState<LiveGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -125,7 +129,7 @@ export function TemplateFieldEditor({
     if (!open || !fieldRef) return;
     setDraft({});
     setMessage(null);
-    setSection("name");
+    setSection(initialSection ?? "name");
     void reload().then((g) => {
       if (!g) return;
       const f = kind === "mark"

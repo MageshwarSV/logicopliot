@@ -601,6 +601,76 @@ def template_field(field_id: str, body: CustomFieldIn, db: Session = Depends(get
 
 # ---- template-level settings with no API before ---------------------------------------------------
 
+class DocumentIn(BaseModel):
+    name: str
+    doc_type: str = "Custom"
+    is_required: bool = True
+
+
+@router.post("/groups/{group_id}/documents")
+def add_document(group_id: str, body: DocumentIn, db: Session = Depends(get_db),
+                 user: User = Depends(require_write_access(SUPER_ADMIN))) -> dict:
+    """Add a document to the live template (last in order). The onboarding workbook, when there
+    is one, gets it too, so Steps 1 and 2 offer it straight away."""
+    group = _group(db, group_id)
+    name = " ".join(body.name.split())
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the document a name.")
+    docs = _template_docs(db, group.id)
+    if any(d.name.lower() == name.lower() for d in docs):
+        raise HTTPException(status_code=409, detail=f"The template already has a document called {name!r}.")
+    td = TemplateDocument(tenant_id=group.tenant_id, group_id=group.id, name=name, doc_type=body.doc_type or "Custom",
+                          order_index=len(docs), is_required=body.is_required, page_count=0)
+    db.add(td)
+    db.flush()
+    wb = db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group.id).first()
+    if wb is not None:
+        current = _documents(db, wb)  # seeds + keeps Additional Details last
+        listed = [d for d in (wb.documents or []) if d["id"] != ADDITIONAL_ID]
+        if not any(d.get("template_document_id") == td.id for d in current):
+            extra = [d for d in (wb.documents or []) if d["id"] == ADDITIONAL_ID]
+            wb.documents = [*listed, {"id": td.id, "name": td.name, "template_document_id": td.id}, *extra]
+            flag_modified(wb, "documents")
+    db.commit()
+    return {"id": td.id, "name": td.name}
+
+
+@router.delete("/documents/{document_id}")
+def delete_document(document_id: str, db: Session = Depends(get_db),
+                    _: User = Depends(require_write_access(SUPER_ADMIN))) -> dict:
+    """Remove a document from the live template - only while no job uses it. Its boxes, layout
+    and classifier samples go with it; a job's own pages never do (refused instead)."""
+    from app.models.job import JobDocument, JobFieldValue
+
+    td = db.get(TemplateDocument, document_id)
+    if td is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    used = db.query(JobDocument).filter(JobDocument.template_document_id == td.id).count()
+    used += db.query(JobFieldValue).filter(JobFieldValue.template_document_id == td.id).count()
+    if used:
+        raise HTTPException(status_code=409, detail=(
+            f"{td.name} is used by existing jobs, so it cannot be deleted (their pages and values would "
+            "go with it). Mark it Optional instead."))
+    group_id = td.group_id
+    wb = db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group_id).first()
+    if wb is not None and wb.documents:
+        wb.documents = [dict(d, template_document_id=None) if d.get("template_document_id") == td.id else d
+                        for d in wb.documents]
+        flag_modified(wb, "documents")
+    # A custom field that read this document stops pointing at it (display_document_id is
+    # cleared by its own ON DELETE SET NULL).
+    for cf in db.query(CustomField).filter(CustomField.group_id == group_id).all():
+        if td.id in (cf.source_document_ids or []):
+            cf.source_document_ids = [x for x in cf.source_document_ids if x != td.id]
+            flag_modified(cf, "source_document_ids")
+    db.delete(td)
+    db.flush()
+    for i, d in enumerate(_template_docs(db, group_id)):
+        d.order_index = i
+    db.commit()
+    return {"ok": True}
+
+
 class OrderIn(BaseModel):
     order_index: int = Field(ge=0)
 

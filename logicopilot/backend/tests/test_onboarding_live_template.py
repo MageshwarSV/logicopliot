@@ -247,3 +247,37 @@ def test_super_admin_only(client, db_session, setup):
     tadmin = make_user(db_session, role="tenant_admin", tenant=setup["tenant"], email="ta@example.com")
     if login(client, tadmin.email).status_code == 200:
         assert client.get(f"/api/v1/onboarding/template/groups/{gid}/links").status_code == 403
+
+
+def test_add_and_delete_a_document(client, db_session, setup):
+    gid = setup["group"].id
+    r = client.post(f"/api/v1/onboarding/template/groups/{gid}/documents",
+                    json={"name": "Certificate of Origin", "doc_type": "Custom", "is_required": False})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert client.post(f"/api/v1/onboarding/template/groups/{gid}/documents",
+                       json={"name": "certificate of origin"}).status_code == 409
+    db_session.expire_all()
+    td = db_session.get(TemplateDocument, doc_id)
+    assert td.order_index == 2 and td.is_required is False
+    wb = db_session.get(ErpWorkbook, setup["wb"].id)
+    names = [d["name"] for d in wb.documents]
+    assert "Certificate of Origin" in names and names[-1] == "Additional Details"
+
+    assert client.delete(f"/api/v1/onboarding/template/documents/{doc_id}").status_code == 200
+    db_session.expire_all()
+    assert db_session.get(TemplateDocument, doc_id) is None
+
+
+def test_a_document_used_by_a_job_cannot_be_deleted(client, db_session, setup):
+    from app.models.job import Job, JobDocument
+
+    job = Job(tenant_id=setup["tenant"].id, group_id=setup["group"].id, reference="JOB-1", status="extracted")
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(JobDocument(tenant_id=setup["tenant"].id, job_id=job.id, template_document_id=setup["inv"].id))
+    db_session.commit()
+    r = client.delete(f"/api/v1/onboarding/template/documents/{setup['inv'].id}")
+    assert r.status_code == 409 and "used by existing jobs" in r.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(TemplateDocument, setup["inv"].id) is not None

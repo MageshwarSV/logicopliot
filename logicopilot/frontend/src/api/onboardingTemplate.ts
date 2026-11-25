@@ -155,6 +155,18 @@ export async function setSheetPlan(
 
 // --- template-level settings ---------------------------------------------------------------------
 
+export async function addTemplateDocument(
+  groupId: string, body: { name: string; doc_type?: string; is_required?: boolean },
+): Promise<{ id: string; name: string }> {
+  const { data } = await apiClient.post(`/onboarding/template/groups/${groupId}/documents`, body);
+  return data;
+}
+
+/** Refused (409) while any job uses the document. */
+export async function deleteTemplateDocument(documentId: string): Promise<void> {
+  await apiClient.delete(`/onboarding/template/documents/${documentId}`);
+}
+
 export async function setDocumentOrder(documentId: string, orderIndex: number): Promise<void> {
   await apiClient.patch(`/onboarding/template/documents/${documentId}/order`, { order_index: orderIndex });
 }

@@ -6,18 +6,20 @@ import { Button } from "../../components/ui/Button";
 import {
   OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen,
 } from "../../components/onboarding/OnboardingSteps";
-import { TemplateFieldEditor } from "../../components/onboarding/TemplateFieldEditor";
+import { TemplateFieldEditor, type TemplateFieldSection } from "../../components/onboarding/TemplateFieldEditor";
 import * as onboardingApi from "../../api/onboarding";
 import * as reviewsApi from "../../api/reviews";
 import { listZipPasswords, addZipPassword, deleteZipPassword, type ZipPassword } from "../../api/zipPasswords";
-import { listMailboxes, updateMailbox, type ConnectedMailbox } from "../../api/emailPullerMailboxes";
-import { listErpScripts, updateErpScript } from "../../api/erpScripts";
+import { connectMailbox, listMailboxes, updateMailbox, type ConnectedMailbox } from "../../api/emailPullerMailboxes";
+import { createErpScript, listErpScripts, updateErpScript } from "../../api/erpScripts";
+import { createUser } from "../../api/users";
+import type { MailProvider } from "../../types/auth";
 import type { ErpScript } from "../../types/erpScript";
 import { CombinedDescriptionConfigModal } from "../jobs/CombinedDescriptionConfigModal";
 import { setStatus as setOnboardingStatus } from "../../api/onboardingErp";
 import { DOC_TYPES, MODES, type DemoResult, type ReferenceSheet } from "../../types/onboarding";
 import {
-  apiError, deleteClassifierSample, getClassifierSamples, getLinks, getLiveGroup, getPromptHistory, getTemplateUsers,
+  addTemplateDocument, apiError, createLiveCustomField, deleteClassifierSample, deleteTemplateDocument, getClassifierSamples, getLinks, getLiveGroup, getPromptHistory, getTemplateUsers,
   patchMark, renameDocument, setDocumentManualEntry, setDocumentOrder, setDocumentType, setImporterRequiresGstin,
   setPrealertShipments, setTemplateUser,
   type ClassifierSample, type FieldRef, type LiveGroup, type PromptHistoryRow, type SpecialName, type TemplateUser,
@@ -33,11 +35,12 @@ const INPUT =
 const HELP = "text-[11px] leading-snug text-slate-500 dark:text-slate-400";
 
 type SectionKey =
-  | "documents" | "rules" | "mail" | "processing" | "erp" | "reference" | "crossdoc"
+  | "documents" | "fields" | "rules" | "mail" | "processing" | "erp" | "reference" | "crossdoc"
   | "combined" | "users" | "samples" | "transform" | "names" | "test" | "history";
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "documents", label: "Documents" },
+  { key: "fields", label: "Template fields" },
   { key: "rules", label: "Template rules" },
   { key: "mail", label: "Mail intake & zips" },
   { key: "processing", label: "Processing" },
@@ -86,7 +89,8 @@ export function OnboardingTemplateSettingsPage() {
   const [section, setSection] = useState<SectionKey>("documents");
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
-  const [editRef, setEditRef] = useState<FieldRef | null>(null);
+  const [edit, setEdit] = useState<{ ref: FieldRef; section?: TemplateFieldSection } | null>(null);
+  const openField: OpenField = (ref, section) => setEdit({ ref, section });
 
   async function reload() {
     if (!groupId) return;
@@ -164,15 +168,16 @@ export function OnboardingTemplateSettingsPage() {
 
             <div className="flex min-w-0 flex-col gap-4">
               {section === "documents" && <DocumentsSection group={group} act={act} />}
+              {section === "fields" && <FieldsSection group={group} act={act} openField={openField} />}
               {section === "rules" && <RulesSection group={group} act={act} />}
               {section === "mail" && <MailSection group={group} act={act} />}
               {section === "processing" && <ProcessingSection group={group} act={act} />}
               {section === "erp" && <ErpSection group={group} act={act} />}
-              {section === "reference" && <ReferenceDataSection group={group} openField={setEditRef} />}
-              {section === "crossdoc" && <CrossDocSection group={group} act={act} />}
-              {section === "combined" && <CombinedSection group={group} openField={setEditRef} />}
-              {section === "users" && <UsersSection group={group} />}
-              {section === "transform" && <TransformSection group={group} act={act} openField={setEditRef} />}
+              {section === "reference" && <ReferenceDataSection group={group} act={act} openField={openField} />}
+              {section === "crossdoc" && <CrossDocSection group={group} act={act} openField={openField} />}
+              {section === "combined" && <CombinedSection group={group} act={act} openField={openField} />}
+              {section === "users" && <UsersSection group={group} act={act} />}
+              {section === "transform" && <TransformSection group={group} act={act} openField={openField} />}
               {section === "test" && <TestSection group={group} />}
               {section === "samples" && <SamplesSection group={group} />}
               {section === "history" && <HistoryTable group={group} />}
@@ -188,13 +193,15 @@ export function OnboardingTemplateSettingsPage() {
         )}
       </div>
       {group && (
-        <TemplateFieldEditor groupId={group.id} fieldRef={editRef} open={!!editRef} onClose={() => setEditRef(null)} onSaved={() => void reload()} />
+        <TemplateFieldEditor groupId={group.id} fieldRef={edit?.ref ?? null} open={!!edit} initialSection={edit?.section}
+          onClose={() => setEdit(null)} onSaved={() => void reload()} />
       )}
     </AppShell>
   );
 }
 
 type Act = (fn: () => Promise<unknown>, ok: string) => Promise<void>;
+type OpenField = (ref: FieldRef, section?: TemplateFieldSection) => void;
 
 // ---- Finish setup: make the template live ------------------------------------------------------------
 //
@@ -318,8 +325,22 @@ async function erpApiSetComplete(workbookId: string) {
 
 function DocumentsSection({ group, act }: { group: LiveGroup; act: Act }) {
   const docs = [...group.documents].sort((a, b) => a.order_index - b.order_index);
+  const [add, setAdd] = useState({ name: "", type: "Custom", required: true });
   return (
     <Section title="Documents" help="Name, type, whether a job needs it, manual entry when it is missing, its order, and its sample.">
+      <div className="grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 sm:grid-cols-[1fr_10rem_auto_auto]">
+        <input className={INPUT} placeholder="New document name, e.g. Certificate of Origin" value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} />
+        <select className={INPUT} value={add.type} onChange={(e) => setAdd({ ...add, type: e.target.value })}>
+          {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="accent-indigo-600" checked={add.required} onChange={(e) => setAdd({ ...add, required: e.target.checked })} /> Required
+        </label>
+        <Button size="sm" disabled={!add.name.trim()} onClick={() => act(
+          () => addTemplateDocument(group.id, { name: add.name.trim(), doc_type: add.type, is_required: add.required })
+            .then(() => setAdd({ name: "", type: "Custom", required: true })),
+          `Added the document ${add.name.trim()} - upload its sample, then draw its boxes in Step 2.`)}>+ Add document</Button>
+      </div>
       {docs.map((d, i) => (
         <div key={d.id} className="grid items-center gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 md:grid-cols-[auto_1fr_10rem_auto]">
           <div className="flex flex-col">
@@ -344,10 +365,106 @@ function DocumentsSection({ group, act }: { group: LiveGroup; act: Act }) {
             <Toggle checked={Boolean(d.manual_entry_when_missing)} label="Operator types its fields when it is missing"
               onChange={(v) => act(() => setDocumentManualEntry(d.id, v), `${d.name}: manual entry ${v ? "on" : "off"}.`)} />
           </div>
-          <p className={`${HELP} md:col-span-4`}>{d.marks.filter((m) => m.width > 0).length} box(es) drawn. Draw / redraw boxes in Step 2.</p>
+          <div className="flex items-center gap-2 md:col-span-4">
+            <p className={HELP}>{d.marks.filter((m) => m.width > 0).length} box(es) drawn. Draw / redraw boxes in Step 2.</p>
+            <button type="button" className="ml-auto text-xs text-rose-600 hover:underline"
+              onClick={() => window.confirm(`Delete the document "${d.name}" and its ${d.marks.length} box(es) from the template? Only possible while no job uses it.`)
+                && act(() => deleteTemplateDocument(d.id), `Deleted ${d.name}.`)}>
+              Delete document
+            </button>
+          </div>
         </div>
       ))}
     </Section>
+  );
+}
+
+// ---- Template fields ----------------------------------------------------------------------------------
+
+const NEW_FIELD_KINDS: { key: string; label: string; payload: Record<string, unknown> }[] = [
+  { key: "operator", label: "The operator answers it", payload: { kind: "hardcoded", ask_operator: true } },
+  { key: "fixed", label: "A fixed value", payload: { kind: "hardcoded" } },
+  { key: "ai", label: "The AI works it out", payload: { kind: "ai" } },
+  { key: "reference", label: "Looked up in its own table", payload: { kind: "hardcoded", is_target_value: true, fuzzy_match: true } },
+  { key: "lookup", label: "Looked up in the material master (per line)", payload: { kind: "lookup", per_row: true } },
+  { key: "composite", label: "Joined from other fields (per line)", payload: { kind: "composite", per_row: true } },
+];
+
+async function createField(group: LiveGroup, name: string, kindKey: string): Promise<string> {
+  const kind = NEW_FIELD_KINDS.find((k) => k.key === kindKey) ?? NEW_FIELD_KINDS[0];
+  const cf = await createLiveCustomField(group.id, { label_name: name.trim(), ...kind.payload });
+  return cf.id;
+}
+
+function FieldsSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
+  const [q, setQ] = useState("");
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState("operator");
+  const rows = [
+    ...group.documents.flatMap((d) => d.marks.filter((m) => m.width > 0).map((m) => ({
+      ref: `m:${m.id}`, label: m.label_name, shown: m.display_label, where: `Box on ${d.name}`,
+      flags: [m.ask_operator && "asks operator", m.is_target_value && "lookup", m.is_multi_value && "per row"].filter(Boolean) as string[],
+    }))),
+    ...(group.custom_fields ?? []).map((c) => ({
+      ref: `c:${c.id}`, label: c.label_name, shown: c.display_label,
+      where: c.kind === "ai" ? "AI works it out" : c.kind === "lookup" ? "Material master lookup" : c.kind === "composite" ? "Joined from fields" : "Fixed / operator",
+      flags: [c.ask_operator && "asks operator", c.is_target_value && "lookup", c.per_row && "per line", c.hidden_from_capture && "hidden"].filter(Boolean) as string[],
+    })),
+  ].filter((r) => !q || `${r.label} ${r.shown ?? ""} ${r.where}`.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  return (
+    <Section title="Template fields" help="Every field of the live template - boxes drawn on documents and fields worked out another way. Open one for all its settings, or add a field that is not an ERP Excel column (e.g. an operator question)."
+      actions={<input className={`${INPUT} w-56`} placeholder="Search fields" value={q} onChange={(e) => setQ(e.target.value)} />}>
+      <div className="grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 sm:grid-cols-[1fr_16rem_auto]">
+        <input className={INPUT} placeholder="New field name, e.g. Duty Payment Method" value={name} onChange={(e) => setName(e.target.value)} />
+        <select className={INPUT} value={kind} onChange={(e) => setKind(e.target.value)}>
+          {NEW_FIELD_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+        </select>
+        <Button size="sm" disabled={!name.trim()} onClick={() => act(async () => {
+          const id = await createField(group, name, kind);
+          setName("");
+          openField(`c:${id}`, kind === "ai" || kind === "lookup" || kind === "composite" ? "kind" : kind === "reference" ? "reference" : "name");
+        }, `Created the field ${name.trim()} - finish its settings in the popup.`)}>+ New field</Button>
+      </div>
+      <p className={HELP}>A box on a document is created by drawing it in Step 2.</p>
+      <div className="flex max-h-[34rem] flex-col gap-1 overflow-y-auto">
+        {rows.map((r) => (
+          <div key={r.ref} className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
+            <span className="min-w-0 flex-1 truncate">
+              <b>{r.shown || r.label}</b>{r.shown && <span className={`ml-1 ${HELP}`}>({r.label})</span>}
+              <span className={`ml-2 ${HELP}`}>{r.where}{r.flags.length ? ` · ${r.flags.join(" · ")}` : ""}</span>
+            </span>
+            <Button size="sm" variant="secondary" onClick={() => openField(r.ref)}>Open</Button>
+          </div>
+        ))}
+        {!rows.length && <p className={HELP}>No fields{q ? ` match "${q}"` : " yet"}.</p>}
+      </div>
+    </Section>
+  );
+}
+
+/** A one-line "create a field of this kind" form, used where a section needs a new field. */
+function NewFieldRow({ group, act, openField, kinds, placeholder }: {
+  group: LiveGroup; act: Act; openField: OpenField; kinds: string[]; placeholder: string;
+}) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState(kinds[0]);
+  const options = NEW_FIELD_KINDS.filter((k) => kinds.includes(k.key));
+  return (
+    <div className={`grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 ${options.length > 1 ? "sm:grid-cols-[1fr_16rem_auto]" : "sm:grid-cols-[1fr_auto]"}`}>
+      <input className={INPUT} placeholder={placeholder} value={name} onChange={(e) => setName(e.target.value)} />
+      {options.length > 1 && (
+        <select className={INPUT} value={kind} onChange={(e) => setKind(e.target.value)}>
+          {options.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+        </select>
+      )}
+      <Button size="sm" disabled={!name.trim()} onClick={() => act(async () => {
+        const id = await createField(group, name, kind);
+        setName("");
+        openField(`c:${id}`, kind === "reference" ? "reference" : "kind");
+      }, `Created ${name.trim()} - finish its settings in the popup.`)}>+ Create</Button>
+    </div>
   );
 }
 
@@ -388,6 +505,7 @@ function MailSection({ group, act }: { group: LiveGroup; act: Act }) {
   const [boxes, setBoxes] = useState<ConnectedMailbox[]>([]);
   const [zips, setZips] = useState<ZipPassword[]>([]);
   const [zip, setZip] = useState({ label: "", password: "", domains: "" });
+  const [newBox, setNewBox] = useState<{ provider: MailProvider; email: string; password: string }>({ provider: "gmail", email: "", password: "" });
 
   async function load() {
     const [u, b, z] = await Promise.all([getTemplateUsers(group.id), listMailboxes(), listZipPasswords()]);
@@ -408,6 +526,9 @@ function MailSection({ group, act }: { group: LiveGroup; act: Act }) {
             {users.filter((u) => u.role === "operator" || u.role === "tenant_admin").map((u) => <option key={u.id} value={u.id}>{u.name} · {u.email}</option>)}
           </select>
         </div>
+        {!users.some((u) => u.role === "operator" || u.role === "tenant_admin") && (
+          <p className={HELP}>This customer has no operator or Tenant Admin login yet - create one in Users (left menu), then pick it here.</p>
+        )}
         <div><Button size="sm" onClick={() => act(() => onboardingApi.setPullEmail(group.id, email.trim() || null, operator || null), "Mail intake saved.")}>Save mail intake</Button></div>
       </Section>
 
@@ -428,6 +549,21 @@ function MailSection({ group, act }: { group: LiveGroup; act: Act }) {
             {available.map((b) => <option key={b.id} value={b.id}>{b.email}{b.group_name ? ` (now: ${b.group_name})` : ""}</option>)}
           </select>
         )}
+        <div className="grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 sm:grid-cols-[8rem_1fr_1fr_auto]">
+          <select className={INPUT} value={newBox.provider} onChange={(e) => setNewBox({ ...newBox, provider: e.target.value as MailProvider })}>
+            <option value="gmail">Gmail</option>
+            <option value="zoho">Zoho</option>
+          </select>
+          <input className={INPUT} placeholder="Mailbox email" value={newBox.email} onChange={(e) => setNewBox({ ...newBox, email: e.target.value })} />
+          <input className={INPUT} placeholder="App password" type="password" autoComplete="new-password" value={newBox.password} onChange={(e) => setNewBox({ ...newBox, password: e.target.value })} />
+          <Button size="sm" disabled={!newBox.email.trim() || !newBox.password} onClick={() => act(async () => {
+            const mb = await connectMailbox({ email: newBox.email.trim(), app_password: newBox.password, provider: newBox.provider });
+            await updateMailbox(mb.id, { tenant_id: group.tenant_id, group_id: group.id });
+            setNewBox({ provider: newBox.provider, email: "", password: "" });
+            await load();
+          }, "Mailbox connected and routed to this template.")}>+ Connect mailbox</Button>
+          <p className={`${HELP} sm:col-span-4`}>Uses the mailbox's app password (not the normal login password). The app checks it can log in before saving.</p>
+        </div>
       </Section>
 
       <Section title="Zip passwords" help="Used to open password-protected zip attachments (e.g. Flex).">
@@ -494,6 +630,7 @@ function ProcessingSection({ group, act }: { group: LiveGroup; act: Act }) {
 function ErpSection({ group, act }: { group: LiveGroup; act: Act }) {
   const [scripts, setScripts] = useState<ErpScript[]>([]);
   const [branch, setBranch] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState({ name: "", url: "", login: true, username: "", password: "", branchField: "" });
   async function load() {
     const s = await listErpScripts(group.tenant_id);
     setScripts(s);
@@ -503,37 +640,113 @@ function ErpSection({ group, act }: { group: LiveGroup; act: Act }) {
   const linked = scripts.filter((s) => (s.template_ids ?? []).includes(group.id));
   const ready = linked.find((s) => s.status === "ready");
   const cfg = group.excel_config as { file_name?: string; sheets?: unknown[] } | null | undefined;
+  const isExcel = group.entry_mode === "excel";
+
+  async function createScript() {
+    const created = await createErpScript(group.tenant_id, {
+      name: draft.name.trim(), url: draft.url.trim(), has_login: draft.login,
+      login_username: draft.login ? draft.username.trim() || null : null,
+      login_password: draft.login ? draft.password || null : null,
+      template_ids: [group.id],
+    });
+    if (draft.branchField.trim()) await updateErpScript(created.id, { branch_field: draft.branchField.trim() });
+    setDraft({ name: "", url: "", login: true, username: "", password: "", branchField: "" });
+    await load();
+    window.open(`/super-admin/erp-scripts/${created.id}`, "_blank", "noopener");
+  }
 
   return (
     <>
       <Section title="How jobs reach the ERP">
-        <p className="text-sm">
-          Entry mode: <b>{group.entry_mode === "excel" ? "ERP Excel import" : "Field by field (web entry)"}</b>
-          {group.entry_mode === "excel" && cfg && <span className={HELP}> · {cfg.file_name ?? "import file"} · {(cfg.sheets ?? []).length} sheet(s) mapped</span>}
-        </p>
-        <p className={HELP}>The Excel column rules are set per field in Steps 1 and 4 (Live template panel). Switching the entry mode itself stays on Customer Template Mapping.</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {[
+            { mode: "excel", title: "ERP Excel import", text: "The job becomes one Excel workbook that the ERP script uploads." },
+            { mode: "fields", title: "Field by field (web entry)", text: "The ERP script types every value into the ERP screens." },
+          ].map((m) => {
+            const on = (group.entry_mode ?? "fields") === m.mode;
+            return (
+              <button key={m.mode} type="button" disabled={on}
+                onClick={() => window.confirm(`Switch "${group.name}" to ${m.title}? New ERP entries use it straight away.`)
+                  && act(() => onboardingApi.setEntryMode(group.id, m.mode as "excel" | "fields", (group.excel_config ?? undefined) as never), `Entry mode: ${m.title}.`)}
+                className={`rounded-xl border p-3 text-left ${on ? "border-indigo-500 bg-indigo-50 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:ring-indigo-500/30" : "border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"}`}>
+                <span className="block text-sm font-semibold">{on ? "● " : ""}{m.title}</span>
+                <span className={HELP}>{m.text}</span>
+              </button>
+            );
+          })}
+        </div>
+        {isExcel && cfg && <p className={HELP}>{cfg.file_name ?? "import file"} · {(cfg.sheets ?? []).length} sheet(s) mapped. Column rules are set per field in Steps 1 and 4 (Live template panel).</p>}
+        {!isExcel && !(cfg?.sheets ?? []).length && <p className={HELP}>To switch to Excel import, map at least one sheet in Step 1 first, or the switch is refused.</p>}
         <p className="text-sm">
           ERP script: {ready ? <b className="text-emerald-700 dark:text-emerald-300">{ready.name} (ready)</b> : <b className="text-amber-700 dark:text-amber-300">no ready script linked - jobs cannot go to the ERP</b>}
         </p>
       </Section>
-      <Section title="ERP scripts linked to this template" help="A job uses the first READY script linked to its template. The branch field routes each job to that branch's ERP login.">
-        {scripts.length === 0 && <p className={HELP}>This customer has no ERP scripts.</p>}
+
+      <Section title="ERP scripts" help="A job uses the first READY script linked to its template. The branch field routes each job to that branch's ERP login. Record or edit a script's steps in the ERP Script recorder.">
+        {scripts.length === 0 && <p className={HELP}>This customer has no ERP scripts yet - create one below.</p>}
         {scripts.map((s) => {
           const on = (s.template_ids ?? []).includes(group.id);
           return (
-            <div key={s.id} className="grid items-center gap-2 rounded-lg border border-slate-200 p-2 dark:border-slate-700 sm:grid-cols-[auto_1fr_14rem_auto]">
-              <input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={on} onChange={(e) => {
-                const ids = new Set(s.template_ids ?? []);
-                if (e.target.checked) ids.add(group.id); else ids.delete(group.id);
-                void act(() => updateErpScript(s.id, { template_ids: [...ids] }).then(load), `${s.name} ${e.target.checked ? "linked" : "unlinked"}.`);
-              }} />
-              <span className="text-sm"><b>{s.name}</b> <span className={HELP}>· {s.status} · {(s.steps ?? []).length} steps</span></span>
-              <input className={INPUT} placeholder="Branch field (e.g. Destination)" value={branch[s.id] ?? ""} onChange={(e) => setBranch({ ...branch, [s.id]: e.target.value })} disabled={!on} />
-              <Button size="sm" variant="secondary" disabled={!on || (branch[s.id] ?? "") === (s.branch_field ?? "")}
-                onClick={() => act(() => updateErpScript(s.id, { branch_field: (branch[s.id] ?? "").trim() || null }).then(load), "Branch field saved.")}>Save</Button>
+            <div key={s.id} className="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={on} onChange={(e) => {
+                    const ids = new Set(s.template_ids ?? []);
+                    if (e.target.checked) ids.add(group.id); else ids.delete(group.id);
+                    void act(() => updateErpScript(s.id, { template_ids: [...ids] }).then(load), `${s.name} ${e.target.checked ? "linked to" : "unlinked from"} this template.`);
+                  }} />
+                  <b>{s.name}</b>
+                </label>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${s.status === "ready" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+                  {s.status === "ready" ? "Ready" : "Draft"}
+                </span>
+                <span className={HELP}>{(s.steps ?? []).length} steps</span>
+                <div className="ml-auto flex gap-2">
+                  <a href={`/super-admin/erp-scripts/${s.id}`} target="_blank" rel="noopener noreferrer"
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">Open recorder ↗</a>
+                  <Button size="sm" variant="secondary" disabled={s.status !== "ready" && !(s.steps ?? []).length}
+                    onClick={() => act(() => updateErpScript(s.id, { status: s.status === "ready" ? "draft" : "ready" }).then(load),
+                      s.status === "ready" ? `${s.name} is back to draft - jobs no longer use it.` : `${s.name} is ready - jobs use it.`)}>
+                    {s.status === "ready" ? "Back to draft" : "Mark ready"}
+                  </Button>
+                </div>
+              </div>
+              {on && (
+                <div className="flex items-center gap-2">
+                  <input className={INPUT} placeholder="Branch field (e.g. Destination) - blank = one login for all" value={branch[s.id] ?? ""} onChange={(e) => setBranch({ ...branch, [s.id]: e.target.value })} />
+                  <Button size="sm" variant="secondary" disabled={(branch[s.id] ?? "") === (s.branch_field ?? "")}
+                    onClick={() => act(() => updateErpScript(s.id, { branch_field: (branch[s.id] ?? "").trim() || null }).then(load), "Branch field saved.")}>Save</Button>
+                </div>
+              )}
             </div>
           );
         })}
+
+        <div className="flex flex-col gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5">
+          <p className="text-sm font-semibold">+ Create a new ERP script for this template</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input className={INPUT} placeholder="Script name, e.g. SOFTLINK Air Import" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+            <input className={INPUT} placeholder="ERP address, e.g. https://erp.example.com/login" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-indigo-600" checked={draft.login} onChange={(e) => setDraft({ ...draft, login: e.target.checked })} />
+            The ERP needs a login
+          </label>
+          {draft.login && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input className={INPUT} placeholder="ERP username" autoComplete="off" value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} />
+              <input className={INPUT} placeholder="ERP password" type="password" autoComplete="new-password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+            </div>
+          )}
+          <input className={INPUT} placeholder="Branch field (optional, e.g. Destination)" value={draft.branchField} onChange={(e) => setDraft({ ...draft, branchField: e.target.value })} />
+          <div className="flex items-center gap-2">
+            <Button size="sm" disabled={!draft.name.trim() || !/^https?:\/\//i.test(draft.url.trim())}
+              onClick={() => act(createScript, "Script created and linked to this template - the recorder opened in a new tab to record its steps. Mark it Ready when done.")}>
+              Create script & open recorder
+            </Button>
+            <span className={HELP}>It starts as a Draft; jobs use it once you record its steps and press Mark ready.</span>
+          </div>
+        </div>
       </Section>
     </>
   );
@@ -541,7 +754,7 @@ function ErpSection({ group, act }: { group: LiveGroup; act: Act }) {
 
 // ---- Reference data ----------------------------------------------------------------------------------
 
-function ReferenceDataSection({ group, openField }: { group: LiveGroup; openField: (r: FieldRef) => void }) {
+function ReferenceDataSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
   const [sheet, setSheet] = useState<ReferenceSheet | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -587,7 +800,9 @@ function ReferenceDataSection({ group, openField }: { group: LiveGroup; openFiel
         {note && <p className={HELP}>{note}</p>}
       </Section>
       <Section title="Fields with their own reference table" help="Open a field to add, upload, search or delete its rows (e.g. the 5,890 port codes, importer branches with GSTIN).">
-        {lookupFields.length === 0 && <p className={HELP}>No field looks values up yet - tick "Look the value up" in a field's settings.</p>}
+        <NewFieldRow group={group} act={act} openField={openField}
+          kinds={["reference", "lookup"]} placeholder="New lookup field, e.g. Shipment Port Code" />
+        {lookupFields.length === 0 && <p className={HELP}>No field looks values up yet - create one above, or tick "Look the value up" in a field's settings.</p>}
         {lookupFields.map((f) => (
           <div key={f.ref} className="flex items-center gap-2 text-sm">
             <span className="font-medium">{f.label}</span><span className={HELP}>{f.where}</span>
@@ -601,11 +816,22 @@ function ReferenceDataSection({ group, openField }: { group: LiveGroup; openFiel
 
 // ---- Cross-document checks ----------------------------------------------------------------------------
 
-function CrossDocSection({ group, act }: { group: LiveGroup; act: Act }) {
+function CrossDocSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
   const marks = new Map(group.documents.flatMap((d) => d.marks.map((m) => [m.id, `${m.label_name} (${d.name})`] as const)));
   const cfs = new Map((group.custom_fields ?? []).map((c) => [c.id, c.label_name] as const));
+  const [pick, setPick] = useState("");
   return (
-    <Section title="Cross-document checks" help="Each pair must hold the same value; a mismatch is flagged on the job. Add checks from a field's settings (Cross-document check).">
+    <Section title="Cross-document checks" help="Each pair must hold the same value; a mismatch is flagged on the job.">
+      <div className="grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 sm:grid-cols-[1fr_auto]">
+        <select className={INPUT} value={pick} onChange={(e) => setPick(e.target.value)}>
+          <option value="">+ Add a check - pick the field that must match another document…</option>
+          {group.documents.flatMap((d) => d.marks.filter((m) => m.width > 0).map((m) => (
+            <option key={m.id} value={`m:${m.id}`}>{m.label_name} · box on {d.name}</option>
+          )))}
+          {(group.custom_fields ?? []).map((c) => <option key={c.id} value={`c:${c.id}`}>{c.label_name} · custom field</option>)}
+        </select>
+        <Button size="sm" disabled={!pick} onClick={() => { openField(pick, "crosscheck"); setPick(""); }}>Choose what it must match →</Button>
+      </div>
       {group.cross_doc_links.length === 0 && <p className={HELP}>No checks yet.</p>}
       {group.cross_doc_links.map((l) => (
         <div key={l.id} className="flex items-center gap-2 text-sm">
@@ -623,12 +849,14 @@ function CrossDocSection({ group, act }: { group: LiveGroup; act: Act }) {
 
 // ---- Combined Description ------------------------------------------------------------------------------
 
-function CombinedSection({ group, openField }: { group: LiveGroup; openField: (r: FieldRef) => void }) {
+function CombinedSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
   const [open, setOpen] = useState(false);
   const composite = (group.custom_fields ?? []).filter((c) => c.kind === "composite");
   return (
     <Section title="Combined Description" help="Fields joined from other fields per product line. The template-wide pieces and separators are set on the field; per-consignee formats are set here (needs jobs with that consignee).">
-      {composite.length === 0 && <p className={HELP}>No combined field yet - create one in Step 4 (Formula) or set a field's kind to "Join other fields".</p>}
+      <NewFieldRow group={group} act={act} openField={openField}
+        kinds={["composite"]} placeholder="New combined field, e.g. Combined Description" />
+      {composite.length === 0 && <p className={HELP}>No combined field yet - create one above.</p>}
       {composite.map((c) => (
         <div key={c.id} className="flex items-center gap-2 text-sm">
           <span className="font-medium">{c.label_name}</span>
@@ -644,9 +872,10 @@ function CombinedSection({ group, openField }: { group: LiveGroup; openField: (r
 
 // ---- Users ------------------------------------------------------------------------------------------------
 
-function UsersSection({ group }: { group: LiveGroup }) {
+function UsersSection({ group, act }: { group: LiveGroup; act: Act }) {
   const [users, setUsers] = useState<TemplateUser[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [nu, setNu] = useState({ name: "", email: "", password: "", onlyThis: false });
   const load = () => getTemplateUsers(group.id).then(setUsers).catch(() => setUsers([]));
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [group.id]);
   return (
@@ -665,13 +894,35 @@ function UsersSection({ group }: { group: LiveGroup }) {
         </label>
       ))}
       {note && <p className={HELP}>{note}</p>}
+      <div className="flex flex-col gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5">
+        <p className="text-sm font-semibold">+ New Tenant Admin login for this customer</p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <input className={INPUT} placeholder="Full name" value={nu.name} onChange={(e) => setNu({ ...nu, name: e.target.value })} />
+          <input className={INPUT} placeholder="Email" type="email" autoComplete="off" value={nu.email} onChange={(e) => setNu({ ...nu, email: e.target.value })} />
+          <input className={INPUT} placeholder="Password (min. 8 characters)" type="password" autoComplete="new-password" value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} />
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="accent-indigo-600" checked={nu.onlyThis} onChange={(e) => setNu({ ...nu, onlyThis: e.target.checked })} />
+          Only this template (unticked = sees every template of the customer)
+        </label>
+        <div>
+          <Button size="sm" disabled={!nu.name.trim() || !nu.email.trim() || nu.password.length < 8}
+            onClick={() => act(async () => {
+              await createUser({ email: nu.email.trim(), password: nu.password, full_name: nu.name.trim(), role: "tenant_admin",
+                tenant_id: group.tenant_id, ...(nu.onlyThis ? { template_ids: [group.id] } : {}) });
+              setNu({ name: "", email: "", password: "", onlyThis: false });
+              await load();
+            }, "Tenant Admin login created.")}>Create login</Button>
+        </div>
+        <p className={HELP}>Operator and GK2 logins are created by this customer's Tenant Admin (Users page) - then tick them above.</p>
+      </div>
     </Section>
   );
 }
 
 // ---- Data Transformation & approval -----------------------------------------------------------------
 
-function TransformSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: (r: FieldRef) => void }) {
+function TransformSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
   const targets = new Set(group.cross_doc_links.map((l) => l.target_mark_id));
   const docs = group.documents.map((d) => ({ d, marks: d.marks.filter((m) => m.width > 0 && !targets.has(m.id)) })).filter((x) => x.marks.length);
   const [prompts, setPrompts] = useState<Record<string, string>>({});
