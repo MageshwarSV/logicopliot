@@ -5534,6 +5534,15 @@ class ExcelBuildFailed(Exception):
     operator-readable reason, never a bare exception."""
 
 
+_FILL_MARK = " Correct in ERP (filled so no mandatory column was empty): "
+
+
+def _note_auto_fills(job: Job, fills: list[str]) -> None:
+    """Put this build's filled values on the job's Auto ERP note, replacing the last build's."""
+    base = (job.auto_erp_note or "").split(_FILL_MARK)[0]
+    job.auto_erp_note = (base + (_FILL_MARK + "; ".join(fills) + "." if fills else ""))[:8000] or None
+
+
 def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False) -> Path:
     """Build this job's ERP-import workbook fresh from its CURRENT extracted values.
 
@@ -5561,6 +5570,14 @@ def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool
         return use_edited_or_build(job.id, target, lambda: None)
     cfg = grp.excel_config or {}
     values, rows = entry_values_and_rows(db, job)
+    # Auto ERP Submission: no mandatory ERP column may go out empty (app/core/auto_erp_complete.py).
+    # Only the workbook gets the filled values; the job keeps what was read, and the note lists
+    # every one for the customer to correct in the ERP.
+    if getattr(job, "auto_erp_submitted", False):
+        from app.core.auto_erp_complete import complete_for_erp
+
+        values, rows, fills = complete_for_erp(db, job, cfg, values, rows)
+        _note_auto_fills(job, fills)
     filled, mapped = _column_fill(cfg, values, rows)
     if mapped and not filled:
         raise ExcelBuildFailed(
