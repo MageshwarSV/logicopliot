@@ -4975,7 +4975,12 @@ class RecorderSession:
             if _present(p, step.get("selector"), step.get("frames") or [], timeout=8000):
                 # If the recorded value field is present but DISABLED, the form has stopped
                 # accepting input — usually because the record already exists → Duplicated.
-                if action in ("fill", "autocomplete", "select", "manual_entry") and _element_disabled(p, step.get("selector"), step.get("frames") or []):
+                # force_enable steps excepted - see the same guard on the main playback
+                # path: the flag means "this control is disabled by design, unlock it", and
+                # stopping here denies it the only thing it does.
+                if (action in ("fill", "autocomplete", "select", "manual_entry")
+                        and not step.get("force_enable")
+                        and _element_disabled(p, step.get("selector"), step.get("frames") or [])):
                     blk = _detect_block(p) or {
                         "outcome": "duplicate",
                         "reason": "The form is locked (fields disabled) — the record already exists.",
@@ -6515,7 +6520,18 @@ def _play_steps(
                         # check_blocked) a validation/import-rejected popup that locked it. Check
                         # for a concrete, nameable message FIRST - don't waste the budget filling
                         # a disabled field, and don't presume "duplicate" when we don't know that.
-                        if action in ("fill", "autocomplete", "select", "manual_entry") and _element_disabled(page, sel, frames):
+                        # ...unless this step is marked force_enable ("Unblock" in the
+                        # recorder). That flag exists precisely for a control the ERP leaves
+                        # disabled until something the script never does enables it, and
+                        # _perform_step strips the attribute before acting - but it never got
+                        # the chance, because this guard broke the run first. A padlocked step
+                        # could therefore never do the one thing the padlock is for.
+                        # Found live 2026-11-25 on JOB-31CBFD: the flag was set on the branch
+                        # select, the retry still died here, and the log still read
+                        # "step 57 select: field disabled".
+                        if (action in ("fill", "autocomplete", "select", "manual_entry")
+                                and not steps[i].get("force_enable")
+                                and _element_disabled(page, sel, frames)):
                             errs = _validation_errors(page)
                             blocked = (
                                 {"outcome": "validation",
