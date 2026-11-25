@@ -431,3 +431,38 @@ def import_current(
     return {"classified": sum(counts.values()), "by_category": counts, "left_unclassified": total - sum(counts.values()),
             "boxes": made, "samples_used": samples_used, "missing_fields": missing,
             "erp_ui_scripts": [sc.name for sc in linked], "erp_ui_added": (erp_ui or {}).get("added", [])}
+
+
+# ---- Screen Designer preview before the template has a job -----------------------------------
+
+@router.get("/groups/{group_id}/design-preview")
+def design_preview(
+    group_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(SUPER_ADMIN)),
+) -> dict:
+    """What the Screen Designer shows for a template document when no job exists yet: the Step 0
+    sample of that document and, per field, the Step 2 box reading or the ERP Excel value
+    (app/core/erp_design_preview.py). Empty when the template has no onboarding workbook."""
+    from app.core.erp_design_preview import preview_values
+    from app.core.excel_entry import sheet_plans
+    from app.models.custom_field import CustomField
+    from app.models.field_mark import FieldMark
+    from app.models.template_group import TemplateGroup
+
+    wb = db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group_id).first()
+    if wb is None:
+        return {"workbook_id": None, "doc_id": None, "sample": None, "values": {}}
+    doc = next((d for d in _documents(db, wb) if d.get("template_document_id") == document_id), None)
+    s = _sample(db, wb.id, doc["id"]) if doc else None
+    group = db.get(TemplateGroup, group_id)
+    fields = db.query(ErpField).filter(ErpField.workbook_id == wb.id, ErpField.category.isnot(None)).all()
+    boxes = {m.field_id: m for m in db.query(ErpFieldMark).filter(ErpFieldMark.workbook_id == wb.id)}
+    marks = db.query(FieldMark).filter(FieldMark.document_id == document_id).order_by(FieldMark.created_at).all()
+    cfs = db.query(CustomField).filter(CustomField.group_id == group_id).order_by(CustomField.created_at).all()
+    values = preview_values(fields, boxes, sheet_plans((group.excel_config if group else None) or {}),
+                            marks, cfs, doc["id"] if doc else None)
+    return {"workbook_id": wb.id, "doc_id": doc["id"] if doc else None,
+            "sample": {"file_name": s.file_name, "page_count": s.page_count} if s else None,
+            "values": values}

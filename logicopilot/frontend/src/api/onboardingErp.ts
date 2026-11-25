@@ -304,3 +304,20 @@ export async function importCurrent(groupId: string, replace = false): Promise<I
   const { data } = await apiClient.post<ImportResult>(`/onboarding/erp/groups/${groupId}/import-current`, null, { params: { replace } });
   return data;
 }
+
+
+/** Screen Designer before the template has a job: the Step 0 sample of a template document and,
+ *  per designer field ref, the Step 2 box reading / ERP Excel value / fixed value. */
+export interface DesignPreview {
+  workbook_id: string | null;
+  doc_id: string | null;
+  sample: { file_name: string; page_count: number } | null;
+  values: Record<string, { value: string; from: "sample" | "excel" | "fixed" }>;
+}
+
+export async function designPreview(groupId: string, templateDocumentId: string): Promise<DesignPreview> {
+  const { data } = await apiClient.get<DesignPreview>(`/onboarding/erp/groups/${groupId}/design-preview`, {
+    params: { document_id: templateDocumentId },
+  });
+  return data;
+}

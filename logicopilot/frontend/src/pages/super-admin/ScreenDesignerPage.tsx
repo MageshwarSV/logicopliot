@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { designPreview, fetchSamplePageUrl } from "../../api/onboardingErp";
+import type { DesignPreview } from "../../api/onboardingErp";
 import type { DragEvent, ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
@@ -119,6 +121,8 @@ export function ScreenDesignerPage() {
   const [jobs, setJobs] = useState<RecentJob[]>([]);
   const [previewJobId, setPreviewJobId] = useState("");
   const [previewJob, setPreviewJob] = useState<JobDetail | null>(null);
+  // No job yet (a screen is designed before the first job): onboarding's sample and values.
+  const [design, setDesign] = useState<DesignPreview | null>(null);
   const [selected, setSelected] = useState<Selection>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -193,10 +197,18 @@ export function ScreenDesignerPage() {
     jobsApi.getJob(previewJobId).then(setPreviewJob).catch(() => setPreviewJob(null));
   }, [previewJobId]);
 
+  useEffect(() => {
+    if (previewJobId || !groupId || !docId) { setDesign(null); return; }
+    designPreview(groupId, docId).then(setDesign).catch(() => setDesign(null));
+  }, [previewJobId, groupId, docId]);
+
   // ---- values from the preview job --------------------------------------------------------
   const values = useMemo(() => {
     const out = new Map<string, string>();
-    if (!previewJob) return out;
+    if (!previewJob) {
+      for (const [ref, v] of Object.entries(design?.values ?? {})) out.set(ref, v.value);
+      return out;
+    }
     const docJobIds = new Set(previewJob.documents.filter((d) => d.template_document_id === docId).map((d) => d.id));
     const value = (fv: JobFieldValue) => (fv.value ?? fv.corrected_value ?? fv.extracted_value ?? "").toString();
     const rows = previewJob.field_values.filter((fv) => fv.row_index != null && fv.job_document_id && docJobIds.has(fv.job_document_id));
@@ -212,7 +224,9 @@ export function ScreenDesignerPage() {
       }
     }
     return out;
-  }, [previewJob, docId]);
+  }, [previewJob, docId, design]);
+  const designSample = !previewJob && design?.sample && design.workbook_id && design.doc_id
+    ? { workbookId: design.workbook_id, docId: design.doc_id, ...design.sample } : null;
 
   const previewJobDoc = previewJob?.documents.find((d) => d.template_document_id === docId && (d.page_count ?? 0) > 0) ?? null;
   useEffect(() => { setDocPage(1); }, [docId, previewJobId]);
@@ -413,7 +427,7 @@ export function ScreenDesignerPage() {
             f?.multiline ? "min-h-[4.5rem] whitespace-pre-wrap py-2" : "truncate py-2.5"
           }`}
         >
-          {value || <span className="italic text-rose-400">{previewJob ? "not found" : "no preview job"}</span>}
+          {value || <span className="italic text-rose-400">{previewJob ? "not found" : design ? "no value yet" : "no preview job"}</span>}
         </div>
       </div>
     );
@@ -607,7 +621,23 @@ export function ScreenDesignerPage() {
           </Card>
 
           {/* Centre: the screen, as the operator sees it - Document Preview beside Extracted Data */}
-          <div onClick={() => setSelected(null)} className={`grid min-w-0 items-start gap-4 ${showDoc && previewJobDoc ? "lg:grid-cols-2" : ""}`}>
+          <div onClick={() => setSelected(null)} className={`grid min-w-0 items-start gap-4 ${showDoc && (previewJobDoc || designSample) ? "lg:grid-cols-2" : ""}`}>
+            {showDoc && !previewJob && designSample && (
+              <Card className="h-fit min-w-0 p-5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-auto">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Document Preview</p>
+                  {designSample.page_count > 1 && (
+                    <div className="flex items-center gap-1 text-xs text-slate-500">
+                      <button type="button" disabled={docPage <= 1} onClick={(e) => { e.stopPropagation(); setDocPage((p) => p - 1); }} className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800">‹</button>
+                      page {docPage} of {designSample.page_count}
+                      <button type="button" disabled={docPage >= designSample.page_count} onClick={(e) => { e.stopPropagation(); setDocPage((p) => p + 1); }} className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800">›</button>
+                    </div>
+                  )}
+                </div>
+                <p className="mb-3 text-xs text-slate-400">Onboarding sample · {designSample.file_name} - no job on this template yet</p>
+                <SamplePagePreview workbookId={designSample.workbookId} docId={designSample.docId} page={Math.min(docPage, designSample.page_count || 1)} />
+              </Card>
+            )}
             {showDoc && previewJobDoc && previewJob && (
               <Card className="h-fit min-w-0 p-5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-auto">
                 <div className="mb-3 flex items-center justify-between gap-2">
@@ -627,7 +657,7 @@ export function ScreenDesignerPage() {
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-lg font-semibold text-indigo-700 dark:text-indigo-300">Extracted Data</p>
                 <div className="flex items-center gap-2">
-                  {previewJobDoc && (
+                  {(previewJobDoc || designSample) && (
                     <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setShowDoc((v) => !v); }}>
                       {showDoc ? "Hide document" : "Show document"}
                     </Button>
@@ -636,7 +666,7 @@ export function ScreenDesignerPage() {
                 </div>
               </div>
               <p className="mb-2 text-xs text-slate-500">
-                {docName} · as the operator sees it, with the preview job's values. Drag fields and section headings; double-click a label to rename it.
+                {docName} · as the operator sees it, with {previewJob ? "the preview job's values" : design ? "the onboarding values (Step 2 box reading, else the ERP Excel value)" : "the preview job's values"}. Drag fields and section headings; double-click a label to rename it.
               </p>
               <ColourKeyPreview />
               {layout.sections.map((s, i) => (
@@ -1010,6 +1040,25 @@ function JobPagePreview({ jobId, jobDocumentId, page }: { jobId: string; jobDocu
       .catch(() => !cancelled && setFailed(true));
     return () => { cancelled = true; if (made) URL.revokeObjectURL(made); };
   }, [jobId, jobDocumentId, page]);
+  if (failed) return <p className="text-sm text-slate-500">Could not load this page.</p>;
+  if (!url) return <p className="text-sm text-slate-400">Loading page…</p>;
+  return <img src={url} alt={`Page ${page}`} className="block w-full rounded-lg border border-slate-200 dark:border-slate-700" />;
+}
+
+/** One page of the onboarding sample (Step 0) - the designer's document before any job exists. */
+function SamplePagePreview({ workbookId, docId, page }: { workbookId: string; docId: string; page: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let made: string | null = null;
+    let cancelled = false;
+    setUrl(null);
+    setFailed(false);
+    fetchSamplePageUrl(workbookId, docId, page)
+      .then((u) => { if (cancelled) URL.revokeObjectURL(u); else { made = u; setUrl(u); } })
+      .catch(() => !cancelled && setFailed(true));
+    return () => { cancelled = true; if (made) URL.revokeObjectURL(made); };
+  }, [workbookId, docId, page]);
   if (failed) return <p className="text-sm text-slate-500">Could not load this page.</p>;
   if (!url) return <p className="text-sm text-slate-400">Loading page…</p>;
   return <img src={url} alt={`Page ${page}`} className="block w-full rounded-lg border border-slate-200 dark:border-slate-700" />;
