@@ -48,7 +48,7 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "reference", label: "Reference data" },
   { key: "crossdoc", label: "Cross-document checks" },
   { key: "combined", label: "Combined Description" },
-  { key: "users", label: "Users" },
+  { key: "users", label: "Tenant Admins" },
   { key: "transform", label: "Data Transformation & approval" },
   { key: "test", label: "Test on samples" },
   { key: "samples", label: "Classifier samples" },
@@ -527,7 +527,7 @@ function MailSection({ group, act }: { group: LiveGroup; act: Act }) {
           </select>
         </div>
         {!users.some((u) => u.role === "operator" || u.role === "tenant_admin") && (
-          <p className={HELP}>This customer has no operator or Tenant Admin login yet - create one in Users (left menu), then pick it here.</p>
+          <p className={HELP}>This customer has no operator or Tenant Admin login yet - create a Tenant Admin in "Tenant Admins" (left menu); operators are created by the Tenant Admin.</p>
         )}
         <div><Button size="sm" onClick={() => act(() => onboardingApi.setPullEmail(group.id, email.trim() || null, operator || null), "Mail intake saved.")}>Save mail intake</Button></div>
       </Section>
@@ -879,9 +879,10 @@ function UsersSection({ group, act }: { group: LiveGroup; act: Act }) {
   const load = () => getTemplateUsers(group.id).then(setUsers).catch(() => setUsers([]));
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [group.id]);
   return (
-    <Section title="Users who work on this template" help="A user with no template assigned sees every template of the customer. Assigning this one to such a user limits them to it.">
+    <Section title="Tenant Admins of this template" help="The Super Admin gives the template to the customer's Tenant Admins; each Tenant Admin then gives it to their own users (operators, GK2) from their Users page. A Tenant Admin with no template ticked sees every template of the customer.">
       {!users && <p className={HELP}>Loading…</p>}
-      {users?.filter((u) => u.role !== "manager").map((u) => (
+      {users && !users.some((u) => u.role === "tenant_admin") && <p className={HELP}>This customer has no Tenant Admin yet - create one below.</p>}
+      {users?.filter((u) => u.role === "tenant_admin").map((u) => (
         <label key={u.id} className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
           <input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={u.assigned} onChange={async (e) => {
             const on = e.target.checked;
@@ -889,7 +890,7 @@ function UsersSection({ group, act }: { group: LiveGroup; act: Act }) {
             if (!on && u.assignment_count === 1 && !window.confirm(`This is ${u.name}'s only template - removing it makes ${u.name} see EVERY template of the customer. Continue?`)) return;
             try { await setTemplateUser(group.id, u.id, on); await load(); setNote(`${u.name}: ${on ? "assigned" : "removed"}.`); } catch (err) { setNote(apiError(err, "Could not save.")); }
           }} />
-          <span className="min-w-0 flex-1"><b>{u.name}</b> <span className={HELP}>{u.email} · {u.role}</span></span>
+          <span className="min-w-0 flex-1"><b>{u.name}</b> <span className={HELP}>{u.email}</span></span>
           <span className={HELP}>{u.sees_all ? "sees all templates" : `${u.assignment_count} template(s)`}</span>
         </label>
       ))}
@@ -914,7 +915,7 @@ function UsersSection({ group, act }: { group: LiveGroup; act: Act }) {
               await load();
             }, "Tenant Admin login created.")}>Create login</Button>
         </div>
-        <p className={HELP}>Operator and GK2 logins are created by this customer's Tenant Admin (Users page) - then tick them above.</p>
+        <p className={HELP}>Operators and GK2 users are created and given templates by the Tenant Admin, from their own Users page.</p>
       </div>
     </Section>
   );
