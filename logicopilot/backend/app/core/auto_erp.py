@@ -17,6 +17,8 @@ Agreed rules for the auto path (2026-11-25):
     else the first option (never a junk row) - see fill_operator_defaults and
     app/core/auto_erp_match.py; the customer changes it in the ERP if it is wrong; a field with
     nothing to choose from stays blank and the job still goes;
+  * the billing customer (ERP Quotation Name) and the importer are matched from the documents;
+    when either cannot be worked out the job is held for a person to pick it;
   * a job is never sent while a mandatory document is missing, while it is flagged as a
     possible duplicate, or a second time;
   * the template must have a ready ERP script and Excel entry - otherwise nothing would really
@@ -90,6 +92,7 @@ def _first_option(cf) -> str | None:
 _DOC_NAME_LABELS = ("Consignee", "consignee_full_name", "Document Importer Name", "consignee_name")
 _DOC_ADDRESS_LABELS = ("Consignee Address",)
 _COUNTRY_LABELS = ("ERP Consignee Country",)
+_DOC_QUOTATION_LABELS = ("Quotation Name", "Document Quotation Name")
 
 
 def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[str]:
@@ -103,7 +106,7 @@ def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[
     was not a person's choice. Returns "Label = value (how)" for each one filled."""
     from app.api.v1.jobs import (ERP_ENTRY_LABEL, _quotation_master_names, _quotation_name_key,
                                  _reference_options_payload)
-    from app.core.auto_erp_match import is_junk, match_name, pick_branch
+    from app.core.auto_erp_match import QUOTATION_QUESTION, is_junk, match_name, pick_branch
     from app.core.erp_ui_fields import master_of
     from app.core.importer_gstin import gstin_rule
     from app.models.custom_field import CustomField
@@ -163,6 +166,13 @@ def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[
                 names = _quotation_master_names(db, job.group_id)
                 if names is not None:
                     opts = [o for o in opts if _quotation_name_key(o.get("value")) in names]
+                # The billing customer: matched from the forwarder on the documents, never
+                # "the first customer in the list" (that sent AIT Worldwide on two jobs).
+                doc_q = val(_DOC_QUOTATION_LABELS)
+                value, how = match_name(doc_q, opts, None, job.tenant_id, question=QUOTATION_QUESTION)
+                if value:
+                    how = f'{how} for "{doc_q}"'
+                opts = []
             if master.get("source") == "importer_master" and master.get("level") == "name":
                 doc_name = val(_DOC_NAME_LABELS)
                 value, how = match_name(doc_name, opts, country, job.tenant_id)
@@ -190,6 +200,26 @@ def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[
 
 
 # ------------------------------------------------------------------------------------- the hook
+
+def _empty_master_names(db: Session, job) -> list[str]:
+    """Required master NAME fields (ERP Quotation Name, ERP Importer Name) still empty."""
+    from app.core.erp_ui_fields import master_of
+    from app.models.custom_field import CustomField
+    from app.models.job import JobFieldValue
+
+    out = []
+    for cf in db.query(CustomField).filter(CustomField.group_id == job.group_id,
+                                           CustomField.ask_operator.is_(True),
+                                           CustomField.ask_operator_required.is_(True)).all():
+        m = master_of(cf.label_name) or {}
+        if m.get("level") != "name":
+            continue
+        fv = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None),
+                                            JobFieldValue.label_name == cf.label_name).first()
+        if fv is None or not (fv.value or "").strip() or not re.search(r"[A-Za-z0-9]", fv.value):
+            out.append(m.get("display") or cf.label_name)
+    return out
+
 
 def _hold(db: Session, job, reason: str) -> None:
     job.auto_erp_note = f"Auto ERP submission held for manual review: {reason}"
@@ -236,6 +266,14 @@ def maybe_auto_submit(db: Session, job) -> bool:
         return False            # another branch: the normal manual review
 
     filled = fill_operator_defaults(db, job, branch)
+    missing_names = _empty_master_names(db, job)
+    if missing_names:
+        # The billing customer or the importer could not be worked out: a guess would put the
+        # wrong company into the ERP, so a person picks it (the rest of the job still waits
+        # in Ready for Review with whatever was matched).
+        _hold(db, job, "could not work out " + " and ".join(missing_names)
+              + " from the documents - pick it on Required Details Review, then submit.")
+        return False
     job.auto_erp_submitted = True
     job.gk2_skipped = True      # no GK2 review - and lets a failed run be retried (gk2_approve)
     job.erp_submitted_by_id = None
