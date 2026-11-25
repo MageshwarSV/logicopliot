@@ -863,3 +863,44 @@ def test_ai_field(field_id: str, db: Session = Depends(get_db),
         value = extract_document_fields(text, spec).get(cf.label_name)
         results.append({"document": td.name, "value": value, "note": None})
     return {"field": cf.label_name, "results": results}
+
+
+# ---- Step 3: generate the reading prompts in bulk ----------------------------------------------
+
+class GeneratePromptsIn(BaseModel):
+    mark_ids: list[str] | None = None   # None = every box on the template
+    only_missing: bool = True           # False = regenerate even a box that has a prompt
+
+
+@router.post("/groups/{group_id}/generate-prompts")
+def generate_prompts(group_id: str, body: GeneratePromptsIn, db: Session = Depends(get_db),
+                     user: User = Depends(require_write_access(SUPER_ADMIN))) -> dict:
+    """Build each box's reading profile - label variations, what the value means, its format,
+    and the extraction prompt - from its box on the sample (the same generator a new box gets).
+    By default only boxes with no prompt yet, so a prompt someone tuned is never overwritten
+    unless asked; every overwritten prompt goes into the prompt history."""
+    from app.api.v1.field_marks import _apply_profile
+    from app.models.prompt_change import PromptChange
+
+    group = _group(db, group_id)
+    docs = {d.id: d for d in _template_docs(db, group.id)}
+    marks = [m for m in _marks(db, list(docs.values())) if (m.width or 0) > 0]
+    if body.mark_ids is not None:
+        wanted = set(body.mark_ids)
+        marks = [m for m in marks if m.id in wanted]
+    done, skipped = [], 0
+    for m in marks:
+        if body.only_missing and (m.extraction_prompt or "").strip():
+            skipped += 1
+            continue
+        old_prompt, old_hint = m.extraction_prompt, m.value_format_hint
+        _apply_profile(m, docs[m.document_id], db)          # commits
+        if old_prompt and old_prompt != m.extraction_prompt:
+            db.add(PromptChange(tenant_id=group.tenant_id, group_id=group.id, mark_id=m.id,
+                                label_name=m.label_name[:100], old_prompt=old_prompt, new_prompt=m.extraction_prompt,
+                                old_format_hint=old_hint, new_format_hint=m.value_format_hint, action="regenerate",
+                                changed_by_id=user.id,
+                                changed_by_name=(user.full_name or user.email or "")[:255] or None))
+            db.commit()
+        done.append(m.id)
+    return {"generated": len(done), "skipped": skipped, "mark_ids": done}

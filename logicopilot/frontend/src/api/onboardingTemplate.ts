@@ -263,3 +263,12 @@ export async function testAiField(customFieldId: string): Promise<{
   const { data } = await apiClient.post(`/onboarding/template/custom-fields/${customFieldId}/test-ai`);
   return data;
 }
+
+/** Step 3: build the reading prompts (label variations, meaning, format, prompt) from each box.
+ *  only_missing (default) leaves a box that already has a prompt alone. */
+export async function generatePrompts(groupId: string, body: { mark_ids?: string[]; only_missing?: boolean }): Promise<{
+  generated: number; skipped: number; mark_ids: string[];
+}> {
+  const { data } = await apiClient.post(`/onboarding/template/groups/${groupId}/generate-prompts`, body);
+  return data;
+}

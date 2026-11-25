@@ -107,3 +107,32 @@ def test_ai_field_test_runs_the_saved_rule_on_the_samples(client, db_session, se
     # no rule -> refused
     client.patch(f"/api/v1/custom-fields/{cf_id}", json={"ai_prompt": ""})
     assert client.post(f"/api/v1/onboarding/template/custom-fields/{cf_id}/test-ai").status_code == 422
+
+
+def test_generate_prompts_fills_only_missing_and_logs_a_regenerate(client, db_session, setup):
+    from unittest.mock import patch
+
+    from app.models.prompt_change import PromptChange
+
+    hawb, mark_id = _box(client, db_session, setup)
+    gid = setup["group"].id
+    url = f"/api/v1/onboarding/template/groups/{gid}/generate-prompts"
+
+    def fake(mark, document, db):
+        mark.extraction_prompt = f"Read {mark.label_name} v{(mark.extraction_prompt or '').count('v') + 1}"
+        mark.anchor_variations = ["HAWB No", "House AWB"]
+        db.commit()
+
+    m = db_session.get(FieldMark, mark_id)
+    m.extraction_prompt = None
+    db_session.commit()
+    with patch("app.api.v1.field_marks._apply_profile", side_effect=fake):
+        r = client.post(url, json={}).json()
+        assert r["generated"] == 1 and r["mark_ids"] == [mark_id]
+        again = client.post(url, json={}).json()                 # already has one: left alone
+        assert again["generated"] == 0 and again["skipped"] == 1
+        assert db_session.query(PromptChange).filter(PromptChange.mark_id == mark_id).count() == 0
+        regen = client.post(url, json={"mark_ids": [mark_id], "only_missing": False}).json()
+        assert regen["generated"] == 1
+    hist = db_session.query(PromptChange).filter(PromptChange.mark_id == mark_id).one()
+    assert hist.action == "regenerate" and hist.old_prompt == "Read HAWB_No v1"

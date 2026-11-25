@@ -9,15 +9,17 @@ import {
 import { TemplateFieldEditor, type TemplateFieldSection } from "../../components/onboarding/TemplateFieldEditor";
 import { apiError, getLiveGroup, type FieldRef, type LiveGroup } from "../../api/onboardingTemplate";
 import { HistoryTable, TestSection, TransformSection, type OpenField } from "./OnboardingTemplateSettingsPage";
+import { PromptsReview } from "../../components/onboarding/PromptsReview";
 
 // Customer Onboarding - Step 3: Prompts & Test (recommended workflow, 2026-11-26).
 // The one place for HOW each document value is read and checked: format rules with a check on
 // the field's example value, reading the template samples, and the prompt history. It took these
-// over from Template Settings. Bulk prompt generation with a comparison against the customer's
-// ERP Excel comes here next (phase D).
+// over from Template Settings. The Prompts tab (phase D) builds every box's prompt in one click and
+// tests them all on the samples against the customer's ERP Excel.
 
-type Tab = "format" | "test" | "history";
+type Tab = "prompts" | "format" | "test" | "history";
 const TABS: { key: Tab; label: string; help: string }[] = [
+  { key: "prompts", label: "Prompts", help: "Every field's reading prompt and label variations, tested on the samples against the ERP Excel." },
   { key: "format", label: "Format rules & check", help: "The format rule each value goes through after it is read - check it on the field's example value." },
   { key: "test", label: "Test on samples", help: "Read each document's template sample with the current prompts and see every value." },
   { key: "history", label: "Prompt history", help: "Every prompt change on this template, newest first." },
@@ -26,7 +28,7 @@ const TABS: { key: Tab; label: string; help: string }[] = [
 export function OnboardingPromptsPage() {
   const groupId = useOnboardingCustomer("customer");
   const [group, setGroup] = useState<LiveGroup | null>(null);
-  const [tab, setTab] = useState<Tab>("format");
+  const [tab, setTab] = useState<Tab>("prompts");
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [edit, setEdit] = useState<{ ref: FieldRef; section?: TemplateFieldSection } | null>(null);
@@ -56,6 +58,15 @@ export function OnboardingPromptsPage() {
   }
 
   const info = TABS.find((t) => t.key === tab)!;
+  // Building prompts writes the live template: on a live one, ask once per session.
+  const confirmLiveEdit = () => {
+    if (group?.status !== "approved") return true;
+    const key = `onboarding.liveEditOk.${groupId}`;
+    try { if (sessionStorage.getItem(key)) return true; } catch { /* ignore */ }
+    const ok = window.confirm("This template is LIVE. Building prompts changes the live template, and new jobs use them straight away.\n\nContinue?");
+    if (ok) { try { sessionStorage.setItem(key, "1"); } catch { /* ignore */ } }
+    return ok;
+  };
 
   return (
     <AppShell title="Prompts & Test" subtitle="Customer Onboarding · Step 3 - how each document value is read, formatted and tested">
@@ -98,6 +109,10 @@ export function OnboardingPromptsPage() {
               {info.help} Click a field's name for its full reading settings (prompt, label variations, AI suggestion).
             </p>
             <div className="flex flex-col gap-4">
+              {tab === "prompts" && (
+                <PromptsReview group={group} groupId={groupId} onChanged={reload} openField={(ref) => openField(ref)}
+                  beforeSave={confirmLiveEdit} onMessage={(tone, text) => setMessage({ tone, text })} />
+              )}
               {tab === "format" && <TransformSection group={group} act={act} openField={openField} />}
               {tab === "test" && <TestSection group={group} />}
               {tab === "history" && <HistoryTable group={group} />}
