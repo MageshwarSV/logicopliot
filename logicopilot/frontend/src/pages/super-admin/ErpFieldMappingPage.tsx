@@ -397,8 +397,18 @@ export function ErpFieldMappingPage() {
 
       {wb && (
         <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-          {/* Left: worksheets */}
-          <Card className="flex h-fit flex-col p-4">
+          {/* Left: worksheets. Dropping a bucket card here takes it out of its bucket. */}
+          <Card
+            className={`flex h-fit flex-col p-4 ${dragOver === "left" ? "ring-2 ring-rose-300" : ""}`}
+            onDragOver={over("left")}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((k) => (k === "left" ? null : k)); }}
+            onDrop={drop(null)}
+          >
+            {dragOver === "left" && (
+              <p className="mb-2 rounded-lg border border-dashed border-rose-300 bg-rose-50 px-3 py-2 text-center text-xs font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">
+                Drop here to take it out of its bucket - back to not classified
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <p className="text-base font-semibold text-slate-900 dark:text-slate-50">ERP Excel Structure</p>
               {complete && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-xs text-white">✓</span>}
@@ -611,8 +621,16 @@ export function ErpFieldMappingPage() {
                           onDragOver={over(`c:${f.id}`)}
                           onDrop={drop(b.key, f.id, activeDoc)}
                           onClick={() => setEditing(f)}
-                          className={`flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
+                          className={`group relative flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 pr-7 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
                         >
+                          <button
+                            type="button"
+                            title="Take it out of this bucket - back to not classified"
+                            onClick={(e) => { e.stopPropagation(); void moveTo(f.id, null); }}
+                            className="absolute right-1.5 top-1.5 rounded px-1 text-sm text-slate-300 hover:bg-rose-50 hover:text-rose-600 group-hover:text-slate-500 dark:hover:bg-rose-500/10"
+                          >
+                            ✕
+                          </button>
                           <span className="mt-0.5 text-slate-300">⠿</span>
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">{label(f)}{f.mandatory && <span className="text-rose-500">*</span>}</p>
@@ -670,7 +688,7 @@ export function ErpFieldMappingPage() {
               <p className="mb-2 text-center text-sm text-slate-600 dark:text-slate-300">
                 {sheet === ERP_UI && <>ⓘ <b>ERP UI</b> holds fields the ERP UI script picks on the ERP screen that are not Excel columns (ERP Quotation Name / Branch, ERP Importer Name / Branch …). Pick them up from the ERP script on the left, or use "+ Add new field" in a bucket. </>}
                 ⓘ Drag and drop fields of the <b>{sheet}</b> worksheet into the appropriate bucket of the selected document
-                {activeDoc !== NO_DOC ? <> (<b>{docName(activeDoc)}</b>)</> : null}. Drop a field here to take it out of its bucket.
+                {activeDoc !== NO_DOC ? <> (<b>{docName(activeDoc)}</b>)</> : null}. To take a field out of its bucket, press its ✕, or drag it back to the left list or here.
               </p>
               {unclassified.length > 0 && (
                 <div className="flex flex-wrap justify-center gap-2">
