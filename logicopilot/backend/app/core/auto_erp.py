@@ -12,9 +12,11 @@ What the run is: exactly the submission GK1's Final Submit runs when GK2 is off 
 (jobs._kick_off_real_erp_submission - the same queue, branch logins, failure banner and retry).
 Agreed rules for the auto path (2026-11-25):
   * cross-document rule failures do not stop it - it is submitted anyway;
-  * a required operator-pick field still empty gets a default (the first option it offers) -
-    the customer changes it in the ERP if it is wrong; a free-text one with no options stays
-    blank and the job still goes;
+  * a required operator-pick field still empty gets a value: the importer name matched from
+    the Document Importer Name, a branch chosen by the job's branch or the consignee address,
+    else the first option (never a junk row) - see fill_operator_defaults and
+    app/core/auto_erp_match.py; the customer changes it in the ERP if it is wrong; a field with
+    nothing to choose from stays blank and the job still goes;
   * a job is never sent while a mandatory document is missing, while it is flagged as a
     possible duplicate, or a second time;
   * the template must have a ready ERP script and Excel entry - otherwise nothing would really
@@ -79,18 +81,30 @@ def _first_option(cf) -> str | None:
     return None
 
 
-def fill_operator_defaults(db: Session, job) -> list[str]:
-    """Give every required operator-pick field that is still empty a default: the first option
-    the job screen would offer for it (its reference list - a master's branch only among the
-    picked name's own branches - or its fixed choices). Written as the field's extracted value,
-    never as a correction, so the screen still shows it was not a person's choice. Returns
-    "Label = value" for each one filled."""
+_DOC_NAME_LABELS = ("Consignee", "consignee_full_name", "Document Importer Name", "consignee_name")
+_DOC_ADDRESS_LABELS = ("Consignee Address",)
+_COUNTRY_LABELS = ("ERP Consignee Country",)
+
+
+def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[str]:
+    """Give every required operator-pick field that is still empty (or holds only a junk value
+    like ".") a value, the way an operator would pick it (app/core/auto_erp_match.py):
+      * Importer name: the Document Importer Name matched against the Importer master;
+      * a master's branch: among the picked name's own branches - the one naming the job's
+        branch, else the AI from the consignee address, else the first;
+      * anything else: the first option its list or fixed choices offer.
+    Written as the field's extracted value, never as a correction, so the screen still shows it
+    was not a person's choice. Returns "Label = value (how)" for each one filled."""
     from app.api.v1.jobs import (ERP_ENTRY_LABEL, _quotation_master_names, _quotation_name_key,
                                  _reference_options_payload)
+    from app.core.auto_erp_match import is_junk, match_name, pick_branch
     from app.core.erp_ui_fields import master_of
+    from app.core.importer_gstin import gstin_rule
     from app.models.custom_field import CustomField
     from app.models.job import JobFieldValue
+    from app.models.template_group import TemplateGroup
 
+    grp = db.get(TemplateGroup, job.group_id)
     fields = db.query(CustomField).filter(
         CustomField.group_id == job.group_id,
         CustomField.ask_operator.is_(True),
@@ -104,29 +118,55 @@ def fill_operator_defaults(db: Session, job) -> list[str]:
         fv.label_name: fv for fv in db.query(JobFieldValue).filter(
             JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None)).all()}
 
+    def val(labels) -> str:
+        for label in labels:
+            fv = current.get(label)
+            if fv is not None and (fv.value or "").strip():
+                return fv.value.strip()
+        return ""
+
+    country = val(_COUNTRY_LABELS)
     filled: list[str] = []
     for cf in fields:
         fv = current.get(cf.label_name)
         if fv is not None and (fv.value or "").strip():
-            continue
-        value = None
+            # A person's choice, or a real reading, stays. Only a junk reading is replaced.
+            if fv.corrected_value is not None or not is_junk(fv.value):
+                continue
+        value, how = None, ""
         master = master_of(cf.label_name) or {}
         parent = master.get("depends_on")
+        gst = gstin_rule(db, grp, cf) if grp is not None else None
         if parent:
             pfv = current.get(parent)
             key = (pfv.value or "").strip() if pfv is not None else ""
             # No name picked = no way to choose among its branches; leave it.
-            opts = _reference_options_payload(db, cf.id, key=key)["options"] if key else []
+            opts = (_reference_options_payload(db, cf.id, key=key, country=country, gstin=gst)["options"]
+                    if key else [])
+            if opts:
+                importer = master.get("source") == "importer_master"
+                value, how = pick_branch(
+                    [str(o["value"]).strip() for o in opts], job_branch=branch,
+                    address=val(_DOC_ADDRESS_LABELS) if importer else None, company=key,
+                    tenant_id=job.tenant_id)
         else:
-            opts = _reference_options_payload(db, cf.id)["options"]
+            opts = _reference_options_payload(db, cf.id, country=country, gstin=gst)["options"]
             if (cf.label_name or "").strip().lower() == ERP_ENTRY_LABEL:
                 names = _quotation_master_names(db, job.group_id)
                 if names is not None:
                     opts = [o for o in opts if _quotation_name_key(o.get("value")) in names]
-        if opts:
-            value = str(opts[0]["value"]).strip()
+            if master.get("source") == "importer_master" and master.get("level") == "name":
+                doc_name = val(_DOC_NAME_LABELS)
+                value, how = match_name(doc_name, opts, country, job.tenant_id)
+                if value:
+                    how = f'{how} for "{doc_name}"'
+                opts = []          # never "the first importer in the list"
+            if opts and not value:
+                value = next((str(o["value"]).strip() for o in opts if not is_junk(o.get("value"))), None)
+                how = "first option" if value else ""
         if not value:
             value = _first_option(cf)
+            how = "first choice" if value else ""
         if not value:
             continue
         if fv is None:
@@ -136,7 +176,7 @@ def fill_operator_defaults(db: Session, job) -> list[str]:
             current[cf.label_name] = fv
         else:
             fv.extracted_value = value
-        filled.append(f"{cf.label_name} = {value}")
+        filled.append(f"{cf.label_name} = {value} ({how})" if how else f"{cf.label_name} = {value}")
     db.flush()
     return filled
 
@@ -187,7 +227,7 @@ def maybe_auto_submit(db: Session, job) -> bool:
     if not branch_matches(rule, branch):
         return False            # another branch: the normal manual review
 
-    filled = fill_operator_defaults(db, job)
+    filled = fill_operator_defaults(db, job, branch)
     job.auto_erp_submitted = True
     job.gk2_skipped = True      # no GK2 review - and lets a failed run be retried (gk2_approve)
     job.erp_submitted_by_id = None
@@ -195,7 +235,7 @@ def maybe_auto_submit(db: Session, job) -> bool:
     if branch:
         note += f" Branch: {branch}."
     if filled:
-        note += " Filled with a default: " + "; ".join(filled) + "."
+        note += " Picked automatically: " + "; ".join(filled) + "."
     job.auto_erp_note = note
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status="extracted",
                     stage="ERP Entry", note=note[:2000]))

@@ -3,6 +3,8 @@ allowed per tenant by the SaaS Admin, switched on per template / branch by the T
 from unittest.mock import patch
 
 from app.core.auto_erp import fill_operator_defaults, maybe_auto_submit
+from app.core.auto_erp_match import is_junk, match_name, norm_company, pick_branch
+from app.models.custom_field_reference import CustomFieldReferenceValue
 from app.models.custom_field import CustomField
 from app.models.erp_script import ErpScript
 from app.models.job import Job, JobFieldValue
@@ -122,7 +124,7 @@ def test_empty_operator_pick_gets_the_first_option(db_session):
                                  label_name="Mode", corrected_value="LCL"))
     db_session.commit()
 
-    assert fill_operator_defaults(db_session, job) == ["Port Type = SEA"]
+    assert fill_operator_defaults(db_session, job) == ["Port Type = SEA (first choice)"]
     vals = {fv.label_name: fv for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
     assert vals["Port Type"].extracted_value == "SEA" and vals["Port Type"].corrected_value is None
     assert vals["Mode"].value == "LCL"            # a value already there is never replaced
@@ -154,3 +156,81 @@ def test_settings_permissions(client, db_session):
 
     other = make_tenant(db_session, name="Other Co")
     assert client.get(f"/api/v1/auto-erp/tenants/{other.id}").status_code == 404
+
+
+# ----------------------------------------------------------------- importer matching (auto mode)
+
+def _opt(name, country=""):
+    return {"value": name, "match_values": [name.upper(), country, "", ""]}
+
+
+IMPORTERS = [_opt("."), _opt("JUNIPER NETWORKS INC.", "UNITED STATES"),
+             _opt("Juniper Networks International B.V.", "NETHERLANDS"),
+             _opt("JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED", "INDIA"),
+             _opt("JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED", "")]
+
+
+def test_junk_and_company_words():
+    assert is_junk(".") and is_junk(" - ") and is_junk("N/A") and not is_junk("DELHI")
+    assert norm_company("Juniper Networks Solution India Pvt. Ltd.") == \
+        norm_company("JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED")
+
+
+def test_importer_name_exact_after_normalising_no_ai():
+    with patch("app.core.auto_erp_match.ai_choose") as ai:
+        v, how = match_name("Juniper Networks Solution India Pvt. Ltd.", IMPORTERS, "INDIA")
+    ai.assert_not_called()
+    assert v == "JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED" and how == "exact match"
+
+
+def test_importer_name_ambiguous_asks_ai_and_none_close_stays_blank():
+    with patch("app.core.auto_erp_match.ai_choose", return_value=0) as ai:
+        v, how = match_name("Juniper Networks", IMPORTERS, "INDIA")
+    ai.assert_called_once()
+    assert how == "AI match" and v == ai.call_args[0][1][0]
+    assert "." not in ai.call_args[0][1]                      # junk never offered
+    with patch("app.core.auto_erp_match.ai_choose", return_value=None):
+        assert match_name("Juniper Networks", IMPORTERS)[0] is None
+        assert match_name("Totally Different Traders", IMPORTERS)[0] is None
+
+
+def test_branch_choice():
+    opts = ["BANDRA KURLA", "Bhiwandi", "DELHI", "KARNATAKA", "."]
+    assert pick_branch(["ONLY ONE", "."]) == ("ONLY ONE", "only branch")
+    assert pick_branch(["CHENNAI", "BANGALORE"], job_branch="Bangalore")[0] == "BANGALORE"
+    with patch("app.core.auto_erp_match.ai_choose", return_value=3) as ai:
+        v, how = pick_branch(opts, job_branch="Bangalore", address="Whitefield, Bengaluru, Karnataka 560066")
+    assert v == "KARNATAKA" and how == "AI from the consignee address"
+    assert "." not in ai.call_args[0][1]
+    with patch("app.core.auto_erp_match.ai_choose", return_value=None):
+        assert pick_branch(opts, address="somewhere") == ("BANDRA KURLA", "first branch")
+
+
+def test_auto_fill_picks_importer_from_the_document_not_the_first_row(db_session):
+    tenant, group, job = _setup(db_session)
+    name = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="ERP Consignee Name", kind="hardcoded",
+                       ask_operator=True, ask_operator_required=True, is_target_value=True)
+    branch = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="ERP Importer Address / Branch Code",
+                         kind="hardcoded", ask_operator=True, ask_operator_required=True, is_target_value=True)
+    db_session.add_all([name, branch])
+    db_session.commit()
+    for o in IMPORTERS:
+        db_session.add(CustomFieldReferenceValue(custom_field_id=name.id, match_value_1=o["match_values"][0],
+                                                 match_value_2=o["match_values"][1], resolved_value=o["value"]))
+    for b in ("BANDRA KURLA", "KARNATAKA"):
+        db_session.add(CustomFieldReferenceValue(custom_field_id=branch.id,
+                                                 match_value_1="JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED",
+                                                 match_value_2=b, resolved_value=b))
+    for label, v in (("Consignee", "Juniper Networks Solution India Pvt. Ltd."),
+                     ("Consignee Address", "Prestige Tech Park, Bengaluru, Karnataka"),
+                     ("ERP Consignee Country", "INDIA"), ("ERP Consignee Name", ".")):
+        db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, label_name=label, extracted_value=v,
+                                     custom_field_id=name.id if label == "ERP Consignee Name" else None))
+    db_session.commit()
+
+    with patch("app.core.auto_erp_match.ai_choose", return_value=1):
+        filled = fill_operator_defaults(db_session, job, "Bangalore")
+    vals = {fv.label_name: fv.value for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
+    assert vals["ERP Consignee Name"] == "JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED"   # the "." replaced
+    assert vals["ERP Importer Address / Branch Code"] == "KARNATAKA"
+    assert any("exact match" in f for f in filled) and any("consignee address" in f for f in filled)
