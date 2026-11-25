@@ -31,6 +31,10 @@ from app.api.v1.master_data_cth import router as master_data_cth_router
 from app.api.v1.extraction_corrections import router as extraction_corrections_router
 from app.api.v1.api_cost import router as api_cost_router
 from app.api.v1.edocket import router as edocket_router
+from app.api.v1.screen_designer import router as screen_designer_router
+from app.api.v1.onboarding_erp import router as onboarding_erp_router
+from app.api.v1.onboarding_erp_docs import router as onboarding_erp_docs_router
+from app.api.v1.auto_erp import router as auto_erp_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -66,3 +70,7 @@ api_router.include_router(classifier_test_router)
 api_router.include_router(extraction_corrections_router)
 api_router.include_router(api_cost_router)
 api_router.include_router(edocket_router)
+api_router.include_router(screen_designer_router)
+api_router.include_router(onboarding_erp_router)
+api_router.include_router(onboarding_erp_docs_router)
+api_router.include_router(auto_erp_router)

@@ -28,10 +28,21 @@ export const superAdminFeatures = [
   // Fields operators keep correcting on many different jobs - where an extraction prompt needs
   // work (app/core/field_edits.py).
   { path: "/super-admin/extraction-corrections", navLabel: "Extraction Corrections", group: "Platform Configuration", order: 5.7 },
+  // Lay out a template document's job screen: sections, order, product card (Screen Designer).
+  { path: "/super-admin/screen-designer", navLabel: "Screen Designer", group: "Platform Configuration", order: 5.8 },
 
   // Connect any Gmail/Zoho mailbox (independent of any operator user) and assign it a
   // Tenant + Template - replaces the old per-user mailbox card on the Tenant Admin's own
   // "New User" form.
+  // Customer Onboarding (2026-11-24): the new step-by-step onboarding, built alongside the
+  // existing wizard (which stays untouched until this replaces it). Step 1 - ERP fields.
+  { path: "/super-admin/onboarding/start", navLabel: "Step 0 - Choose Template", group: "Customer Onboarding", order: 5.94 },
+  { path: "/super-admin/onboarding/erp-fields", navLabel: "Step 1 - ERP Field Mapping", group: "Customer Onboarding", order: 5.95 },
+  { path: "/super-admin/onboarding/document-mapping", navLabel: "Step 2 - Document Mapping", group: "Customer Onboarding", order: 5.96 },
+  // Step 3 is the Screen Designer itself, reached from the onboarding flow.
+  { path: "/super-admin/onboarding/screen-designer", navLabel: "Step 3 - Screen Designer", group: "Customer Onboarding", order: 5.97 },
+  { path: "/super-admin/onboarding/field-config", navLabel: "Step 4 - Field Configuration", group: "Customer Onboarding", order: 5.98 },
+
   { path: "/super-admin/email-puller", navLabel: "Email Puller", group: "Integrations & Automation", order: 6 },
   { path: "/super-admin/erp-scripts", navLabel: "ERP Script Management", group: "Integrations & Automation", order: 7 },
   { path: "/super-admin/entry-browser", navLabel: "Entry Browser", group: "Integrations & Automation", order: 8 },
@@ -51,6 +62,7 @@ export const superAdminFeatures = [
 export const SUPER_ADMIN_FEATURE_GROUPS = [
   "Customer Management",
   "Platform Configuration",
+  "Customer Onboarding",
   "Integrations & Automation",
   "Operations",
   "Finance & System",

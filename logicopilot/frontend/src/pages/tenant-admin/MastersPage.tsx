@@ -10,6 +10,7 @@ import { customTypeIdOf, type TypeSelection, type UserType } from "../../api/use
 import { MODES } from "../../types/onboarding";
 import { ReferenceSheetsSection } from "../super-admin/ReferenceSheetsSection";
 import { ReferenceValuesSection } from "../super-admin/ReferenceValuesSection";
+import { AutoErpSettingsPanel } from "../../components/AutoErpSettingsPanel";
 
 type CreatableRole = "operator" | "gk2" | "manager";
 
@@ -321,6 +322,13 @@ export function MastersPage() {
           </div>
         )}
       </Card>
+
+      {user?.tenant_id && (
+        <Card className="mt-6 max-w-3xl p-5">
+          <p className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">Auto ERP Submission</p>
+          <AutoErpSettingsPanel tenantId={user.tenant_id} canAllow={false} />
+        </Card>
+      )}
 
       {/* Reused as-is from the Super Admin's own Settings page - listGroups() is now
           tenant-scoped server-side (see list_groups in template_groups.py), so this already

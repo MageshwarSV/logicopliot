@@ -585,6 +585,7 @@ export function JobsPage() {
     missingDocuments?: string[] | null,
     completedAt?: string | null,
     failedAt?: string | null,
+    autoErp?: boolean,
   ) {
     const s = stage ?? "Document Capture";
     // The two words that mean the job is finished - the same pair the emerald styling below
@@ -624,6 +625,12 @@ export function JobsPage() {
           {BUSY.has(s) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />}
           {displayStatusLabel(s)}
         </span>
+        {autoErp && (
+          <span className="w-fit rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
+            title="Sent to the ERP automatically after extraction - no review in Cargora">
+            AUTO
+          </span>
+        )}
         {/* Named right here too, not only on hover - the whole point is an operator can tell
             WHICH document to go find without opening the job. */}
         {missingDocuments && missingDocuments.length > 0 && (
@@ -999,7 +1006,7 @@ export function JobsPage() {
     },
     {
       header: "Status",
-      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at, j.erp_failed_at),
+      render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at, j.erp_failed_at, j.auto_erp_submitted),
     },
     // Who this job is assigned to. Editable for operator/super_admin/admin — the candidate
     // list is narrowed to operators scoped to THIS job's own mode (a Sea Import job only

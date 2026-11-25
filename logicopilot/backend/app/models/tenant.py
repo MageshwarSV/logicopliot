@@ -31,6 +31,12 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # for Approval goes straight into the real ERP submission instead of landing in a GK2's
     # "Pending for GK2" queue - see submit_for_gk2_approval/Job.gk2_skipped.
     gk2_required_by_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Auto ERP Submission (app/core/auto_erp.py). auto_erp_allowed is the SaaS Admin's switch:
+    # off = the tenant cannot use it at all. auto_erp_rules is the Tenant Admin's per template:
+    # {template_group_id: {"enabled": bool, "branches": [str]}} - empty branches = every branch.
+    # A template with no entry, or a tenant not allowed, keeps the normal manual review.
+    auto_erp_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_erp_rules: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The one key that gets this tenant's IRN Pending link working (see
     # app/api/v1/public_irn.py) - generated once from the Super Admin dashboard's "Generate
     # Link" button and never rotated automatically, so a link already handed out keeps
