@@ -6,6 +6,8 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
+import { TemplateFieldEditor } from "../../components/onboarding/TemplateFieldEditor";
+import { getLinks, putTemplateBox, type FieldRef } from "../../api/onboardingTemplate";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -172,6 +174,9 @@ export function ErpDocumentMappingPage() {
   const [fieldSearch, setFieldSearch] = useState("");
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  // The live template field a box belongs to - its full settings popup (like the old Document
+  // Templates "Name this field" popup) opens after a box is drawn, or from the field's row.
+  const [liveField, setLiveField] = useState<{ ref: FieldRef; name: string } | null>(null);
 
   const customer = customers.find((c) => c.group_id === groupId) ?? null;
   const workbookId = customer?.workbook?.id ?? "";
@@ -233,6 +238,28 @@ export function ErpDocumentMappingPage() {
       setSelected(next?.id ?? null);
     } catch (err) {
       setMessage({ tone: "warn", text: errorText(err, "Could not save the box.") });
+      return;
+    }
+    // The same box on the live template (created or moved), then its settings popup.
+    try {
+      const live = await putTemplateBox(selectedField.id, { page, ...b, line_item: lineDefault });
+      setLiveField({ ref: live.ref, name: live.label });
+      setMessage(live.warning
+        ? { tone: "warn", text: live.warning }
+        : { tone: "ok", text: `${live.created ? "Created" : "Moved"} "${live.label}" on the live template.` });
+    } catch (err) {
+      setMessage({ tone: "warn", text: `Box saved here, but not on the live template: ${errorText(err, "unknown error")}` });
+    }
+  };
+
+  const openLive = async (f: DocMappingField) => {
+    try {
+      const l = await getLinks(groupId);
+      const hit = l.fields.find((x) => x.erp_field_id === f.id);
+      if (hit?.ref) setLiveField({ ref: hit.ref, name: hit.label ?? f.excel_name });
+      else setMessage({ tone: "warn", text: `"${f.excel_name}" is not on the live template yet - draw its box to create it.` });
+    } catch (err) {
+      setMessage({ tone: "warn", text: errorText(err, "Could not read the live template.") });
     }
   };
 
@@ -466,6 +493,10 @@ export function ErpDocumentMappingPage() {
                                 .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not clear.") }))}>
                               Clear box
                             </button>
+                            <button type="button" className="font-semibold text-indigo-600 hover:underline dark:text-indigo-300"
+                              onClick={() => void openLive(f)}>
+                              All field settings
+                            </button>
                           </div>
                         </div>
                       )}
@@ -483,6 +514,13 @@ export function ErpDocumentMappingPage() {
           </div>
         )}
       </div>
+      <TemplateFieldEditor
+        groupId={groupId}
+        fieldRef={liveField?.ref ?? null}
+        open={!!liveField}
+        onClose={() => setLiveField(null)}
+        heading={liveField ? <span>Drawn in Document Mapping · {liveField.name}</span> : undefined}
+      />
     </AppShell>
   );
 }

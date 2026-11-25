@@ -48,9 +48,10 @@ const STEPS = [
   { n: 2, label: "Document Mapping", path: "/super-admin/onboarding/document-mapping", param: "customer" },
   { n: 3, label: "Screen Designer", path: "/super-admin/onboarding/screen-designer", param: "group" },
   { n: 4, label: "Field Configuration", path: "/super-admin/onboarding/field-config", param: "customer" },
+  { n: 5, label: "Template Settings", path: "/super-admin/onboarding/template-settings", param: "customer" },
 ] as const;
 
-export function OnboardingSteps({ current, groupId }: { current: 0 | 1 | 2 | 3 | 4; groupId: string }) {
+export function OnboardingSteps({ current, groupId }: { current: 0 | 1 | 2 | 3 | 4 | 5; groupId: string }) {
   return (
     <nav aria-label="Onboarding steps" className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 px-1 py-2">
       {STEPS.map((s, i) => {

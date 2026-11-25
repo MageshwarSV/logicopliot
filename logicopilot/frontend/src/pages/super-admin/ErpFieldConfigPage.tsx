@@ -8,6 +8,7 @@ import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook, FixedConfig, Oper
 import {
   OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen,
 } from "../../components/onboarding/OnboardingSteps";
+import { LiveTemplatePanel } from "../../components/onboarding/LiveTemplatePanel";
 
 // Customer Onboarding - Step 4: Field Configuration. One tab per value source; click a field to
 // configure it. Fixed (value, per-importer values, shown or hidden), Operator Input (question,
@@ -19,12 +20,16 @@ const TABS: { key: ErpCategory; label: string; ready: boolean; tone: string; nex
   { key: "reference", label: "Reference", ready: true, tone: "text-amber-800 dark:text-amber-300", next: "" },
   { key: "fixed", label: "Fixed", ready: true, tone: "text-slate-700 dark:text-slate-200", next: "" },
   { key: "operator", label: "Operator Input", ready: true, tone: "text-pink-700 dark:text-pink-300", next: "" },
+  // These three are set on the live template field itself (Live template panel below): the
+  // AI instruction + documents it reads; the pieces a field joins + the ERP Excel column rules
+  // (pick by, fallback, transform, fixed / per-row values); a box's extraction prompt, format
+  // rule, validation and cross-document checks.
   { key: "ai", label: "Calculated (AI-Derived)", ready: false, tone: "text-violet-700 dark:text-violet-300",
-    next: "Next round: the AI instruction with a suggested start, which documents it reads, and Test on the sample." },
+    next: "AI instruction, the documents it reads, validation and operator settings - on the live template field. Use \"Get an AI suggestion\" / Test in its settings." },
   { key: "formula", label: "Calculated (Formula / Rule)", ready: false, tone: "text-teal-700 dark:text-teal-300",
-    next: "Next round: a no-code builder - join, maths, if / else, transforms - with a live result from the sample values." },
+    next: "Join other fields (with separators) on the live field, and the ERP Excel column rules: choose between fields, fallback fields, transform, fixed or per-row values." },
   { key: "document", label: "Document", ready: false, tone: "text-blue-700 dark:text-blue-300",
-    next: "Next round: extraction prompt, expected format / validation and cross-checks with other documents." },
+    next: "Extraction prompt, label variations, format rule (with check), validation, table rows and cross-document checks - on the live box. Draw the box in Step 2 to create it." },
 ];
 
 function errorText(err: unknown, fallback: string): string {
@@ -134,7 +139,7 @@ export function ErpFieldConfigPage() {
                   >
                     <span className={`block text-sm font-semibold ${t.tone}`}>{t.label}</span>
                     <span className="block text-xs text-slate-400">
-                      {all.length} field{all.length === 1 ? "" : "s"}{t.ready ? ` · ${done} set` : " · next round"}
+                      {all.length} field{all.length === 1 ? "" : "s"}{t.ready ? ` · ${done} set` : " · live template settings"}
                     </span>
                   </button>
                 );
@@ -182,12 +187,14 @@ export function ErpFieldConfigPage() {
               <Card className="h-fit p-5">
                 {!field && <p className="text-sm text-slate-500">Pick a field on the left to configure it.</p>}
                 {field && !tabInfo.ready && (
-                  <div className="flex flex-col gap-2 text-sm">
-                    <p className="text-base font-semibold text-slate-900 dark:text-slate-50">{field.display_label || field.excel_name}</p>
-                    <p className="rounded-lg border border-dashed border-slate-300 px-3 py-2 text-slate-500 dark:border-slate-700">{tabInfo.next}</p>
+                  <div className="flex flex-col gap-3 text-sm">
+                    <Header field={field} />
+                    <p className="text-xs text-slate-500">{tabInfo.next}</p>
                     {(field.formula || field.ai_prompt || field.erp_master_ref) && (
                       <p className="text-xs text-slate-500">Note from Step 1: {field.formula || field.ai_prompt || field.erp_master_ref}</p>
                     )}
+                    {/* Everything this field needs, set on the live template field it fills. */}
+                    <LiveTemplatePanel key={field.id} groupId={groupId} erpFieldId={field.id} />
                   </div>
                 )}
                 {field && field.category === "fixed" && <FixedPanel key={field.id} field={field} onSave={(p) => saveField(field, p)} />}
@@ -195,11 +202,17 @@ export function ErpFieldConfigPage() {
                 {field && field.category === "reference" && (
                   <ReferencePanel key={field.id} field={field} fields={fields} onSave={(p) => saveField(field, p)} />
                 )}
+                {field && tabInfo.ready && (
+                  <div className="mt-4">
+                    <LiveTemplatePanel key={`live-${field.id}`} groupId={groupId} erpFieldId={field.id} compact />
+                  </div>
+                )}
               </Card>
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
               <Link to={`/super-admin/onboarding/screen-designer?group=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 3</Link>
+              <Link to={`/super-admin/onboarding/template-settings?customer=${groupId}`} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">Next: Template Settings →</Link>
             </div>
           </>
         )}

@@ -45,6 +45,7 @@ import { ScreenDesignerPage } from "../pages/super-admin/ScreenDesignerPage";
 import { ErpFieldMappingPage } from "../pages/super-admin/ErpFieldMappingPage";
 import { OnboardingStartPage } from "../pages/super-admin/OnboardingStartPage";
 import { ErpFieldConfigPage } from "../pages/super-admin/ErpFieldConfigPage";
+import { OnboardingTemplateSettingsPage } from "../pages/super-admin/OnboardingTemplateSettingsPage";
 import { ErpDocumentMappingPage } from "../pages/super-admin/ErpDocumentMappingPage";
 import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
@@ -206,6 +207,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <ErpFieldConfigPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/onboarding/template-settings"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <OnboardingTemplateSettingsPage />
           </ProtectedRoute>
         }
       />

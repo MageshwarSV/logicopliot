@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook } from "../../api/onboardingErp";
 import { ErpUiPicker } from "../../components/onboarding/ErpUiPicker";
+import { LiveTemplatePanel } from "../../components/onboarding/LiveTemplatePanel";
 import { formatDateTime } from "../../utils/dateTime";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
 
@@ -813,6 +814,7 @@ export function ErpFieldMappingPage() {
           }}
           onError={(text) => setMessage({ tone: "warn", text })}
           documents={documents}
+          groupId={wb.group_id}
         />
       )}
       </div>
@@ -821,10 +823,12 @@ export function ErpFieldMappingPage() {
 }
 
 function FieldConfigModal({
-  field, onClose, onSaved, onDeleted, onError, documents,
+  field, onClose, onSaved, onDeleted, onError, documents, groupId,
 }: {
   field: ErpField;
   documents: erpApi.ErpDocument[];
+  /** The template - the "Live template" panel below edits its real field and ERP Excel column. */
+  groupId: string;
   onClose: () => void;
   onSaved: (f: ErpField, summary: erpApi.ErpSummary, status: string) => void;
   onDeleted: (id: string) => void;
@@ -870,7 +874,7 @@ function FieldConfigModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
           <div>
             <p className="text-base font-semibold text-slate-900 dark:text-slate-50">Field configuration</p>
@@ -925,6 +929,9 @@ function FieldConfigModal({
             <input className={input} value={draft.erp_master_ref ?? ""} onChange={(e) => set("erp_master_ref", e.target.value)} placeholder="e.g. Port master (country + city → code), Importer branch master" />)}
           {draft.category === "operator" && row("Hint for the operator",
             <input className={input} value={draft.description ?? ""} onChange={(e) => set("description", e.target.value)} placeholder="e.g. IGM number from the shipping line's arrival notice" />)}
+          {/* The real template field this column fills, every setting of it, and the ERP
+              Excel column's own rules - saved on the live template. */}
+          <LiveTemplatePanel groupId={groupId} erpFieldId={field.id} compact />
         </div>
         <div className="mt-5 flex items-center gap-2">
           {field.is_custom && (
