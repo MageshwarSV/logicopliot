@@ -92,6 +92,19 @@ export function ErpFieldMappingPage() {
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [adding, setAdding] = useState<ErpCategory | null>(null);
+  // The field being dragged - shows the drop bar pinned at the top of the screen.
+  const [dragging, setDragging] = useState<string | null>(null);
+  // The field whose "Move to…" menu is open.
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [menuAt, setMenuAt] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  // Buckets folded to their heading. Remembered per browser.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(window.localStorage.getItem("erpMapping.collapsed") || "{}"); } catch { return {}; }
+  });
+  const setFold = (next: Record<string, boolean>) => {
+    setCollapsed(next);
+    try { window.localStorage.setItem("erpMapping.collapsed", JSON.stringify(next)); } catch { /* convenience only */ }
+  };
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   // Which document tab of the Document bucket is open; NO_DOC = Document fields not assigned yet.
   const [docTab, setDocTab] = useState("");
@@ -294,7 +307,11 @@ export function ErpFieldMappingPage() {
   const dragStart = (fieldId: string) => (e: DragEvent) => {
     e.dataTransfer.setData(DRAG_MIME, fieldId);
     e.dataTransfer.effectAllowed = "move";
+    setMenuFor(null);
+    // After the browser has taken its drag image - showing the bar at once can cancel the drag.
+    window.setTimeout(() => setDragging(fieldId), 0);
   };
+  const dragEnd = () => { setDragging(null); setDragOver(null); };
   const over = (key: string) => (e: DragEvent) => {
     if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
     e.preventDefault();
@@ -305,6 +322,7 @@ export function ErpFieldMappingPage() {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(null);
+    setDragging(null);
     const id = e.dataTransfer.getData(DRAG_MIME);
     if (!id) return;
     const f = fields.find((x) => x.id === id);
@@ -350,6 +368,28 @@ export function ErpFieldMappingPage() {
   return (
     <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
+      {/* While dragging: every bucket within reach, pinned at the top, wherever the page is scrolled. */}
+      {dragging && (
+        <div className="fixed inset-x-0 top-2 z-50 mx-auto flex w-fit max-w-[95vw] flex-wrap items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+          <span className="px-2 text-xs text-slate-500">Drop on{activeDoc !== NO_DOC ? ` ${docName(activeDoc)}` : ""}:</span>
+          {BUCKETS.map((b) => (
+            <div key={b.key}
+              onDragOver={over(`bar:${b.key}`)}
+              onDragLeave={() => setDragOver((k) => (k === `bar:${b.key}` ? null : k))}
+              onDrop={drop(b.key, undefined, activeDoc)}
+              className={`rounded-lg border-2 border-dashed px-3 py-2 text-xs font-semibold ${b.box} ${b.head} ${dragOver === `bar:${b.key}` ? "ring-2 ring-indigo-400" : ""}`}>
+              {b.icon} {b.title}
+            </div>
+          ))}
+          <div
+            onDragOver={over("bar:none")}
+            onDragLeave={() => setDragOver((k) => (k === "bar:none" ? null : k))}
+            onDrop={drop(null)}
+            className={`rounded-lg border-2 border-dashed border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-200 ${dragOver === "bar:none" ? "ring-2 ring-rose-400" : ""}`}>
+            ✕ Not classified
+          </div>
+        </div>
+      )}
       {/* Header */}
       <OnboardingSteps current={1} groupId={groupId} />
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
@@ -476,6 +516,7 @@ export function ErpFieldMappingPage() {
                               key={f.id}
                               draggable
                               onDragStart={dragStart(f.id)}
+                              onDragEnd={dragEnd}
                               onClick={() => {
                                 setSheet(s.name);
                                 setEditing(f);
@@ -591,57 +632,93 @@ export function ErpFieldMappingPage() {
               </button>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="mb-2 flex items-center justify-end gap-3 text-xs">
+              <button type="button" className="text-slate-500 hover:text-indigo-600" onClick={() => setFold({})}>Expand all</button>
+              <button type="button" className="text-slate-500 hover:text-indigo-600"
+                onClick={() => setFold(Object.fromEntries(BUCKETS.map((b) => [b.key, true])))}>Collapse all</button>
+            </div>
+            <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
               {BUCKETS.map((b) => {
                 const items = inBucket(b.key);
+                const folded = !!collapsed[b.key];
                 return (
                   <div
                     key={b.key}
                     onDragOver={over(`b:${b.key}`)}
                     onDragLeave={() => setDragOver((k) => (k === `b:${b.key}` ? null : k))}
                     onDrop={drop(b.key, undefined, activeDoc)}
-                    className={`flex min-h-[13rem] flex-col rounded-xl border-2 border-dashed p-3 ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
+                    className={`flex flex-col rounded-xl border-2 border-dashed p-3 ${folded ? "" : "min-h-[10rem]"} ${b.box} ${dragOver === `b:${b.key}` ? "ring-2 ring-indigo-300" : ""}`}
                   >
-                    <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setFold({ ...collapsed, [b.key]: !folded })}
+                      className="flex items-center gap-2 text-left" title={folded ? "Expand" : "Collapse"}>
+                      <span className="w-3 text-xs text-slate-400">{folded ? "▸" : "▾"}</span>
                       <span className={`text-lg ${b.head}`}>{b.icon}</span>
-                      <p className={`font-semibold ${b.head}`}>{b.title}</p>
+                      <span className={`font-semibold ${b.head}`}>{b.title}</span>
                       <span className={`ml-auto rounded-full px-2 text-xs font-semibold ${b.badge}`}>{items.length}</span>
-                    </div>
-                    <p className="mb-2 text-xs text-slate-500">
+                    </button>
+                    {!folded && <>
+                    <p className="mb-2 mt-0.5 text-xs text-slate-500">
                       {b.key === "document" && documents.find((d) => d.id === activeDoc)?.fixed
                         ? "Not for Additional Details - a value read off a document goes on that document's tab."
                         : b.key === "document" && activeDoc !== NO_DOC ? `Values read from the ${docName(activeDoc)} document.` : b.help}
                     </p>
-                    <div className="flex flex-1 flex-col gap-2">
+                    <div className="flex max-h-[60vh] flex-1 flex-col gap-1 overflow-y-auto pr-1">
                       {items.map((f) => (
                         <div
                           key={f.id}
                           draggable
                           onDragStart={dragStart(f.id)}
+                          onDragEnd={dragEnd}
                           onDragOver={over(`c:${f.id}`)}
                           onDrop={drop(b.key, f.id, activeDoc)}
                           onClick={() => setEditing(f)}
-                          className={`group relative flex cursor-grab items-start gap-2 rounded-lg border bg-white px-3 py-2 pr-7 shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
+                          title={[`${f.sheet_name}${f.column_key ? ` · column ${f.column_key}` : ""}`, subtitle(f), f.samples.length ? `e.g. ${f.samples.join(" · ")}` : ""].filter(Boolean).join("\n")}
+                          className={`group relative flex cursor-grab items-center gap-2 rounded-md border bg-white px-2 py-1 text-sm shadow-sm dark:bg-slate-900 ${b.card} dark:border-slate-700 ${dragOver === `c:${f.id}` ? "border-t-4 border-t-indigo-500" : ""}`}
                         >
+                          <span className="text-slate-300">⠿</span>
+                          <span className="min-w-0 shrink truncate font-medium text-slate-800 dark:text-slate-100">{label(f)}{f.mandatory && <span className="text-rose-500">*</span>}</span>
+                          <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-400">{f.sheet_name === ERP_UI ? "ERP UI" : `${f.sheet_name}${f.column_key ? `·${f.column_key}` : ""}`}</span>
+                          <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-slate-400">{sampleLine(f) ?? ""}</span>
+                          <button
+                            type="button"
+                            title="Move to…"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const r = e.currentTarget.getBoundingClientRect();
+                              // Open upwards near the bottom of the screen.
+                              setMenuAt({ top: r.bottom + 360 > window.innerHeight ? Math.max(8, r.top - 360) : r.bottom + 4, right: window.innerWidth - r.right });
+                              setMenuFor(menuFor === f.id ? null : f.id);
+                            }}
+                            className="shrink-0 rounded px-1 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-800"
+                          >
+                            ⋯
+                          </button>
                           <button
                             type="button"
                             title="Take it out of this bucket - back to not classified"
                             onClick={(e) => { e.stopPropagation(); void moveTo(f.id, null); }}
-                            className="absolute right-1.5 top-1.5 rounded px-1 text-sm text-slate-300 hover:bg-rose-50 hover:text-rose-600 group-hover:text-slate-500 dark:hover:bg-rose-500/10"
+                            className="shrink-0 rounded px-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600 group-hover:text-slate-500 dark:hover:bg-rose-500/10"
                           >
                             ✕
                           </button>
-                          <span className="mt-0.5 text-slate-300">⠿</span>
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">{label(f)}{f.mandatory && <span className="text-rose-500">*</span>}</p>
-                            <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-400">{f.sheet_name}{f.column_key ? ` · ${f.column_key}` : ""}</p>
-                            {subtitle(f) && <p className="truncate text-xs text-slate-500">{subtitle(f)}</p>}
-                            {sampleLine(f) && <p className="truncate font-mono text-[11px] text-slate-400" title={f.samples.join(" · ")}>e.g. {sampleLine(f)}</p>}
-                          </div>
+                          {menuFor === f.id && (
+                            <MoveMenu
+                              field={f}
+                              documents={documents}
+                              activeDoc={activeDoc}
+                              at={menuAt}
+                              onClose={() => setMenuFor(null)}
+                              onMove={(category, doc) => {
+                                setMenuFor(null);
+                                void moveTo(f.id, category, undefined, doc);
+                                if (doc && doc !== activeDoc) setDocTab(doc);
+                              }}
+                            />
+                          )}
                         </div>
                       ))}
                       {items.length === 0 && (
-                        <div className="flex flex-1 flex-col items-center justify-center rounded-lg text-center text-xs text-slate-400">
+                        <div className="flex flex-1 flex-col items-center justify-center rounded-lg py-6 text-center text-xs text-slate-400">
                           <span className="text-2xl">+</span>
                           Drag fields here
                           {activeDoc !== NO_DOC && <><br />from the {docName(activeDoc)} document</>}
@@ -673,6 +750,7 @@ export function ErpFieldMappingPage() {
                         + Add new field
                       </button>
                     )}
+                    </>}
                   </div>
                 );
               })}
@@ -697,6 +775,7 @@ export function ErpFieldMappingPage() {
                       key={f.id}
                       draggable
                       onDragStart={dragStart(f.id)}
+                      onDragEnd={dragEnd}
                       onClick={() => setEditing(f)}
                       className="flex cursor-grab items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm dark:border-rose-500/30 dark:bg-slate-900 dark:text-slate-200"
                       title={f.samples.length ? `e.g. ${f.samples.join(" · ")}` : undefined}
@@ -871,3 +950,47 @@ function FieldConfigModal({
   );
 }
 
+
+
+/** "Move to…" for one field: another bucket on this document, back to not classified, or the same
+ *  bucket on another document tab - no dragging needed. */
+function MoveMenu({ field, documents, activeDoc, at, onMove, onClose }: {
+  field: ErpField;
+  at: { top: number; right: number };
+  documents: erpApi.ErpDocument[];
+  activeDoc: string;
+  onMove: (category: ErpCategory | null, doc?: string) => void;
+  onClose: () => void;
+}) {
+  const otherDocs = documents.filter((d) => d.id !== activeDoc);
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); onClose(); }} />
+      <div onClick={(e) => e.stopPropagation()} style={{ top: at.top, right: at.right }}
+        className="fixed z-50 max-h-[360px] w-60 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Move to</p>
+        {BUCKETS.filter((b) => b.key !== field.category).map((b) => (
+          <button key={b.key} type="button" onClick={() => onMove(b.key, activeDoc !== NO_DOC ? activeDoc : undefined)}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800">
+            <span className={b.head}>{b.icon}</span><span className="text-slate-700 dark:text-slate-200">{b.title}</span>
+          </button>
+        ))}
+        <button type="button" onClick={() => onMove(null)}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10">
+          ✕ Not classified
+        </button>
+        {otherDocs.length > 0 && field.category && (
+          <>
+            <p className="mt-1 border-t border-slate-100 px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:border-slate-800">Same bucket, other document</p>
+            {otherDocs.map((d) => (
+              <button key={d.id} type="button" onClick={() => onMove(field.category, d.id)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800">
+                📄 {d.name}
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
