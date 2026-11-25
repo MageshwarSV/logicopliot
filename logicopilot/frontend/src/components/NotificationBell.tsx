@@ -3,7 +3,12 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { notificationsApi, type AppNotification } from "../api/notifications";
 import { useAuth } from "../auth/useAuth";
-import { BellIcon, CheckCircleIcon, ExclamationTriangleIcon } from "./ui/icons";
+import {
+  ArrowPathIcon,
+  BellIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+} from "./ui/icons";
 
 /** How often the bell re-checks. Was a minute; the bell now POPS UP a result the moment it is
  *  seen, and the user has just been sent to the dashboard to wait for exactly that - a minute
@@ -18,6 +23,59 @@ const MAX_TOASTS = 3;
  *  new failure (its `at` moves forward) and must pop up again. */
 function occurrence(n: AppNotification): string {
   return `${n.id}@${n.at ?? ""}`;
+}
+
+/** How a notification reads. Was a bare `kind !== "submitted"` boolean, which made every new
+ *  kind an error by default - a job simply being given a different ERP number is neither a
+ *  success nor a failure, it is a fact the operator has to know. */
+type Tone = "ok" | "warn" | "info";
+
+function toneOf(kind: AppNotification["kind"]): Tone {
+  if (kind === "submitted") return "ok";
+  if (kind === "renumbered") return "info";
+  return "warn";
+}
+
+const TONE_RING: Record<Tone, string> = {
+  ok: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400",
+  warn: "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400",
+  info: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-400",
+};
+
+const TONE_BORDER: Record<Tone, string> = {
+  ok: "border-emerald-200 dark:border-emerald-500/30",
+  warn: "border-rose-200 dark:border-rose-500/30",
+  info: "border-indigo-200 dark:border-indigo-500/30",
+};
+
+function ToneIcon({ tone, className }: { tone: Tone; className?: string }) {
+  if (tone === "ok") return <CheckCircleIcon className={className} />;
+  if (tone === "info") return <ArrowPathIcon className={className} />;
+  return <ExclamationTriangleIcon className={className} />;
+}
+
+const TITLES: Record<AppNotification["kind"], string> = {
+  submitted: "Submitted to ERP",
+  failed: "Failed to submit to ERP",
+  password: "Waiting for a zip password",
+  password_reminder: "Still waiting for a zip password",
+  renumbered: "ERP job number changed",
+};
+
+function bodyOf(n: AppNotification): string {
+  switch (n.kind) {
+    case "password":
+    case "password_reminder":
+      return `${n.job_reference} has a password-protected zip - open the job and enter the password.`;
+    case "renumbered":
+      // The old number is in `detail`. Said plainly here because the first thing anyone asks
+      // is "then what happened to the entry I filed yesterday" - it is still in the ERP.
+      return `The rerun was filed in the ERP as a new entry. This job is now ${n.job_reference}.`;
+    case "failed":
+      return `${n.job_reference} could not be entered in the ERP.`;
+    default:
+      return `${n.job_reference} has been submitted to the ERP.`;
+  }
 }
 
 /** What this browser tab has already announced, per user. Module-level rather than component
@@ -185,13 +243,13 @@ export function NotificationBell() {
           <div className="max-h-96 overflow-y-auto">
             {items.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-slate-400">
-                Nothing yet. ERP submissions and failures show up here.
+                Nothing yet. ERP submissions, failures and job-number changes show up here.
               </p>
             ) : (
               items.map((n) => {
-                // A job waiting for a zip password reads as a warning, like a failure.
-                const failed = n.kind !== "submitted";
-                const pw = n.kind === "password" || n.kind === "password_reminder";
+                // A job waiting for a zip password reads as a warning, like a failure; a
+                // renumber reads as neither (see toneOf).
+                const tone = toneOf(n.kind);
                 return (
                   <button
                     key={n.id}
@@ -202,27 +260,17 @@ export function NotificationBell() {
                     }`}
                   >
                     <span
-                      className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-                        failed
-                          ? "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400"
-                          : "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400"
-                      }`}
+                      className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${TONE_RING[tone]}`}
                     >
-                      {failed ? (
-                        <ExclamationTriangleIcon className="h-4 w-4" />
-                      ) : (
-                        <CheckCircleIcon className="h-4 w-4" />
-                      )}
+                      <ToneIcon tone={tone} className="h-4 w-4" />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">
-                        {pw
-                          ? n.kind === "password_reminder" ? "Still waiting for a zip password" : "Waiting for a zip password"
-                          : failed ? "Failed to submit to ERP" : "Submitted to ERP"}
+                        {TITLES[n.kind]}
                       </span>
                       <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
-                        {n.job_reference}
-                        {failed && n.detail ? ` — ${n.detail}` : ""}
+                        {n.kind === "renumbered" ? n.detail || n.job_reference : n.job_reference}
+                        {n.kind === "failed" && n.detail ? ` — ${n.detail}` : ""}
                       </span>
                     </span>
                     <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400">
@@ -253,44 +301,23 @@ export function NotificationBell() {
             className="fixed right-4 top-16 z-[60] flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-2"
           >
             {toasts.map(({ key, n }) => {
-              const failed = n.kind !== "submitted";
-              const pw = n.kind === "password" || n.kind === "password_reminder";
+              const tone = toneOf(n.kind);
               return (
                 <div
                   key={key}
-                  className={`flex items-start gap-3 rounded-xl border bg-white px-4 py-3 shadow-xl dark:bg-slate-900 ${
-                    failed
-                      ? "border-rose-200 dark:border-rose-500/30"
-                      : "border-emerald-200 dark:border-emerald-500/30"
-                  }`}
+                  className={`flex items-start gap-3 rounded-xl border bg-white px-4 py-3 shadow-xl dark:bg-slate-900 ${TONE_BORDER[tone]}`}
                 >
                   <span
-                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-                      failed
-                        ? "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400"
-                        : "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400"
-                    }`}
+                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${TONE_RING[tone]}`}
                   >
-                    {failed ? (
-                      <ExclamationTriangleIcon className="h-4 w-4" />
-                    ) : (
-                      <CheckCircleIcon className="h-4 w-4" />
-                    )}
+                    <ToneIcon tone={tone} className="h-4 w-4" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      {pw
-                        ? n.kind === "password_reminder" ? "Still waiting for a zip password" : "Waiting for a zip password"
-                        : failed ? "Failed to submit to ERP" : "Submitted to ERP"}
+                      {TITLES[n.kind]}
                     </p>
-                    <p className="text-xs text-slate-600 dark:text-slate-300">
-                      {pw
-                        ? `${n.job_reference} has a password-protected zip - open the job and enter the password.`
-                        : failed
-                        ? `${n.job_reference} could not be entered in the ERP.`
-                        : `${n.job_reference} has been submitted to the ERP.`}
-                    </p>
-                    {failed && n.detail && (
+                    <p className="text-xs text-slate-600 dark:text-slate-300">{bodyOf(n)}</p>
+                    {n.kind !== "submitted" && n.detail && (
                       <p className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-400">
                         {n.detail}
                       </p>
