@@ -5458,6 +5458,9 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
             v = fv.value or ""
             if v.strip() or fv.label_name not in d:
                 d[fv.label_name] = v
+    # Which INVOICES row each set became. Left EMPTY when there is nothing to dedupe, and
+    # an empty map means "one row", which is exactly what the sheet prints then.
+    set_to_serial: dict[int, int] = {}
     if len(per_set) > 1:
         # Several SETS does not always mean several invoices - a packing list whose own
         # "Invoice No" reading never matched any invoice's is left unpaired (see
@@ -5468,7 +5471,6 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         from app.core.doc_sets import pairing_key
 
         key_to_serial: dict[str, int] = {}
-        set_to_serial: dict[int, int] = {}
         deduped: list[dict[str, str]] = []
         for k in sorted(per_set):
             key = pairing_key(per_set[k])
@@ -5483,22 +5485,6 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
                 key_to_serial[key] = len(deduped)
         if len(deduped) > 1:
             rows[SET_VALUES_KEY] = deduped
-        # ITEMS.InvSrNo must name a row that EXISTS on the INVOICES sheet. INVOICES writes one
-        # row per DEDUPED invoice, numbered by position; the line items carried the raw set
-        # they came from. Where dedupe changed the count - one invoice reaching the job in two
-        # sets, the usual combined invoice+packing list - the two numberings diverged: INVOICES
-        # held a single row numbered 1 while every item said InvSrNo 2. The ERP imported the
-        # invoice, found no invoice 2 for the items to hang off, and dropped all of them
-        # WITHOUT an error - a job filed with its products missing and nothing on screen to
-        # say so (production 2026-11-25, MAA/SI/03999: 1 invoice row, 22 items all "2").
-        line_sets = rows.get(LINE_SET_KEY)
-        if set_to_serial and isinstance(line_sets, list):
-            def _serial(raw) -> str:
-                try:
-                    return str(set_to_serial.get(int(raw) or 1, 1))
-                except (TypeError, ValueError):
-                    return "1"
-            rows[LINE_SET_KEY] = [_serial(s) for s in line_sets]
 
     # Every "...Address" field, wherever it landed above (job-level, per-row, or per-invoice-
     # set) - re-flowed to the ERP's own line width, not whatever width the source document
@@ -5512,6 +5498,28 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
             continue
         if "address" in label.lower():
             rows[label] = [_wrap_address_lines(v) for v in rows[label]]
+    # ITEMS.InvSrNo must name a row that EXISTS on the INVOICES sheet. INVOICES writes one
+    # row per invoice it actually prints, numbered by POSITION; the line items carried the raw
+    # SET they came from, and a set index is not a position. They agree only by luck.
+    #
+    # Production 2026-11-25, MAA/SI/03999: the invoice sat in set 2 alone, so INVOICES printed
+    # ONE row numbered 1 while all 22 items said InvSrNo 2. The ERP imported the invoice, found
+    # no invoice 2 for the items to hang off, dropped every product and raised NO error - the
+    # entry filed empty and the run reported ok.
+    #
+    # Runs for EVERY job, not only when dedupe fires: an empty set_to_serial means the sheet
+    # prints a single row, so every line belongs to row 1 whatever set number it carries. A
+    # first attempt at this lived inside `if len(per_set) > 1`, which is exactly the branch
+    # this job never entered.
+    line_sets = rows.get(LINE_SET_KEY)
+    if isinstance(line_sets, list):
+        def _serial(raw) -> str:
+            try:
+                return str(set_to_serial.get(int(raw) or 1, 1))
+            except (TypeError, ValueError):
+                return "1"
+        rows[LINE_SET_KEY] = [_serial(s) for s in line_sets]
+
     for d in rows.get(SET_VALUES_KEY) or []:
         for label in list(d):
             if "address" in label.lower():

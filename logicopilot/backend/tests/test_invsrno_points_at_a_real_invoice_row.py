@@ -129,3 +129,33 @@ def test_a_single_invoice_job_is_untouched(db_session):
 
     assert _invoice_count(rows) == 1
     assert rows[LINE_SET_KEY] == ["1", "1"]
+
+
+def test_a_lone_invoice_in_set_2_still_numbers_its_items_1(db_session):
+    """THE production case, which a first attempt at this fix missed.
+
+    MAA/SI/03999's invoice sat in set 2 on its own - set 1 held only an unpaired packing
+    list, which `invoice_sets` filters out, so there was exactly ONE invoice set and its
+    index was 2. INVOICES printed one row numbered 1; every item said 2.
+
+    The first fix lived inside `if len(per_set) > 1`, the dedupe branch - which this job
+    never enters, because after filtering there is only one set. A set index is not a
+    position, and the mapping has to run whether or not anything was deduped.
+    """
+    tenant = make_tenant(db_session)
+    job = _job(db_session, tenant, "JOB-INVSRNO-5")
+    # Only set 2 carries an invoice; set 1's values are a stray packing list with no
+    # invoice number of its own, so invoice_sets drops it.
+    _job_level(db_session, job, "Invoice No", 2, "CI26110005")
+    _job_level(db_session, job, "Invoice Date", 2, "02-Nov-2026")
+    for r in (1, 2, 3):
+        _line(db_session, job, "product_description", 2, r, f"PART {r}")
+    db_session.commit()
+
+    _values, rows = entry_values_and_rows(db_session, job)
+
+    assert _invoice_count(rows) == 1
+    assert rows[LINE_SET_KEY] == ["1", "1", "1"], (
+        "the one invoice prints as row 1, so its items must say 1 - "
+        f"got {rows[LINE_SET_KEY]}"
+    )
