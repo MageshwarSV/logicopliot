@@ -487,7 +487,7 @@ export function ScreenDesignerPage() {
   const docName = template?.documents.find((d) => d.id === docId)?.name ?? "";
 
   return (
-    <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card. Changes save straight away.">
+    <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card - layout only. Changes save straight away.">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
       {inOnboarding && <OnboardingSteps current={5} groupId={groupId} />}
       {/* Pickers */}
@@ -669,6 +669,13 @@ export function ScreenDesignerPage() {
                 {docName} · as the operator sees it, with {previewJob ? "the preview job's values" : design ? "the onboarding values (Step 2 box reading, else the ERP Excel value)" : "the preview job's values"}. Drag fields and section headings; double-click a label to rename it.
               </p>
               <ColourKeyPreview />
+              {unplaced.length > 0 && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                  <span className="font-semibold">{unplaced.length} field{unplaced.length === 1 ? " is" : "s are"} not on the screen</span>
+                  {" - the operator will not see "}{unplaced.length === 1 ? "it" : "them"}: {unplaced.slice(0, 6).map((f) => f.display_label || f.label_name).join(", ")}
+                  {unplaced.length > 6 ? ` and ${unplaced.length - 6} more` : ""}. Drag {unplaced.length === 1 ? "it" : "them"} in from "Not placed" on the left.
+                </div>
+              )}
               {layout.sections.map((s, i) => (
                 <div
                   key={s.id}
@@ -898,7 +905,6 @@ function FieldProperties({
     || layout.product_card.fields.includes(field.ref)
     || layout.product_card.groups.some((g) => g.fields.includes(field.ref));
 
-  const optionsText = (field.fixed_options ?? []).join("\n");
 
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -971,42 +977,27 @@ function FieldProperties({
         <input type="checkbox" checked={field.multiline} onChange={(e) => void save({ multiline: e.target.checked }, { multiline: e.target.checked })} />
         Multi-line box (addresses, long text)
       </label>
-      <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-        <input type="checkbox" checked={field.mandatory} onChange={(e) => void save({ ask_operator_required: e.target.checked }, { mandatory: e.target.checked })} />
-        Mandatory (blocks approval when empty)
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-slate-500">
-        Dropdown choices (one per line - empty = a text box)
-        <textarea
-          defaultValue={optionsText}
-          rows={4}
-          onBlur={(e) => {
-            const list = e.target.value.split("\n").map((x) => x.trim()).filter(Boolean);
-            if (list.join("\n") !== optionsText) void save({ fixed_options: list.length ? list : null }, { fixed_options: list.length ? list : null });
-          }}
-          className="rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-        />
-      </label>
-      {field.fixed_options?.length ? (
-        <label className="flex flex-col gap-1 text-xs text-slate-500">
-          Dropdown style
-          <select
-            value={field.dropdown_style ?? "plain"}
-            onChange={(e) => void save({ dropdown_style: e.target.value }, { dropdown_style: e.target.value })}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-          >
-            <option value="plain">Plain list</option>
-            <option value="search">Search, pick only</option>
-            <option value="search_free">Search, or type anything</option>
-          </select>
-        </label>
-      ) : null}
+      {/* Behaviour belongs to Step 4 (one owner per setting): shown here, changed there. */}
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs dark:border-slate-700 dark:bg-slate-800/40">
+        <p className="mb-1 font-medium text-slate-600 dark:text-slate-300">Behaviour</p>
+        <div className="flex flex-wrap gap-1">
+          <span className={`rounded-full px-2 py-0.5 ${field.mandatory ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>
+            {field.mandatory ? "Mandatory" : "Optional"}
+          </span>
+          <span className="rounded-full bg-slate-200 px-2 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+            {field.fixed_options?.length ? `Dropdown · ${field.fixed_options.length} choices` : "Text box"}
+          </span>
+        </div>
+        <Link to={`/super-admin/onboarding/field-config?customer=${groupId}`} className="mt-1.5 inline-block font-medium text-indigo-600 hover:underline dark:text-indigo-300">
+          Change mandatory / choices in Step 4 Field Configuration →
+        </Link>
+      </div>
       {inLayout && (
         <Button size="sm" variant="secondary" onClick={() => onLayout(withoutRef(layout, field.ref))}>
           Take out of the layout
         </Button>
       )}
-      <p className="text-[11px] text-slate-400">{saving ? "Saving…" : "Label, width, multi-line, mandatory and dropdown are saved on the field itself (the same settings as the template wizard)."}</p>
+      <p className="text-[11px] text-slate-400">{saving ? "Saving…" : "The Screen Designer is layout only: label on the screen, width and multi-line are saved on the field. How a field behaves is Step 4."}</p>
     </div>
   );
 }
