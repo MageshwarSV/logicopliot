@@ -1,14 +1,20 @@
 import { apiClient } from "./client";
 
-/** The two things that happen to a job after the operator has moved on from it. */
+/** The things that happen to a job after the operator has moved on from it. */
 export interface AppNotification {
   /** "<kind>:<job id>" - there is no notification row, so this is what identifies one. */
   id: string;
-  /** "password" / "password_reminder": a job waiting for a zip password (see HeldPasswordPanel). */
-  kind: "submitted" | "failed" | "password" | "password_reminder";
+  /**
+   * "password" / "password_reminder": a job waiting for a zip password (see HeldPasswordPanel).
+   * "renumbered": the job was re-run and the ERP filed it as a NEW entry under a new job
+   * number - the old one is never reused. job_reference is already the new number; `detail`
+   * carries "<old> -> <new>", which is what the operator needs to find the stale entry in
+   * SOFTLINK and delete it.
+   */
+  kind: "submitted" | "failed" | "password" | "password_reminder" | "renumbered";
   job_id: string;
   job_reference: string;
-  /** Why it failed, for kind "failed". */
+  /** Why it failed (kind "failed"), or "<old number> -> <new number>" (kind "renumbered"). */
   detail?: string | null;
   at?: string | null;
   read: boolean;

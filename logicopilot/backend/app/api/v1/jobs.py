@@ -3360,11 +3360,11 @@ def mark_erp_submitted(
         f"(ERP job number {erp_job_no}) - the automation crashed on an unrelated later screen "
         "and reported this run as failed by mistake."
     )
-    # Same "placeholder reference -> the ERP's own job number" promotion persist_run_outcome
-    # already does on a real success - this job may not have gone through that path cleanly if
-    # the crash happened before it got there.
-    if re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
-        job.reference = erp_job_no
+    # Same promotion persist_run_outcome already does on a real success - this job may not
+    # have gone through that path cleanly if the crash happened before it got there. No
+    # previous number is passed: nothing re-ran here, so only an untouched placeholder moves,
+    # which is exactly what this did before.
+    _adopt_erp_job_no(db, job, erp_job_no)
     db.commit()
     db.refresh(job)
     return _build_detail(db, job)
@@ -5858,6 +5858,56 @@ def learn_unscripted_alerts(db: Session, script, alerts: list[dict] | None) -> i
     return added
 
 
+# The prefix every "the ERP gave this job a different number" JobEvent carries, so the
+# notification bell can find them again without a column of its own (see
+# app/api/v1/notifications.py, kind "renumbered").
+RENUMBER_NOTE = "ERP job number changed"
+
+
+def _adopt_erp_job_no(db: Session, job: Job, erp_job_no: str,
+                      previous_job_no: str | None = None) -> None:
+    """Move the job's reference onto the number the ERP actually gave this run.
+
+    A job's reference starts as a placeholder ("JOB-7F3A9C" - see generate_job_no()) and is
+    promoted to the ERP's own job number the first time an entry succeeds: from then on that
+    number IS the job's identity everywhere - the page title, the Jobs list, the Entry
+    Browser, the E-Docket's "JOB No." field, which all read this one value.
+
+    A RERUN does not reuse the old number. The ERP files a brand new entry with a brand new
+    job number, and until now nothing moved the reference onto it: the promotion only ever
+    fired on an untouched placeholder, so a job that had already been submitted once kept
+    showing the number of the entry it was re-run to replace. Live, 2026-11-25:
+    MAA/SI/03999/26-27 was re-run, the ERP filed it as MAA/SI/04008/26-27, and every screen
+    still said 03999 - including the one the operator uses to find the entry in SOFTLINK.
+
+    Only ever moves a reference WE set. Two cases qualify:
+
+      * an untouched placeholder - nobody has named this job yet;
+      * the number the previous run read back off the ERP - we put it there, so it is ours
+        to move.
+
+    A reference a person typed is left exactly as it is, which is the rule the placeholder
+    check already encoded and the reason `previous_job_no` is passed in rather than guessed.
+
+    The change is written to the job's history as well, which is what puts it on the bell.
+    """
+    old = (job.reference or "").strip()
+    if not erp_job_no or old == erp_job_no:
+        return
+    placeholder = bool(re.fullmatch(r"JOB-[0-9A-F]{6}", old))
+    if not placeholder and old != (previous_job_no or "").strip():
+        # Somebody's own label for this job. Not ours to rename.
+        return
+    job.reference = erp_job_no
+    if placeholder:
+        # The first real number this job has ever had. Nothing "changed" - the placeholder was
+        # never a number anyone went looking for - and announcing it on every single job would
+        # make the bell useless. The "Submitted to ERP" notification already covers this.
+        return
+    db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status, stage=None,
+                    note=f"{RENUMBER_NOTE}: {old} → {erp_job_no}"))
+
+
 def persist_run_outcome(db: Session, job: Job, script, result: dict,
                         operator_id: str | None = None) -> dict:
     """Write down what an ERP run did, and decide the job's status from it.
@@ -5882,6 +5932,10 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     # The reference the ERP generated (Bill of Entry number / acknowledgement) is the only
     # durable proof the entry happened on their side. Kept even on a failed or duplicate
     # outcome - a run that got far enough to read it is exactly when it is needed.
+    # Read BEFORE the new run overwrites it: this is how _adopt_erp_job_no knows the
+    # reference on the job is one WE put there (and may move) rather than a label a person
+    # typed (which it must leave alone).
+    previous_job_no = ((job.erp_captured or {}).get("ERP_Job_No") or {}).get("value", "").strip()
     if result.get("captured"):
         job.erp_captured = {k: v for k, v in result["captured"].items() if v}
     # A picture of where a FAILED run actually stopped, persisted the same way a successful
@@ -6015,14 +6069,10 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     # not" as "submitted", so this alone is enough; nothing else needs to change.
     if job.ai_submitted_at is None:
         job.ai_submitted_at = datetime.now(timezone.utc)
-    # A job auto-created from an incoming email (or any job that never got a real reference of
-    # its own) carries a placeholder ("JOB-7F3A9C" - see generate_job_no()) until the real ERP
-    # entry exists. The moment it does, the ERP's own job number IS the job's real identity -
-    # the placeholder has done its job and should stop being what everyone sees (the page
-    # title, the Jobs list, the E-Docket's own "JOB No." field, which reads this same value).
-    # Only ever replaces an untouched placeholder, never a reference someone set on purpose.
-    if re.fullmatch(r"JOB-[0-9A-F]{6}", job.reference or ""):
-        job.reference = erp_job_no
+    # The ERP's own job number IS this job's identity from here on - for a first submission
+    # (promoting the placeholder) and equally for a RERUN, which the ERP files under a new
+    # number every time. See _adopt_erp_job_no for which references it will and will not move.
+    _adopt_erp_job_no(db, job, erp_job_no, previous_job_no)
     db.commit()
     return erp
 
