@@ -250,3 +250,53 @@ def test_one_letter_codes_are_kept_and_code_label_options_give_the_code(db_sessi
     assert fill_operator_defaults(db_session, job) == ["AdvancePriorNormal = P (first choice)"]
     vals = {fv.label_name: fv.value for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
     assert vals == {"BETypeCode": "I", "AdvancePriorNormal": "P"}
+
+
+def _quotation_setup(db_session, doc_q):
+    tenant, group, job = _setup(db_session)
+    q = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="Erp Entry Name", kind="hardcoded",
+                    ask_operator=True, ask_operator_required=True, is_target_value=True)
+    db_session.add(q)
+    db_session.commit()
+    for name in ("AIT WORLDWIDE LOGISTICS INDIA PRIVATE LIMITED", "EXPEDITORS INTERNATIONAL (INDIA) PVT LTD",
+                 "KUEHNE+NAGEL PVT LTD"):
+        db_session.add(CustomFieldReferenceValue(custom_field_id=q.id, match_value_1=name, resolved_value=name))
+    if doc_q:
+        db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, label_name="Quotation Name",
+                                     extracted_value=doc_q))
+    db_session.commit()
+    return job
+
+
+def test_quotation_name_comes_from_the_document_forwarder_not_the_first_row(db_session):
+    job = _quotation_setup(db_session, "Expeditors International India Pvt")
+    with patch("app.core.auto_erp_match.ai_choose", return_value=0), patch(KICK) as kick:
+        assert maybe_auto_submit(db_session, job) is True
+    kick.assert_called_once()
+    v = db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                               JobFieldValue.label_name == "Erp Entry Name").one().value
+    assert v == "EXPEDITORS INTERNATIONAL (INDIA) PVT LTD"
+    assert "AIT" not in job.auto_erp_note
+
+
+def test_nothing_blocks_unmatched_customer_goes_with_the_first_option(db_session):
+    job = _quotation_setup(db_session, None)
+    with patch("app.core.auto_erp_match.ai_choose", return_value=None), patch(KICK) as kick:
+        assert maybe_auto_submit(db_session, job) is True
+    kick.assert_called_once()
+    v = db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                               JobFieldValue.label_name == "Erp Entry Name").one().value
+    assert v == "AIT WORLDWIDE LOGISTICS INDIA PRIVATE LIMITED"
+    assert "check it in the ERP" in job.auto_erp_note
+
+
+def test_nothing_blocks_missing_document_still_goes(db_session):
+    from app.models.template_document import TemplateDocument
+
+    tenant, group, job = _setup(db_session)
+    db_session.add(TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice", is_required=True))
+    db_session.commit()
+    with patch(KICK) as kick:
+        assert maybe_auto_submit(db_session, job) is True
+    kick.assert_called_once()
+    assert "Sent without: Invoice" in job.auto_erp_note

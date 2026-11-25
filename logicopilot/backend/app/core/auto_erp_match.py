@@ -7,6 +7,9 @@ its branches. In auto mode (app/core/auto_erp.py) the system picks instead:
     against the master: first an exact match once company words are normalised ("Pvt. Ltd." =
     "PRIVATE LIMITED"), preferring the job's importer country; when several names are close the
     AI chooses among the closest few; nothing close = left blank.
+  * Quotation name - the Document Quotation Name (the forwarder read off the documents) matched
+    the same way against the customer's quotation list; a forwarder's overseas office (e.g.
+    "Expeditors International (UK) BFS") may be billed through its Indian company.
   * A branch (importer or quotation) - the only one, else the one naming the job's branch
     (Bangalore), else the AI chooses using the consignee address on the document, else the first.
   * Junk rows ("." and the like) are never chosen.
@@ -75,7 +78,7 @@ def ai_choose(question: str, candidates: list[str], tenant_id: str | None) -> in
 
 
 def match_name(doc_name: str | None, options: list[dict], country: str | None = None,
-               tenant_id: str | None = None) -> tuple[str | None, str]:
+               tenant_id: str | None = None, *, question: str | None = None) -> tuple[str | None, str]:
     """(master value, how it was chosen) for a company name read off the documents.
     options: [{"value", "match_values": [name, country, ...]}] as the reference list gives them."""
     target = norm_company(doc_name)
@@ -108,10 +111,11 @@ def match_name(doc_name: str | None, options: list[dict], country: str | None = 
     if top[0][1] >= 0.92 and (len(top) == 1 or top[0][1] - top[1][1] >= 0.08):
         return top[0][0], "close match"
     pick = ai_choose(
-        f'A customs document names the importer "{doc_name}"'
-        + (f" (country {want_country})" if want_country else "")
-        + ". Which of these entries in the ERP's importer list is the SAME company? "
-          "Different countries or different legal entities are not the same company.",
+        question.format(doc_name=doc_name) if question else (
+            f'A customs document names the importer "{doc_name}"'
+            + (f" (country {want_country})" if want_country else "")
+            + ". Which of these entries in the ERP's importer list is the SAME company? "
+              "Different countries or different legal entities are not the same company."),
         [v for v, _ in top], tenant_id)
     if pick is not None:
         return top[pick][0], "AI match"
@@ -140,3 +144,11 @@ def pick_branch(options: list[str], *, job_branch: str | None = None, address: s
         if pick is not None:
             return opts[pick], "AI from the consignee address"
     return opts[0], "first branch"
+
+
+QUOTATION_QUESTION = (
+    'The shipment documents name the freight forwarder "{doc_name}". The options are the '
+    "customs broker's own customers (the companies it bills). Which option is this forwarder? "
+    "A forwarder's office abroad (UK, US, ...) counts as its Indian company in the list, but a "
+    "different forwarder group never does - answer 0 if none is the same group."
+)

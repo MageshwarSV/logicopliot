@@ -33,11 +33,12 @@ export function AutoErpSettingsPanel({ tenantId, canAllow }: { tenantId: string;
   return (
     <div className="space-y-4">
       <p className="text-xs text-slate-500 dark:text-slate-400">
-        When on, a job goes to the ERP the moment extraction finishes, with no review in Cargora.
-        The customer corrects anything in the ERP. Cross-document rule failures do not stop it, and an
-        empty pick field (e.g. ERP Quotation Branch) gets its first option. A job is never sent while a
-        mandatory document is missing or while it is flagged as a possible duplicate. Failed runs show
-        as Failed in Cargora for someone to retry.
+        When on, nothing in Cargora stops the job: it goes to the ERP the moment extraction finishes,
+        with no review, validation or approval here, and the customer corrects anything in the ERP.
+        Empty pick fields are filled from the documents (quotation customer, importer, branch), else
+        with the first option. Missing documents and cross-document rule failures do not stop it. Only
+        a job flagged as a possible duplicate is not sent, so the ERP never gets the same shipment
+        twice. Failed ERP runs show as Failed in Cargora for someone to retry.
       </p>
 
       <label className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${data.allowed ? "border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10" : "border-slate-200 dark:border-slate-700"}`}>
