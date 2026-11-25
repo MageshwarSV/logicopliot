@@ -163,6 +163,12 @@ def invoice_number_from_tokens(doc_type: str, tokens: list[dict] | None) -> str 
             got = _value_under_label(words, head, tails)
             if got:
                 return got
+        # The same label written short ("Comm. Inv.", "Inv. No") - before the bare word
+        # "Invoice" below, which on such a page can only find the title "COMMERCIAL INVOICE"
+        # and the Purchase Order number under it (see _SHORT_INVOICE_LABELS).
+        got = _value_under_short_invoice_label(words)
+        if got:
+            return got
         # Nothing carried a TWO-word label. Some suppliers label the number with the single
         # word "Invoice" and print it straight after: Allison Transmission's "COMMERCIAL
         # INVOICE AND PACKING LIST" reads "Invoice  94286287", so neither the two-word layout
@@ -221,6 +227,98 @@ def _value_under_label(words: list[dict], head: str, tails: frozenset) -> str | 
                         return key
     except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency: a token
         # dict missing a coordinate must cost the layout read, not the classification.
+        pass
+    return None
+
+
+# The invoice-number label written SHORT, and where its number sits:
+#   "Comm. Inv."           a column heading, number UNDER it. Vishay (JOB-A0D519) prints three
+#                          invoices in one PDF, one per page, each numbered under "Comm. Inv. /
+#                          Delivery Note". No page carries "Invoice No", so the only label the
+#                          layout read could see was the title "COMMERCIAL INVOICE" - and the
+#                          value under THAT is the Purchase Order number. Read that way, two
+#                          different invoices for the same PO would be one.
+#   "Inv No:" / "Inv #"    an inline label, number to its RIGHT ("INV NO: IY26110509" - four of
+#                          those in one PDF on MAA/AI/34368/26-27 were read as one invoice).
+#                          Looking under it first found the address or payment terms below.
+_SHORT_INVOICE_LABELS = (
+    (frozenset({"comm", "commercial"}), frozenset({"inv"}), ("below", "right")),
+    (frozenset({"inv"}), frozenset({"no", "number", "nr", "#"}), ("right", "below")),
+)
+
+
+def _label_word(text: str | None) -> str:
+    """A label word compared on its letters only: the OCR splits "Comm. Inv. /" into
+    "Comm" "." "Inv" "." "/" on one page and glues "Inv./Delivery" together on the next."""
+    t = (text or "").strip().lower()
+    if t == "#":
+        return t
+    m = re.search(r"[a-z0-9]+", t)
+    return m.group(0) if m else ""
+
+
+def _value_right_of(words: list[dict], lx1: float, ly0: float) -> str | None:
+    """The value printed after an inline label, put back together: the OCR hands
+    "AFY26-D395" over as "AFY26" "-" "D395" and "SQT-2026111101" as "SQT" "-" "2026111101", and
+    the first piece alone ("AFY26") would be the same for every invoice in that series. Pieces
+    are joined while they touch; a real space starts the next candidate."""
+    line = sorted((c for c in words if abs(c["y0"] - ly0) < 0.012 and c["x0"] >= lx1 - 0.002),
+                  key=lambda c: c["x0"])
+    segments: list[list[dict]] = []
+    for c in line:
+        if not re.search(r"[A-Za-z0-9]", c.get("text") or "") and not segments:
+            continue                                     # the label's own ":" / ".:"
+        if segments and c["x0"] - segments[-1][-1]["x1"] <= 0.004:
+            segments[-1].append(c)
+        else:
+            segments.append([c])
+    for seg in segments:
+        if seg[0]["x0"] > lx1 + 0.15:                    # too far over: the next column
+            break
+        value = "".join((c.get("text") or "").strip() for c in seg).strip(":,;.-/")
+        if looks_like_invoice_number(value):
+            key = normalise_key(value)
+            if len(key) >= MIN_KEY_LEN:
+                return key
+    return None
+
+
+def _value_under_short_invoice_label(words: list[dict]) -> str | None:
+    """The number printed with "Comm. Inv." / "Inv. No" / "Inv #" (see _SHORT_INVOICE_LABELS)."""
+    try:
+        keyed = [(w, _label_word(w.get("text"))) for w in words]
+        keyed = [(w, k) for w, k in keyed if k]          # the lone "." and "/" tokens drop out
+        for (a, ka), (b, kb) in zip(keyed, keyed[1:]):
+            order = next((o for first, second, o in _SHORT_INVOICE_LABELS
+                          if ka in first and kb in second), None)
+            if order is None:
+                continue
+            # Both words on ONE line, side by side - not "Comm" ending one line and "Inv"
+            # starting the next.
+            if abs(a["y0"] - b["y0"]) >= 0.012 or not (a["x0"] <= b["x0"] <= a["x1"] + 0.05):
+                continue
+            lx0, lx1 = min(a["x0"], b["x0"]), max(a["x1"], b["x1"])
+            ly0, ly1 = min(a["y0"], b["y0"]), max(a["y1"], b["y1"])
+
+            def below(c: dict) -> bool:
+                return (ly1 - 0.004 <= c["y0"] <= ly1 + 0.06
+                        and c["x0"] < lx1 + 0.02 and c["x1"] > lx0 - 0.02)
+
+            for where in order:
+                if where == "right":
+                    got = _value_right_of(words, lx1, ly0)
+                    if got:
+                        return got
+                    continue
+                hits = [c for c in words
+                        if c is not a and c is not b
+                        and looks_like_invoice_number(c.get("text", "")) and below(c)]
+                if hits:
+                    hits.sort(key=lambda c: (round(c["y0"], 3), c["x0"]))
+                    key = normalise_key(hits[0]["text"].strip().strip(":,;."))
+                    if len(key) >= MIN_KEY_LEN:
+                        return key
+    except Exception:  # noqa: BLE001 - geometry is a bonus, never a hard dependency.
         pass
     return None
 
