@@ -820,3 +820,46 @@ def delete_document_sample(sample_id: str, db: Session = Depends(get_db),
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+# ---- Step 4: test an AI-Derived field on the template's samples ---------------------------------
+
+@router.post("/custom-fields/{field_id}/test-ai")
+def test_ai_field(field_id: str, db: Session = Depends(get_db),
+                  _: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Run one AI-Derived field's rule over the text of the template's sample documents (the
+    documents it reads, else all of them) and return what it answers on each - nothing is saved.
+    The same extraction call a job makes for an AI field."""
+    from app.api.v1.field_marks import _document_dir
+    from app.core.docai import get_page_ocr
+    from app.core.extraction import extract_document_fields
+
+    cf = db.get(CustomField, field_id)
+    if cf is None:
+        raise HTTPException(status_code=404, detail="Field not found")
+    if not (cf.ai_prompt or "").strip():
+        raise HTTPException(status_code=422, detail="Write the AI rule first.")
+    docs = _template_docs(db, cf.group_id)
+    wanted = set(cf.source_document_ids or [])
+    if wanted:
+        docs = [d for d in docs if d.id in wanted]
+    spec = [{"label": cf.label_name, "prompt": cf.ai_prompt, "variations": [], "description": cf.ai_prompt}]
+    results = []
+    for td in docs:
+        if not td.page_count:
+            results.append({"document": td.name, "value": None, "note": "no sample uploaded"})
+            continue
+        parts = []
+        for p in range(1, td.page_count + 1):
+            try:
+                o = get_page_ocr(_document_dir(td.id), p)
+                parts.append(o.get("layout_text") or o.get("text") or "")
+            except Exception:  # noqa: BLE001 - a page that cannot be read is skipped
+                continue
+        text = "\n".join(parts)
+        if not text.strip():
+            results.append({"document": td.name, "value": None, "note": "no text read from the sample"})
+            continue
+        value = extract_document_fields(text, spec).get(cf.label_name)
+        results.append({"document": td.name, "value": value, "note": None})
+    return {"field": cf.label_name, "results": results}

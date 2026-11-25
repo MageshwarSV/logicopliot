@@ -10,12 +10,15 @@ import {
   OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen,
 } from "../../components/onboarding/OnboardingSteps";
 import { LiveTemplatePanel } from "../../components/onboarding/LiveTemplatePanel";
+import { LiveBehaviourPanel } from "../../components/onboarding/LiveBehaviourPanel";
 
 // Customer Onboarding - Step 4: Field Configuration. One tab per value source; click a field to
 // configure it. Fixed (value, per-importer values, shown or hidden), Operator Input (question,
 // hint, input type, choices, default, mandatory) and Reference (Quotation / Importer Master or
 // the field's own table, picked within another field, what it fills, operator pick or auto).
-// AI-Derived, Formula and Document are configured in the next rounds.
+// AI-Derived (rule + documents + Test), Formula (pieces + preview) and Document (label, mandatory,
+// input, choices, validation, cross-document checks) are set on the live field in "How it
+// behaves" (LiveBehaviourPanel) - Step 4 owns how every field behaves (recommended workflow).
 
 const TABS: { key: ErpCategory; label: string; ready: boolean; tone: string; next: string }[] = [
   { key: "reference", label: "Reference", ready: true, tone: "text-amber-800 dark:text-amber-300", next: "" },
@@ -26,11 +29,11 @@ const TABS: { key: ErpCategory; label: string; ready: boolean; tone: string; nex
   // (pick by, fallback, transform, fixed / per-row values); a box's extraction prompt, format
   // rule, validation and cross-document checks.
   { key: "ai", label: "Calculated (AI-Derived)", ready: false, tone: "text-violet-700 dark:text-violet-300",
-    next: "AI instruction, the documents it reads, validation and operator settings - on the live template field. Use \"Get an AI suggestion\" / Test in its settings." },
+    next: "The AI rule and the documents it reads, tested on the template samples; plus label, mandatory, input and validation." },
   { key: "formula", label: "Calculated (Formula / Rule)", ready: false, tone: "text-teal-700 dark:text-teal-300",
-    next: "Join other fields (with separators) on the live field, and the ERP Excel column rules: choose between fields, fallback fields, transform, fixed or per-row values." },
+    next: "The pieces it joins (fields or fixed text) with the separator before each, previewed with Excel examples; the ERP Excel column rules are below." },
   { key: "document", label: "Document", ready: false, tone: "text-blue-700 dark:text-blue-300",
-    next: "Extraction prompt, label variations, format rule (with check), validation, table rows and cross-document checks - on the live box. Draw the box in Step 2 to create it." },
+    next: "Label, mandatory, input type, choices, validation and cross-document checks. Where it sits is Step 2; how it is read (prompt, format rule) is Step 3." },
 ];
 
 function errorText(err: unknown, fallback: string): string {
@@ -82,6 +85,15 @@ export function ErpFieldConfigPage() {
   const list = inTab(tab).filter((f) => !q || `${f.excel_name} ${f.display_label ?? ""} ${f.sheet_name}`.toLowerCase().includes(q));
   const field = fields.find((f) => f.id === selected && f.category === tab) ?? null;
   const tabInfo = TABS.find((t) => t.key === tab)!;
+  // Example values by field name (ERP Excel column / screen label), for the formula preview.
+  const samples = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const f of fields) {
+      if (!f.samples.length) continue;
+      for (const k of [f.excel_name, f.display_label]) if (k && !(k in out)) out[k] = String(f.samples[0]);
+    }
+    return out;
+  }, [fields]);
 
   useEffect(() => { setSelected(null); }, [tab]);
 
@@ -160,7 +172,7 @@ export function ErpFieldConfigPage() {
                   >
                     <span className={`block text-sm font-semibold ${t.tone}`}>{t.label}</span>
                     <span className="block text-xs text-slate-400">
-                      {all.length} field{all.length === 1 ? "" : "s"}{t.ready ? ` · ${done} set` : " · live template settings"}
+                      {all.length} field{all.length === 1 ? "" : "s"}{t.ready ? ` · ${done} set` : " · on the live field"}
                     </span>
                   </button>
                 );
@@ -214,8 +226,10 @@ export function ErpFieldConfigPage() {
                     {(field.formula || field.ai_prompt || field.erp_master_ref) && (
                       <p className="text-xs text-slate-500">Note from Step 1: {field.formula || field.ai_prompt || field.erp_master_ref}</p>
                     )}
-                    {/* Everything this field needs, set on the live template field it fills. */}
-                    <LiveTemplatePanel key={field.id} groupId={groupId} erpFieldId={field.id} />
+                    {/* How it behaves, on the live field it fills - then the link / column rules. */}
+                    <LiveBehaviourPanel key={`beh-${field.id}`} groupId={groupId} erpFieldId={field.id} category={field.category}
+                      mode="full" samples={samples} beforeSave={confirmLiveEdit} onMessage={(tone, text) => setMessage({ tone, text })} />
+                    <LiveTemplatePanel key={field.id} groupId={groupId} erpFieldId={field.id} compact />
                   </div>
                 )}
                 {field && field.category === "fixed" && <FixedPanel key={field.id} field={field} onSave={(p) => saveField(field, p)} />}
@@ -224,7 +238,9 @@ export function ErpFieldConfigPage() {
                   <ReferencePanel key={field.id} field={field} fields={fields} onSave={(p) => saveField(field, p)} />
                 )}
                 {field && tabInfo.ready && (
-                  <div className="mt-4">
+                  <div className="mt-4 flex flex-col gap-4">
+                    <LiveBehaviourPanel key={`beh-${field.id}`} groupId={groupId} erpFieldId={field.id} category={field.category}
+                      mode="extras" samples={samples} beforeSave={confirmLiveEdit} onMessage={(tone, text) => setMessage({ tone, text })} />
                     <LiveTemplatePanel key={`live-${field.id}`} groupId={groupId} erpFieldId={field.id} compact />
                   </div>
                 )}

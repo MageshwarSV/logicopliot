@@ -747,7 +747,6 @@ export function ScreenDesignerPage() {
               onDeselect={() => setSelected(null)}
               onError={setMessage}
               groupId={groupId}
-              onRenamed={() => void loadDocument()}
             />
           </Card>
         </div>
@@ -765,7 +764,7 @@ export function ScreenDesignerPage() {
 }
 
 function PropertiesPanel({
-  selected, layout, fieldByRef, onLayout, onFieldSaved, onDeselect, onError, groupId, onRenamed,
+  selected, layout, fieldByRef, onLayout, onFieldSaved, onDeselect, onError, groupId,
 }: {
   selected: Selection;
   layout: ScreenLayout;
@@ -775,7 +774,6 @@ function PropertiesPanel({
   onDeselect: () => void;
   onError: (msg: string) => void;
   groupId: string;
-  onRenamed: () => void;
 }) {
   if (!selected) {
     return (
@@ -843,13 +841,12 @@ function PropertiesPanel({
       onFieldSaved={onFieldSaved}
       onError={onError}
       groupId={groupId}
-      onRenamed={onRenamed}
     />
   );
 }
 
 function FieldProperties({
-  field, layout, onLayout, onFieldSaved, onError, groupId, onRenamed,
+  field, layout, onLayout, onFieldSaved, onError, groupId,
 }: {
   field: DesignerField;
   layout: ScreenLayout;
@@ -857,38 +854,8 @@ function FieldProperties({
   onFieldSaved: (ref: string, patch: Partial<DesignerField>) => void;
   onError: (msg: string) => void;
   groupId: string;
-  onRenamed: () => void;
 }) {
   const [saving, setSaving] = useState(false);
-  // Parameter (internal) name: a safe rename - the server refuses it, with the reason, when
-  // anything that cannot follow depends on the name.
-  const [paramOpen, setParamOpen] = useState(false);
-  const [paramName, setParamName] = useState(field.label_name);
-  const [usage, setUsage] = useState<designerApi.FieldUsage | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const openParam = async () => {
-    setParamOpen(true);
-    setParamName(field.label_name);
-    setUsage(null);
-    try { setUsage(await designerApi.fieldUsage(groupId, field.ref)); } catch { onError("Could not check where this name is used."); }
-  };
-  const doRename = async () => {
-    const name = paramName.trim();
-    if (!name || name === field.label_name) { setParamOpen(false); return; }
-    setRenaming(true);
-    try {
-      const res = await designerApi.renameParameter(groupId, field.ref, name);
-      onFieldSaved(field.ref, { label_name: res.name });
-      setParamOpen(false);
-      onRenamed();
-    } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onError(detail ?? "Could not rename the parameter.");
-    } finally {
-      setRenaming(false);
-    }
-  };
-
   const save = async (patch: designerApi.FieldPatch, local: Partial<DesignerField>) => {
     setSaving(true);
     try {
@@ -912,35 +879,8 @@ function FieldProperties({
         <p className="font-semibold text-slate-700 dark:text-slate-200">Field</p>
         <p className="font-mono text-[11px] text-slate-400">
           {field.label_name}
-          <button type="button" onClick={() => void openParam()} className="ml-2 font-sans text-indigo-600 hover:underline">rename parameter</button>
+          <Link to={`/super-admin/onboarding/field-config?customer=${groupId}`} className="ml-2 font-sans text-indigo-600 hover:underline">rename in Step 4</Link>
         </p>
-        {paramOpen && (
-          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800/50">
-            <p className="text-[11px] text-slate-500">Parameter name - the internal name the ERP Excel, scripts and saved values use.</p>
-            <input
-              value={paramName}
-              onChange={(e) => setParamName(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
-            />
-            {!usage && <p className="mt-1 text-[11px] text-slate-400">Checking where it is used…</p>}
-            {usage && usage.blocks.length > 0 && (
-              <ul className="mt-1 list-disc pl-4 text-[11px] text-rose-600">
-                {usage.blocks.map((b) => <li key={b}>{b}</li>)}
-              </ul>
-            )}
-            {usage && usage.auto.length > 0 && (
-              <ul className="mt-1 list-disc pl-4 text-[11px] text-emerald-700 dark:text-emerald-300">
-                {usage.auto.map((a) => <li key={a}>{a}</li>)}
-              </ul>
-            )}
-            <div className="mt-2 flex gap-2">
-              <Button size="sm" disabled={!usage?.allowed} isLoading={renaming} onClick={() => void doRename()}>
-                {usage && !usage.allowed ? "Cannot rename" : "Rename"}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setParamOpen(false)}>Cancel</Button>
-            </div>
-          </div>
-        )}
         <p className="text-[11px] text-slate-400">
           {field.source === "custom" ? `Job-level field (${field.kind})` : field.place === "card" ? "One per product line" : "Read off this document"}
         </p>

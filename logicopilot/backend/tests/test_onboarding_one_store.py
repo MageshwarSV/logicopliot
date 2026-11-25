@@ -84,3 +84,26 @@ def test_clear_box_removes_an_unused_live_box_on_a_draft_template(client, db_ses
     assert "removed" in r["message"]
     db_session.expire_all()
     assert db_session.get(FieldMark, mark_id) is None
+
+
+def test_ai_field_test_runs_the_saved_rule_on_the_samples(client, db_session, setup):
+    from unittest.mock import patch
+
+    from app.models.template_document import TemplateDocument
+
+    origin = setup["origin"]
+    cf_id = client.post(f"{TPL}/{origin.id}/template-field", json={}).json()["custom_field_id"]
+    awb = db_session.get(TemplateDocument, setup["awb"].id)
+    awb.page_count = 1
+    db_session.commit()
+    with patch("app.core.docai.get_page_ocr", return_value={"layout_text": "Origin: GB"}), \
+         patch("app.core.extraction.extract_document_fields", return_value={"CountryOfOriginCode": "GB"}) as ex:
+        r = client.post(f"/api/v1/onboarding/template/custom-fields/{cf_id}/test-ai")
+    assert r.status_code == 200, r.text
+    by = {x["document"]: x for x in r.json()["results"]}
+    assert by["Air Waybill"]["value"] == "GB"
+    assert by["Invoice"]["note"] == "no sample uploaded"
+    assert ex.call_args[0][1][0]["prompt"] == "Most common origin, 2 letters"
+    # no rule -> refused
+    client.patch(f"/api/v1/custom-fields/{cf_id}", json={"ai_prompt": ""})
+    assert client.post(f"/api/v1/onboarding/template/custom-fields/{cf_id}/test-ai").status_code == 422

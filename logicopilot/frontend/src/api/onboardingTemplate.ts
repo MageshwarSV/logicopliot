@@ -255,3 +255,11 @@ export function apiError(e: unknown, fallback: string): string {
   if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg);
   return fallback;
 }
+
+/** Step 4: run an AI-Derived field's rule over the template's sample documents (nothing saved). */
+export async function testAiField(customFieldId: string): Promise<{
+  field: string; results: { document: string; value: string | null; note: string | null }[];
+}> {
+  const { data } = await apiClient.post(`/onboarding/template/custom-fields/${customFieldId}/test-ai`);
+  return data;
+}
