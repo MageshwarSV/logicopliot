@@ -6,8 +6,7 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
-import { TemplateFieldEditor } from "../../components/onboarding/TemplateFieldEditor";
-import { getLinks, putTemplateBox, type FieldRef } from "../../api/onboardingTemplate";
+import { putTemplateBox } from "../../api/onboardingTemplate";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -176,7 +175,6 @@ export function ErpDocumentMappingPage() {
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   // The live template field a box belongs to - its full settings popup (like the old Document
   // Templates "Name this field" popup) opens after a box is drawn, or from the field's row.
-  const [liveField, setLiveField] = useState<{ ref: FieldRef; name: string } | null>(null);
 
   const customer = customers.find((c) => c.group_id === groupId) ?? null;
   const workbookId = customer?.workbook?.id ?? "";
@@ -240,26 +238,15 @@ export function ErpDocumentMappingPage() {
       setMessage({ tone: "warn", text: errorText(err, "Could not save the box.") });
       return;
     }
-    // The same box on the live template (created or moved), then its settings popup.
+    // The same box on the live template (created or moved). Step 2 is only WHERE a value sits:
+    // how it is read is Step 3, how it behaves Step 4 - no settings popup here.
     try {
       const live = await putTemplateBox(selectedField.id, { page, ...b, line_item: lineDefault });
-      setLiveField({ ref: live.ref, name: live.label });
       setMessage(live.warning
         ? { tone: "warn", text: live.warning }
         : { tone: "ok", text: `${live.created ? "Created" : "Moved"} "${live.label}" on the live template.` });
     } catch (err) {
       setMessage({ tone: "warn", text: `Box saved here, but not on the live template: ${errorText(err, "unknown error")}` });
-    }
-  };
-
-  const openLive = async (f: DocMappingField) => {
-    try {
-      const l = await getLinks(groupId);
-      const hit = l.fields.find((x) => x.erp_field_id === f.id);
-      if (hit?.ref) setLiveField({ ref: hit.ref, name: hit.label ?? f.excel_name });
-      else setMessage({ tone: "warn", text: `"${f.excel_name}" is not on the live template yet - draw its box to create it.` });
-    } catch (err) {
-      setMessage({ tone: "warn", text: errorText(err, "Could not read the live template.") });
     }
   };
 
@@ -477,12 +464,17 @@ export function ErpDocumentMappingPage() {
                       {f.mark && on && (
                         <div className="mt-1">
                           <p className="truncate font-mono text-[11px] text-slate-600 dark:text-slate-300">Read: {f.mark.detected_value || "—"}</p>
+                          {f.mark.anchor && (
+                            <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title="The caption printed next to the value - it finds the value on other layouts">
+                              Anchor: <span className="font-medium text-slate-700 dark:text-slate-200">{f.mark.anchor}</span>
+                            </p>
+                          )}
                           <p className="text-[11px] font-medium" style={{ color: TONE[res ?? "no-excel"] }}>
                             {res === "match" ? "✓ matches the Excel" : res === "differs" ? "⚠ differs from the Excel - check the box" : res === "no-read" ? "Nothing read inside the box" : "No Excel value to compare"}
                             {" · page "}{f.mark.page}
                           </p>
                           <div className="mt-1 flex items-center gap-3 text-[11px]" onClick={(e) => e.stopPropagation()}>
-                            <label className="flex items-center gap-1 text-slate-500">
+                            <label className="flex items-center gap-1 text-slate-500" title="Tick for a product-table column: draw the box on its first row and every row is read">
                               <input type="checkbox" checked={f.mark.line_item}
                                 onChange={(e) => erpApi.setMarkLineItem(f.id, e.target.checked).then((mark) => replaceField(f.id, { mark }))
                                   .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not save.") }))} />
@@ -496,10 +488,11 @@ export function ErpDocumentMappingPage() {
                                 .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not clear.") }))}>
                               Clear box
                             </button>
-                            <button type="button" className="font-semibold text-indigo-600 hover:underline dark:text-indigo-300"
-                              onClick={() => void openLive(f)}>
-                              All field settings
-                            </button>
+                            <Link to={`/super-admin/onboarding/prompts?customer=${groupId}`}
+                              className="font-semibold text-indigo-600 hover:underline dark:text-indigo-300"
+                              title="How this value is read - prompt, label variations, format rule and a test - is Step 3">
+                              Reading &amp; test → Step 3
+                            </Link>
                           </div>
                         </div>
                       )}
@@ -517,13 +510,6 @@ export function ErpDocumentMappingPage() {
           </div>
         )}
       </div>
-      <TemplateFieldEditor
-        groupId={groupId}
-        fieldRef={liveField?.ref ?? null}
-        open={!!liveField}
-        onClose={() => setLiveField(null)}
-        heading={liveField ? <span>Drawn in Document Mapping · {liveField.name}</span> : undefined}
-      />
     </AppShell>
   );
 }

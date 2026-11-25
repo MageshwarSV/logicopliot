@@ -24,7 +24,8 @@ import type { CorrectedField } from "../../api/extractionCorrections";
 
 // Every setting of ONE live template field (a box drawn on a document, or a custom field), in
 // one place - the same data the old Document Templates / Data Transformation screens edit,
-// saved through the same routes. Opened from Customer Onboarding Steps 1, 2 and 4.
+// saved through the same routes. Opened from Customer Onboarding Steps 1, 3 (reading), 4 and 6 -
+// not from Step 2, which is only where a value sits.
 
 type Draft = Record<string, unknown>;
 export type TemplateFieldSection =
