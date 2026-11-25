@@ -279,10 +279,24 @@ def test_quotation_name_comes_from_the_document_forwarder_not_the_first_row(db_s
     assert "AIT" not in job.auto_erp_note
 
 
-def test_quotation_name_that_cannot_be_worked_out_holds_the_job(db_session):
+def test_nothing_blocks_unmatched_customer_goes_with_the_first_option(db_session):
     job = _quotation_setup(db_session, None)
     with patch("app.core.auto_erp_match.ai_choose", return_value=None), patch(KICK) as kick:
-        assert maybe_auto_submit(db_session, job) is False
-    kick.assert_not_called()
-    assert job.auto_erp_submitted is False
-    assert "held" in job.auto_erp_note and "ERP Quotation Name" in job.auto_erp_note
+        assert maybe_auto_submit(db_session, job) is True
+    kick.assert_called_once()
+    v = db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                               JobFieldValue.label_name == "Erp Entry Name").one().value
+    assert v == "AIT WORLDWIDE LOGISTICS INDIA PRIVATE LIMITED"
+    assert "check it in the ERP" in job.auto_erp_note
+
+
+def test_nothing_blocks_missing_document_still_goes(db_session):
+    from app.models.template_document import TemplateDocument
+
+    tenant, group, job = _setup(db_session)
+    db_session.add(TemplateDocument(tenant_id=tenant.id, group_id=group.id, name="Invoice", is_required=True))
+    db_session.commit()
+    with patch(KICK) as kick:
+        assert maybe_auto_submit(db_session, job) is True
+    kick.assert_called_once()
+    assert "Sent without: Invoice" in job.auto_erp_note
