@@ -14,6 +14,7 @@ import { listMailboxes, updateMailbox, type ConnectedMailbox } from "../../api/e
 import { listErpScripts, updateErpScript } from "../../api/erpScripts";
 import type { ErpScript } from "../../types/erpScript";
 import { CombinedDescriptionConfigModal } from "../jobs/CombinedDescriptionConfigModal";
+import { setStatus as setOnboardingStatus } from "../../api/onboardingErp";
 import { DOC_TYPES, MODES, type DemoResult, type ReferenceSheet } from "../../types/onboarding";
 import {
   apiError, deleteClassifierSample, getClassifierSamples, getLinks, getLiveGroup, getPromptHistory, getTemplateUsers,
@@ -122,7 +123,7 @@ export function OnboardingTemplateSettingsPage() {
               group.status === "approved" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
                 : group.status === "changes_requested" ? "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300"
                 : "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`}>
-              {group.status === "approved" ? "Approved - operators can run it" : group.status === "changes_requested" ? "Changes requested" : `Status: ${group.status}`}
+              {group.status === "approved" ? "● Live - operators can use it" : group.status === "changes_requested" ? "Changes requested - not live" : "In testing - not live yet"}
             </span>
           )}
           <div className="ml-auto">
@@ -145,6 +146,8 @@ export function OnboardingTemplateSettingsPage() {
           </Card>
         )}
         {groupId && !group && <Card className="p-10 text-center text-sm text-slate-500">Loading…</Card>}
+
+        {group && <GoLiveCard group={group} act={act} />}
 
         {group && (
           <div className="grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)]">
@@ -192,6 +195,124 @@ export function OnboardingTemplateSettingsPage() {
 }
 
 type Act = (fn: () => Promise<unknown>, ok: string) => Promise<void>;
+
+// ---- Finish setup: make the template live ------------------------------------------------------------
+//
+// "Live" = status approved: the only status operators see in New Job (jobs.available_groups).
+// Before that, a checklist: blocking problems stop it, warnings are shown but allowed.
+
+type Check = { ok: boolean; level: "block" | "warn"; text: string; fix?: string };
+
+function GoLiveCard({ group, act }: { group: LiveGroup; act: Act }) {
+  const [open, setOpen] = useState(false);
+  const [checks, setChecks] = useState<Check[] | null>(null);
+  const [workbookId, setWorkbookId] = useState<string | null>(null);
+  const live = group.status === "approved";
+
+  async function runChecks() {
+    setChecks(null);
+    setOpen(true);
+    const out: Check[] = [];
+    const docs = group.documents;
+    const required = docs.filter((d) => d.is_required !== false);
+    const boxes = (d: (typeof docs)[number]) => d.marks.filter((m) => m.width > 0).length;
+
+    out.push({ ok: docs.length > 0, level: "block", text: docs.length ? `${docs.length} document(s) set up` : "The template has no documents", fix: "Step 0 / Template Settings → Documents" });
+    const noSample = docs.filter((d) => !d.is_uploaded);
+    out.push({ ok: !noSample.length, level: "warn", text: noSample.length ? `No sample yet: ${noSample.map((d) => d.name).join(", ")}` : "Every document has a sample", fix: "Template Settings → Documents → Upload sample" });
+    const noBox = required.filter((d) => boxes(d) === 0);
+    out.push({ ok: !noBox.length, level: "block", text: noBox.length ? `Required document(s) with no box drawn: ${noBox.map((d) => d.name).join(", ")}` : "Every required document has its boxes", fix: "Step 2 Document Mapping" });
+
+    if (group.entry_mode === "excel") {
+      const sheets = ((group.excel_config as { sheets?: unknown[] } | null)?.sheets ?? []).length
+        || ((group.excel_config as { columns?: unknown[] } | null)?.columns?.length ? 1 : 0);
+      out.push({ ok: sheets > 0, level: "block", text: sheets ? `ERP Excel mapping: ${sheets} sheet(s)` : "ERP Excel import is on but no sheet is mapped", fix: "Step 1 → Live template → ERP Excel column rules" });
+    }
+    try {
+      const l = await getLinks(group.id);
+      setWorkbookId(l.workbook_id);
+      const loose = l.fields.filter((f) => f.category && !f.ref);
+      out.push({ ok: !loose.length, level: "warn",
+        text: loose.length ? `${loose.length} classified onboarding field(s) not connected to the live template (they will not be filled): ${loose.slice(0, 6).map((f) => f.excel_name).join(", ")}${loose.length > 6 ? "…" : ""}` : "Every classified field is connected to the live template",
+        fix: "Step 1 / Step 4 → Live template → Link or Create" });
+    } catch { /* no onboarding workbook - nothing to check */ }
+    try {
+      const scripts = await listErpScripts(group.tenant_id);
+      const ready = scripts.find((s) => (s.template_ids ?? []).includes(group.id) && s.status === "ready");
+      out.push({ ok: !!ready, level: "warn", text: ready ? `ERP script ready: ${ready.name}` : "No ready ERP script linked - jobs can be extracted but not sent to the ERP", fix: "Template Settings → ERP entry & scripts" });
+    } catch { /* scripts unreadable - skip */ }
+    const noFormat = docs.flatMap((d) => d.marks).filter((m) => m.width > 0 && m.ask_operator && !m.ask_operator_hint).length;
+    if (noFormat) out.push({ ok: false, level: "warn", text: `${noFormat} operator question(s) have no hint for the operator`, fix: "Field settings → Operator" });
+    setChecks(out);
+  }
+
+  const blocked = (checks ?? []).some((c) => !c.ok && c.level === "block");
+
+  async function goLive() {
+    await act(async () => {
+      if (workbookId) { try { await erpApiSetComplete(workbookId); } catch { /* onboarding status is informational */ } }
+      await reviewsApi.approveTemplate(group.id);
+    }, `"${group.name}" is live - operators can now pick it in New Job.`);
+    setOpen(false);
+  }
+
+  return (
+    <>
+      <Card className={`mb-4 flex flex-wrap items-center gap-4 p-5 ${live ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-500/30 dark:bg-emerald-500/5" : "border-indigo-300 bg-indigo-50/50 dark:border-indigo-500/30 dark:bg-indigo-500/5"}`}>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
+            {live ? "This template is live" : "Finish setup and make this template live"}
+          </p>
+          <p className={HELP}>
+            {live
+              ? "Operators can pick it in New Job and every mail / upload for it runs with these settings."
+              : "Until then only Super Admins can test it - operators do not see it in New Job. A quick check runs first."}
+          </p>
+        </div>
+        {live ? (
+          <Button variant="secondary" onClick={() => window.confirm(`Take "${group.name}" off live? Operators will no longer see it in New Job; jobs already created are not affected.`)
+            && act(() => onboardingApi.finalizeGroup(group.id), `"${group.name}" is back in testing - operators no longer see it.`)}>
+            Take off live (back to testing)
+          </Button>
+        ) : (
+          <Button onClick={() => void runChecks()}>✓ Finish setup — make template live</Button>
+        )}
+      </Card>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={() => setOpen(false)}>
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+            <p className="text-lg font-semibold text-slate-900 dark:text-slate-50">Make "{group.name}" live?</p>
+            <p className={`mb-4 ${HELP}`}>Operators will see it in New Job and its mails / uploads run with these settings.</p>
+            {!checks && <p className="py-6 text-center text-sm text-slate-500">Checking the template…</p>}
+            {checks && (
+              <ul className="flex flex-col gap-2">
+                {checks.map((c, i) => (
+                  <li key={i} className={`rounded-lg border px-3 py-2 text-sm ${c.ok ? "border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+                    : c.level === "block" ? "border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-500/10" : "border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10"}`}>
+                    <span className="font-medium">{c.ok ? "✓" : c.level === "block" ? "✗" : "⚠"} {c.text}</span>
+                    {!c.ok && c.fix && <span className={`block ${HELP}`}>Fix in: {c.fix}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {checks && blocked && <p className="mt-3 text-sm font-medium text-rose-700 dark:text-rose-300">Fix the ✗ items first - the template cannot go live with them.</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setOpen(false)}>Not yet</Button>
+              <Button disabled={!checks || blocked} onClick={() => void goLive()}>
+                {checks && checks.some((c) => !c.ok) && !blocked ? "Make live anyway" : "Make live now"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+async function erpApiSetComplete(workbookId: string) {
+  await setOnboardingStatus(workbookId, "complete");
+}
 
 // ---- Documents -------------------------------------------------------------------------------------
 
@@ -609,9 +730,9 @@ function TransformSection({ group, act, openField }: { group: LiveGroup; act: Ac
           </div>
         ))}
       </Section>
-      <Section title="Approval" help="Operators can run the template once it is approved. Not approving sends the message to the template's inbox.">
+      <Section title="Approval" help="Approving makes the template live (same as the green button at the top, without its checklist). Not approving sends the message to the template's inbox.">
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => act(async () => { if (changed.length) await saveAll(); await reviewsApi.approveTemplate(group.id); }, "Template approved.")}>Approve template</Button>
+          <Button onClick={() => act(async () => { if (changed.length) await saveAll(); await reviewsApi.approveTemplate(group.id); }, "Template approved - it is live.")}>Approve (make live)</Button>
         </div>
         <textarea className={INPUT} rows={2} placeholder="What needs changing (for Not approve)" value={why} onChange={(e) => setWhy(e.target.value)} />
         <div><Button variant="danger" size="sm" disabled={!why.trim()} onClick={() => act(() => reviewsApi.requestChanges(group.id, why.trim()), "Changes requested.")}>Not approve</Button></div>
