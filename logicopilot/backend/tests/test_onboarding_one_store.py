@@ -136,3 +136,37 @@ def test_generate_prompts_fills_only_missing_and_logs_a_regenerate(client, db_se
         assert regen["generated"] == 1
     hist = db_session.query(PromptChange).filter(PromptChange.mark_id == mark_id).one()
     assert hist.action == "regenerate" and hist.old_prompt == "Read HAWB_No v1"
+
+
+def test_end_to_end_test_compares_the_built_excel_with_the_customers(client, db_session, setup):
+    from types import SimpleNamespace as NS
+    from unittest.mock import patch
+
+    from app.models.template_document import TemplateDocument
+
+    group = db_session.get(TemplateGroup, setup["group"].id)
+    group.excel_config = {"sheets": [{"sheet": "GENERAL", "header_row": 1, "scope": "job", "columns": [
+        {"column": "I", "header": "PortOfShipmentCode", "field": "Shipment Port Code"},
+        {"column": "B", "header": "HAWB_No", "field": "HAWB_No"},
+        {"column": "H", "header": "CountryOfOriginCode", "field": "Origin AI"},
+    ]}]}
+    setup["cf"].hardcoded_value = "INMAA4"
+    db_session.add(CustomField(tenant_id=setup["tenant"].id, group_id=group.id, label_name="Origin AI", kind="ai",
+                               ai_prompt="x"))
+    setup["port"].samples = ["INMAA4"]
+    setup["hawb"].samples = ["H123"]
+    setup["origin"].samples = ["GB"]
+    db_session.get(TemplateDocument, setup["awb"].id).page_count = 1
+    db_session.commit()
+
+    demo = NS(results=[NS(label_name="HAWB_No", extracted_value="H999", extracted_values=None, mark_id="m1", matched_anchor=None)])
+    with patch("app.api.v1.field_marks.demo_extract", return_value=demo):
+        r = client.post(f"/api/v1/onboarding/template/groups/{group.id}/end-to-end-test")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    cols = {c["header"]: c for c in body["sheets"][0]["columns"]}
+    assert cols["PortOfShipmentCode"]["status"] == "match"                  # fixed value
+    assert cols["HAWB_No"]["status"] == "differs" and cols["HAWB_No"]["read_from"] == "Air Waybill"
+    assert cols["CountryOfOriginCode"]["status"] == "on_job"                # AI: filled on a real job
+    assert body["summary"]["match"] == 1 and body["summary"]["differs"] == 1 and body["summary"]["match_rate"] == 50
+    assert "Invoice" in body["unread_documents"]

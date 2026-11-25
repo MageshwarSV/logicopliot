@@ -17,9 +17,10 @@ import type { MailProvider } from "../../types/auth";
 import type { ErpScript } from "../../types/erpScript";
 import { CombinedDescriptionConfigModal } from "../jobs/CombinedDescriptionConfigModal";
 import { setStatus as setOnboardingStatus } from "../../api/onboardingErp";
+import * as autoErpApi from "../../api/autoErp";
 import { DOC_TYPES, MODES, type DemoResult, type ReferenceSheet } from "../../types/onboarding";
 import {
-  addTemplateDocument, apiError, createLiveCustomField, deleteClassifierSample, deleteTemplateDocument, getClassifierSamples, getLinks, getLiveGroup, getPromptHistory, getTemplateUsers,
+  addTemplateDocument, apiError, createLiveCustomField, endToEndTest, type E2eResult, deleteClassifierSample, deleteTemplateDocument, getClassifierSamples, getLinks, getLiveGroup, getPromptHistory, getTemplateUsers,
   patchMark, renameDocument, setDocumentManualEntry, setDocumentOrder, setDocumentType, setImporterRequiresGstin,
   setPrealertShipments, setTemplateUser,
   type ClassifierSample, type FieldRef, type LiveGroup, type PromptHistoryRow, type SpecialName, type TemplateUser,
@@ -36,9 +37,11 @@ const HELP = "text-[11px] leading-snug text-slate-500 dark:text-slate-400";
 
 type SectionKey =
   | "documents" | "fields" | "rules" | "mail" | "processing" | "erp" | "reference" | "crossdoc"
-  | "combined" | "users" | "samples" | "approval" | "names";
+  | "combined" | "users" | "samples" | "approval" | "names" | "e2e" | "auto";
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
+  { key: "e2e", label: "End-to-end test" },
+  { key: "auto", label: "Auto ERP Submission" },
   { key: "documents", label: "Documents" },
   { key: "fields", label: "Template fields" },
   { key: "rules", label: "Template rules" },
@@ -84,7 +87,7 @@ export function Section({ title, help, children, actions }: { title: string; hel
 export function OnboardingTemplateSettingsPage() {
   const groupId = useOnboardingCustomer("customer");
   const [group, setGroup] = useState<LiveGroup | null>(null);
-  const [section, setSection] = useState<SectionKey>("documents");
+  const [section, setSection] = useState<SectionKey>("e2e");
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [edit, setEdit] = useState<{ ref: FieldRef; section?: TemplateFieldSection } | null>(null);
@@ -165,6 +168,8 @@ export function OnboardingTemplateSettingsPage() {
             </Card>
 
             <div className="flex min-w-0 flex-col gap-4">
+              {section === "e2e" && <EndToEndSection group={group} />}
+              {section === "auto" && <AutoErpSection group={group} />}
               {section === "documents" && <DocumentsSection group={group} act={act} />}
               {section === "fields" && <FieldsSection group={group} act={act} openField={openField} />}
               {section === "rules" && <RulesSection group={group} act={act} />}
@@ -244,6 +249,18 @@ function GoLiveCard({ group, act }: { group: LiveGroup; act: Act }) {
       const ready = scripts.find((s) => (s.template_ids ?? []).includes(group.id) && s.status === "ready");
       out.push({ ok: !!ready, level: "warn", text: ready ? `ERP script ready: ${ready.name}` : "No ready ERP script linked - jobs can be extracted but not sent to the ERP", fix: "Template Settings → ERP entry & scripts" });
     } catch { /* scripts unreadable - skip */ }
+    const noPrompt = docs.flatMap((d) => d.marks).filter((m) => m.width > 0 && !(m.extraction_prompt ?? "").trim());
+    out.push({ ok: !noPrompt.length, level: "warn",
+      text: noPrompt.length ? `${noPrompt.length} field(s) have no reading prompt: ${noPrompt.slice(0, 5).map((m) => m.label_name).join(", ")}${noPrompt.length > 5 ? "…" : ""}` : "Every box has a reading prompt",
+      fix: "Step 3 Prompts & Test → Generate missing prompts" });
+    const e2e = lastE2e(group.id);
+    if (group.entry_mode === "excel") {
+      out.push(!e2e
+        ? { ok: false, level: "warn", text: "The end-to-end test has not been run in this session", fix: "Template Settings → End-to-end test" }
+        : { ok: e2e.summary.differs + e2e.summary.missing === 0, level: "warn",
+            text: `End-to-end test: ${e2e.summary.match_rate ?? 0}% of compared ERP Excel columns match the customer's Excel (${e2e.summary.differs} differ, ${e2e.summary.missing} empty)`,
+            fix: "Step 2 / 3 / 4, then run the end-to-end test again" });
+    }
     const noFormat = docs.flatMap((d) => d.marks).filter((m) => m.width > 0 && m.ask_operator && !m.ask_operator_hint).length;
     if (noFormat) out.push({ ok: false, level: "warn", text: `${noFormat} operator question(s) have no hint for the operator`, fix: "Field settings → Operator" });
     setChecks(out);
@@ -410,7 +427,7 @@ function FieldsSection({ group, act, openField }: { group: LiveGroup; act: Act; 
     .sort((a, b) => a.label.localeCompare(b.label));
 
   return (
-    <Section title="Template fields" help="Every field of the live template - boxes drawn on documents and fields worked out another way. Open one for all its settings, or add a field that is not an ERP Excel column (e.g. an operator question)."
+    <Section title="Template fields" help="Every field of the live template - boxes drawn on documents and fields worked out another way. How a field behaves is set in Step 4 Field Configuration; Advanced opens every setting. Add a field here only when it is not an ERP Excel column (e.g. an operator question)."
       actions={<input className={`${INPUT} w-56`} placeholder="Search fields" value={q} onChange={(e) => setQ(e.target.value)} />}>
       <div className="grid gap-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5 sm:grid-cols-[1fr_16rem_auto]">
         <input className={INPUT} placeholder="New field name, e.g. Duty Payment Method" value={name} onChange={(e) => setName(e.target.value)} />
@@ -431,7 +448,8 @@ function FieldsSection({ group, act, openField }: { group: LiveGroup; act: Act; 
               <b>{r.shown || r.label}</b>{r.shown && <span className={`ml-1 ${HELP}`}>({r.label})</span>}
               <span className={`ml-2 ${HELP}`}>{r.where}{r.flags.length ? ` · ${r.flags.join(" · ")}` : ""}</span>
             </span>
-            <Button size="sm" variant="secondary" onClick={() => openField(r.ref)}>Open</Button>
+            <Link to={`/super-admin/onboarding/field-config?customer=${group.id}`} className="shrink-0 text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-300">Configure in Step 4</Link>
+            <Button size="sm" variant="ghost" onClick={() => openField(r.ref)}>Advanced</Button>
           </div>
         ))}
         {!rows.length && <p className={HELP}>No fields{q ? ` match "${q}"` : " yet"}.</p>}
@@ -987,6 +1005,147 @@ function ApprovalSection({ group, act }: { group: LiveGroup; act: Act }) {
     <Section title="Approval" help="Making the template live is the green Finish setup button at the top - one Make Live, always with its checklist. Not approving sends the message to the template's inbox.">
       <textarea className={INPUT} rows={2} placeholder="What needs changing (for Not approve)" value={why} onChange={(e) => setWhy(e.target.value)} />
       <div><Button variant="danger" size="sm" disabled={!why.trim()} onClick={() => act(() => reviewsApi.requestChanges(group.id, why.trim()), "Changes requested.")}>Not approve</Button></div>
+    </Section>
+  );
+}
+
+// ---- End-to-end test (phase G) ----------------------------------------------------------------------
+//
+// Samples read with the live prompts -> fixed values and formulas added -> the ERP Excel built as a
+// job builds it -> every column compared with the customer's own ERP Excel. The last result is kept
+// for this browser session so the Go Live checklist can show it.
+
+const E2E_KEY = (groupId: string) => `onboarding.e2e.${groupId}`;
+function lastE2e(groupId: string): E2eResult | null {
+  try { const raw = sessionStorage.getItem(E2E_KEY(groupId)); return raw ? JSON.parse(raw) as E2eResult : null; } catch { return null; }
+}
+
+const E2E_TONE: Record<string, string> = {
+  match: "text-emerald-700 dark:text-emerald-300", differs: "text-amber-700 dark:text-amber-300",
+  missing: "text-rose-700 dark:text-rose-300", on_job: "text-slate-500", extra: "text-slate-500",
+};
+const E2E_TEXT: Record<string, string> = {
+  match: "✓ matches", differs: "⚠ differs", missing: "✗ empty", on_job: "filled on the job", extra: "not in the customer's Excel",
+};
+
+function EndToEndSection({ group }: { group: LiveGroup }) {
+  const [result, setResult] = useState<E2eResult | null>(() => lastE2e(group.id));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [onlyProblems, setOnlyProblems] = useState(true);
+  async function run() {
+    setBusy(true); setError(null);
+    try {
+      const r = await endToEndTest(group.id);
+      setResult(r);
+      try { sessionStorage.setItem(E2E_KEY(group.id), JSON.stringify(r)); } catch { /* ignore */ }
+    } catch (e) { setError(apiError(e, "Could not run the test.")); }
+    finally { setBusy(false); }
+  }
+  const s = result?.summary;
+  return (
+    <Section title="End-to-end test" help="Reads every document's sample with the live prompts, adds the fixed values and formulas, builds the ERP Excel exactly as a job does, and compares every column with the customer's own ERP Excel. Nothing is saved. AI, reference and operator values are filled on a real job."
+      actions={<Button size="sm" isLoading={busy} onClick={() => void run()}>{result ? "Run again" : "Run the end-to-end test"}</Button>}>
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      {!result && !busy && <p className={HELP}>Run it once Steps 2-4 are done - it is the proof the whole configuration produces the customer's Excel.</p>}
+      {busy && <p className="text-sm text-slate-500">Reading the samples and building the Excel… (about a minute)</p>}
+      {result && s && (
+        <>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {[
+              ["Match rate", s.match_rate == null ? "—" : `${s.match_rate}%`, "text-indigo-700 dark:text-indigo-300"],
+              ["Match", s.match, E2E_TONE.match], ["Differ", s.differs, E2E_TONE.differs],
+              ["Empty", s.missing, E2E_TONE.missing], ["Filled on the job", s.on_job, E2E_TONE.on_job],
+            ].map(([label, value, tone]) => (
+              <div key={label as string} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                <p className={HELP}>{label}</p>
+                <p className={`text-xl font-semibold tabular-nums ${tone}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+          {result.unread_documents.length > 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">No sample read for: {result.unread_documents.join(", ")}.</p>
+          )}
+          <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+            <input type="checkbox" checked={onlyProblems} onChange={(e) => setOnlyProblems(e.target.checked)} /> Show only columns that differ or are empty
+          </label>
+          {result.sheets.map((sh) => {
+            const cols = sh.columns.filter((c) => !onlyProblems || c.status === "differs" || c.status === "missing");
+            if (!cols.length) return null;
+            return (
+              <div key={sh.sheet} className="rounded-xl border border-slate-200 dark:border-slate-700">
+                <p className="border-b border-slate-100 px-3 py-2 text-sm font-semibold dark:border-slate-800">{sh.sheet} <span className={HELP}>· {sh.scope} · {sh.rows_built} row(s) built</span></p>
+                <table className="w-full text-left text-xs">
+                  <thead className="text-slate-500"><tr>
+                    <th className="px-3 py-1.5 font-medium">Column</th><th className="px-3 py-1.5 font-medium">Field</th>
+                    <th className="px-3 py-1.5 font-medium">Customer's Excel</th><th className="px-3 py-1.5 font-medium">Built by Cargora</th>
+                    <th className="px-3 py-1.5 font-medium">Result</th>
+                  </tr></thead>
+                  <tbody>{cols.map((c, i) => (
+                    <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
+                      <td className="px-3 py-1.5">{c.header}{c.column ? <span className="text-slate-400"> ({c.column})</span> : null}</td>
+                      <td className="px-3 py-1.5 text-slate-500">{c.field || "fixed"}{c.read_from ? ` · ${c.read_from}` : ""}</td>
+                      <td className="px-3 py-1.5 font-mono">{c.expected || "—"}</td>
+                      <td className="px-3 py-1.5 font-mono">{c.built || "—"}</td>
+                      <td className={`px-3 py-1.5 font-medium ${E2E_TONE[c.status]}`}>{E2E_TEXT[c.status]}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </Section>
+  );
+}
+
+// ---- Auto ERP Submission for this template (phase G) -------------------------------------------------
+
+function AutoErpSection({ group }: { group: LiveGroup }) {
+  const [data, setData] = useState<autoErpApi.AutoErpSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { autoErpApi.getAutoErp(group.tenant_id).then(setData).catch((e) => setError(apiError(e, "Could not load."))); }, [group.tenant_id]);
+  const row = data?.templates.find((t) => t.group_id === group.id);
+  async function run(fn: () => Promise<autoErpApi.AutoErpSettings>) {
+    setBusy(true); setError(null);
+    try { setData(await fn()); } catch (e) { setError(apiError(e, "Could not save.")); } finally { setBusy(false); }
+  }
+  return (
+    <Section title="Auto ERP Submission" help="When on, a job of this template goes to the ERP as soon as its documents are read - no review in Cargora; the customer corrects it in the ERP.">
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      {!data && !error && <p className={HELP}>Loading…</p>}
+      {data && (
+        <>
+          <Toggle checked={data.allowed} disabled={busy} label={`Allowed for ${data.tenant_name}`}
+            help="The customer-level switch (also under Tenants → Auto ERP)." onChange={(v) => void run(() => autoErpApi.setAutoErpAllowed(group.tenant_id, v))} />
+          {row && (
+            <Toggle checked={row.enabled} disabled={busy || !data.allowed} label={`Auto submit ${group.name}`}
+              help={row.enabled ? (row.branches.length ? `Only for: ${row.branches.join(", ")}` : "Every branch") : "Manual review (normal flow)"}
+              onChange={(v) => void run(() => autoErpApi.setAutoErpTemplate(group.tenant_id, group.id, v, row.branches))} />
+          )}
+          {row?.enabled && row.problems.length > 0 && <p className="text-xs text-amber-700 dark:text-amber-300">⚠ Jobs cannot be sent yet: {row.problems.join(" ")}</p>}
+          {row?.enabled && row.script?.branch_field && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-500">Branches ({row.script.branch_field}):</span>
+              {[...new Set([...data.branch_options, ...row.branches])].map((b) => {
+                const on = row.branches.includes(b);
+                return (
+                  <button key={b} type="button" disabled={busy}
+                    onClick={() => void run(() => autoErpApi.setAutoErpTemplate(group.tenant_id, group.id, true, on ? row.branches.filter((x) => x !== b) : [...row.branches, b]))}
+                    className={`rounded-full border px-2.5 py-1 ${on ? "border-indigo-400 bg-indigo-600 text-white" : "border-slate-200 text-slate-600 hover:border-indigo-300 dark:border-slate-600 dark:text-slate-300"}`}>
+                    {on ? "✓ " : ""}{b}
+                  </button>
+                );
+              })}
+              {row.branches.length > 0 && (
+                <button type="button" className="text-indigo-600 hover:underline" onClick={() => void run(() => autoErpApi.setAutoErpTemplate(group.tenant_id, group.id, true, []))}>All branches</button>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </Section>
   );
 }

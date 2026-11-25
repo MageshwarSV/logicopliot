@@ -272,3 +272,18 @@ export async function generatePrompts(groupId: string, body: { mark_ids?: string
   const { data } = await apiClient.post(`/onboarding/template/groups/${groupId}/generate-prompts`, body);
   return data;
 }
+
+/** Step 6: the end-to-end test - samples read, ERP Excel built, compared with the customer's. */
+export interface E2eColumn {
+  column: string | null; header: string | null; field: string; read_from: string | null;
+  expected: string; built: string; status: "match" | "differs" | "missing" | "on_job" | "extra";
+}
+export interface E2eResult {
+  summary: { match: number; differs: number; missing: number; on_job: number; extra: number; compared: number; match_rate: number | null };
+  sheets: { sheet: string; scope: string; rows_built: number; columns: E2eColumn[] }[];
+  unread_documents: string[];
+}
+export async function endToEndTest(groupId: string): Promise<E2eResult> {
+  const { data } = await apiClient.post<E2eResult>(`/onboarding/template/groups/${groupId}/end-to-end-test`);
+  return data;
+}

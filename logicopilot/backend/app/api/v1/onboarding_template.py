@@ -904,3 +904,112 @@ def generate_prompts(group_id: str, body: GeneratePromptsIn, db: Session = Depen
             db.commit()
         done.append(m.id)
     return {"generated": len(done), "skipped": skipped, "mark_ids": done}
+
+
+# ---- Step 6: end-to-end test - samples -> extraction -> ERP Excel -> the customer's own Excel ----
+
+def _same(a, b) -> bool:
+    x = re.sub(r"[^A-Z0-9.]", "", str(a or "").upper())
+    y = re.sub(r"[^A-Z0-9.]", "", str(b or "").upper())
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    try:
+        return float(x.replace(",", "")) == float(y.replace(",", ""))
+    except ValueError:
+        return False
+
+
+@router.post("/groups/{group_id}/end-to-end-test")
+def end_to_end_test(group_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """The whole configuration on the template's samples, before going live: every document's
+    sample is read with the live prompts, the template's fixed values and formula joins are
+    added, the ERP Excel rows are built exactly as a job builds them, and every column is
+    compared with the first data row of the customer's own ERP Excel (onboarding Step 0/1).
+    Nothing is saved. AI-Derived, reference and operator values are filled on a real job, so
+    they are reported as such rather than counted as differences."""
+    from app.api.v1.field_marks import demo_extract
+    from app.api.v1.jobs import _join_composite_pieces
+    from app.core.excel_entry import _rows_for_plan, sheet_plans
+
+    group = _group(db, group_id)
+    if (group.entry_mode or "fields") != "excel" or not group.excel_config:
+        raise HTTPException(status_code=422, detail="This template has no ERP Excel mapping to test.")
+    wb = (db.query(ErpWorkbook).filter(ErpWorkbook.group_id == group.id)
+          .order_by(ErpWorkbook.created_at.desc()).first())
+    if wb is None:
+        raise HTTPException(status_code=422, detail="Upload the customer's ERP Excel in Step 0 first.")
+
+    values: dict[str, str] = {}
+    rows: dict[str, list] = {}
+    read_from: dict[str, str] = {}
+    unread_docs: list[str] = []
+    for td in _template_docs(db, group.id):
+        if not td.page_count:
+            unread_docs.append(td.name)
+            continue
+        try:
+            out = demo_extract(document_id=td.id, db=db, user=user)
+        except Exception:  # noqa: BLE001 - one unreadable sample does not stop the test
+            unread_docs.append(td.name)
+            continue
+        for r in out.results:
+            if r.extracted_values:
+                rows.setdefault(r.label_name, [v or "" for v in r.extracted_values])
+                values.setdefault(r.label_name, next((v for v in r.extracted_values if v), "") or "")
+            elif r.extracted_value and not values.get(r.label_name):
+                values[r.label_name] = r.extracted_value
+                values[f"{r.label_name}@@{td.name}"] = r.extracted_value
+            read_from.setdefault(r.label_name, td.name)
+
+    filled_on_job: set[str] = set()
+    cfs = db.query(CustomField).filter(CustomField.group_id == group.id).all()
+    for c in cfs:
+        if c.kind == "hardcoded" and c.hardcoded_value and not c.ask_operator and not c.is_target_value:
+            values.setdefault(c.label_name, c.hardcoded_value)
+        elif c.kind == "ai" or c.ask_operator or c.is_target_value or c.kind == "lookup":
+            filled_on_job.add(c.label_name)
+    for c in cfs:
+        if c.kind == "composite" and c.composite_source_labels:
+            pieces = [p.get("fixed", "") if isinstance(p, dict) else str(values.get(p, "") or "")
+                      for p in c.composite_source_labels]
+            values.setdefault(c.label_name, _join_composite_pieces(pieces, c.composite_separators))
+
+    expected: dict[tuple, str] = {}
+    for f in db.query(ErpField).filter(ErpField.workbook_id == wb.id).all():
+        sample = str(f.samples[0]).strip() if f.samples and f.samples[0] is not None else ""
+        if f.column_key:
+            expected[(f.sheet_name, f"col:{f.column_key}")] = sample
+        if f.excel_name:
+            expected.setdefault((f.sheet_name, f"hdr:{f.excel_name.strip().lower()}"), sample)
+
+    sheets, summary = [], {"match": 0, "differs": 0, "missing": 0, "on_job": 0, "extra": 0}
+    for plan in sheet_plans(group.excel_config):
+        built = _rows_for_plan(plan, values, rows)
+        first = built[0] if built else []
+        items = []
+        for i, col in enumerate(plan["columns"]):
+            exp = expected.get((plan["sheet"], f"col:{col.get('column')}"),
+                               expected.get((plan["sheet"], f"hdr:{str(col.get('header') or '').strip().lower()}"), ""))
+            got = str(first[i] if i < len(first) and first[i] is not None else "").strip()
+            field = col.get("field") or ""
+            if not exp and not got:
+                continue
+            if field in filled_on_job and not got:
+                status = "on_job"
+            elif not exp:
+                status = "extra"
+            elif not got:
+                status = "missing"
+            else:
+                status = "match" if _same(exp, got) else "differs"
+            summary[status] += 1
+            items.append({"column": col.get("column"), "header": col.get("header"), "field": field,
+                          "read_from": read_from.get(field), "expected": exp, "built": got, "status": status})
+        sheets.append({"sheet": plan["sheet"], "scope": plan["scope"], "rows_built": len(built), "columns": items})
+    compared = summary["match"] + summary["differs"] + summary["missing"]
+    return {"summary": {**summary, "compared": compared,
+                        "match_rate": round(100 * summary["match"] / compared) if compared else None},
+            "sheets": sheets, "unread_documents": unread_docs}
