@@ -36,6 +36,18 @@ const MOTHER_VESSEL_ROW = "Mother Vessel Name";
 // The second box on the Weight (Gross) row. Its stored key is built the way every paired
 // row's is: "<pair label>\u0000<row label>".
 const NET_WEIGHT_LABEL = "Net Weight";
+// The package-count row. Sea and air print DIFFERENT labels for it, and the stored values
+// are keyed by label - so the one filled in has to be the one this mode actually prints.
+// It was not: the client renamed the sea row to "No. of Pkgs (...)" on 2026-11-24, the
+// autofill kept writing to the air label, and every sea docket came out with an empty
+// package box while the value sat under a key nothing rendered.
+const PKGS_ROW_AIR = "No. of Cartons / Pallet / Drum";
+const PKGS_ROW_SEA = "No. of Pkgs (Cartons / Pallet / Drum)";
+// "ERP Date" - the shipment's ETA, which is what the client asked this row to show. The job
+// carries it on its own eta_date column (read off the pre-alert mail), not as a document
+// field, so it is filled below rather than by a label pattern. Blank, and typed by hand, on
+// a job that never got a pre-alert.
+const ERP_DATE_ROW = "ERP Date";
 const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
 const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
@@ -96,6 +108,17 @@ function formatDateDDMMYYYY(iso: string | null | undefined): string {
   return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
+/** A plain "YYYY-MM-DD" day (Job.eta_date) as the docket prints dates: DD/MM/YYYY.
+ *
+ *  Split rather than passed through `new Date`, which reads a bare date as UTC midnight and
+ *  then reports it in the viewer's own zone - one timezone west of UTC and the docket prints
+ *  the day before the ETA.
+ */
+function formatIsoDay(day: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((day ?? "").trim());
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
+}
+
 function bestValue(
   fields: JobFieldValue[], patterns: RegExp[] | undefined, docName?: string,
 ): string {
@@ -151,7 +174,7 @@ function airRows(isExport: boolean): DocketRow[] {
       patterns: [/^igm date\.?$/i, /\bigm\b/i, /inward\s*date/i, /arrival\s*date/i, /eta/i],
     },
     {
-      label: "No. of Cartons / Pallet / Drum",
+      label: PKGS_ROW_AIR,
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
     },
     { label: CONTAINER_ROW, patterns: [/container/i] },
@@ -217,6 +240,10 @@ function seaRows(isExport: boolean): DocketRow[] {
     // of its own to go. Say so if the voyage should ride along with it.
     { label: MOTHER_VESSEL_ROW },
     { label: "FEEDER Vessel Name" },
+    // Filled from the job's own ETA below. No `patterns`: the ETA is a column on the job,
+    // not a mark on a document, and a loose /eta/i over the field list matches the IGM row's
+    // own last-resort source - two rows showing one value, which is worse than one blank box.
+    { label: ERP_DATE_ROW },
     {
       // The NUMBER is typed; the Date half keeps the old row's own sources.
       label: "IGM No / IGM Date",
@@ -226,7 +253,11 @@ function seaRows(isExport: boolean): DocketRow[] {
       },
     },
     {
-      label: "No. of Pkgs (Cartons / Pallet / Drum)",
+      label: PKGS_ROW_SEA,
+      // None of these ever matched the real field, which is "package_count": the first wants
+      // a "no"/"of" in front of it, and \bpackages?\b cannot end on the underscore of
+      // "package_count" because _ is a word character. The Bill of Lading's own count and
+      // unit are put in below, exactly as the air docket already does.
       patterns: [/no\.?\s*(of|&)?\s*(kind\s*of\s*)?(carton|pack|pallet|drum)/i, /\bcartons?\b/i, /\bpackages?\b/i],
     },
     { label: CONTAINER_ROW, patterns: [/container/i] },
@@ -401,6 +432,12 @@ export function EDocketPage() {
       .map((v) => (v ?? "").trim())
       .filter(Boolean)
       .join(" ");
+    // Sea and air label this row differently; `rows()` splits on the same test.
+    const isSeaDocket = /sea/i.test(job.mode ?? "");
+    const pkgsRow = isSeaDocket ? PKGS_ROW_SEA : PKGS_ROW_AIR;
+    // "ERP Date" - the job's ETA, off its own column. Empty on a job that arrived without a
+    // pre-alert, which leaves the box blank to be typed rather than guessing a date.
+    const etaDay = formatIsoDay(job.eta_date);
     // "No. of Container 20"/40"/LCL" - every container on the Bill of Lading, each as
     // "NUMBER (TYPE)" (e.g. "WHSU1234567 (40 SD)"), joined " , " in container order. Both
     // marks are standalone multi-value rows on the BL, paired by their shared row_index (the
@@ -491,8 +528,14 @@ export function EDocketPage() {
       if (!(netWeightKey in prev) && netWeight) {
         next[netWeightKey] = netWeight;
       }
-      if (!("No. of Cartons / Pallet / Drum" in prev) && cartons) {
-        next["No. of Cartons / Pallet / Drum"] = cartons;
+      // Into whichever of the two labels THIS docket prints - see PKGS_ROW_AIR/PKGS_ROW_SEA.
+      if (!(pkgsRow in prev) && cartons) {
+        next[pkgsRow] = cartons;
+      }
+      // Sea only: the air docket has no ERP Date row, and writing a key it never renders
+      // would quietly carry a value into the saved state that nothing can see or clear.
+      if (isSeaDocket && !(ERP_DATE_ROW in prev) && etaDay) {
+        next[ERP_DATE_ROW] = etaDay;
       }
       if (!(CONTAINER_ROW in prev) && containers) {
         next[CONTAINER_ROW] = containers;
