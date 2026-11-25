@@ -236,3 +236,99 @@ def complete_for_erp(db: Session, job, config: dict, values: dict, rows: dict) -
             parts.append(f"{v}{where}, {how}")
         notes.append(f"{name} = " + "; ".join(parts))
     return values, rows, notes
+
+
+def fill_job_values(db: Session, job) -> list[str]:
+    """Save a value into every field of the job that has a list of choices and is empty (or
+    holds something not in its list) - header fields and every product line - so the job screen
+    shows what goes to the ERP instead of "not found". Same choice rules as complete_for_erp.
+    Written as the extracted value, never as a correction; a person's correction is kept as it
+    is. Required fields with no list get NA / 0. Returns "Label = value (how)" lines."""
+    from app.models.job import JobFieldValue
+
+    info = _Fields(db, job)
+    fvs = db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id).all()
+    header = {fv.label_name: fv for fv in fvs if fv.row_index is None}
+    lines: dict[tuple, list] = {}
+    for fv in fvs:
+        if fv.row_index is not None:
+            lines.setdefault((fv.label_name, fv.set_index), []).append(fv)
+    filled: dict[str, list] = {}
+
+    def valid(label, v) -> bool:
+        opts = info.options.get(label)
+        return not _empty(v) and (not opts or str(v).strip() in opts)
+
+    def set_value(fv, value, how, where):
+        fv.extracted_value = value
+        filled.setdefault(fv.label_name, []).append((where, value, how))
+
+    def header_qty_unit(options):
+        for label, fv in header.items():
+            if label.strip().lower() in _QTY_UNIT_LABELS and valid(label, fv.value):
+                return nearest_option(fv.value, options)
+        return None
+
+    def from_lines(options):
+        c = Counter()
+        for (label, _s), group in lines.items():
+            lo = label.lower()
+            if "unit" in lo or "quantity type" in lo:
+                for fv in group:
+                    hit = nearest_option(fv.value or "", options) if not _empty(fv.value) else None
+                    if hit:
+                        c[hit] += 1
+        return c.most_common(1)[0][0] if c else None
+
+    def pick(label, current, siblings, *, line: bool):
+        options = info.options[label]
+        if not _empty(current):
+            hit = nearest_option(str(current), options)
+            if hit:
+                return hit, f'nearest choice for "{current}"'
+        sib = Counter(nearest_option(str(s), options) for s in siblings if not _empty(s))
+        sib.pop(None, None)
+        if sib:
+            return sib.most_common(1)[0][0], "same as the other lines"
+        lo = label.lower()
+        if line and ("unit" in lo or "quantity type" in lo):
+            hit = header_qty_unit(options)
+            if hit:
+                return hit, "the job's quantity unit"
+        if not line and "unit" in lo and "quantity" in lo:
+            hit = from_lines(options)
+            if hit:
+                return hit, "the product lines' unit"
+        hit = info.most_used(label, options)
+        if hit:
+            return hit, "most used on this template's jobs"
+        return options[0], "first choice"
+
+    # Product lines first, so an empty header quantity unit can take the lines' unit.
+    for (label, set_index), group in lines.items():
+        if label not in info.options:
+            continue
+        for fv in sorted(group, key=lambda f: f.row_index):
+            if fv.corrected_value is not None or valid(label, fv.value):
+                continue
+            value, how = pick(label, fv.value, [g.value for g in group if valid(label, g.value)], line=True)
+            set_value(fv, value, how, f"line {fv.row_index}")
+    for label, fv in header.items():
+        if fv.corrected_value is not None or valid(label, fv.value):
+            continue
+        if label in info.options:
+            value, how = pick(label, fv.value, [], line=False)
+            set_value(fv, value, how, "")
+        elif label in info.required and _empty(fv.value):
+            value = "0" if _numeric(label, info.past(label)) else "NA"
+            set_value(fv, value, "placeholder", "")
+    db.flush()
+
+    notes = []
+    for label, items in filled.items():
+        vals = Counter((v, how) for _w, v, how in items)
+        is_line = items[0][0].startswith("line")
+        parts = [f"{v}" + (f" ({n} line{'s' if n > 1 else ''})" if is_line else "") + f", {how}"
+                 for (v, how), n in vals.items()]
+        notes.append(f"{label} = " + "; ".join(parts))
+    return notes

@@ -79,3 +79,49 @@ def test_the_quantity_unit_feeds_empty_lines(db_session):
     _, r, notes = complete_for_erp(db_session, job, CFG, {"Total Quantity Unit": "Sets"},
                                    {"product_description": ["A"], "unit": [""]})
     assert r["unit"] == ["SET"] and "quantity unit" in notes[0]
+
+
+def test_job_values_on_screen_lines_then_header_quantity_unit(db_session):
+    from app.core.auto_erp_complete import fill_job_values
+
+    t, g, job = _setup(db_session)
+    d = db_session.query(TemplateDocument).filter(TemplateDocument.group_id == g.id).first()
+    db_session.add(FieldMark(tenant_id=t.id, document_id=d.id, label_name="Total Quantity Unit", x=0, y=0,
+                             width=1, height=1, fixed_options=UNITS))
+    for n in range(2):                                      # past jobs use NOS
+        old = Job(tenant_id=t.id, group_id=g.id, reference=f"OLD-{n}", status="completed")
+        db_session.add(old)
+        db_session.commit()
+        db_session.add(JobFieldValue(tenant_id=t.id, job_id=old.id, label_name="unit", row_index=1,
+                                     extracted_value="NOS"))
+    for r in (1, 2, 3):
+        db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="unit", row_index=r, set_index=1,
+                                     extracted_value=None))
+    db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="Total Quantity Unit",
+                                 extracted_value=None))
+    db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="IGM No", extracted_value=""))
+    db_session.commit()
+
+    notes = fill_job_values(db_session, job)
+    vals = {(fv.label_name, fv.row_index): fv for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
+    assert [vals[("unit", r)].value for r in (1, 2, 3)] == ["NOS", "NOS", "NOS"]
+    assert vals[("Total Quantity Unit", None)].value == "NOS"           # from the lines
+    assert vals[("IGM No", None)].value == "NA"
+    assert all(fv.corrected_value is None for fv in vals.values())       # never a correction
+    assert any("Total Quantity Unit = NOS" in n for n in notes)
+
+
+def test_job_values_keep_a_persons_choice_and_valid_values(db_session):
+    from app.core.auto_erp_complete import fill_job_values
+
+    t, _g, job = _setup(db_session)
+    db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="unit", row_index=1, set_index=1,
+                                 corrected_value="BAG"))
+    db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="unit", row_index=2, set_index=1,
+                                 extracted_value="SET"))
+    db_session.add(JobFieldValue(tenant_id=t.id, job_id=job.id, label_name="unit", row_index=3, set_index=1,
+                                 extracted_value="pieces"))
+    db_session.commit()
+    fill_job_values(db_session, job)
+    got = {fv.row_index: fv.value for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
+    assert got == {1: "BAG", 2: "SET", 3: "PCS"}
