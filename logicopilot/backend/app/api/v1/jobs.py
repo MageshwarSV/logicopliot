@@ -3486,6 +3486,10 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     except ExcelBuildFailed as exc:
         _fail(str(exc))
         return
+    # An auto-submitted job's build lists the values it filled on the job's note
+    # (_note_auto_fills) - saved now, before the long ERP run, so it is not lost.
+    if job.auto_erp_submitted:
+        db.commit()
 
     grp = db.get(TemplateGroup, job.group_id)
     cfg = grp.excel_config or {}

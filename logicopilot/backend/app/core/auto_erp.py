@@ -247,6 +247,11 @@ def maybe_auto_submit(db: Session, job) -> bool:
         return False            # another branch: the normal manual review
 
     filled = fill_operator_defaults(db, job, branch)
+    # Every dropdown field on the job (header and product lines) gets a value too, so the screen
+    # shows what goes to the ERP - Total Quantity Unit, each line's unit, ...
+    from app.core.auto_erp_complete import fill_job_values
+
+    filled += fill_job_values(db, job)
     job.auto_erp_submitted = True
     job.gk2_skipped = True      # no GK2 review - and lets a failed run be retried (gk2_approve)
     job.erp_submitted_by_id = None
