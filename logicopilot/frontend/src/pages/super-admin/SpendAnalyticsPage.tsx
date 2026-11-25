@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import axios from "axios";
 import { Link } from "react-router-dom";
-import { Card, StatCard } from "../../components/ui/Card";
+import { Card } from "../../components/ui/Card";
 import { Modal } from "../../components/ui/Modal";
 import { Input } from "../../components/ui/Input";
 import { Button } from "../../components/ui/Button";
@@ -160,14 +160,60 @@ function PieChart({ slices }: { slices: PieSlice[] }) {
   );
 }
 
-/** Same shape as the shared StatCard, plus one small secondary line - the INR conversion,
- *  an "across N jobs" note, an expiry date - none of which fit StatCard's plain string value. */
-function StatCardWithSub({ label, value, sub }: { label: string; value: string; sub: string | null }) {
+const n = (v: number) => v.toLocaleString("en-IN");
+const rupees = (v: number, digits = 2) =>
+  `₹${v.toLocaleString("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+const niceDate = (iso: string) =>
+  new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+
+const PRESETS = [
+  { label: "Today", days: 1 },
+  { label: "Last 7 days", days: 7 },
+  { label: "Last 30 days", days: 30 },
+  { label: "Last 90 days", days: 90 },
+];
+
+function SectionTitle({ title, hint, badge }: { title: string; hint?: string; badge?: { text: string; tone: "green" | "grey" } }) {
   return (
-    <Card className="p-5">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-      <p className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{value}</p>
-      {sub && <p className="text-xs text-slate-400">{sub}</p>}
+    <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h2 className="text-base font-semibold text-slate-900 dark:text-slate-50">{title}</h2>
+      {badge && (
+        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.tone === "green"
+          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+          {badge.text}
+        </span>
+      )}
+      {hint && <p className="text-xs text-slate-500 dark:text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+/** A headline money card: what it is, the number, and one line that explains it. */
+function KpiCard({ label, value, sub, accent, children }: {
+  label: string; value: string; sub?: string | null; accent?: boolean; children?: ReactNode;
+}) {
+  return (
+    <Card className={`flex flex-col p-5 ${accent ? "border-indigo-200 bg-gradient-to-br from-indigo-50 to-white dark:border-indigo-500/30 dark:from-indigo-500/10 dark:to-slate-900" : ""}`}>
+      <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</p>
+      <p className="mt-2 text-3xl font-semibold tracking-tight tabular-nums text-slate-900 dark:text-slate-50">{value}</p>
+      {sub && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{sub}</p>}
+      {children && <div className="mt-auto pt-3">{children}</div>}
+    </Card>
+  );
+}
+
+/** Several small counts side by side in one card, split by thin lines. */
+function StatStrip({ items }: { items: { label: string; value: string; sub?: string; muted?: boolean }[] }) {
+  return (
+    <Card className="grid grid-cols-2 divide-slate-100 dark:divide-slate-800 sm:grid-cols-4 sm:divide-x">
+      {items.map((it) => (
+        <div key={it.label} className="border-b border-slate-100 p-4 last:border-b-0 dark:border-slate-800 sm:border-b-0">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{it.label}</p>
+          <p className={`mt-1 text-xl font-semibold tabular-nums ${it.muted ? "text-slate-500 dark:text-slate-400" : "text-slate-900 dark:text-slate-50"}`}>{it.value}</p>
+          {it.sub && <p className="mt-0.5 text-[11px] text-slate-400">{it.sub}</p>}
+        </div>
+      ))}
     </Card>
   );
 }
@@ -182,6 +228,9 @@ function StatCardWithSub({ label, value, sub }: { label: string; value: string; 
  *  (It was its own Spend Analytics page until 2026-11-23.) */
 export function SpendAnalyticsPanel() {
   const [range, setRange] = useState(() => preset(30));
+  const [presetDays, setPresetDays] = useState<number | null>(30);
+  const [reload, setReload] = useState(0);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [data, setData] = useState<SpendAnalytics | null>(null);
   const [realCosts, setRealCosts] = useState<OpenAICosts | null>(null);
   const [metric, setMetric] = useState<Metric>("estimated_tokens");
@@ -253,51 +302,79 @@ export function SpendAnalyticsPanel() {
         setData(local);
         setRealCosts(realResult.real);
         setRealCostsError(realResult.err);
+        setUpdatedAt(new Date());
       })
       .catch(() => setError("Could not load spend analytics."))
       .finally(() => setLoading(false));
-  }, [range]);
+  }, [range, reload]);
 
   const activeMetric = METRICS.find((m) => m.value === metric)!;
 
+  const usdToInr = rate ? rate.rate : null;
+  const jobs = data?.totals.jobs ?? 0;
+  const billed = data?.totals.billed_pages ?? 0;
+  const spend = realCosts?.connected ? realCosts.total_usd : null;
+  const perPageUsd = spend != null && billed > 0 ? spend / billed : null;
+  const perJobUsd = spend != null && jobs > 0 ? spend / jobs : null;
+  const rangeText = range.start === range.end ? niceDate(range.start) : `${niceDate(range.start)} – ${niceDate(range.end)}`;
+
+  function pickPreset(days: number) {
+    setPresetDays(days);
+    setRange(preset(days));
+  }
+
   return (
     <>
-      <Card className="mb-6 p-5">
-        <div className="flex flex-wrap items-end gap-3">
-          {[
-            { label: "Today", days: 1 },
-            { label: "This week", days: 7 },
-            { label: "This month", days: 30 },
-            { label: "Last 90 days", days: 90 },
-          ].map((p) => (
+      {/* Toolbar: period on the left, what is shown and when it was fetched on the right. */}
+      <Card className="mb-6 p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800" role="tablist" aria-label="Period">
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                role="tab"
+                aria-selected={presetDays === p.days}
+                onClick={() => pickPreset(p.days)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${presetDays === p.days
+                  ? "bg-white text-indigo-700 shadow-sm dark:bg-slate-900 dark:text-indigo-300"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"}`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <input
+              type="date"
+              aria-label="From"
+              value={range.start}
+              max={range.end}
+              onChange={(e) => { setPresetDays(null); setRange((r) => ({ ...r, start: e.target.value })); }}
+              className={`rounded-lg border bg-white px-2.5 py-1.5 text-sm dark:bg-slate-900 dark:text-slate-100 ${presetDays === null ? "border-indigo-300 dark:border-indigo-500/50" : "border-slate-200 dark:border-slate-700"}`}
+            />
+            <span>to</span>
+            <input
+              type="date"
+              aria-label="To"
+              value={range.end}
+              min={range.start}
+              onChange={(e) => { setPresetDays(null); setRange((r) => ({ ...r, end: e.target.value })); }}
+              className={`rounded-lg border bg-white px-2.5 py-1.5 text-sm dark:bg-slate-900 dark:text-slate-100 ${presetDays === null ? "border-indigo-300 dark:border-indigo-500/50" : "border-slate-200 dark:border-slate-700"}`}
+            />
+          </div>
+          <div className="ml-auto flex items-center gap-3">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {loading ? "Getting from OpenAI…" : updatedAt ? `Updated ${updatedAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}` : ""}
+            </span>
             <button
-              key={p.label}
               type="button"
-              onClick={() => setRange(preset(p.days))}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700 dark:border-slate-700 dark:text-slate-300"
+              disabled={loading}
+              onClick={() => setReload((x) => x + 1)}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              {p.label}
+              Refresh
             </button>
-          ))}
-          <div className="flex items-end gap-2">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-500 dark:text-slate-400">From</label>
-              <input
-                type="date"
-                value={range.start}
-                onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))}
-                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-500 dark:text-slate-400">To</label>
-              <input
-                type="date"
-                value={range.end}
-                onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))}
-                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-              />
-            </div>
           </div>
         </div>
       </Card>
@@ -308,170 +385,133 @@ export function SpendAnalyticsPanel() {
         </div>
       )}
 
-      {!loading && data && (
-        <>
-          {realCosts?.connected ? (
-            <div className="mb-6">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                Real spend — from OpenAI
-              </p>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-                <StatCardWithSub
-                  label="Actual Spend (USD)"
+      {!data && loading && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-36 animate-pulse rounded-2xl bg-slate-100 dark:bg-slate-800" />)}
+        </div>
+      )}
+
+      {data && (
+        <div className={`space-y-8 transition-opacity ${loading ? "opacity-60" : ""}`}>
+          {/* 1. Money */}
+          <section>
+            <SectionTitle title="Spend" hint={rangeText}
+              badge={realCosts?.connected ? { text: "Real bill from OpenAI", tone: "green" } : undefined} />
+            {realCosts?.connected ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiCard
+                  accent
+                  label="Total spend"
                   value={`$${realCosts.total_usd.toFixed(2)}`}
-                  sub={formatInr(realCosts.total_usd, rate)}
+                  sub={formatInr(realCosts.total_usd, rate) ? `${formatInr(realCosts.total_usd, rate)} at ₹${rate!.rate.toFixed(2)}/$` : null}
                 />
-                <StatCard label="Real Input Tokens" value={realCosts.total_input_tokens.toLocaleString()} />
-                <StatCard label="Real Output Tokens" value={realCosts.total_output_tokens.toLocaleString()} />
-                <StatCardWithSub
-                  label="Average Spend / Job"
-                  value={data.totals.jobs > 0 ? `$${(realCosts.total_usd / data.totals.jobs).toFixed(4)}` : "—"}
-                  sub={
-                    data.totals.jobs > 0
-                      ? [formatInr(realCosts.total_usd / data.totals.jobs, rate), `across ${data.totals.jobs.toLocaleString()} job${data.totals.jobs === 1 ? "" : "s"}`]
-                          .filter(Boolean)
-                          .join(" · ")
-                      : "No jobs in this range"
-                  }
+                {/* Real spend over the pages BILLED in the same range (the billing ledger), not the
+                    pages still attached to documents - that left out re-runs and deleted jobs and
+                    read 40% too high on 24 Nov 2026. */}
+                <KpiCard
+                  label="Cost per billed page"
+                  value={perPageUsd == null ? "—" : usdToInr ? rupees(perPageUsd * usdToInr, 3) : `$${perPageUsd.toFixed(4)}`}
+                  sub={perPageUsd == null ? "No billed pages in this range" : `$${perPageUsd.toFixed(4)} · ${n(billed)} billed page${billed === 1 ? "" : "s"}`}
                 />
-                {/* What one BILLED page cost: OpenAI's real spend over the pages billed in the same
-                    range (the billing ledger - what the invoice counts), in rupees at today's rate.
-                    It used the pages still attached to documents, which leaves out pages read and
-                    then left unattached, deleted jobs and re-runs - on 24 Nov 2026 that was 120 of
-                    168 billed pages, and the cost per page read 40% too high. */}
-                <StatCardWithSub
-                  label="Cost per billed page (₹)"
-                  value={data.totals.billed_pages > 0 && rate
-                    ? `₹${((realCosts.total_usd * rate.rate) / data.totals.billed_pages).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`
-                    : "—"}
-                  sub={data.totals.billed_pages > 0
-                    ? [`$${(realCosts.total_usd / data.totals.billed_pages).toFixed(4)}`, `across ${data.totals.billed_pages.toLocaleString()} billed page${data.totals.billed_pages === 1 ? "" : "s"}`,
-                       rate ? `₹${rate.rate.toFixed(2)}/$` : null].filter(Boolean).join(" · ")
-                    : "No billed pages in this range"}
+                <KpiCard
+                  label="Cost per job"
+                  value={perJobUsd == null ? "—" : usdToInr ? rupees(perJobUsd * usdToInr) : `$${perJobUsd.toFixed(4)}`}
+                  sub={perJobUsd == null ? "No jobs in this range" : `$${perJobUsd.toFixed(4)} · ${n(jobs)} job${jobs === 1 ? "" : "s"}`}
                 />
-                <Card className="flex flex-col justify-between gap-2 p-5">
-                  <div>
-                    <p className="text-sm text-slate-500 dark:text-slate-400">OpenAI Account Balance</p>
-                    {settings?.openai_balance_usd != null ? (
-                      <>
-                        <p className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
-                          ${settings.openai_balance_usd.toFixed(2)}
-                        </p>
-                        <p className="text-xs text-slate-400">
-                          {[
-                            formatInr(settings.openai_balance_usd, rate),
-                            settings.openai_balance_expiry
-                              ? `Expires ${new Date(settings.openai_balance_expiry + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}`
-                              : "No expiry set",
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-sm text-slate-400">Not set yet</p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={openBalanceModal}
-                    className="self-start text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
-                  >
-                    {settings?.openai_balance_usd != null ? "Update" : "+ Add balance"}
+                <KpiCard
+                  label="OpenAI balance"
+                  value={settings?.openai_balance_usd != null ? `$${settings.openai_balance_usd.toFixed(2)}` : "Not set"}
+                  sub={settings?.openai_balance_usd != null
+                    ? [formatInr(settings.openai_balance_usd, rate),
+                       settings.openai_balance_expiry ? `expires ${niceDate(settings.openai_balance_expiry)}` : "no expiry set"]
+                        .filter(Boolean).join(" · ")
+                    : "Enter it from platform.openai.com"}
+                >
+                  <button type="button" onClick={openBalanceModal}
+                    className="text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400">
+                    {settings?.openai_balance_usd != null ? "Update balance" : "+ Add balance"}
                   </button>
-                </Card>
+                </KpiCard>
               </div>
-            </div>
-          ) : realCostsError ? (
-            <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
-              Your OpenAI Admin key is connected, but reading real spend failed: {realCostsError}
-            </div>
-          ) : (
-            <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-              Real dollar spend isn't connected yet. <Link to="/super-admin/settings" className="underline">Connect your OpenAI Admin API key in Settings</Link>{" "}
-              to see the actual bill here instead of an estimate.
-            </div>
-          )}
+            ) : realCostsError ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+                Your OpenAI Admin key is connected, but reading real spend failed: {realCostsError}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                Real dollar spend isn't connected yet. <Link to="/super-admin/settings" className="underline">Connect your OpenAI Admin API key in Settings</Link>{" "}
+                to see the actual bill here.
+              </div>
+            )}
+          </section>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-            This app's own counts (estimate)
-          </p>
-          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="Jobs Created" value={data.totals.jobs.toLocaleString()} />
-            <StatCard label="Documents Uploaded" value={data.totals.documents.toLocaleString()} />
-            {/* Billed Pages is the invoice's own count; Pages on Documents is what is still attached
+          {/* 2. Work done */}
+          <section>
+            <SectionTitle title="Usage" hint="Counted by this app" />
+            {/* Billed Pages is the invoice's own count; Pages on documents is what is still attached
                 to the documents of jobs that still exist, so it is lower. */}
-            <StatCardWithSub
-              label="Billed Pages"
-              value={data.totals.billed_pages.toLocaleString()}
-              sub={data.totals.billed_rerun_pages > 0
-                ? `incl. ${data.totals.billed_rerun_pages.toLocaleString()} re-run`
-                : "what the invoice counts"}
-            />
-            <StatCardWithSub
-              label="Pages on Documents"
-              value={data.totals.pages.toLocaleString()}
-              sub="still attached to a job's documents"
-            />
-            <StatCard label="Characters Read" value={data.totals.characters.toLocaleString()} />
-            <StatCard label="Est. Tokens Spent" value={data.totals.estimated_tokens.toLocaleString()} />
-          </div>
+            <StatStrip items={[
+              { label: "Jobs", value: n(data.totals.jobs), sub: data.totals.zero_result_jobs > 0 ? `${n(data.totals.zero_result_jobs)} with no result` : "all returned data" },
+              { label: "Documents", value: n(data.totals.documents), sub: "uploaded" },
+              { label: "Billed pages", value: n(data.totals.billed_pages),
+                sub: data.totals.billed_rerun_pages > 0 ? `incl. ${n(data.totals.billed_rerun_pages)} re-run` : "what the invoice counts" },
+              { label: "Pages on documents", value: n(data.totals.pages), sub: "still attached to a job", muted: true },
+            ]} />
+          </section>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          {/* 3. Tokens: real first, the app's own estimate greyed */}
+          <section>
+            <SectionTitle title="Tokens" />
+            <StatStrip items={[
+              { label: "Input tokens", value: realCosts?.connected ? n(realCosts.total_input_tokens) : "—", sub: "real, from OpenAI" },
+              { label: "Output tokens", value: realCosts?.connected ? n(realCosts.total_output_tokens) : "—", sub: "real, from OpenAI" },
+              { label: "Estimated tokens", value: n(data.totals.estimated_tokens), sub: "app estimate (characters ÷ 4)", muted: true },
+              { label: "Characters read", value: n(data.totals.characters), sub: "OCR text", muted: true },
+            ]} />
+          </section>
+
+          {/* 4. Charts */}
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Card className="p-5 lg:col-span-2">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="font-semibold text-slate-900 dark:text-slate-50">
-                  {activeMetric.label} per day
-                </h2>
-                <div className="flex flex-wrap gap-1.5">
-                  {METRICS.map((m) => (
-                    <button
-                      key={m.value}
-                      type="button"
-                      onClick={() => setMetric(m.value)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                        metric === m.value
-                          ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
-                          : "text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-                      }`}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
+                <h2 className="font-semibold text-slate-900 dark:text-slate-50">{activeMetric.label} per day</h2>
+                <select
+                  value={metric}
+                  onChange={(e) => setMetric(e.target.value as Metric)}
+                  aria-label="Chart metric"
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  {METRICS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
               </div>
               <BarChart days={data.days} metric={metric} color={activeMetric.color} />
             </Card>
 
             <Card className="p-5">
-              <h2 className="mb-1 font-semibold text-slate-900 dark:text-slate-50">Job Outcomes</h2>
+              <h2 className="mb-1 font-semibold text-slate-900 dark:text-slate-50">Job outcomes</h2>
               <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
-                Every job costs a call the moment it extracts — this is the share that came
-                back with nothing usable at all.
+                Every job is paid for when it extracts. Red is the share that came back with nothing usable.
               </p>
               <PieChart
                 slices={[
-                  {
-                    label: "Returned data",
-                    value: data.totals.jobs - data.totals.zero_result_jobs,
-                    color: "#10b981",
-                  },
+                  { label: "Returned data", value: data.totals.jobs - data.totals.zero_result_jobs, color: "#10b981" },
                   { label: "Zero result", value: data.totals.zero_result_jobs, color: "#f43f5e" },
                 ]}
               />
             </Card>
-          </div>
+          </section>
 
-          <p className="mt-4 text-xs text-slate-400">
-            "Est. Tokens" is an ESTIMATE, not the real OpenAI bill — it is computed from the
-            real OCR text volume this system read for every document ({data.totals.characters.toLocaleString()}{" "}
-            characters across {data.totals.jobs.toLocaleString()} job{data.totals.jobs === 1 ? "" : "s"}
-            ), divided by 4 (OpenAI's own published rule of thumb for English text).
-            {realCosts?.connected
-              ? " The \"Real spend\" figures above are the actual OpenAI numbers, not an estimate."
-              : " Connect an OpenAI Admin API key in Settings to replace this estimate with the real billed figure."}
-          </p>
-        </>
+          <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+            <summary className="cursor-pointer font-medium text-slate-600 dark:text-slate-300">How these numbers are worked out</summary>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>Spend, input and output tokens are the real figures from OpenAI's Admin API, for all projects on this account. Google Document AI is not included.</li>
+              <li>Cost per billed page = total spend ÷ billed pages (the pages the invoice counts, re-runs included), in rupees at today's rate.</li>
+              <li>Cost per job = total spend ÷ jobs created in the same range.</li>
+              <li>Estimated tokens is not the bill: it is the OCR text this app read ({n(data.totals.characters)} characters) divided by 4, OpenAI's rule of thumb for English.</li>
+              <li>OpenAI has no API for the account balance, so it is entered by hand.</li>
+            </ul>
+          </details>
+        </div>
       )}
 
       <Modal open={balanceModalOpen} onClose={() => setBalanceModalOpen(false)} title="OpenAI Account Balance">

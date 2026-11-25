@@ -125,11 +125,11 @@ export function ApiCostPage() {
   const periodLabel = PERIODS.find(([k]) => k === period)?.[1] ?? "";
 
   return (
-    <AppShell title="API Cost & Usage" subtitle="OpenAI's real cost (Admin API key) next to the jobs and pages it paid for - pulled from OpenAI when you open it.">
-      <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900" role="tablist">
-        {([["live", "Live from OpenAI"], ["daily", "Daily cost & pages"]] as const).map(([k, label]) => (
+    <AppShell title="API Cost & Usage" subtitle="What OpenAI actually charged, and the jobs and pages it paid for.">
+      <div className="mb-5 flex flex-wrap gap-6 border-b border-slate-200 dark:border-slate-800" role="tablist">
+        {([["live", "Overview"], ["daily", "Daily cost & pages"]] as const).map(([k, label]) => (
           <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)}
-            className={`rounded-lg px-4 py-2 text-sm font-medium ${view === k ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            className={`-mb-px border-b-2 px-1 pb-2.5 text-sm font-medium transition-colors ${view === k ? "border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300" : "border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"}`}>
             {label}
           </button>
         ))}
