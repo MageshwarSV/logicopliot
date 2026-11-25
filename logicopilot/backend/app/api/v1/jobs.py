@@ -5467,17 +5467,38 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         # when there is one.
         from app.core.doc_sets import pairing_key
 
-        seen_keys: set[str] = set()
+        key_to_serial: dict[str, int] = {}
+        set_to_serial: dict[int, int] = {}
         deduped: list[dict[str, str]] = []
         for k in sorted(per_set):
             key = pairing_key(per_set[k])
-            if key is not None and key in seen_keys:
+            if key is not None and key in key_to_serial:
+                # The same invoice arriving in a second set: it keeps the serial its first
+                # set was given, so both sets' line items point at the one INVOICES row.
+                set_to_serial[k or 1] = key_to_serial[key]
                 continue
-            if key is not None:
-                seen_keys.add(key)
             deduped.append(per_set[k])
+            set_to_serial[k or 1] = len(deduped)
+            if key is not None:
+                key_to_serial[key] = len(deduped)
         if len(deduped) > 1:
             rows[SET_VALUES_KEY] = deduped
+        # ITEMS.InvSrNo must name a row that EXISTS on the INVOICES sheet. INVOICES writes one
+        # row per DEDUPED invoice, numbered by position; the line items carried the raw set
+        # they came from. Where dedupe changed the count - one invoice reaching the job in two
+        # sets, the usual combined invoice+packing list - the two numberings diverged: INVOICES
+        # held a single row numbered 1 while every item said InvSrNo 2. The ERP imported the
+        # invoice, found no invoice 2 for the items to hang off, and dropped all of them
+        # WITHOUT an error - a job filed with its products missing and nothing on screen to
+        # say so (production 2026-11-25, MAA/SI/03999: 1 invoice row, 22 items all "2").
+        line_sets = rows.get(LINE_SET_KEY)
+        if set_to_serial and isinstance(line_sets, list):
+            def _serial(raw) -> str:
+                try:
+                    return str(set_to_serial.get(int(raw) or 1, 1))
+                except (TypeError, ValueError):
+                    return "1"
+            rows[LINE_SET_KEY] = [_serial(s) for s in line_sets]
 
     # Every "...Address" field, wherever it landed above (job-level, per-row, or per-invoice-
     # set) - re-flowed to the ERP's own line width, not whatever width the source document
