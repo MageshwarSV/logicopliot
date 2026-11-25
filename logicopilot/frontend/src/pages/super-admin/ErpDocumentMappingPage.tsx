@@ -269,7 +269,7 @@ export function ErpDocumentMappingPage() {
       selected: f.id === selected, tone: TONE[compare(f) ?? "no-excel"] }));
 
   return (
-    <AppShell title="Document Mapping" subtitle="Customer Onboarding · Step 2 of 4 - mark where each document field sits on the sample">
+    <AppShell title="Document Mapping" subtitle="Customer Onboarding · Step 2 - mark where each document field sits on the sample">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
         <OnboardingSteps current={2} groupId={groupId} />
         <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
@@ -489,7 +489,10 @@ export function ErpDocumentMappingPage() {
                               line item (first row)
                             </label>
                             <button type="button" className="text-rose-500 hover:underline"
-                              onClick={() => erpApi.clearMark(f.id).then(() => replaceField(f.id, { mark: null }))
+                              onClick={() => erpApi.clearMark(f.id).then((r) => {
+                                  replaceField(f.id, { mark: null });
+                                  if (r?.message) setMessage({ tone: r.message.includes("kept") ? "warn" : "ok", text: r.message });
+                                })
                                 .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not clear.") }))}>
                               Clear box
                             </button>
@@ -506,8 +509,8 @@ export function ErpDocumentMappingPage() {
               </div>
               <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
                 <Link to={`/super-admin/onboarding/erp-fields?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">← Step 1</Link>
-                <Button size="sm" onClick={() => navigate(`/super-admin/onboarding/screen-designer?group=${groupId}`)}>
-                  Next: Layout →
+                <Button size="sm" onClick={() => navigate(`/super-admin/onboarding/prompts?customer=${groupId}`)}>
+                  Next: Prompts &amp; Test →
                 </Button>
               </div>
             </Card>

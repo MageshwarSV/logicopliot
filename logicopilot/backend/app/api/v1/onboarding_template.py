@@ -536,6 +536,69 @@ def template_box(field_id: str, body: BoxIn, db: Session = Depends(get_db),
             "created": created, "warning": warning}
 
 
+def live_box_for(db: Session, f: ErpField) -> FieldMark | None:
+    """The live box (FieldMark) an onboarding Document field fills, or None."""
+    wb = db.get(ErpWorkbook, f.workbook_id)
+    group = db.get(TemplateGroup, wb.group_id) if wb else None
+    if group is None:
+        return None
+    row = next((r for r in _link_rows(db, wb, group) if r["erp_field_id"] == f.id), None)
+    ref = (row or {}).get("ref") or ""
+    return db.get(FieldMark, ref[2:]) if ref.startswith("m:") else None
+
+
+def live_settings_from(f: ErpField, label: str) -> dict:
+    """The live custom-field settings an onboarding field's Step 4 configuration stands for -
+    used when the live field is created AND every time Step 4 saves (push_to_live), so what is
+    configured in onboarding is what jobs use."""
+    cfg = f.config or {}
+    out: dict = {"display_label": f.display_label if f.display_label and f.display_label != label else None,
+                 "ask_operator_required": bool(f.mandatory)}
+    if f.category == "fixed":
+        out["hardcoded_value"] = cfg.get("value") or f.default_value
+        out["hidden_from_capture"] = bool(cfg.get("hidden"))
+    elif f.category == "operator":
+        out["ask_operator"] = True
+        out["ask_operator_hint"] = f.description
+        out["hardcoded_value"] = cfg.get("default") or f.default_value
+        dropdown = cfg.get("input_type") == "dropdown" and cfg.get("choices")
+        out["fixed_options"] = [str(c) for c in cfg["choices"]] if dropdown else None
+        out["date_picker"] = cfg.get("input_type") == "date"
+    elif f.category == "reference":
+        out["is_target_value"] = True
+    elif f.category == "ai":
+        out["ai_prompt"] = f.ai_prompt
+    return out
+
+
+def push_to_live(db: Session, f: ErpField) -> dict | None:
+    """Write an onboarding field's Step 4 configuration onto the live field it fills (one data
+    store: jobs read the live template). A box on a document takes only its screen label.
+    Nothing happens when the field is not connected to a live field yet. Caller commits."""
+    wb = db.get(ErpWorkbook, f.workbook_id)
+    group = db.get(TemplateGroup, wb.group_id) if wb else None
+    if group is None:
+        return None
+    row = next((r for r in _link_rows(db, wb, group) if r["erp_field_id"] == f.id), None)
+    ref = (row or {}).get("ref") or ""
+    if ref.startswith("c:"):
+        cf = db.get(CustomField, ref[2:])
+        if cf is None:
+            return None
+        for k, v in live_settings_from(f, cf.label_name).items():
+            if k == "ai_prompt" and not v:
+                continue            # Step 4 never blanks an AI rule written in the editor
+            setattr(cf, k, v)
+        return {"ref": ref, "label": cf.label_name}
+    if ref.startswith("m:"):
+        m = db.get(FieldMark, ref[2:])
+        if m is None:
+            return None
+        m.display_label = f.display_label if f.display_label and f.display_label != m.label_name else None
+        return {"ref": ref, "label": m.label_name}
+    return None
+
+
 class CustomFieldIn(BaseModel):
     kind: str | None = None  # hardcoded | ai | lookup | composite; default from the category
     label_name: str | None = None
@@ -564,26 +627,9 @@ def template_field(field_id: str, body: CustomFieldIn, db: Session = Depends(get
                 .filter(TemplateDocument.group_id == group.id, FieldMark.label_name == label).first():
             raise HTTPException(status_code=409, detail=f"{label!r} is already a field drawn on a document - link to it instead.")
         kind = body.kind or _KIND_FOR.get(f.category or "", "hardcoded")
-        cfg = f.config or {}
-        seed: dict = {"label_name": label, "kind": kind,
-                      "display_label": f.display_label if f.display_label and f.display_label != label else None,
-                      "ask_operator_required": bool(f.mandatory)}
-        if f.category == "fixed":
-            seed["hardcoded_value"] = cfg.get("value") or f.default_value
-            seed["hidden_from_capture"] = bool(cfg.get("hidden"))
-        elif f.category == "operator":
-            seed["ask_operator"] = True
-            seed["ask_operator_hint"] = f.description
-            seed["hardcoded_value"] = cfg.get("default") or f.default_value
-            if cfg.get("input_type") == "dropdown" and cfg.get("choices"):
-                seed["fixed_options"] = [str(c) for c in cfg["choices"]]
-            if cfg.get("input_type") == "date":
-                seed["date_picker"] = True
-        elif f.category == "reference":
-            seed["is_target_value"] = True
+        seed: dict = {"label_name": label, "kind": kind, **live_settings_from(f, label)}
+        if f.category == "reference":
             seed["fuzzy_match"] = True
-        elif f.category == "ai":
-            seed["ai_prompt"] = f.ai_prompt
         elif f.category == "formula":
             seed["per_row"] = True
         out = create_custom_field(group_id=group.id, db=db, _=None,

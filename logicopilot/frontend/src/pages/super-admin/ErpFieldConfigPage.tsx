@@ -4,6 +4,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
+import * as templateApi from "../../api/onboardingTemplate";
 import type { ErpCategory, ErpCustomer, ErpField, ErpWorkbook, FixedConfig, OperatorConfig, ReferenceConfig } from "../../api/onboardingErp";
 import {
   OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen,
@@ -49,7 +50,7 @@ export function ErpFieldConfigPage() {
   const [customers, setCustomers] = useState<ErpCustomer[]>([]);
   const [wb, setWb] = useState<ErpWorkbook | null>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<ErpCategory>("fixed");
+  const [tab, setTab] = useState<ErpCategory>("reference");
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
@@ -84,11 +85,31 @@ export function ErpFieldConfigPage() {
 
   useEffect(() => { setSelected(null); }, [tab]);
 
+  // Saving here writes the live template (one data store). On a template that is already live
+  // that changes running jobs straight away, so it is confirmed once per session.
+  const [isLive, setIsLive] = useState(false);
+  useEffect(() => {
+    if (!groupId) return;
+    templateApi.getLiveGroup(groupId).then((g) => setIsLive(g.status === "approved")).catch(() => setIsLive(false));
+  }, [groupId]);
+  const liveOkKey = `onboarding.liveEditOk.${groupId}`;
+  const confirmLiveEdit = () => {
+    if (!isLive) return true;
+    try { if (sessionStorage.getItem(liveOkKey)) return true; } catch { /* ignore */ }
+    const ok = window.confirm("This template is LIVE. Saving here changes the live template, and new jobs use it straight away.\n\nSave anyway?");
+    if (ok) { try { sessionStorage.setItem(liveOkKey, "1"); } catch { /* ignore */ } }
+    return ok;
+  };
+
   const saveField = async (f: ErpField, patch: erpApi.ErpFieldPatch) => {
+    if (!confirmLiveEdit()) return;
     try {
       const res = await erpApi.updateField(f.id, patch);
       setWb((w) => (w ? { ...w, fields: w.fields.map((x) => (x.id === f.id ? res.field : x)) } : w));
-      setMessage({ tone: "ok", text: `Saved ${res.field.display_label || res.field.excel_name}.` });
+      const name = res.field.display_label || res.field.excel_name;
+      setMessage(res.live
+        ? { tone: "ok", text: `Saved ${name} - applied to the live template field "${res.live.label}".` }
+        : { tone: "warn", text: `Saved ${name} in onboarding. It is not connected to a live field yet - use "Create" or "Link" below so jobs use it.` });
     } catch (err) {
       setMessage({ tone: "warn", text: errorText(err, "Could not save.") });
     }
@@ -211,8 +232,8 @@ export function ErpFieldConfigPage() {
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
-              <Link to={`/super-admin/onboarding/screen-designer?group=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 3</Link>
-              <Link to={`/super-admin/onboarding/template-settings?customer=${groupId}`} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">Next: Template Settings →</Link>
+              <Link to={`/super-admin/onboarding/prompts?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 3 Prompts</Link>
+              <Link to={`/super-admin/onboarding/screen-designer?group=${groupId}`} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">Next: Screen Designer →</Link>
             </div>
           </>
         )}

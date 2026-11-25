@@ -274,8 +274,15 @@ def set_line_item(
     if m is None:
         raise HTTPException(status_code=404, detail="This field has no box yet.")
     m.line_item, m.updated_by_name = body.line_item, _who(user)
+    # The live box follows: a line item is read once per product row (FieldMark.is_multi_value).
+    from app.api.v1.onboarding_template import live_box_for
+
+    f = db.get(ErpField, field_id)
+    live = live_box_for(db, f) if f else None
+    if live is not None:
+        live.is_multi_value = body.line_item
     db.commit()
-    return {"mark": _mark_out(m)}
+    return {"mark": _mark_out(m), "live_updated": live is not None}
 
 
 @router.delete("/fields/{field_id}/mark")
@@ -290,8 +297,28 @@ def clear_mark(
         f = db.get(ErpField, field_id)
         _history(db, wb, user, "clear_box", field_id=field_id, detail={"field": f.excel_name if f else field_id})
         db.delete(m)
+        # The live box goes too - but only while nothing depends on it. On a live template, or
+        # once any job has read the field, removing the box would take that field off running
+        # jobs, so it is kept and the reply says so.
+        from app.api.v1.onboarding_template import live_box_for
+        from app.models.job import JobFieldValue
+        from app.models.template_group import TemplateGroup
+
+        live = live_box_for(db, f) if f else None
+        if live is not None:
+            group = db.get(TemplateGroup, wb.group_id)
+            used = db.query(JobFieldValue.id).filter(JobFieldValue.mark_id == live.id).first() is not None
+            if (group is not None and group.status == "approved") or used:
+                message = ("The box was kept on the live template - the template is live or jobs already "
+                           "read this field. Remove it from the field's settings if you really mean to.")
+            else:
+                db.delete(live)
+                message = "The box was removed from the live template too."
+        else:
+            message = None
         db.commit()
-    return {"ok": True}
+        return {"ok": True, "message": message}
+    return {"ok": True, "message": None}
 
 
 # ---- Import current setup (a template already running on Excel entry) -----------------------

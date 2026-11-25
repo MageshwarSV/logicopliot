@@ -341,9 +341,16 @@ def update_field(
     if changed:
         _history(db, wb, user, "classify" if set(changed) <= {"category", "position"} else "configure",
                  field_id=f.id, detail={"field": f.excel_name, "sheet": f.sheet_name, **changed})
+    # One data store: a Step 4 configuration goes straight onto the live field it fills, so the
+    # job uses exactly what was configured here (onboarding_template.push_to_live).
+    live = None
+    if set(updates) & {"config", "display_label", "description", "mandatory", "default_value"}:
+        from app.api.v1.onboarding_template import push_to_live
+
+        live = push_to_live(db, f)
     db.commit()
     return {"field": _field_out(f), "summary": _summary(
-        db.query(ErpField).filter(ErpField.workbook_id == wb.id).all()), "status": wb.status}
+        db.query(ErpField).filter(ErpField.workbook_id == wb.id).all()), "status": wb.status, "live": live}
 
 
 class CustomFieldIn(BaseModel):
