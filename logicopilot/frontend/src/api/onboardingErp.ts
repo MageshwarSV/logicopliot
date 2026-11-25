@@ -18,7 +18,9 @@ export interface ErpCustomer {
   name: string;
   tenant: string;
   mode: string | null;
-  workbook: ({ id: string; file_name: string; status: string; sheet_count: number } & ErpSummary) | null;
+  workbook: ({ id: string; file_name: string; status: string; sheet_count: number;
+    /** Fields on the ERP UI sheet - picked on the ERP screen by the script, not in the Excel. */
+    erp_ui_fields?: number } & ErpSummary) | null;
   /** The template already runs on Excel entry - Step 0 can import its current set-up. */
   excel_setup?: boolean;
 }

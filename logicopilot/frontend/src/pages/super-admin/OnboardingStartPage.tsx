@@ -4,13 +4,15 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
-import type { DocMapping, ErpCustomer } from "../../api/onboardingErp";
+import type { DocMapping, ErpCustomer, ErpField } from "../../api/onboardingErp";
+import { ErpUiPicker } from "../../components/onboarding/ErpUiPicker";
 import {
   OnboardingSteps, rememberOnboardingCustomer, useOnboardingCustomer, useOnboardingFullScreen,
 } from "../../components/onboarding/OnboardingSteps";
 
 // Customer Onboarding - Step 0: choose the customer template, then everything the later steps
-// work from, in one place: the ERP Excel workbook and one sample per document. Steps 1-3 then
+// work from, in one place: the ERP Excel workbook, the ERP UI script's fields (picked on the
+// ERP screen, not in the Excel) and one sample per document. Steps 1-3 then
 // carry the chosen customer without asking again.
 
 function errorText(err: unknown, fallback: string): string {
@@ -39,6 +41,7 @@ export function OnboardingStartPage() {
   const excelInput = useRef<HTMLInputElement>(null);
   const sampleInput = useRef<HTMLInputElement>(null);
   const [sampleFor, setSampleFor] = useState<string>("");
+  const [erpUi, setErpUi] = useState<ErpField[] | null>(null);
 
   const loadCustomers = () => erpApi.listCustomers().then(setCustomers).catch(() => setMessage({ tone: "warn", text: "Could not load the templates." }));
   useEffect(() => { void loadCustomers(); }, []);
@@ -50,6 +53,14 @@ export function OnboardingStartPage() {
     if (!workbookId) { setDocs(null); return; }
     erpApi.getDocMapping(workbookId).then(setDocs).catch(() => setDocs(null));
   }, [workbookId]);
+
+  const ERP_UI = "ERP UI (not in Excel)";
+  useEffect(() => {
+    if (!workbookId || !groupId) { setErpUi(null); return; }
+    erpApi.getWorkbook(groupId)
+      .then((w) => setErpUi((w?.fields ?? []).filter((f) => f.sheet_name === ERP_UI).sort((a, b) => a.position - b.position)))
+      .catch(() => setErpUi(null));
+  }, [workbookId, groupId]);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -200,7 +211,7 @@ export function OnboardingStartPage() {
                   <p className="text-xs text-slate-500">{c.tenant}{c.mode ? ` · ${c.mode}` : ""}</p>
                   <p className="mt-2 text-xs">
                     {c.workbook
-                      ? <span className="text-emerald-700 dark:text-emerald-300">ERP Excel ✓ · {c.workbook.percent}% classified{c.workbook.status === "complete" ? " · Step 1 done" : ""}</span>
+                      ? <span className="text-emerald-700 dark:text-emerald-300">ERP Excel ✓ · {c.workbook.percent}% classified{c.workbook.erp_ui_fields ? ` · ERP UI ${c.workbook.erp_ui_fields}` : ""}{c.workbook.status === "complete" ? " · Step 1 done" : ""}</span>
                       : <span className="text-slate-400">No ERP Excel yet</span>}
                   </p>
                 </button>
@@ -212,6 +223,7 @@ export function OnboardingStartPage() {
 
         {customer && (
           <div className="grid gap-4 lg:grid-cols-2">
+            <div className="flex flex-col gap-4">
             {/* 2. ERP Excel */}
             <Card className="h-fit p-5">
               <p className="text-base font-semibold text-slate-900 dark:text-slate-50">2. ERP Excel workbook</p>
@@ -238,6 +250,51 @@ export function OnboardingStartPage() {
               )}
               {customer.workbook && <p className="mt-2 text-[11px] text-slate-400">Replacing keeps every classification whose sheet and column still exist.</p>}
             </Card>
+
+            {/* 2b. ERP UI script */}
+            <Card className="h-fit p-5">
+              <div className="flex items-center justify-between">
+                <p className="text-base font-semibold text-slate-900 dark:text-slate-50">🖥 ERP UI script fields</p>
+                {erpUi && <span className="text-xs text-slate-400">{erpUi.length} field{erpUi.length === 1 ? "" : "s"}</span>}
+              </div>
+              <p className="mb-3 text-xs text-slate-500">
+                Values the ERP UI script picks on the ERP screen that are not in the Excel (ERP Quotation Name / Branch, ERP Importer Name / Branch …) - still required.
+                They show in Step 1 on the "ERP UI (not in Excel)" sheet and are configured in Step 4.
+              </p>
+              {!customer.workbook && <p className="text-sm text-slate-500">Upload the ERP Excel first.</p>}
+              {customer.workbook && erpUi && erpUi.length > 0 && (
+                <div className="mb-3 flex flex-col gap-1">
+                  {erpUi.map((f) => {
+                    const c = (f.config ?? {}) as { source?: string; level?: string; depends_on?: string; fills?: string; key_field?: string };
+                    const src = c.source === "quotation_master" ? "Quotation Master" : c.source === "importer_master" ? "Importer Master" : c.source === "own_table" ? "own table" : "";
+                    return (
+                      <div key={f.id} className="flex flex-wrap items-baseline gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm dark:border-slate-700">
+                        <span className="font-medium text-slate-800 dark:text-slate-100">{f.display_label || f.excel_name}{f.mandatory && <span className="text-rose-500">*</span>}</span>
+                        <span className="text-[11px] text-slate-400">{f.excel_name}</span>
+                        <span className="ml-auto text-xs text-slate-500">
+                          {f.category ?? "not classified"}{src ? ` · ${src}${c.level ? ` (${c.level})` : ""}` : ""}
+                          {c.depends_on ? ` · within ${c.depends_on}` : ""}{c.fills ? ` · fills ${c.fills}` : ""}
+                          {c.key_field ? ` · by ${c.key_field}` : ""}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {customer.workbook && erpUi && erpUi.length === 0 && <p className="mb-2 text-sm text-slate-500">None yet - pick the ERP script this template runs with.</p>}
+              {customer.workbook && (
+                <ErpUiPicker
+                  workbookId={customer.workbook.id}
+                  onAdded={(w, text) => {
+                    setErpUi(w.fields.filter((f) => f.sheet_name === ERP_UI).sort((a, b) => a.position - b.position));
+                    setMessage({ tone: "ok", text });
+                    void loadCustomers();
+                  }}
+                  onError={(text) => setMessage({ tone: "warn", text })}
+                />
+              )}
+            </Card>
+            </div>
 
             {/* 3. Sample documents */}
             <Card className="h-fit p-5">

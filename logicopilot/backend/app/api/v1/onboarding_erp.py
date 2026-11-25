@@ -160,7 +160,8 @@ def list_customers(
         if w is not None:
             fields = db.query(ErpField).filter(ErpField.workbook_id == w.id).all()
             item["workbook"] = {"id": w.id, "file_name": w.file_name, "status": w.status,
-                                "sheet_count": len(w.sheets), **_summary(fields)}
+                                "sheet_count": len(w.sheets), **_summary(fields),
+                                "erp_ui_fields": sum(1 for f in fields if f.sheet_name == ERP_UI_SHEET)}
         out.append(item)
     return out
 
@@ -565,7 +566,9 @@ def list_erp_scripts(
         out.append({"id": sc.id, "name": sc.name, "status": sc.status,
                     "linked": wb.group_id in (sc.template_ids or []),
                     "fields": len(labels), "not_in_excel": [l for l in labels if l not in in_excel]})
-    out.sort(key=lambda x: (not x["linked"], x["name"].lower()))
+    # The template's own scripts first, then the ones using the most fields outside the Excel
+    # (a copied template is linked to none - its source's script is the likely one).
+    out.sort(key=lambda x: (not x["linked"], -len(x["not_in_excel"]), x["name"].lower()))
     return out
 
 
