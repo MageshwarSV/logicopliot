@@ -2916,6 +2916,44 @@ def _validation_errors(page) -> list[str]:
     return out
 
 
+# The ERP refuses a whole Excel import on one bad cell and says so in a modal listing
+# Sheet / Field / Description. Matched on the heading alone: everything under it is the
+# ERP's own wording and will differ per sheet, per field and per release.
+_IMPORT_REJECTED = ("invalid data found",)
+
+
+def _import_rejection(page) -> str | None:
+    """The ERP's own "Invalid Data Found" import dialog, summarised - or None.
+
+    This is the single most useful error the ERP ever hands us: it names the sheet, the
+    column and what the column will accept. It used to be thrown away. A click blocked by
+    this dialog looked like any other unexpected screen, so the AI takeover did what it does
+    with a blocker - found "Close" and pressed it. Closing it discards everything the import
+    had loaded, and the run then saved a job carrying nothing but the few fields typed in by
+    hand (production 2026-11-25: MAA/AI/35112, 35113 and 35118 all filed empty this way, and
+    reported `ok`, because the script's ONE success check is "did a job number appear").
+
+    Deliberately narrow: ONLY an import rejection stops the run here. Every other dialog -
+    a session prompt, a confirmation, a notice - still goes to the AI exactly as before.
+    """
+    try:
+        for txt in _validation_errors(page):
+            low = txt.lower()
+            if not any(m in low for m in _IMPORT_REJECTED):
+                continue
+            lines = [" ".join(ln.split()) for ln in txt.splitlines() if ln.strip()]
+            # Drop the heading and the table's own header row; keep what names the problem.
+            rows = [ln for ln in lines
+                    if not any(m in ln.lower() for m in _IMPORT_REJECTED)
+                    and ln.lower() not in ("sheet field description", "sheet", "field", "description")]
+            summary = " | ".join(rows[:3]) or " ".join(lines)
+            more = f" (and {len(rows) - 3} more)" if len(rows) > 3 else ""
+            return (summary + more)[:400]
+    except Exception:  # noqa: BLE001 - reading the screen must never itself end a run
+        return None
+    return None
+
+
 def _scroll_dy(step: dict) -> int:
     """Pixels a scroll step moves: negative up, positive down. Default one screen down."""
     raw = step.get("value")
@@ -6830,6 +6868,24 @@ def _play_steps(
                                     i += 1
                                     resumed = True
                                     break
+                        # Before asking the AI to clear this screen: if it is the ERP
+                        # REJECTING the import, there is nothing to clear. Closing it throws
+                        # away everything the Excel loaded, and the run goes on to save an
+                        # entry with no data in it - which is worse than failing, because
+                        # nobody can tell by looking. Fail here, carrying the ERP's own words
+                        # so the operator can fix the file and press Retry.
+                        rejected = _import_rejection(page)
+                        if rejected:
+                            blocked = {
+                                "outcome": "validation",
+                                "reason": ("The ERP rejected the Excel import, so none of the "
+                                           f"data went in: {rejected}. Fix the Excel - or press "
+                                           "'Reset to generated' if it was edited by hand - then "
+                                           "press Retry."),
+                            }
+                            log.append(f"step {i + 1} {action}: the ERP rejected the import — "
+                                       f"{rejected}")
+                            break
                         msg = ai_takeover(
                             f"An unexpected screen/dialog is blocking the recorded flow (e.g. an "
                             f"'already logged in, continue?' prompt, a cookie/confirmation dialog, a "
