@@ -33,6 +33,8 @@ class JobOut(BaseModel):
     # "Customer name" and was showing the TEMPLATE's name, which is a different thing: every
     # nokia(excel) job showed "nokia(excel)" whoever the consignee turned out to be.
     customer_name: str | None = None
+    # Auto ERP Submission (app/core/auto_erp.py): sent to the ERP by the system, no review.
+    auto_erp_submitted: bool = False
     # The House Bill of Lading number, read off this job's own documents - its own list column,
     # between Job No and ETA. None when this job's template never marks an "HBL No" field, or
     # the job has nothing read for it yet.
@@ -375,6 +377,10 @@ class JobDetailOut(BaseModel):
     # apart from "a GK2 actually reviewed this": it goes straight from None to "preparing_erp"
     # either way.
     gk2_skipped: bool = False
+    # Auto ERP Submission: sent by the system straight after extraction, and what it did (the
+    # defaults it filled) or why it held the job for manual review.
+    auto_erp_submitted: bool = False
+    auto_erp_note: str | None = None
     # Predictive - whether THIS job's shipment type currently needs GK2 (see
     # Tenant.gk2_required_by_mode), computed fresh on every read. Unlike gk2_skipped (only ever
     # set once GK1 has already submitted), this is known before Final Submit is pressed, so

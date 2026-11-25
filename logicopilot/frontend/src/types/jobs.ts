@@ -11,6 +11,8 @@ export interface Job {
   outer_status?: string | null;
   /** The consignee on this job's own documents - NOT the template's name. */
   customer_name?: string | null;
+  /** Auto ERP Submission: sent to the ERP by the system straight after extraction, no review. */
+  auto_erp_submitted?: boolean;
   /** The House Bill of Lading number, read off this job's own documents - the Jobs list's own
    *  BL No column, between Job No and ETA. Null when this job's template never marks an
    *  "HBL No" field, or nothing has been read for it yet. */
@@ -295,6 +297,9 @@ export interface JobDetail {
    *  Final Submit for Approval went straight into the real ERP submission instead of a human
    *  GK2's queue. gk2_status alone can't tell this apart from "a GK2 actually reviewed this". */
   gk2_skipped?: boolean;
+  auto_erp_submitted?: boolean;
+  /** What Auto ERP Submission did (defaults filled) or why it held the job for manual review. */
+  auto_erp_note?: string | null;
   /** Predictive, unlike gk2_skipped (only ever true AFTER GK1 has already submitted) - whether
    *  THIS job's shipment type currently needs GK2, known before Final Submit is pressed, so the
    *  button can say up front whether it's headed to GK2 or straight to the real ERP. */

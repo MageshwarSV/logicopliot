@@ -95,6 +95,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # reviewed this and it's now running/done" apart from "no GK2 ever touched this job" -
     # gk2_status alone can't: it goes straight from None to "preparing_erp" either way.
     gk2_skipped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Auto ERP Submission (app/core/auto_erp.py): True once the system itself sent this job to
+    # the ERP straight after extraction, with no review in Cargora. auto_erp_note says what it
+    # did (fields it filled with a default) or why it held the job back for manual review.
+    auto_erp_submitted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_erp_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # GK1's IRN Documents Upload stage (see app/models/supporting_document.py): set once an
     # operator explicitly presses Approval for IRN or Skip - the stage is optional, but one
     # of those two actions is what ticks it off, and unlike the old client-only "irnApproved"

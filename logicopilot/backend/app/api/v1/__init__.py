@@ -34,6 +34,7 @@ from app.api.v1.edocket import router as edocket_router
 from app.api.v1.screen_designer import router as screen_designer_router
 from app.api.v1.onboarding_erp import router as onboarding_erp_router
 from app.api.v1.onboarding_erp_docs import router as onboarding_erp_docs_router
+from app.api.v1.auto_erp import router as auto_erp_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -72,3 +73,4 @@ api_router.include_router(edocket_router)
 api_router.include_router(screen_designer_router)
 api_router.include_router(onboarding_erp_router)
 api_router.include_router(onboarding_erp_docs_router)
+api_router.include_router(auto_erp_router)

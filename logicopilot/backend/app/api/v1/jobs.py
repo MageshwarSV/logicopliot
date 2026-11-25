@@ -4487,6 +4487,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         excel_entry=(group.entry_mode or "fields") == "excel",
         gk2_status=job.gk2_status,
         gk2_skipped=job.gk2_skipped,
+        auto_erp_submitted=job.auto_erp_submitted,
+        auto_erp_note=job.auto_erp_note,
         # Predictive, unlike gk2_skipped (only ever set AFTER GK1 has already submitted) - lets
         # GK1's own screen say up front where Final Submit is actually headed, before they press
         # it. See Tenant.gk2_required_by_mode / _gk2_required_for_job.
@@ -11315,6 +11317,12 @@ def run_extraction(
     db.commit()
     db.refresh(job)
 
+    # Auto ERP Submission (off unless the tenant/template has it on): straight to the ERP,
+    # no review in Cargora. Can never fail the extraction itself.
+    from app.core.auto_erp import safe_maybe_auto_submit
+
+    safe_maybe_auto_submit(db, job)
+
 
 @router.post("/jobs/{job_id}/extract", response_model=JobDetailOut)
 def extract_job(
@@ -11411,6 +11419,12 @@ def resolve_duplicate(
                             detail='Only "approve" is handled here — see Delete/Hold above.')
     job.status = "extracted"
     db.commit()
+    db.refresh(job)
+    # A person has just said it is a separate shipment - with Auto ERP Submission on, it now
+    # goes to the ERP like any other job of its template.
+    from app.core.auto_erp import safe_maybe_auto_submit
+
+    safe_maybe_auto_submit(db, job)
     db.refresh(job)
     return _build_detail(db, job)
 

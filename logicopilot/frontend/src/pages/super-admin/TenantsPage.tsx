@@ -8,6 +8,7 @@ import { Modal } from "../../components/ui/Modal";
 import { StatusBadge } from "../../components/ui/Badge";
 import { CreateTenantModal } from "./CreateTenantModal";
 import { TenantUsersModal } from "./TenantUsersModal";
+import { AutoErpSettingsPanel } from "../../components/AutoErpSettingsPanel";
 import * as tenantsApi from "../../api/tenants";
 import * as usersApi from "../../api/users";
 import type { Tenant } from "../../types/tenant";
@@ -31,6 +32,7 @@ export function TenantsPage() {
   const [tenantModalOpen, setTenantModalOpen] = useState(false);
   const [usersOfTenant, setUsersOfTenant] = useState<Tenant | null>(null);
   const [irnLinkTenant, setIrnLinkTenant] = useState<Tenant | null>(null);
+  const [autoErpTenant, setAutoErpTenant] = useState<Tenant | null>(null);
   const [irnLinkBusy, setIrnLinkBusy] = useState(false);
   const [irnLinkCopied, setIrnLinkCopied] = useState(false);
 
@@ -124,6 +126,10 @@ export function TenantsPage() {
             >
               {t.irn_pending_access_key ? "IRN Link" : "Generate IRN Link"}
             </Button>
+            <Button variant="ghost" size="sm" onClick={() => setAutoErpTenant(t)}
+              title="Send jobs to the ERP straight after extraction, with no review in Cargora">
+              Auto ERP
+            </Button>
             <Button variant="ghost" size="sm" className="text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10" onClick={() => handleDeleteTenant(t)}>
               Delete
             </Button>
@@ -172,6 +178,11 @@ export function TenantsPage() {
         onClose={() => setUsersOfTenant(null)}
         onChanged={refresh}
       />
+
+      <Modal open={autoErpTenant !== null} onClose={() => setAutoErpTenant(null)}
+        title={`Auto ERP Submission${autoErpTenant ? ` · ${autoErpTenant.name}` : ""}`} maxWidth="max-w-3xl">
+        {autoErpTenant && <AutoErpSettingsPanel tenantId={autoErpTenant.id} canAllow />}
+      </Modal>
 
       <Modal open={irnLinkTenant !== null} onClose={() => setIrnLinkTenant(null)} title="IRN Pending link">
         {irnLinkTenant && (

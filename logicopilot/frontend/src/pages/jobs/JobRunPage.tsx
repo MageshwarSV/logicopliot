@@ -2859,6 +2859,14 @@ export function JobRunPage() {
           </div>
         </div>
       )}
+      {job.auto_erp_note && (
+        <div className={`mb-4 rounded-lg border px-4 py-3 text-sm ${job.auto_erp_submitted
+          ? "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200"
+          : "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
+          <span className="font-medium">{job.auto_erp_submitted ? "Auto ERP Submission" : "Auto ERP Submission held"}</span>
+          {" · "}{job.auto_erp_note}
+        </div>
+      )}
       {/* What came with the mail/upload but could not be read - a password-protected zip, a
           damaged one, a file type that is not read - so nothing is missed without a trace. */}
       {job.attachment_notes?.large_zip && job.status === "draft" && (
