@@ -25,7 +25,7 @@ import {
   type ClassifierSample, type FieldRef, type LiveGroup, type PromptHistoryRow, type SpecialName, type TemplateUser,
 } from "../../api/onboardingTemplate";
 
-// Customer Onboarding - Step 5: Template Settings. Everything that belongs to the template as a
+// Customer Onboarding - Step 6: Template Settings & Go Live. Everything that belongs to the template as a
 // whole, on the LIVE template - the settings the old Document Templates, Customer List,
 // Document Processing, Data Transformation, ERP Scripts, Email Puller, Zip Passwords and user
 // screens hold (those screens stay exactly as they are).
@@ -36,7 +36,7 @@ const HELP = "text-[11px] leading-snug text-slate-500 dark:text-slate-400";
 
 type SectionKey =
   | "documents" | "fields" | "rules" | "mail" | "processing" | "erp" | "reference" | "crossdoc"
-  | "combined" | "users" | "samples" | "transform" | "names" | "test" | "history";
+  | "combined" | "users" | "samples" | "approval" | "names";
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "documents", label: "Documents" },
@@ -49,10 +49,8 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "crossdoc", label: "Cross-document checks" },
   { key: "combined", label: "Combined Description" },
   { key: "users", label: "Tenant Admins" },
-  { key: "transform", label: "Data Transformation & approval" },
-  { key: "test", label: "Test on samples" },
+  { key: "approval", label: "Approval" },
   { key: "samples", label: "Classifier samples" },
-  { key: "history", label: "Prompt history" },
   { key: "names", label: "Built-in field names" },
 ];
 
@@ -68,7 +66,7 @@ function Toggle({ checked, onChange, label, help, disabled }: { checked: boolean
   );
 }
 
-function Section({ title, help, children, actions }: { title: string; help?: ReactNode; children: ReactNode; actions?: ReactNode }) {
+export function Section({ title, help, children, actions }: { title: string; help?: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return (
     <Card className="p-5">
       <div className="mb-4 flex flex-wrap items-start gap-2">
@@ -117,9 +115,9 @@ export function OnboardingTemplateSettingsPage() {
   }
 
   return (
-    <AppShell title="Template Settings" subtitle="Customer Onboarding · Step 5 - everything that belongs to the template as a whole, on the live template">
+    <AppShell title="Template Settings" subtitle="Customer Onboarding · Step 6 - everything that belongs to the template as a whole, and making it live">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
-        <OnboardingSteps current={5} groupId={groupId} />
+        <OnboardingSteps current={6} groupId={groupId} />
         <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
           <OnboardingCustomer name={group?.name} groupId={groupId} />
           {group && (
@@ -177,10 +175,8 @@ export function OnboardingTemplateSettingsPage() {
               {section === "crossdoc" && <CrossDocSection group={group} act={act} openField={openField} />}
               {section === "combined" && <CombinedSection group={group} act={act} openField={openField} />}
               {section === "users" && <UsersSection group={group} act={act} />}
-              {section === "transform" && <TransformSection group={group} act={act} openField={openField} />}
-              {section === "test" && <TestSection group={group} />}
+              {section === "approval" && <ApprovalSection group={group} act={act} />}
               {section === "samples" && <SamplesSection group={group} />}
-              {section === "history" && <HistoryTable group={group} />}
               {section === "names" && <NamesSection group={group} />}
             </div>
           </div>
@@ -188,7 +184,7 @@ export function OnboardingTemplateSettingsPage() {
 
         {group && (
           <div className="mt-4 flex justify-end gap-2">
-            <Link to={`/super-admin/onboarding/field-config?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 4</Link>
+            <Link to={`/super-admin/onboarding/screen-designer?group=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 5</Link>
           </div>
         )}
       </div>
@@ -200,8 +196,8 @@ export function OnboardingTemplateSettingsPage() {
   );
 }
 
-type Act = (fn: () => Promise<unknown>, ok: string) => Promise<void>;
-type OpenField = (ref: FieldRef, section?: TemplateFieldSection) => void;
+export type Act = (fn: () => Promise<unknown>, ok: string) => Promise<void>;
+export type OpenField = (ref: FieldRef, section?: TemplateFieldSection) => void;
 
 // ---- Finish setup: make the template live ------------------------------------------------------------
 //
@@ -923,13 +919,12 @@ function UsersSection({ group, act }: { group: LiveGroup; act: Act }) {
 
 // ---- Data Transformation & approval -----------------------------------------------------------------
 
-function TransformSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
+export function TransformSection({ group, act, openField }: { group: LiveGroup; act: Act; openField: OpenField }) {
   const targets = new Set(group.cross_doc_links.map((l) => l.target_mark_id));
   const docs = group.documents.map((d) => ({ d, marks: d.marks.filter((m) => m.width > 0 && !targets.has(m.id)) })).filter((x) => x.marks.length);
   const [prompts, setPrompts] = useState<Record<string, string>>({});
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [why, setWhy] = useState("");
 
   useEffect(() => {
     setPrompts(Object.fromEntries(group.documents.flatMap((d) => d.marks.map((m) => [m.id, m.tenant_format_prompt ?? ""]))));
@@ -982,20 +977,23 @@ function TransformSection({ group, act, openField }: { group: LiveGroup; act: Ac
           </div>
         ))}
       </Section>
-      <Section title="Approval" help="Approving makes the template live (same as the green button at the top, without its checklist). Not approving sends the message to the template's inbox.">
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => act(async () => { if (changed.length) await saveAll(); await reviewsApi.approveTemplate(group.id); }, "Template approved - it is live.")}>Approve (make live)</Button>
-        </div>
-        <textarea className={INPUT} rows={2} placeholder="What needs changing (for Not approve)" value={why} onChange={(e) => setWhy(e.target.value)} />
-        <div><Button variant="danger" size="sm" disabled={!why.trim()} onClick={() => act(() => reviewsApi.requestChanges(group.id, why.trim()), "Changes requested.")}>Not approve</Button></div>
-      </Section>
     </>
+  );
+}
+
+function ApprovalSection({ group, act }: { group: LiveGroup; act: Act }) {
+  const [why, setWhy] = useState("");
+  return (
+    <Section title="Approval" help="Making the template live is the green Finish setup button at the top - one Make Live, always with its checklist. Not approving sends the message to the template's inbox.">
+      <textarea className={INPUT} rows={2} placeholder="What needs changing (for Not approve)" value={why} onChange={(e) => setWhy(e.target.value)} />
+      <div><Button variant="danger" size="sm" disabled={!why.trim()} onClick={() => act(() => reviewsApi.requestChanges(group.id, why.trim()), "Changes requested.")}>Not approve</Button></div>
+    </Section>
   );
 }
 
 // ---- Test on samples ----------------------------------------------------------------------------------
 
-function TestSection({ group }: { group: LiveGroup }) {
+export function TestSection({ group }: { group: LiveGroup }) {
   const [results, setResults] = useState<Record<string, DemoResult | string>>({});
   async function run(docId: string) {
     setResults((r) => ({ ...r, [docId]: "Reading…" }));
@@ -1057,7 +1055,7 @@ function SamplesSection({ group }: { group: LiveGroup }) {
   );
 }
 
-function HistoryTable({ group }: { group: LiveGroup }) {
+export function HistoryTable({ group }: { group: LiveGroup }) {
   const [rows, setRows] = useState<PromptHistoryRow[] | null>(null);
   const [q, setQ] = useState("");
   useEffect(() => { getPromptHistory(group.id).then(setRows).catch(() => setRows([])); }, [group.id]);

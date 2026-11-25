@@ -32,6 +32,7 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/onboarding/document-mapping": DocumentIcon,
   "/super-admin/onboarding/screen-designer": FolderIcon,
   "/super-admin/onboarding/field-config": GearIcon,
+  "/super-admin/onboarding/prompts": GearIcon,
   "/super-admin/onboarding/template-settings": GearIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,

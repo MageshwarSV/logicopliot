@@ -367,7 +367,7 @@ export function ErpFieldMappingPage() {
   const progress = counted.length ? Math.round((countedDone * 100) / counted.length) : 0;
 
   return (
-    <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 of 4 - ERP Field Classification">
+    <AppShell title="Field Mapping" subtitle="Customer Onboarding · Step 1 - ERP Field Classification">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
       {/* While dragging: every bucket within reach, pinned at the top, wherever the page is scrolled. */}
       {dragging && (
@@ -924,7 +924,7 @@ function FieldConfigModal({
             <input className={input} value={draft.formula ?? ""} onChange={(e) => set("formula", e.target.value)} placeholder="e.g. QTY × Unit_Price, or IF currency = INR THEN 1" />)}
           {draft.category === "ai" && row("AI instruction",
             <textarea className={input} rows={3} value={draft.ai_prompt ?? ""} onChange={(e) => set("ai_prompt", e.target.value)} placeholder="e.g. Return the 2-letter ISO code of the country most product lines come from" />,
-            "Set up and tested in Step 4 - AI Prompts & Validation")}
+            "Set up and tested in Step 4 - Field Configuration")}
           {draft.category === "reference" && row("Reference master / lookup",
             <input className={input} value={draft.erp_master_ref ?? ""} onChange={(e) => set("erp_master_ref", e.target.value)} placeholder="e.g. Port master (country + city → code), Importer branch master" />)}
           {draft.category === "operator" && row("Hint for the operator",

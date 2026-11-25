@@ -107,10 +107,10 @@ function readDrag(e: DragEvent): DragItem | null {
 
 export function ScreenDesignerPage() {
   const [params, setParams] = useSearchParams();
-  // Opened as Step 3 of Customer Onboarding: show the onboarding step bar.
+  // Opened as Step 5 of Customer Onboarding: show the onboarding step bar.
   const inOnboarding = useLocation().pathname.includes("/onboarding/");
   const [templates, setTemplates] = useState<DesignerTemplate[]>([]);
-  // As Step 3 of Customer Onboarding the template is the one chosen in Step 0.
+  // As Step 5 of Customer Onboarding the template is the one chosen in Step 0.
   const onboardingGroup = useOnboardingCustomer("group");
   const groupId = params.get("group") ?? (inOnboarding ? onboardingGroup : "");
   const docId = params.get("doc") ?? "";
@@ -489,7 +489,7 @@ export function ScreenDesignerPage() {
   return (
     <AppShell title="Screen Designer" subtitle="Lay out a document's job screen: sections, their order, where each field sits, and the product card. Changes save straight away.">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
-      {inOnboarding && <OnboardingSteps current={3} groupId={groupId} />}
+      {inOnboarding && <OnboardingSteps current={5} groupId={groupId} />}
       {/* Pickers */}
       <Card className="mb-4 flex flex-wrap items-end gap-4 p-4">
         {inOnboarding && (
@@ -746,6 +746,12 @@ export function ScreenDesignerPage() {
         </div>
       )}
       {loading && <Card className="p-8 text-center text-sm text-slate-500">Loading…</Card>}
+      {inOnboarding && groupId && (
+        <div className="mt-4 flex justify-end gap-2">
+          <Link to={`/super-admin/onboarding/field-config?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">← Step 4 Field Configuration</Link>
+          <Link to={`/super-admin/onboarding/template-settings?customer=${groupId}`} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">Next: Template Settings &amp; Go Live →</Link>
+        </div>
+      )}
       </div>
     </AppShell>
   );
