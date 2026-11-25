@@ -26,6 +26,7 @@ Agreed rules for the auto path (2026-11-25):
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -76,8 +77,13 @@ def ready_script(db: Session, job):
 def _first_option(cf) -> str | None:
     for o in cf.fixed_options or []:
         v = o.get("value") or o.get("label") if isinstance(o, dict) else o
-        if str(v or "").strip():
-            return str(v).strip()
+        v = str(v or "").strip()
+        # "H:H - Home" is code:label - the job saves and the ERP reads the code (see
+        # parseFixedOption in JobRunPage.tsx).
+        if ":" in v:
+            v = v.split(":", 1)[0].strip()
+        if v:
+            return v
     return None
 
 
@@ -131,7 +137,9 @@ def fill_operator_defaults(db: Session, job, branch: str | None = None) -> list[
         fv = current.get(cf.label_name)
         if fv is not None and (fv.value or "").strip():
             # A person's choice, or a real reading, stays. Only a junk reading is replaced.
-            if fv.corrected_value is not None or not is_junk(fv.value):
+            # Only a reading with no letter or digit at all (".", "-") counts as junk here: a
+            # one-letter code like "H" or "P" is a real value.
+            if fv.corrected_value is not None or re.search(r"[A-Za-z0-9]", fv.value):
                 continue
         value, how = None, ""
         master = master_of(cf.label_name) or {}

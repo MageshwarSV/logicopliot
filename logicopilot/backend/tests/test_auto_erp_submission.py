@@ -234,3 +234,19 @@ def test_auto_fill_picks_importer_from_the_document_not_the_first_row(db_session
     assert vals["ERP Consignee Name"] == "JUNIPER NETWORKS SOLUTION INDIA PRIVATE LIMITED"   # the "." replaced
     assert vals["ERP Importer Address / Branch Code"] == "KARNATAKA"
     assert any("exact match" in f for f in filled) and any("consignee address" in f for f in filled)
+
+
+def test_one_letter_codes_are_kept_and_code_label_options_give_the_code(db_session):
+    tenant, group, job = _setup(db_session)
+    be = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="BETypeCode", kind="hardcoded",
+                     ask_operator=True, ask_operator_required=True, fixed_options=["H:H - Home", "I:I - In-Bond"])
+    prior = CustomField(tenant_id=tenant.id, group_id=group.id, label_name="AdvancePriorNormal", kind="hardcoded",
+                        ask_operator=True, ask_operator_required=True, fixed_options=["P:Prior", "N:Normal"])
+    db_session.add_all([be, prior])
+    db_session.commit()
+    db_session.add(JobFieldValue(tenant_id=tenant.id, job_id=job.id, custom_field_id=be.id,
+                                 label_name="BETypeCode", extracted_value="I"))
+    db_session.commit()
+    assert fill_operator_defaults(db_session, job) == ["AdvancePriorNormal = P (first choice)"]
+    vals = {fv.label_name: fv.value for fv in db_session.query(JobFieldValue).filter(JobFieldValue.job_id == job.id)}
+    assert vals == {"BETypeCode": "I", "AdvancePriorNormal": "P"}
