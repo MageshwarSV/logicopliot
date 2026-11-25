@@ -167,6 +167,9 @@ export function ErpDocumentMappingPage() {
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(100);
   const [selected, setSelected] = useState<string | null>(null);
+  // Which fields the list shows - fields still to mark first, so the work left is what you see.
+  const [view, setView] = useState<"todo" | "check" | "done" | "all">("todo");
+  const [fieldSearch, setFieldSearch] = useState("");
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
 
@@ -205,6 +208,14 @@ export function ErpDocumentMappingPage() {
   const totals = (data?.documents ?? []).reduce((a, d) => { const c = countFor(d.id); return { total: a.total + c.total, done: a.done + c.done }; }, { total: 0, done: 0 });
   const unassigned = (data?.fields ?? []).filter((f) => !f.source_document || !data?.documents.some((d) => d.id === f.source_document));
   const selectedField = docFields.find((f) => f.id === selected) ?? null;
+  const needsCheck = (f: DocMappingField) => !!f.mark && (compare(f) === "differs" || compare(f) === "no-read");
+  const shownFields = docFields.filter((f) => {
+    if (view === "todo" && f.mark) return false;
+    if (view === "done" && !f.mark) return false;
+    if (view === "check" && !needsCheck(f)) return false;
+    const fq = fieldSearch.trim().toLowerCase();
+    return !fq || `${f.excel_name} ${f.sheet_name}`.toLowerCase().includes(fq);
+  });
 
   useEffect(() => { setPage(1); setSelected(null); }, [docId]);
 
@@ -372,28 +383,71 @@ export function ErpDocumentMappingPage() {
                 <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Fields on {doc?.name}</p>
                 {doc && <span className="text-xs text-slate-400">{countFor(doc.id).done} of {countFor(doc.id).total} marked</span>}
               </div>
+              {docFields.length > 0 && (() => {
+                const n = {
+                  todo: docFields.filter((f) => !f.mark).length,
+                  check: docFields.filter((f) => f.mark && (compare(f) === "differs" || compare(f) === "no-read")).length,
+                  done: docFields.filter((f) => f.mark).length,
+                  all: docFields.length,
+                };
+                const tabs: { key: typeof view; label: string; tone: string }[] = [
+                  { key: "todo", label: "To mark", tone: "text-slate-700 dark:text-slate-200" },
+                  { key: "check", label: "Check", tone: "text-amber-700 dark:text-amber-300" },
+                  { key: "done", label: "Marked", tone: "text-emerald-700 dark:text-emerald-300" },
+                  { key: "all", label: "All", tone: "text-slate-500" },
+                ];
+                return (
+                  <>
+                    <div className="mb-2 grid grid-cols-4 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                      {tabs.map((t) => (
+                        <button key={t.key} type="button" onClick={() => setView(t.key)}
+                          title={t.key === "check" ? "Marked, but nothing was read inside the box or it differs from the Excel" : undefined}
+                          className={`rounded-md px-1 py-1 text-xs font-medium ${view === t.key ? `bg-white shadow-sm dark:bg-slate-900 ${t.tone}` : "text-slate-500 hover:text-slate-700"}`}>
+                          {t.label} <span className="opacity-70">{n[t.key]}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <input value={fieldSearch} onChange={(e) => setFieldSearch(e.target.value)} placeholder="Search field…"
+                      className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900" />
+                  </>
+                );
+              })()}
               {docFields.length === 0 && (
                 <p className="text-sm text-slate-500">No Document fields on this document. Put them on it in <Link className="text-indigo-600 underline" to={`/super-admin/onboarding/erp-fields?customer=${groupId}`}>Step 1</Link>.</p>
               )}
-              <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto">
-                {docFields.map((f) => {
+              <div className="flex max-h-[62vh] flex-col gap-1 overflow-y-auto pr-1">
+                {docFields.length > 0 && shownFields.length === 0 && (
+                  <p className="py-6 text-center text-sm text-slate-500">
+                    {fieldSearch.trim() ? `No field matches "${fieldSearch}".`
+                      : view === "todo" ? "✓ Every field on this document has a box."
+                      : view === "check" ? "✓ Nothing to check - every box reads a value that fits the Excel."
+                      : "No fields here yet."}
+                  </p>
+                )}
+                {shownFields.map((f) => {
                   const res = compare(f);
                   const on = f.id === selected;
                   return (
                     <div
                       key={f.id}
                       onClick={() => { setSelected(on ? null : f.id); if (f.mark && f.mark.page !== page) setPage(f.mark.page); }}
-                      className={`cursor-pointer rounded-lg border px-3 py-2 text-sm ${on ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-500/30" : "border-slate-200 hover:border-slate-300 dark:border-slate-700"}`}
+                      title={f.samples.length ? `Excel: ${f.samples.join(" · ")}` : undefined}
+                      className={`cursor-pointer rounded-md border px-2 py-1.5 text-sm ${on ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-500/30" : "border-slate-200 hover:border-slate-300 dark:border-slate-700"}`}
                     >
                       <div className="flex items-center gap-2">
                         {f.mark
-                          ? <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white">✓</span>
+                          ? <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] text-white" style={{ background: TONE[res ?? "no-excel"] }}>{res === "match" ? "✓" : res === "differs" || res === "no-read" ? "!" : "✓"}</span>
                           : <span className="h-3 w-3 shrink-0 rounded-full border-2 border-slate-300" />}
-                        <span className="min-w-0 flex-1 truncate font-medium text-slate-800 dark:text-slate-100">{fieldName(f)}</span>
-                        <span className="text-[10px] text-slate-400">{f.sheet_name}</span>
+                        <span className="min-w-0 shrink truncate font-medium text-slate-800 dark:text-slate-100">{fieldName(f)}</span>
+                        <span className="shrink-0 text-[10px] text-slate-400">{f.sheet_name}</span>
+                        <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-slate-400">{f.samples[0] ?? ""}</span>
                       </div>
-                      {f.samples.length > 0 && <p className="mt-1 truncate font-mono text-[11px] text-slate-500">Excel: {f.samples.slice(0, 2).join(" · ")}</p>}
-                      {f.mark && (
+                      {f.mark && !on && (
+                        <p className="mt-0.5 truncate pl-6 font-mono text-[11px]" style={{ color: TONE[res ?? "no-excel"] }}>
+                          Read: {f.mark.detected_value || "nothing"} · p{f.mark.page}
+                        </p>
+                      )}
+                      {f.mark && on && (
                         <div className="mt-1">
                           <p className="truncate font-mono text-[11px] text-slate-600 dark:text-slate-300">Read: {f.mark.detected_value || "—"}</p>
                           <p className="text-[11px] font-medium" style={{ color: TONE[res ?? "no-excel"] }}>
