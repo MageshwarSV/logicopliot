@@ -31,6 +31,7 @@ from app.models.job_deletion import JobDeletion  # noqa: F401
 from app.models.field_value_edit import FieldValueEdit  # noqa: F401
 from app.models.prompt_change import PromptChange  # noqa: F401
 from app.models.api_cost import ApiCostDaily, ApiCostDailyCustomer, ApiCostRun  # noqa: F401
+from app.models.customs_tariff import CustomsTariff, CustomsTariffUpload  # noqa: F401
 from app.models.pending_email import PendingEmail  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401
 from app.models.custom_filter_page import CustomFilterPage  # noqa: F401

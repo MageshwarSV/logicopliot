@@ -49,6 +49,7 @@ import { OnboardingTemplateSettingsPage } from "../pages/super-admin/OnboardingT
 import { OnboardingPromptsPage } from "../pages/super-admin/OnboardingPromptsPage";
 import { ErpDocumentMappingPage } from "../pages/super-admin/ErpDocumentMappingPage";
 import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
+import { CustomsTariffPage } from "../pages/super-admin/CustomsTariffPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
@@ -168,6 +169,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <FilterPagesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/customs-tariff"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <CustomsTariffPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/customs-tariff"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <CustomsTariffPage readOnly />
           </ProtectedRoute>
         }
       />

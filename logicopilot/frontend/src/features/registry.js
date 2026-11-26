@@ -21,6 +21,8 @@ export const superAdminFeatures = [
   { path: "/super-admin/data-transformation", navLabel: "Data Transformation", group: "Platform Configuration", order: 5 },
   // Pages removed from every document before classification (a supplier's terms and
   // conditions, a recurring cover sheet) - the page existed but had no menu entry.
+  // The global Indian Customs Tariff (ICEGATE) CTH master - every tenant, every stream.
+  { path: "/super-admin/customs-tariff", navLabel: "Indian Customs Tariff (ICEGATE)", group: "Platform Configuration", order: 5.4 },
   { path: "/super-admin/filter-pages", navLabel: "Filter Pages", group: "Platform Configuration", order: 5.5 },
   // Per template: start extraction automatically, hold it for a large zip, Excel by sheet and
   // the Excel files never used - how documents are processed, so Super Admin only.

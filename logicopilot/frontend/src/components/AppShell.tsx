@@ -409,6 +409,7 @@ export function AppShell({
                         { label: "ERP Master Data – Importer", to: "/tenant-admin/master-data/importer" },
                         { label: "ERP Master Data – Quotation", to: "/tenant-admin/master-data/quotation" },
                         { label: "CTH Master", to: "/tenant-admin/master-data/cth" },
+                        { label: "Indian Customs Tariff (ICEGATE)", to: "/tenant-admin/master-data/customs-tariff" },
                         { label: "Zip Passwords", to: "/tenant-admin/master-data/zip-passwords" },
                         { label: "Shipments", to: "/tenant-admin/customers" },
                         { label: "Shipment Type", to: "/tenant-admin/masters" },
