@@ -2922,6 +2922,26 @@ def _validation_errors(page) -> list[str]:
 _IMPORT_REJECTED = ("invalid data found",)
 
 
+def _rejected_import_block(said: str) -> dict:
+    """The outcome an import rejection produces, written for the operator who has to fix it.
+
+    One wording for both places it can be found - when it blocks a click mid-run, and when it
+    is still sitting on screen at the end - so the job card never reads differently depending
+    on which of the two noticed it.
+
+    "validation", so persist_run_outcome reports the job as Failed (not "duplicated") and the
+    failure screenshot is saved with it: the operator sees the ERP's own words AND the screen
+    they came from.
+    """
+    return {
+        "outcome": "validation",
+        "reason": ("The ERP would not accept this entry, so NONE of the data went in. "
+                   f"The ERP says: \u201c{said}\u201d. Correct those values on the job - or "
+                   "press 'Reset to generated' if the Excel was edited by hand - then press "
+                   "Retry."),
+    }
+
+
 def _rejection_in(scope) -> str | None:
     """The "Invalid Data Found" block's own text inside one page or frame, or None.
 
@@ -6993,13 +7013,7 @@ def _play_steps(
                         # so the operator can fix the file and press Retry.
                         rejected = _import_rejection(page)
                         if rejected:
-                            blocked = {
-                                "outcome": "validation",
-                                "reason": ("The ERP rejected the Excel import, so none of the "
-                                           f"data went in: {rejected}. Fix the Excel - or press "
-                                           "'Reset to generated' if it was edited by hand - then "
-                                           "press Retry."),
-                            }
+                            blocked = _rejected_import_block(rejected)
                             log.append(f"step {i + 1} {action}: the ERP rejected the import — "
                                        f"{rejected}")
                             break
@@ -7142,6 +7156,27 @@ def _play_steps(
                         log.append(f"AI read the final screen: {ai_diagnosis}")
                 except Exception:  # noqa: BLE001
                     pass
+
+            # ONE LAST LOOK AT THE SCREEN, while the browser is still open.
+            #
+            # The mid-run guard only ever runs when the dialog BLOCKS a click. A rejection that
+            # blocks nothing - the script's remaining steps happen to miss it - was never
+            # looked at, and the run went on to its success check, which asks only "did a job
+            # number appear". The ERP hands that number out BEFORE the data goes in, so an
+            # entry holding nothing still has one, and the job was reported submitted
+            # (production 2026-11-25: MAA/AI/35112, 35113, 35118 - all `ok`, all empty).
+            #
+            # Costs one screen read on an otherwise successful run, and can only ever turn a
+            # run the ERP itself refused into a failure the operator can act on.
+            if blocked is None and value_error is None:
+                try:
+                    leftover = _import_rejection(page)
+                except Exception:  # noqa: BLE001 - never let the last look be what breaks a run
+                    leftover = None
+                if leftover:
+                    blocked = _rejected_import_block(leftover)
+                    log.append("STOPPED - the ERP's rejection was still on screen when the run "
+                               f"finished: {leftover}")
 
             if not get_settings().browser_headless:
                 _safe_wait(page, 3000)  # let the operator see the result before it closes
