@@ -43,11 +43,15 @@ const NET_WEIGHT_LABEL = "Net Weight";
 // package box while the value sat under a key nothing rendered.
 const PKGS_ROW_AIR = "No. of Cartons / Pallet / Drum";
 const PKGS_ROW_SEA = "No. of Pkgs (Cartons / Pallet / Drum)";
-// "ERP Date" - the shipment's ETA, which is what the client asked this row to show. The job
-// carries it on its own eta_date column (read off the pre-alert mail), not as a document
-// field, so it is filled below rather than by a label pattern. Blank, and typed by hand, on
-// a job that never got a pre-alert.
-const ERP_DATE_ROW = "ERP Date";
+// The shipment's ETA. The job carries it on its own eta_date column (read off the pre-alert
+// mail), not as a document field, so it is filled below rather than by a label pattern.
+// Blank, and typed by hand, on a job that never got a pre-alert.
+//
+// Shipped on 2026-11-25 labelled "ERP Date", which was wrong - it has never had anything to
+// do with the ERP - and corrected the next day. OLD_ETA_ROW carries the dockets already
+// saved under that label across, so nobody loses a date they typed.
+const ETA_ROW = "ETA Date";
+const OLD_ETA_ROW = "ERP Date";
 const HAWB_ROW = "HAWB BL No. / HAWB BL Date";
 const MAWB_ROW = "MAWB BL No. / MAWB BL Date";
 const CATEGORY_OPTIONS = ["HOME CONSUMPTION", "BOND", "EX-BOND", "DEEC", "EPCG", "100% EOU", "SEZ"] as const;
@@ -243,7 +247,7 @@ function seaRows(isExport: boolean): DocketRow[] {
     // Filled from the job's own ETA below. No `patterns`: the ETA is a column on the job,
     // not a mark on a document, and a loose /eta/i over the field list matches the IGM row's
     // own last-resort source - two rows showing one value, which is worse than one blank box.
-    { label: ERP_DATE_ROW },
+    { label: ETA_ROW },
     {
       // The NUMBER is typed; the Date half keeps the old row's own sources.
       label: "IGM No / IGM Date",
@@ -435,8 +439,8 @@ export function EDocketPage() {
     // Sea and air label this row differently; `rows()` splits on the same test.
     const isSeaDocket = /sea/i.test(job.mode ?? "");
     const pkgsRow = isSeaDocket ? PKGS_ROW_SEA : PKGS_ROW_AIR;
-    // "ERP Date" - the job's ETA, off its own column. Empty on a job that arrived without a
-    // pre-alert, which leaves the box blank to be typed rather than guessing a date.
+    // The job's ETA, off its own column. Empty on a job that arrived without a pre-alert,
+    // which leaves the box blank to be typed rather than guessing a date.
     const etaDay = formatIsoDay(job.eta_date);
     // "No. of Container 20"/40"/LCL" - every container on the Bill of Lading, each as
     // "NUMBER (TYPE)" (e.g. "WHSU1234567 (40 SD)"), joined " , " in container order. Both
@@ -532,10 +536,10 @@ export function EDocketPage() {
       if (!(pkgsRow in prev) && cartons) {
         next[pkgsRow] = cartons;
       }
-      // Sea only: the air docket has no ERP Date row, and writing a key it never renders
-      // would quietly carry a value into the saved state that nothing can see or clear.
-      if (isSeaDocket && !(ERP_DATE_ROW in prev) && etaDay) {
-        next[ERP_DATE_ROW] = etaDay;
+      // Sea only: the air docket has no ETA row, and writing a key it never renders would
+      // quietly carry a value into the saved state that nothing can see or clear.
+      if (isSeaDocket && !(ETA_ROW in prev) && etaDay) {
+        next[ETA_ROW] = etaDay;
       }
       if (!(CONTAINER_ROW in prev) && containers) {
         next[CONTAINER_ROW] = containers;
@@ -569,7 +573,13 @@ export function EDocketPage() {
       if (typeof st.transactionMode === "string") setTransactionMode(st.transactionMode);
       if (typeof st.priorityType === "string") setPriorityType(st.priorityType);
       if (st.values && typeof st.values === "object") {
-        const savedValues = st.values as Record<string, string>;
+        const savedValues = { ...(st.values as Record<string, string>) };
+        // Dockets saved while the row was called "ERP Date" (25-26 Nov) keep their value:
+        // the stored map is keyed by the row LABEL, so a rename would otherwise orphan it.
+        if (savedValues[OLD_ETA_ROW] && !savedValues[ETA_ROW]) {
+          savedValues[ETA_ROW] = savedValues[OLD_ETA_ROW];
+        }
+        delete savedValues[OLD_ETA_ROW];
         setValues((prev) => ({ ...prev, ...savedValues }));
       }
       if (Array.isArray(st.feedback)) setFeedback(st.feedback as string[][]);
