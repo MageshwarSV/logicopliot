@@ -303,6 +303,11 @@ class JobFieldValueOut(BaseModel):
     # be said honestly: an operator's own typed value, a value learned from an earlier
     # correction rather than read off the sheet, or a sheet not parsed into the cache yet.
     lookup_source: str | None = None
+    # Indian Customs Tariff (app/core/customs_tariff_jobs.py): "tariff_doc" / "tariff_ai" /
+    # "tariff_fallback" when the code on screen is the tariff's suggestion (to be confirmed),
+    # and why - e.g. "Dump code 85371000 is not in the Indian Customs Tariff."
+    value_source: str | None = None
+    source_note: str | None = None
     # Admin-settable - spans the full row in the job screen's two-column field grid instead of
     # sharing it with whatever sits beside it. See FieldMark.full_width's own docstring. False
     # (half width) is today's existing behavior for every field that predates this column.
@@ -383,6 +388,8 @@ class JobDetailOut(BaseModel):
     # defaults it filled) or why it held the job for manual review.
     auto_erp_submitted: bool = False
     auto_erp_note: str | None = None
+    # The template's CTH fields only take Indian Customs Tariff codes (TemplateGroup.use_customs_tariff).
+    customs_tariff_on: bool = False
     # Predictive - whether THIS job's shipment type currently needs GK2 (see
     # Tenant.gk2_required_by_mode), computed fresh on every read. Unlike gk2_skipped (only ever
     # set once GK1 has already submitted), this is known before Final Submit is pressed, so
@@ -496,3 +503,4 @@ class AvailableGroup(BaseModel):
     large_zip_hold: bool = False
     large_zip_mb: int = 5
     large_job_lane: bool = False
+    use_customs_tariff: bool = False

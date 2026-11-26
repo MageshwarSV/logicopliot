@@ -68,6 +68,10 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # to its own worker - one large job at a time - instead of the email cycle's shared pool,
     # so it neither blocks the mail cycle nor takes the workers small jobs use. Off by default.
     large_job_lane: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Indian Customs Tariff (ICEGATE, app/core/customs_tariff_jobs.py): the CTH fields of this
+    # template only take codes from the global tariff - dump codes outside it are not used, an
+    # empty line gets the AI's nearest tariff code for the operator to confirm. Off by default.
+    use_customs_tariff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

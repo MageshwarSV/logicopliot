@@ -4401,6 +4401,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                                 or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                value_source=fv.value_source,
+                source_note=fv.source_note,
                 full_width=(
                     mark_full_width.get(fv.mark_id, False)
                     or cf_full_width.get(fv.custom_field_id, False)
@@ -4537,6 +4539,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         gk2_skipped=job.gk2_skipped,
         auto_erp_submitted=job.auto_erp_submitted,
         auto_erp_note=job.auto_erp_note,
+        customs_tariff_on=bool(getattr(group, "use_customs_tariff", False)),
         # Predictive, unlike gk2_skipped (only ever set AFTER GK1 has already submitted) - lets
         # GK1's own screen say up front where Final Submit is actually headed, before they press
         # it. See Tenant.gk2_required_by_mode / _gk2_required_for_job.
@@ -5791,8 +5794,12 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     # from having to be retyped by hand to "confirm" a code more authoritative than anything
     # the operator would type.
     sync_targets = {sid for c in all_per_row for sid in (c.sync_field_ids or [])}
+    # Indian Customs Tariff (only when the template has it on): unconfirmed suggestions and
+    # codes outside the tariff - see app/core/customs_tariff_jobs.submit_problems.
+    from app.core.customs_tariff_jobs import submit_problems as tariff_problems
+
     if not asked_marks and not asked_customs and not per_row_ids:
-        return []
+        return tariff_problems(db, job)
 
     # A field counts as answered once the operator has saved a corrected value on it.
     corrected = db.query(JobFieldValue).filter(
@@ -5875,6 +5882,7 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
         [label for mid, label in asked_marks.items() if mid not in answered_marks]
         + [label for cid, label in asked_customs.items() if cid not in answered_customs]
         + unanswered_rows
+        + tariff_problems(db, job)
     )
 
 
@@ -11301,6 +11309,13 @@ def run_extraction(
     _ensure_manual_entry_fields(db, job, group)
     # A waybill generated from a pre-alert has no dates on it - see the helper.
     _blank_dates_on_generated_waybills(db, job)
+    # Indian Customs Tariff (off unless the template has it on): CTH codes outside the tariff
+    # are not used, empty lines get the nearest tariff code for the operator to confirm.
+    # After the dump lookup above, which is unchanged. See app/core/customs_tariff_jobs.py.
+    from app.core.customs_tariff_jobs import apply_to_job as _apply_customs_tariff
+
+    db.flush()
+    _apply_customs_tariff(db, job, group)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -11897,6 +11912,22 @@ def carry_across_rows(
     sync_ids = _synced_partner_ids(db, cf)
     previous = (payload.previous or "").strip()
     written = 0
+    # Indian Customs Tariff (template switch on): a typed code must be a tariff code; a picked
+    # side whose code is not in the tariff is skipped on that line, and the lines are reported.
+    from app.core.customs_tariff import active_codes, clean_cth
+    from app.core.customs_tariff_jobs import check_correction, is_tariff_field, tariff_on
+    from app.models.template_group import TemplateGroup as _TGt
+
+    tariff_codes = None
+    if tariff_on(db, db.get(_TGt, job.group_id)) and (
+            is_tariff_field(db, cf) or any(is_tariff_field(db, db.get(CustomField, sid)) for sid in sync_ids)):
+        tariff_codes = active_codes(db)
+    if payload.mode != "pick" and tariff_codes is not None and (payload.value or "").strip():
+        try:
+            payload.value = check_correction(db, job, cf, payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    not_in_tariff: list[int] = []
 
     for by_cf in rows.values():
         primary = by_cf.get(cf.id)
@@ -11932,6 +11963,11 @@ def carry_across_rows(
             # it means: a line with nothing on the chosen side keeps what it has.
             if not value:
                 continue
+            if tariff_codes is not None:
+                if clean_cth(value) not in tariff_codes:
+                    not_in_tariff.append(primary.row_index)
+                    continue
+                value = clean_cth(value)
             # A tick says WHICH candidate is right, and that is all it says. It does not move
             # the candidate: the dump box keeps the customer's master code and the document box
             # keeps what the supplier printed, so the two stay there to be compared on every
@@ -11962,7 +11998,10 @@ def carry_across_rows(
         written += 1
 
     db.commit()
-    return {"rows_written": written}
+    out: dict = {"rows_written": written}
+    if not_in_tariff:
+        out["not_in_tariff_lines"] = sorted(not_in_tariff)
+    return out
 
 
 @router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
@@ -12010,6 +12049,15 @@ def correct_field_value(
         if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
+    # A CTH on a template using the Indian Customs Tariff must be a tariff code.
+    if fv.custom_field_id and fv.row_index is not None and saved.strip():
+        from app.core.customs_tariff_jobs import check_correction
+        from app.models.custom_field import CustomField as _CFt
+
+        try:
+            saved = check_correction(db, job_for_rules, db.get(_CFt, fv.custom_field_id), saved)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     from app.core import field_edits
 
     field_edits.record(db, fv, fv.value, saved, user, source="edit")
@@ -12059,6 +12107,8 @@ def correct_field_value(
         found_y=fv.found_y,
         found_width=fv.found_width,
         found_height=fv.found_height,
+        value_source=fv.value_source,
+        source_note=fv.source_note,
     )
 
 

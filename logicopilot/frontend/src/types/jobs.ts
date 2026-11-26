@@ -161,6 +161,9 @@ export interface JobFieldValue {
    *  said honestly: a value the operator typed, one learned from an earlier correction rather
    *  than read off the sheet, or a sheet not parsed into the cache yet. */
   lookup_source?: string | null;
+  /** Indian Customs Tariff: tariff_doc / tariff_ai / tariff_fallback when the code is a suggestion. */
+  value_source?: string | null;
+  source_note?: string | null;
   /** Admin-settable - spans the full row in the job screen's two-column field grid instead of
    *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing
    *  behavior for every field that predates this. */
@@ -302,6 +305,8 @@ export interface JobDetail {
   auto_erp_submitted?: boolean;
   /** What Auto ERP Submission did (defaults filled) or why it held the job for manual review. */
   auto_erp_note?: string | null;
+  /** The template's CTH fields only take Indian Customs Tariff codes. */
+  customs_tariff_on?: boolean;
   /** Predictive, unlike gk2_skipped (only ever true AFTER GK1 has already submitted) - whether
    *  THIS job's shipment type currently needs GK2, known before Final Submit is pressed, so the
    *  button can say up front whether it's headed to GK2 or straight to the real ERP. */

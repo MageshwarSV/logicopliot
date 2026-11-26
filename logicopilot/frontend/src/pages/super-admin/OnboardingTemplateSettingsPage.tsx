@@ -623,6 +623,13 @@ function ProcessingSection({ group, act }: { group: LiveGroup; act: Act }) {
         </div>
       )}
       <Toggle checked={Boolean(group.large_job_lane)} label="Send big jobs to the large-job lane" onChange={(v) => save({ large_job_lane: v }, `Large-job lane ${v ? "on" : "off"}.`)} />
+      <Toggle checked={Boolean(group.use_customs_tariff)} label="CTH only from the Indian Customs Tariff (ICEGATE)"
+        help="Dump codes not in the tariff are not used; an empty CTH line gets the AI's nearest tariff code to confirm; only tariff codes can be typed or picked. Applies to jobs extracted after it is switched on."
+        onChange={(v) => {
+          if (v && group.status === "approved" && !window.confirm(
+            "This template is LIVE. From the next extraction, its CTH fields only take Indian Customs Tariff codes: dump codes outside the tariff are not used, and empty lines get an AI suggestion the operator must tick.\n\nTurn it on?")) return;
+          void save({ use_customs_tariff: v }, `Indian Customs Tariff ${v ? "on" : "off"} for this template.`);
+        }} />
       <label className="flex flex-col gap-1">
         <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Excel attachments</span>
         <select className={INPUT} value={group.excel_mode ?? "legacy"} onChange={(e) => save({ excel_mode: e.target.value }, "Excel mode saved.")}>

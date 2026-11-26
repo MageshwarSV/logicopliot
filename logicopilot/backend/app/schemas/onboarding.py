@@ -297,6 +297,7 @@ class TemplateGroupOut(BaseModel):
     large_zip_hold: bool = False
     large_zip_mb: int = 5
     large_job_lane: bool = False
+    use_customs_tariff: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):
