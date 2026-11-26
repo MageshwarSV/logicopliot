@@ -5429,6 +5429,7 @@ function ExtractedField({
   neverEdited,
   digitsOnly,
   carryToAllRows,
+  tariffSearch,
   id,
   headerExtra,
 }: {
@@ -5522,6 +5523,9 @@ function ExtractedField({
    *  out of a spreadsheet routinely carries "8482 4000 90" or "8482400090.0" and keeping just
    *  the digits is what the operator meant every time. */
   digitsOnly?: number;
+  /** Indian Customs Tariff search on this box (the CTH answer box, template with the tariff on):
+   *  typing 4-7 digits offers the tariff codes that start with them. */
+  tariffSearch?: boolean;
   /** Runs before a save reaches the server - resolve false to cancel the save outright (the
    *  draft stays as typed, nothing is sent). Insurance Rate (%) uses this to require an
    *  uploaded certificate or a typed reason first (see InsuranceCertificatePopup) - every other
@@ -5544,6 +5548,22 @@ function ExtractedField({
 }) {
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
+  // Indian Customs Tariff: while a code is being typed (4-7 digits), the tariff codes that start
+  // with it are offered under the box - only codes from the tariff can be saved (server check).
+  const [tariffHits, setTariffHits] = useState<TariffCode[]>([]);
+  useEffect(() => {
+    if (!tariffSearch || draft.length < 4 || draft.length >= CTH_LENGTH) {
+      setTariffHits([]);
+      return;
+    }
+    let live = true;
+    const t = window.setTimeout(() => {
+      searchTariff({ q: draft, page: 1, page_size: 30 })
+        .then((r) => { if (live) setTariffHits(r.rows); })
+        .catch(() => { if (live) setTariffHits([]); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(t); };
+  }, [tariffSearch, draft]);
   // multiline only: grows the box's own height to fit the content instead of a fixed row
   // count - a short value stays compact, a long wrapped address gets as many lines as it
   // actually needs. Measures the real rendered height (scrollHeight) rather than guessing a
@@ -6036,7 +6056,8 @@ function ExtractedField({
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
-              placeholder={emptyPlaceholder}
+              placeholder={tariffSearch ? "type 4+ digits to search the tariff" : emptyPlaceholder}
+              list={tariffSearch ? `tariff-${fv.id}` : undefined}
               // A box that opens a list keeps its text clear of the arrow drawn over it below.
               // Not while it is already padded for its own buttons (dirty / corrected) - two
               // right-padding classes on one element is whichever the stylesheet lists last.
@@ -6046,6 +6067,13 @@ function ExtractedField({
                   : boxClassName
               }
             />
+            {tariffSearch && (
+              <datalist id={`tariff-${fv.id}`}>
+                {tariffHits.map((h) => (
+                  <option key={h.cth} value={h.cth}>{[h.description, h.unit, h.rate].filter(Boolean).join(" · ")}</option>
+                ))}
+              </datalist>
+            )}
             {/* The down arrow that says "this opens a list". A searchable dropdown is an <input>,
                 and an <input> draws no arrow of its own - so beside a plain text box the two were
                 indistinguishable until clicked, and an operator had no way to tell a field to
@@ -6494,7 +6522,6 @@ function DualSourcePicker({
   const [saving, setSaving] = useState(false);
   // A save the server refused (a CTH outside the Indian Customs Tariff), shown under the box.
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [tariffHits, setTariffHits] = useState<TariffCode[]>([]);
   const refused = (err: unknown) => {
     setSaveError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not save." : "Could not save.");
   };
@@ -6591,21 +6618,8 @@ function DualSourcePicker({
     setPrimaryDraft(incomingPrimary);
   }, [incomingPrimary, isCthPairing]);
 
-  // Indian Customs Tariff: while a code is being typed (4-7 digits), the tariff codes that
-  // start with it are offered under the box - only codes from the list can be saved.
-  useEffect(() => {
-    if (!tariffOn || !isCthPairing || primaryDraft.length < 4 || primaryDraft.length >= CTH_LENGTH) {
-      setTariffHits([]);
-      return;
-    }
-    let live = true;
-    const t = window.setTimeout(() => {
-      searchTariff({ q: primaryDraft, page: 1, page_size: 30 })
-        .then((r) => { if (live) setTariffHits(r.rows); })
-        .catch(() => { if (live) setTariffHits([]); });
-    }, 250);
-    return () => { live = false; window.clearTimeout(t); };
-  }, [tariffOn, isCthPairing, primaryDraft]);
+  // The tariff search moved to the CTH box itself (ExtractedField tariffSearch, 2026-11-26):
+  // the Dump CTH Number box only ever shows what the customer's dump gave.
 
   // `other` missing entirely (no such field on this row at all) is the only real bail-out -
   // guards the unconditional other.id/other.label_name reads below. A BLANK otherValue used
@@ -6859,17 +6873,9 @@ function DualSourcePicker({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            placeholder={tariffOn && isCthPairing ? "type 4+ digits to search the tariff" : "—"}
-            list={tariffOn && isCthPairing ? `tariff-${primary.id}` : undefined}
+            placeholder="—"
             className={boxClass("primary")}
           />
-          {tariffOn && isCthPairing && (
-            <datalist id={`tariff-${primary.id}`}>
-              {tariffHits.map((h) => (
-                <option key={h.cth} value={h.cth}>{[h.description, h.unit, h.rate].filter(Boolean).join(" · ")}</option>
-              ))}
-            </datalist>
-          )}
         </label>
         {/* Indian Customs Tariff: where an automatic code came from, until the operator confirms
             it (a tick, or typing a code). Amber - it is a suggestion, not the customer's dump. */}
@@ -8768,6 +8774,12 @@ function ExtractionReview({
                                   (fv.label_name ?? "").trim().toUpperCase() === "CTH"
                                     ? CTH_LENGTH
                                     : undefined
+                                }
+                                // The tariff search lives on the CTH box - that is where the
+                                // tariff's code goes (Dump CTH Number only shows the dump).
+                                tariffSearch={
+                                  Boolean(job.customs_tariff_on)
+                                    && (fv.label_name ?? "").trim().toUpperCase() === "CTH"
                                 }
                                 // Typed by hand, the CTH fills every other product line, the
                                 // same way picking Dump/Document above it already does. Only
