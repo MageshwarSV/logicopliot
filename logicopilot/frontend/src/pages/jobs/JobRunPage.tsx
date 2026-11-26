@@ -3,6 +3,7 @@ import { ExcelSheetModal, ExcelSheetViewer, UnclassifiedExcelFiles } from "./Exc
 import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
 import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
+import { ErpFixCard } from "./ErpFixCard";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -24,7 +25,7 @@ import { searchTariff, type TariffCode } from "../../api/customsTariff";
 import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
 import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
 import { useAuth } from "../../auth/useAuth";
-import type { JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
+import type { ErpHelpItem, JobDetail, JobDocument, JobEvent, JobFieldValue } from "../../types/jobs";
 import { screenLayoutRef } from "../../types/jobs";
 
 // The operator's stages, as the customs desk actually works through a job. The backend still
@@ -1993,6 +1994,28 @@ export function JobRunPage() {
     [job?.documents],
   );
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  // The boxes the ERP refused (ErpFixCard's Fix button): outlined in red on Required Details
+  // Review until the operator moves on.
+  const [erpFixIds, setErpFixIds] = useState<Set<string>>(new Set());
+  const fixErpItem = (item: ErpHelpItem) => {
+    if (!job) return;
+    const ids = item.field_value_ids;
+    setErpFixIds(new Set(ids));
+    const fv = job.field_values.find((f) => f.id === ids[0]);
+    const doc = fv
+      ? reviewFiles.find((d) => d.template_document_id === fv.template_document_id)
+      : undefined;
+    if (doc) setActiveFileId(doc.id);
+    setActiveTab("extraction");
+    // The document has to render before its box can be scrolled to.
+    let tries = 0;
+    const seek = () => {
+      const el = ids.map((id) => document.getElementById(`field-${id}`)).find(Boolean);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      else if (tries++ < 10) window.setTimeout(seek, 150);
+    };
+    window.setTimeout(seek, 150);
+  };
   // The sidebar's own last row, sat below every document — same list, same click-to-open
   // pattern, just showing the fields the system asks a person for (never called "Manual Data
   // Entry" out loud; that name is internal only, this is what the operator sees) instead of
@@ -3931,7 +3954,7 @@ export function JobRunPage() {
           {/* The last entry failed. Say what was rejected, point at the red field, and make the
               retry obvious — it re-runs the ERP script with the corrected values, WITHOUT
               re-extracting the documents, so a fixed value is all that changes. */}
-          {!readOnly && entryFailed && (
+          {!readOnly && entryFailed && !job.erp_help?.items?.length && (
             <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm dark:border-rose-500/30 dark:bg-rose-500/10">
               <p className="font-semibold text-rose-800 dark:text-rose-300">
                 ⚠ The last ERP entry failed
@@ -3988,6 +4011,19 @@ export function JobRunPage() {
                     : "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300"
               }`}
             >
+              {job.erp_status !== "ok" && job.erp_status !== "partial" && job.erp_status !== "no_script" &&
+              job.erp_help?.items?.length ? (
+                <ErpFixCard
+                  help={job.erp_help}
+                  jobReference={job.reference ?? job.id}
+                  fieldValues={job.field_values}
+                  onFix={readOnly ? undefined : fixErpItem}
+                  onRetry={!readOnly && job.gk2_status === "failed" ? gk2ApproveAndProceed : undefined}
+                  retryBusy={gk2Busy}
+                  onOpenExcel={!readOnly && job.excel_entry ? () => setExcelEditorOpen(true) : undefined}
+                  onResetExcel={!readOnly && job.erp_excel_edited ? resetEditedExcel : undefined}
+                />
+              ) : (
               <p className="font-semibold">
                 {job.erp_status === "ok"
                   ? "✓ Entered into the ERP and submitted."
@@ -3999,6 +4035,7 @@ export function JobRunPage() {
                       ? "No ERP script configured for this template — nothing was entered."
                       : `✗ ERP entry failed.${job.erp_reason ? " " + job.erp_reason : ""}`}
               </p>
+              )}
               {showsMachinery && job.erp_final_url && (
                 <p className="mt-0.5 text-xs opacity-80">Final page: {job.erp_final_url}</p>
               )}
@@ -4309,6 +4346,7 @@ export function JobRunPage() {
               setActiveFileId={setActiveFileId}
               insuranceMode={insuranceMode}
               onToggleInsuranceMode={switchInsuranceMode}
+              erpFixIds={erpFixIds}
             />
           )}
 
@@ -6943,6 +6981,8 @@ function DualSourcePicker({
  * One panel per uploaded FILE, not per slot, so three invoices are three panels and each
  * sits beside its own pages.
  */
+const ERP_FIX_NOTE = "ERP did not accept this value - see the ERP Submission tab for what it needs.";
+
 function ExtractionReview({
   job,
   jobId,
@@ -6952,6 +6992,7 @@ function ExtractionReview({
   setActiveFileId,
   insuranceMode,
   onToggleInsuranceMode,
+  erpFixIds,
 }: {
   job: JobDetail;
   jobId: string;
@@ -6969,6 +7010,8 @@ function ExtractionReview({
   // never drift into two independent checkboxes. null = neither picked yet.
   insuranceMode: "percentage" | "amount" | null;
   onToggleInsuranceMode: (toAmount: boolean) => void;
+  // Boxes the ERP refused, from the ERP Submission card's Fix button - outlined in red.
+  erpFixIds?: Set<string>;
 }) {
   // The hidden "Supplier Source" field (see SupplierSourceCheckbox) - present only on a template
   // set up for it. Its saved value is the label of the ticked name field; none yet = Shipper.
@@ -8434,8 +8477,8 @@ function ExtractionReview({
                             : undefined
                         }
                         hint={FIELD_HINTS[fv.label_name]}
-                        flagged={missingRequiredIds.has(fv.id)}
-                        flagNote={missingRequiredIds.has(fv.id) ? "Mandatory — needs a value before this document can be approved." : undefined}
+                        flagged={missingRequiredIds.has(fv.id) || !!erpFixIds?.has(fv.id)}
+                        flagNote={missingRequiredIds.has(fv.id) ? "Mandatory — needs a value before this document can be approved." : erpFixIds?.has(fv.id) ? ERP_FIX_NOTE : undefined}
                         onDraftChange={
                           fv.label_name === "ERP Consignee Country" ? setLiveConsigneeCountry : undefined
                         }
@@ -8721,11 +8764,13 @@ function ExtractionReview({
                           // A product-line field with its own list of choices (a
                           // quantity unit) is picked, not typed - see fixedChoiceProps.
                           {...fixedChoiceProps(fv)}
-                          flagged={missingRequiredIds.has(fv.id)}
+                          flagged={missingRequiredIds.has(fv.id) || !!erpFixIds?.has(fv.id)}
                           flagNote={
                             missingRequiredIds.has(fv.id)
                               ? "Mandatory — needs a value before this document can be approved."
-                              : undefined
+                              : erpFixIds?.has(fv.id)
+                                ? ERP_FIX_NOTE
+                                : undefined
                           }
                         />
                       );
@@ -8794,11 +8839,13 @@ function ExtractionReview({
                                         )
                                     : undefined
                                 }
-                                flagged={missingRequiredIds.has(fv.id)}
+                                flagged={missingRequiredIds.has(fv.id) || !!erpFixIds?.has(fv.id)}
                                 flagNote={
                                   missingRequiredIds.has(fv.id)
                                     ? "Mandatory — needs a value before this document can be approved."
-                                    : undefined
+                                    : erpFixIds?.has(fv.id)
+                                      ? ERP_FIX_NOTE
+                                      : undefined
                                 }
                                 small
                                 tone="reference"
@@ -8845,7 +8892,7 @@ function ExtractionReview({
                                   flagged={syncTargets.some(
                                     (t) =>
                                       (t.label_name ?? "").trim().toUpperCase() === "CTH" &&
-                                      missingRequiredIds.has(t.id),
+                                      (missingRequiredIds.has(t.id) || !!erpFixIds?.has(t.id)),
                                   )}
                                 />
                               ))}

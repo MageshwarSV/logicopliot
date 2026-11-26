@@ -229,7 +229,9 @@ function GoLiveCard({ group, act }: { group: LiveGroup; act: Act }) {
     const noSample = docs.filter((d) => !d.is_uploaded);
     out.push({ ok: !noSample.length, level: "warn", text: noSample.length ? `No sample yet: ${noSample.map((d) => d.name).join(", ")}` : "Every document has a sample", fix: "Template Settings → Documents → Upload sample" });
     const noBox = required.filter((d) => boxes(d) === 0);
-    out.push({ ok: !noBox.length, level: "block", text: noBox.length ? `Required document(s) with no box drawn: ${noBox.map((d) => d.name).join(", ")}` : "Every required document has its boxes", fix: "Step 2 Document Mapping" });
+    // A warning, not a stop (4S, 2026-11-26): a template may go live with a document that has no
+    // boxes yet - nothing is read from it until boxes are drawn, and its columns stay empty.
+    out.push({ ok: !noBox.length, level: "warn", text: noBox.length ? `Required document(s) with no box drawn - nothing will be read from them: ${noBox.map((d) => d.name).join(", ")}` : "Every required document has its boxes", fix: "Step 2 Document Mapping" });
 
     if (group.entry_mode === "excel") {
       const sheets = ((group.excel_config as { sheets?: unknown[] } | null)?.sheets ?? []).length
