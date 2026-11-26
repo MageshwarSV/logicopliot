@@ -160,3 +160,49 @@ def test_detail_carries_source(client, db_session, fake_ai):
     assert d["customs_tariff_on"] is True
     fv = next(f for f in d["field_values"] if f["label_name"] == "Dump CTH Number" and f["row_index"] == 2)
     assert fv["value_source"] == "tariff_ai" and "85371000" in fv["source_note"]
+
+
+# ---------------------------------------------------------------- phase 4: Auto ERP
+
+def test_auto_apply_fills_the_answer_box_and_notes(db_session, fake_ai):
+    t, g, job, dump, cth = _setup(db_session)
+    tj.apply_to_job(db_session, job, g)
+    db_session.commit()
+    notes = tj.auto_apply(db_session, job)
+    db_session.commit()
+    # the answer box the ERP reads gets each line's tariff code - as extracted, not a correction
+    assert [_fv(db_session, job, "CTH", r).value for r in (1, 2, 3)] == ["85177990", "85371090", "39232100"]
+    assert all(_fv(db_session, job, "CTH", r).corrected_value is None for r in (1, 2, 3))
+    assert _fv(db_session, job, "CTH", 2).value_source == "tariff_ai"
+    text = " | ".join(notes)
+    assert "AI's nearest tariff code on lines 2, 3" in text and "check in the ERP" in text
+    assert "Dump CTH not in the Indian Customs Tariff, not used, on line 2" in text
+
+
+def test_auto_apply_off_and_no_code(db_session, monkeypatch):
+    t, g, job, dump, cth = _setup(db_session, on=False)
+    assert tj.auto_apply(db_session, job) == []
+    g.use_customs_tariff = True
+    db_session.commit()
+    monkeypatch.setattr(m, "_ask", lambda *a: {})        # AI down: line 2 has a document code, line 3 nothing
+    tj.apply_to_job(db_session, job, g)
+    db_session.commit()
+    notes = tj.auto_apply(db_session, job)
+    assert _fv(db_session, job, "CTH", 2).value == "85371090"     # 'Other' code of 853710
+    assert _fv(db_session, job, "CTH", 3).value == ""             # nothing to place it by
+    text = " | ".join(notes)
+    assert "'Other' code on line 2" in text and "No tariff CTH could be found on line 3" in text
+
+
+def test_erp_columns_never_carry_na_or_codes_outside_the_tariff(db_session, fake_ai):
+    from app.core.auto_erp_complete import complete_for_erp
+
+    t, g, job, dump, cth = _setup(db_session)
+    cth.ask_operator_required = True                       # required: would get "NA" without the guard
+    db_session.commit()
+    cfg = {"sheets": [{"sheet": "ITEMS", "scope": "line", "columns": [
+        {"header": "Desc", "field": "product_description"}, {"header": "CTH", "field": "CTH"}]}]}
+    rows = {"product_description": ["A", "B", "C"], "CTH": ["85177990", "", "8537.10.00"]}
+    _v, r, notes = complete_for_erp(db_session, job, cfg, {}, rows)
+    assert r["CTH"] == ["85177990", "", ""]
+    assert any("removed - not in the Indian Customs Tariff" in n for n in notes)

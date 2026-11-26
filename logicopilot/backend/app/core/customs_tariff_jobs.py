@@ -185,3 +185,93 @@ def submit_problems(db: Session, job) -> list[str]:
         if val and clean_cth(val) not in codes:
             out.append(f"{fields[fv.custom_field_id]} (line {fv.row_index}): {val} is not in the Indian Customs Tariff")
     return out
+
+
+# ---------------------------------------------------------------- Auto ERP (phase 4)
+
+def tariff_labels(db: Session, job) -> set[str]:
+    """Labels of the job's CTH fields when its template uses the tariff, else empty."""
+    from app.models.template_group import TemplateGroup
+
+    group = db.get(TemplateGroup, job.group_id)
+    if not tariff_on(db, group):
+        return set()
+    return {c.label_name for c in tariff_fields(db, group.id)}
+
+
+def _where(keys) -> str:
+    keys = sorted(keys)
+    multi = len({s for s, _r in keys}) > 1
+    parts = [f"invoice {s} line {r}" if multi else str(r) for s, r in keys]
+    return ("lines " if len(parts) > 1 else "line ") + ", ".join(parts) if not multi else ", ".join(parts)
+
+
+def auto_apply(db: Session, job) -> list[str]:
+    """Auto ERP Submission: the tariff code on each line goes to the ERP without a person's
+    tick. The after-extraction pass already put it in the Dump CTH box; here it is copied into
+    the answer box the picker would have filled ("CTH"), as the extracted value - never as a
+    correction. Nothing outside the tariff is ever written. Returns the job-note lines.
+    Does not commit."""
+    from app.models.job import JobFieldValue
+    from app.models.template_group import TemplateGroup
+
+    group = db.get(TemplateGroup, job.group_id)
+    if not tariff_on(db, group):
+        return []
+    fields = tariff_fields(db, group.id)
+    if not fields:
+        return []
+    codes = active_codes(db)
+    fed = {sid for c in fields for sid in (c.sync_field_ids or []) if sid != c.id}
+    ids = {c.id for c in fields}
+    by_line: dict[tuple, list] = {}
+    for fv in db.query(JobFieldValue).filter(JobFieldValue.job_id == job.id,
+                                             JobFieldValue.custom_field_id.in_(list(ids)),
+                                             JobFieldValue.row_index.isnot(None)).all():
+        by_line.setdefault((fv.set_index or 1, fv.row_index), []).append(fv)
+
+    seen: dict[str, set] = {"tariff_ai": set(), "tariff_fallback": set(), "tariff_doc": set(),
+                            "rejected": set(), "none": set()}
+    for k, fvs in by_line.items():
+        code, source = "", None
+        # The box the operator would tick first (Dump CTH Number), then any other CTH box.
+        for fv in sorted(fvs, key=lambda f: f.custom_field_id in fed):
+            val = clean_cth(fv.corrected_value or fv.extracted_value or "")
+            if val and val in codes:
+                code, source = val, fv.value_source
+                break
+        if any("is not in the Indian Customs Tariff" in (fv.source_note or "") for fv in fvs):
+            seen["rejected"].add(k)
+        if not code:
+            seen["none"].add(k)
+            continue
+        if source in seen:
+            seen[source].add(k)
+        for fv in fvs:
+            if fv.custom_field_id in fed and (fv.corrected_value or "").strip() == "":
+                if clean_cth(fv.extracted_value or "") not in codes:
+                    fv.extracted_value = code
+                    fv.value_source = source
+    db.flush()
+
+    notes = []
+    picked = []
+    if seen["tariff_ai"]:
+        picked.append(f"AI's nearest tariff code on {_where(seen['tariff_ai'])}")
+    if seen["tariff_doc"]:
+        picked.append(f"document CTH (in the tariff) on {_where(seen['tariff_doc'])}")
+    if seen["tariff_fallback"]:
+        picked.append(f"the subheading's 'Other' code on {_where(seen['tariff_fallback'])}")
+    if picked:
+        notes.append("CTH from the Indian Customs Tariff: " + "; ".join(picked) + " - check in the ERP")
+    if seen["rejected"]:
+        notes.append(f"Dump CTH not in the Indian Customs Tariff, not used, on {_where(seen['rejected'])}")
+    if seen["none"]:
+        notes.append(f"No tariff CTH could be found on {_where(seen['none'])} - fill it in the ERP")
+    return notes
+
+
+def erp_value(db: Session, raw, codes: frozenset | None = None) -> str:
+    """What may go to the ERP in a CTH column: the tariff code, or "" - never anything else."""
+    code = clean_cth(raw)
+    return code if code and code in (codes if codes is not None else active_codes(db)) else ""

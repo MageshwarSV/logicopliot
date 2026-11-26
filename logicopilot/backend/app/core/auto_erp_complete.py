@@ -165,6 +165,13 @@ def complete_for_erp(db: Session, job, config: dict, values: dict, rows: dict) -
     values = dict(values or {})
     rows = {k: (list(v) if isinstance(v, list) else v) for k, v in (rows or {}).items()}
     info = _Fields(db, job)
+    # Indian Customs Tariff (template switch on): a CTH column only ever carries a tariff code -
+    # never an "NA" placeholder, never a code outside the tariff (that is emptied instead).
+    from app.core.customs_tariff import active_codes
+    from app.core.customs_tariff_jobs import erp_value, tariff_labels
+
+    cth_labels = tariff_labels(db, job)
+    tariff_codes = active_codes(db) if cth_labels else frozenset()
     filled: dict[str, list] = {}           # label -> [(where, value, how)]
 
     def note(label, where, value, how):
@@ -180,6 +187,13 @@ def complete_for_erp(db: Session, job, config: dict, values: dict, rows: dict) -
 
     def choose(label: str, current, siblings: list) -> tuple[str | None, str]:
         base = label.split("@@")[0].strip()
+        if base in cth_labels:
+            if _empty(current):
+                return None, ""
+            ok = erp_value(db, current, tariff_codes)
+            if ok == str(current).strip():
+                return None, ""
+            return ok, ("tariff format" if ok else f'"{current}" removed - not in the Indian Customs Tariff')
         options = info.options.get(base)
         if options:
             if not _empty(current):
