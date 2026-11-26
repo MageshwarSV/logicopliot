@@ -2954,6 +2954,54 @@ def _import_rejection(page) -> str | None:
     return None
 
 
+# Dialogs that mean THE ENTRY HAS NO DATA IN IT. Unlike _IMPORT_REJECTED (a modal the ERP
+# puts on the page when it refuses an Excel), these come through as BROWSER dialogs, and a
+# browser dialog has to be answered or the page hangs - so they were answered, and the run
+# carried on and reported success.
+#
+# Production 2026-11-25: MAA/AI/35112, 35113 and 35118 each filed an entry holding nothing,
+# and each one reported `ok`. The ERP had said so in as many words - "No products in this
+# job" - and the script pressed OK, because an alert step recorded earlier told it to:
+#
+#     ALERT: the ERP raised a alert - 'No products in this job' - accepted (as alert step 88 says)
+#
+# An "if this alert comes, press OK" step is for a question. This is not a question, it is the
+# ERP reporting that the entry is empty, and no recorded answer may turn it into a success.
+_EMPTY_ENTRY_ALERTS = (
+    "no products in this job",
+    "no products for following invoice",
+    "no products for the following invoice",
+)
+
+
+def _empty_entry_block(said: str) -> dict:
+    """The outcome an empty entry produces - written for the operator who has to fix it.
+
+    "validation", so persist_run_outcome reports the job as Failed rather than as a duplicate,
+    and the failure screenshot is saved with it (see persist_run_outcome: a non-ok run writes
+    result["screenshot"] to erp-failure.png, which is what the job card shows).
+    """
+    return {
+        "outcome": "validation",
+        "reason": ("The ERP entry was created but NOTHING went into it - the ERP said: "
+                   f"\u201c{said}\u201d. The products did not reach the ERP, so this entry "
+                   "is empty and must not be used. Check the products on the job, then press "
+                   "Retry - and delete the empty entry in the ERP."),
+    }
+
+
+def _empty_entry_alert(message) -> str | None:
+    """The ERP's own words when it says the entry holds no data - or None.
+
+    Narrow on purpose. Only an entry with NO PRODUCTS stops a run here; every other dialog -
+    a credit-limit notice, a duplicate-invoice confirm, a session prompt - is answered exactly
+    as it always was.
+    """
+    text = " ".join(str(message or "").split())
+    low = text.lower()
+    return text[:300] if any(m in low for m in _EMPTY_ENTRY_ALERTS) else None
+
+
 def _scroll_dy(step: dict) -> int:
     """Pixels a scroll step moves: negative up, positive down. Default one screen down."""
     raw = step.get("value")
@@ -5707,6 +5755,11 @@ def _play_steps(
             # this flag once, before it falls back to the generic AI screen-reading guesswork.
             dismissed_destructive: dict = {"flag": False}
 
+            # Set by _answer_dialog the moment the ERP says the entry has no data in it. The
+            # dialog still gets answered - a browser dialog left unanswered hangs the page -
+            # but the run is failed afterwards instead of being allowed to report success.
+            empty_entry: dict = {"text": None}
+
             # A "close the form?" popup firing right after a double_click is not the same
             # question as one firing after a Save - a double_click in this replay engine only
             # ever means "pick this row from a list-picker popup" (see the field_label/val
@@ -5729,6 +5782,12 @@ def _play_steps(
 
             def _answer_dialog(d):
                 d_page = getattr(d, "page", None)
+                # Noted BEFORE the dialog is answered, and regardless of any "if this alert
+                # comes" rule: a recorded answer decides which BUTTON to press, never whether
+                # the run succeeded. The ERP is telling us the entry is empty.
+                fatal = _empty_entry_alert(d.message)
+                if fatal and empty_entry["text"] is None:
+                    empty_entry["text"] = fatal
                 rule = matching_dialog_rule(d_page, d.message)
                 accept, reply = _dialog_answer(d_page, d.message,
                                                assume_pick_confirm=last_action_was_double_click["flag"])
@@ -6115,6 +6174,15 @@ def _play_steps(
 
             while i < len(steps) and safety < len(steps) * 4 + 12:
                 _current_step["i"] = i
+                # The ERP has told us, in its own words, that this entry holds no products.
+                # Carrying on would reach the success check (a job number appeared) and file
+                # the run as `ok` - which is exactly how three empty entries were filed on
+                # 2026-11-25 with nothing on any screen to say so.
+                if empty_entry["text"] and blocked is None:
+                    blocked = _empty_entry_block(empty_entry["text"])
+                    log.append(f"step {i + 1}: STOPPED - the ERP says the entry has no "
+                               f"products in it: {empty_entry['text']}")
+                    break
                 maybe_save_checkpoint()
                 # ---- PARKED SESSION: wait at the checkpoint for a job to arrive ----------
                 # This is what "stay open" means. The setup steps have just finished, so the
@@ -7048,6 +7116,14 @@ def _play_steps(
                     "ai_diagnosis": ai_diagnosis,
                     "resumed": resumed, "checkpoint_saved": checkpoint_saved,
                 }
+
+            # The same alert raised by the very LAST step never reaches the top of the loop
+            # again, so it is checked once more here. Without this, an entry whose emptiness
+            # the ERP announced on the final screen would still be filed as a success.
+            if empty_entry["text"] and blocked is None:
+                blocked = _empty_entry_block(empty_entry["text"])
+                log.append("STOPPED - the ERP says the entry has no products in it: "
+                           + empty_entry["text"])
 
             # The form locked after entering a value → can't submit. Usually a DUPLICATE
             # (the record already exists). Report it as its own outcome, not a hard failure.
