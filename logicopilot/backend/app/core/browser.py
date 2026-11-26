@@ -1562,11 +1562,79 @@ def _repair_selector(page, step: dict, frames: list, timeout: int = 2500) -> str
     return _text_selector(page, frames, label)
 
 
+# An ERP option that ends in a short bracketed code: "ORAGADAM (3)", "3 (3)", "BRANCH # 9 (9)".
+# Only a SHORT code at the very END counts, so a name like "ABC (INDIA) PVT LTD" is left whole.
+_OPTION_CODE = re.compile(r"^(.*?)\s*\(\s*([\w#./-]{1,8})\s*\)$")
+
+
+def _strong_pick(value: str, options: list) -> str | None:
+    """The option that IS the value - never a guess. Priorities 1-3 of the dropdown rule
+    (4S, 2026-11-26):
+
+      1. exact text (spaces / case / punctuation ignored);
+      2. the option's NAME is the value - "3" -> "3 (3)", "ORAGADAM" -> "ORAGADAM (3)" - then an
+         option that STARTS with the value as a whole word ("3" -> "3 - MAIN (3)");
+      3. the bracketed CODE is the value (several share it -> the first of those).
+
+    Found on SOFTLINK's quotation Address list "ORAGADAM (3)", "3 (3)", "BRANCH # 9 (9)",
+    "0 (0)": asked for 3, the substring rung matched BOTH 3-bearing options and "3 (3)" won only
+    by being shorter. A value must win by being the option's name, not by its length.
+
+    None when nothing is that sure; _fuzzy_pick then tries the looser rungs."""
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+    def bare(s: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]+", " ", norm(s))).strip()
+
+    v = norm(value)
+    opts = [o for o in (options or []) if o and str(o).strip()]
+    if not v or not opts:
+        return None
+    low = [(o, norm(o)) for o in opts]
+    # 1 - exact.
+    for o, ol in low:
+        if ol == v:
+            return o
+    for o, ol in low:
+        if bare(ol) == bare(v):
+            return o
+    # 2 - the name part (the option without its trailing "(code)") is the value...
+    split = []
+    for o, ol in low:
+        m = _OPTION_CODE.match(ol)
+        split.append((o, m.group(1).strip() if m else ol, m.group(2).strip() if m else ""))
+    for o, name, _code in split:
+        if name and name == v:
+            return o
+    for o, name, _code in split:
+        if name and bare(name) and bare(name) == bare(v):
+            return o
+    #     ...or the option starts with the value as a whole word ("3" never takes "33 (33)").
+    starts = [o for o, ol in low
+              if ol.startswith(v) and len(ol) > len(v) and not (ol[len(v)].isalnum() or ol[len(v)] == "_")]
+    if starts:
+        return min(starts, key=lambda o: len(norm(o)))
+    # 3 - the bracketed code is the value. When several options share it ("ORAGADAM (8)",
+    #     "SEZ ORAGADAM (8)") the first of THEM is taken (4S's choice) - before this, "8" fell
+    #     to the substring rung and took "83 (83)", a different code altogether.
+    by_code = [o for o, _name, code in split if code and code == v]
+    if by_code:
+        return by_code[0]
+    return None
+
+
 def _fuzzy_pick(value: str, options: list) -> str | None:
-    """Best fuzzy match of `value` among `options` (case-insensitive). ERP dropdowns rarely
-    hold the exact extracted text, so match tolerantly: exact -> substring -> closest by
-    difflib ratio (>=0.6). Returns the chosen option string, or None if nothing is close."""
+    """Best match of `value` among `options` (case-insensitive). ERP dropdowns rarely hold the
+    exact extracted text, so match tolerantly - but in a fixed order of how SURE each rung is:
+    _strong_pick first (exact, the option's name, starts-with, a unique code), only then
+    substring -> same words -> closest by difflib ratio (>=0.6). Returns the chosen option
+    string, or None if nothing is close."""
     import difflib
+
+    strong = _strong_pick(value, options)
+    if strong is not None:
+        return strong
 
     def norm(s: str) -> str:
         # Collapse runs of whitespace and drop the punctuation ERPs sprinkle differently.
@@ -1649,17 +1717,37 @@ def _fuzzy_pick(value: str, options: list) -> str | None:
 
 
 def _select_fuzzy(loc, value: str) -> bool:
-    """Pick the closest <option> in a native <select>, tolerant of ERP wording."""
-    for kwargs in ({"label": value}, {"value": value}):   # fast path: exact
-        try:
-            loc.select_option(timeout=4000, **kwargs)
-            return True
-        except Exception:  # noqa: BLE001
-            pass
+    """Pick the closest <option> in a native <select>, tolerant of ERP wording.
+
+    Order (4S, 2026-11-26) - what the user SEES first, the hidden code only after it:
+      1. the visible text exactly;
+      2. a sure visible match - the option's name / starts-with / its unique bracketed code
+         (_strong_pick): "3" -> "3 (3)", never "ORAGADAM (3)";
+      3. the hidden option value exactly - a dropdown that shows "Transaction" but stores "T";
+      4. the looser visible rungs (substring, words, spelling), then the same on hidden values.
+    The hidden value used to be tried second, so two options sharing it ("ORAGADAM (3)" and
+    "3 (3)" both stored as 3) went to whichever came first in the list."""
+    try:                                                   # 1 - exact visible text
+        loc.select_option(label=value, timeout=4000)
+        return True
+    except Exception:  # noqa: BLE001
+        pass
     try:
         pairs = loc.evaluate("el => Array.from(el.options).map(o => [o.label || o.textContent || '', o.value])")
     except Exception:  # noqa: BLE001
         pairs = []
+    sure = _strong_pick(value, [p[0] for p in pairs if p and p[0]])
+    if sure:                                               # 2 - sure visible match
+        try:
+            loc.select_option(label=str(sure).strip(), timeout=4000)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    try:                                                   # 3 - hidden value, exact
+        loc.select_option(value=value, timeout=4000)
+        return True
+    except Exception:  # noqa: BLE001
+        pass
     match = _fuzzy_pick(value, [p[0] for p in pairs if p and p[0]])
     if match:
         try:
@@ -4829,28 +4917,12 @@ class RecorderSession:
             applied = False
             if info and info.get("selector"):
                 loc = _scoped(p, info.get("frames"), info["selector"])
-                # Try by visible label, then by value, then a loose text match against the
-                # captured options — so "Registered" applies even if casing/spacing differs.
-                for kwargs in ({"label": value}, {"value": value}):
-                    try:
-                        loc.select_option(timeout=4000, **kwargs)
-                        applied = True
-                        break
-                    except Exception:  # noqa: BLE001
-                        pass
-                if not applied:
-                    try:
-                        opts = info.get("options") or []
-                        match = next(
-                            (o for o in opts if value.strip().lower() == o.strip().lower()), None
-                        ) or next(
-                            (o for o in opts if value.strip().lower() in o.strip().lower()), None
-                        )
-                        if match:
-                            loc.select_option(label=match, timeout=4000)
-                            applied = True
-                    except Exception:  # noqa: BLE001
-                        pass
+                # The same matcher a job run uses (_select_fuzzy), so recording and running
+                # pick the same option - "3" is "3 (3)" here too, not the first option holding 3.
+                try:
+                    applied = _select_fuzzy(loc, value)
+                except Exception:  # noqa: BLE001
+                    applied = False
             p.wait_for_timeout(300)
             if info is not None:
                 info["applied"] = applied
