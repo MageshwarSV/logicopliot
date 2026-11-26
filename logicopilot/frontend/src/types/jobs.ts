@@ -13,6 +13,8 @@ export interface Job {
   customer_name?: string | null;
   /** Auto ERP Submission: sent to the ERP by the system straight after extraction, no review. */
   auto_erp_submitted?: boolean;
+  /** The ERP branch it is entered on (template ERP script branch field, e.g. Bangalore). */
+  erp_branch?: string | null;
   /** The House Bill of Lading number, read off this job's own documents - the Jobs list's own
    *  BL No column, between Job No and ETA. Null when this job's template never marks an
    *  "HBL No" field, or nothing has been read for it yet. */

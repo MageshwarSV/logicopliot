@@ -202,19 +202,20 @@ export function AppShell({
   const ccfCustomer = categoryCountFilters?.customer;
   const ccfStatus = categoryCountFilters?.status;
   const ccfShipmentType = categoryCountFilters?.shipmentType;
+  const ccfErpBranch = categoryCountFilters?.erpBranch;
   useEffect(() => {
     if (!showsJobCategories) return;
     let alive = true;
     const load = () => {
       jobsApi.getJobCategoryCounts({
         dateFrom: ccfDateFrom, dateTo: ccfDateTo, assignedTo: ccfAssignedTo,
-        customer: ccfCustomer, status: ccfStatus, shipmentType: ccfShipmentType,
+        customer: ccfCustomer, status: ccfStatus, shipmentType: ccfShipmentType, erpBranch: ccfErpBranch,
       }).then((c) => { if (alive) setCategoryCounts(c); }).catch(() => {});
     };
     load();
     const t = window.setInterval(load, 30000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
+  }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType, ccfErpBranch]);
 
   // "Fix now · Failed jobs (n)" in the top bar: the logged-in user's OWN ERP-failed jobs (the
   // ones assigned to them - same rule as the Jobs list's "Assigned To" filter), all dates, so a

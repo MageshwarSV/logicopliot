@@ -49,7 +49,7 @@ type QuickKey =
 interface StoredJobsFilters {
   quick: QuickKey;
   customer: string;
-  statusFilter: string;
+  erpBranch: string;
   assignedTo: string;
   shipmentType: string;
   dateFrom: string;
@@ -254,7 +254,7 @@ export function JobsPage() {
   const assignedToParam = searchParams.get("assignedTo");
   const [quick, setQuick] = useState<QuickKey>(() => storedFilters.quick ?? "today");
   const [customer, setCustomer] = useState<string>(() => storedFilters.customer ?? QUICK_ALL);
-  const [statusFilter, setStatusFilter] = useState<string>(() => storedFilters.statusFilter ?? QUICK_ALL);
+  const [erpBranch, setErpBranch] = useState<string>(() => storedFilters.erpBranch ?? QUICK_ALL);
   const [assignedTo, setAssignedTo] = useState<string>(() => storedFilters.assignedTo ?? QUICK_ALL);
   // Search by Job No or BL / Air Waybill No (the "BL No" column - the HAWB on an air job).
   // Compared on letters and digits only, so "45T 0523984" and "45t-0523984" both find
@@ -292,7 +292,7 @@ export function JobsPage() {
       // stored and falls back to the same blank defaults clearing used to produce.
       const own = readStoredJobsFilters(category ?? undefined);
       setCustomer(own.customer ?? QUICK_ALL);
-      setStatusFilter(own.statusFilter ?? QUICK_ALL);
+      setErpBranch(own.erpBranch ?? QUICK_ALL);
       setShipmentType(own.shipmentType ?? QUICK_ALL);
       setDateFrom(own.dateFrom ?? "");
       setDateTo(own.dateTo ?? "");
@@ -365,14 +365,14 @@ export function JobsPage() {
         all = {};
       }
       all[filtersScope(category)] = {
-        quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo,
+        quick, customer, erpBranch, assignedTo, shipmentType, dateFrom, dateTo,
       };
       filtersStore.write(JSON.stringify(all));
     } catch {
       // Best-effort only - worst case, filters just reset on the next visit, exactly like
       // before this existed.
     }
-  }, [category, quick, customer, statusFilter, assignedTo, shipmentType, dateFrom, dateTo]);
+  }, [category, quick, customer, erpBranch, assignedTo, shipmentType, dateFrom, dateTo]);
 
   async function loadFirstPage() {
     setLoading(true);
@@ -710,13 +710,12 @@ export function JobsPage() {
 
   // Exactly the same string the Status column itself shows — filtering by anything else
   // would let a person pick a status they can never actually match against a row.
-  const statuses = useMemo(() => {
+  // ERP Branch filter: the branches the loaded jobs are entered on (their template's ERP script
+  // branch field, e.g. Bangalore / Chennai).
+  const branches = useMemo(() => {
     const s = new Set<string>();
-    for (const j of jobs) {
-      const st = j.outer_status ?? j.stage;
-      if (st) s.add(st);
-    }
-    return [...s].sort();
+    for (const j of jobs) if (j.erp_branch) s.add(j.erp_branch);
+    return [...s].sort((a, b) => a.localeCompare(b));
   }, [jobs]);
 
   // Matches the Assigned To column's own display rule (operator name, else who it was pulled
@@ -891,7 +890,7 @@ export function JobsPage() {
         return key(j.reference).includes(searchKey) || key(j.hbl_no).includes(searchKey);
       }
       if (customer !== QUICK_ALL && (j.customer_name ?? "") !== customer) return false;
-      if (statusFilter !== QUICK_ALL && (j.outer_status ?? j.stage) !== statusFilter) return false;
+      if (erpBranch !== QUICK_ALL && (j.erp_branch ?? "") !== erpBranch) return false;
       if (assignedTo !== QUICK_ALL && assignedToLabel(j) !== assignedTo) return false;
       if (shipmentType !== QUICK_ALL && (j.mode ?? "") !== shipmentType) return false;
       const d = dayKey(rowDate(j));
@@ -920,7 +919,7 @@ export function JobsPage() {
       if (ea !== eb) return ea < eb ? -1 : 1;
       return createdMs(b) - createdMs(a);
     });
-  }, [jobs, showModeTabs, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, category, searchKey]);
+  }, [jobs, showModeTabs, activeModeTab, customer, erpBranch, assignedTo, shipmentType, quickRange, category, searchKey]);
 
   // Page-by-page display over the filtered list. Every job is still loaded in the background
   // (see the auto-continue effect) and filtered client-side above, so this only decides which
@@ -931,7 +930,7 @@ export function JobsPage() {
   const [listPageSize, setListPageSize] = useState(20);
   useEffect(() => {
     setListPage(1);
-  }, [category, activeModeTab, customer, statusFilter, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket, searchKey]);
+  }, [category, activeModeTab, customer, erpBranch, assignedTo, shipmentType, quickRange, listPageSize, tenantFilter, group, bucket, searchKey]);
   // A search belongs to the menu it was typed on.
   useEffect(() => {
     setJobSearch("");
@@ -1156,7 +1155,7 @@ export function JobsPage() {
         dateTo: quickRange.to || undefined,
         assignedTo: assignedTo !== QUICK_ALL ? assignedTo : undefined,
         customer: customer !== QUICK_ALL ? customer : undefined,
-        status: statusFilter !== QUICK_ALL ? statusFilter : undefined,
+        erpBranch: erpBranch !== QUICK_ALL ? erpBranch : undefined,
         shipmentType: shipmentType !== QUICK_ALL ? shipmentType : undefined,
       }}
       actions={
@@ -1307,15 +1306,15 @@ export function JobsPage() {
             </select>
           </div>
           <div className="min-w-0 flex-1">
-            <label className="mb-1 block text-xs font-medium text-slate-500">Status</label>
+            <label className="mb-1 block text-xs font-medium text-slate-500">ERP Branch</label>
             <select
               className={`${quickField} w-full`}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              value={erpBranch}
+              onChange={(e) => setErpBranch(e.target.value)}
             >
-              <option value={QUICK_ALL}>All statuses</option>
-              {statuses.map((s) => (
-                <option key={s} value={s}>{s}</option>
+              <option value={QUICK_ALL}>All branches</option>
+              {branches.map((b) => (
+                <option key={b} value={b}>{b}</option>
               ))}
             </select>
           </div>
@@ -1347,7 +1346,7 @@ export function JobsPage() {
               </select>
             </div>
           )}
-          {(dateFrom || dateTo || customer !== QUICK_ALL || statusFilter !== QUICK_ALL || assignedTo !== QUICK_ALL || shipmentType !== QUICK_ALL || quick !== "today") && (
+          {(dateFrom || dateTo || customer !== QUICK_ALL || erpBranch !== QUICK_ALL || assignedTo !== QUICK_ALL || shipmentType !== QUICK_ALL || quick !== "today") && (
             <button
               type="button"
               onClick={() => {
@@ -1355,7 +1354,7 @@ export function JobsPage() {
                 setDateFrom("");
                 setDateTo("");
                 setCustomer(QUICK_ALL);
-                setStatusFilter(QUICK_ALL);
+                setErpBranch(QUICK_ALL);
                 setAssignedTo(QUICK_ALL);
                 setShipmentType(QUICK_ALL);
               }}

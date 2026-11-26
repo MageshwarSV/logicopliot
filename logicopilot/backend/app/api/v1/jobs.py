@@ -1430,6 +1430,41 @@ def _customer_name(
     return None
 
 
+def _branch_field_for(db: Session, group_id: str | None) -> str | None:
+    """The job field a template's ready ERP script picks its branch login by (ErpScript.
+    branch_field, e.g. "Destination"), cached for the request on the session."""
+    cache = db.info.setdefault("_branch_field_by_group", {})
+    if group_id not in cache:
+        from app.models.erp_script import ErpScript
+
+        field = None
+        for s in db.query(ErpScript).filter(ErpScript.status == "ready").all():
+            if group_id in (s.template_ids or []) and (s.branch_field or "").strip():
+                field = s.branch_field.strip()
+                break
+        cache[group_id] = field
+    return cache[group_id]
+
+
+def _erp_branch(db: Session, job: Job, rows: list | None = None) -> str | None:
+    """The ERP branch a job is entered on - the value of its template's ERP script branch field
+    (e.g. Destination = "Bangalore"). For the Jobs list's ERP Branch column / filter. `rows` =
+    this job's job-level values already fetched for the list (see _hbl_no)."""
+    field = _branch_field_for(db, job.group_id)
+    if not field:
+        return None
+    try:
+        if rows is None:
+            rows = (db.query(JobFieldValue)
+                    .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None)).all())
+    except Exception:  # noqa: BLE001 - never worth failing the list over
+        return None
+    for fv in rows:
+        if fv.label_name == field and (fv.value or "").strip():
+            return fv.value.strip()
+    return None
+
+
 def _hbl_no(db: Session, job: Job, rows: list | None = None) -> str | None:
     """The House Bill of Lading number, read off this job's own documents - for the Jobs
     list's own BL No column. Job-level only (row_index is None), first non-blank "HBL No"
@@ -1711,6 +1746,10 @@ def _job_out(
         hardcoded_ids=hardcoded_ids_by_group.get(job.group_id) if hardcoded_ids_by_group is not None else None,
     )
     out.hbl_no = _hbl_no(
+        db, job,
+        rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
+    )
+    out.erp_branch = _erp_branch(
         db, job,
         rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
     )
@@ -2128,7 +2167,7 @@ def _count_bound_day_range(date_from: str | None, date_to: str | None) -> tuple[
 
 def _job_passes_extra_filters(
     db: Session, job: Job, *, assigned_to: str | None, customer: str | None,
-    status: str | None, shipment_type: str | None,
+    status: str | None, shipment_type: str | None, erp_branch: str | None = None,
 ) -> bool:
     """The remaining Jobs-list filters (Assigned To/Customer/Status/Shipment Type) - none of
     these are plain columns (see _operator_name/_customer_name/_outer_status/_shipment_mode's
@@ -2143,6 +2182,8 @@ def _job_passes_extra_filters(
     if status and _outer_status(db, job) != status:
         return False
     if shipment_type and _shipment_mode(db, job) != shipment_type:
+        return False
+    if erp_branch and (_erp_branch(db, job) or "") != erp_branch:
         return False
     return True
 
@@ -2164,6 +2205,7 @@ def job_category_counts(
     customer: str | None = None,
     status: str | None = None,
     shipment_type: str | None = None,
+    erp_branch: str | None = None,
 ) -> JobCategoryCounts:
     """Badge counts for the Jobs list's four left-side screens - New Jobs / Missing Documents /
     ERP Failed Jobs / Submitted Jobs - under the exact same tenant/role visibility list_jobs
@@ -2198,7 +2240,7 @@ def job_category_counts(
     def _extra(j: Job) -> bool:
         return _job_passes_extra_filters(
             db, j, assigned_to=assigned_to, customer=customer,
-            status=status, shipment_type=shipment_type,
+            status=status, shipment_type=shipment_type, erp_branch=erp_branch,
         )
 
     # Cannot be a single SQL predicate like the other three (see _is_missing_documents) - the

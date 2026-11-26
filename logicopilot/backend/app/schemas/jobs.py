@@ -35,6 +35,8 @@ class JobOut(BaseModel):
     customer_name: str | None = None
     # Auto ERP Submission (app/core/auto_erp.py): sent to the ERP by the system, no review.
     auto_erp_submitted: bool = False
+    # The ERP branch it is entered on (its template's ERP script branch field, e.g. Bangalore).
+    erp_branch: str | None = None
     # The House Bill of Lading number, read off this job's own documents - its own list column,
     # between Job No and ETA. None when this job's template never marks an "HBL No" field, or
     # the job has nothing read for it yet.
