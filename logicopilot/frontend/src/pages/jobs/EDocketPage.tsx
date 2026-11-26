@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { toPng } from "html-to-image";
 import * as jobsApi from "../../api/jobs";
@@ -32,7 +32,13 @@ const ADVANCE_WIDTHS = ["7%", "13%", "28%", "12%", "13%", "13%", "14%"];
 const ADVANCE_PRESET = ["Free Do", "CFS Charges On Forwarders Scope"];
 // Filled from the Bill of Lading, not by a label pattern - one constant so the row and
 // the value put into it can never drift apart (the same reasoning as CONTAINER_ROW).
-const MOTHER_VESSEL_ROW = "Mother Vessel Name";
+const MOTHER_VESSEL_ROW = "Mother Vessel Name / Voyage No.";
+// The row shipped on 2026-11-24 as "Mother Vessel Name" and the voyage number had nowhere to
+// go; the client asked for it back on 2026-11-26. Saved dockets are keyed by the row LABEL,
+// so the old one is carried across on load (see the saved-state block below).
+const OLD_MOTHER_VESSEL_ROW = "Mother Vessel Name";
+// The third box on the Weight (Gross) row - the Bill of Lading's own CBM Measurement.
+const CBM_LABEL = "CBM";
 // The second box on the Weight (Gross) row. Its stored key is built the way every paired
 // row's is: "<pair label>\u0000<row label>".
 const NET_WEIGHT_LABEL = "Net Weight";
@@ -98,6 +104,9 @@ interface DocketRow {
   docName?: string;
   /** Two labels sharing one row (Bill of Entry No. + its Date) - shown as two half-width cells. */
   pairWith?: { label: string; patterns?: RegExp[] };
+  /** A THIRD label on the same row (Weight (Gross) + Net Weight + CBM). Only valid with
+   *  pairWith; the row then prints six cells instead of four. */
+  pairWith2?: { label: string; patterns?: RegExp[] };
 }
 
 /** "Documents Received on" has no field of its own to read - it's the moment this job itself
@@ -239,9 +248,8 @@ function seaRows(isExport: boolean): DocketRow[] {
     { label: "Documents Received on" },
     { label: HAWB_ROW },
     { label: MAWB_ROW },
-    // Filled from the Bill of Lading's own vessel_name below - the same reading the old
-    // "Vessel Name / Voyage No" row showed, minus the voyage number, which now has nowhere
-    // of its own to go. Say so if the voyage should ride along with it.
+    // Vessel AND voyage, from the Bill of Lading's own vessel_name + voyage_number
+    // (e.g. "SITC CEBU / 2618S") - the voyage number was asked for back on 2026-11-26.
     { label: MOTHER_VESSEL_ROW },
     { label: "FEEDER Vessel Name" },
     // Filled from the job's own ETA below. No `patterns`: the ETA is a column on the job,
@@ -269,8 +277,10 @@ function seaRows(isExport: boolean): DocketRow[] {
       label: "Weight (Gross)",
       docName: "Bill of lading",
       patterns: [/^gross wt\.?$/i, /gross\s*weight/i, /\bweight\b/i],
-      // Net Weight is the Packing List's own, joined with its unit below.
+      // Three values on one row: the BL's gross weight, the Packing List's own net weight
+      // (joined with its unit below), and the BL's CBM Measurement.
       pairWith: { label: NET_WEIGHT_LABEL },
+      pairWith2: { label: CBM_LABEL },
     },
     {
       label: "Bill of Entry No.",
@@ -397,9 +407,15 @@ export function EDocketPage() {
       .map((v) => (v ?? "").trim())
       .filter(Boolean)
       .join(" / ");
-    // The sea docket's "Mother Vessel Name" is that same vessel reading on its own - the row
-    // was renamed, not re-sourced, so a job that showed a vessel before still shows it.
-    const motherVessel = (vesselName?.value ?? "").trim();
+    // The sea docket's vessel row shows vessel AND voyage, the same reading the old
+    // "Vessel Name / Voyage No" row had. Either alone still shows rather than being dropped.
+    const motherVessel = vesselVoyage;
+    // "CBM" - the Bill of Lading's own CBM Measurement (e.g. "0.104"), the third box on the
+    // Weight (Gross) row. The BL's own copy specifically: the same figure appears on other
+    // documents and the docket has always shown the carrier's.
+    const cbmMeasurement = (job.field_values.find(
+      (f) => f.label_name.toLowerCase() === "cbm measurement" && f.document_name === "Bill of lading",
+    )?.value ?? "").trim();
     // "Net Weight" - the Packing List's own "Net Weight" + "Net Weight Unit" (e.g.
     // "4251.84 KGS"). Job-level, never a per-line row. Empty when the packing list gave none,
     // which is the wanted behaviour: an empty box, not a guess.
@@ -518,6 +534,9 @@ export function EDocketPage() {
         if (row.pairWith && !(row.pairWith.label + "\u0000" + row.label in next)) {
           next[row.pairWith.label + "\u0000" + row.label] = bestValue(job.field_values, row.pairWith.patterns);
         }
+        if (row.pairWith2 && !(row.pairWith2.label + "\u0000" + row.label in next)) {
+          next[row.pairWith2.label + "\u0000" + row.label] = bestValue(job.field_values, row.pairWith2.patterns);
+        }
       }
       if (!("Documents Received on" in prev) && receivedOn) {
         next["Documents Received on"] = receivedOn;
@@ -531,6 +550,10 @@ export function EDocketPage() {
       const netWeightKey = NET_WEIGHT_LABEL + "\u0000" + "Weight (Gross)";
       if (!(netWeightKey in prev) && netWeight) {
         next[netWeightKey] = netWeight;
+      }
+      const cbmKey = CBM_LABEL + "\u0000" + "Weight (Gross)";
+      if (!(cbmKey in prev) && cbmMeasurement) {
+        next[cbmKey] = cbmMeasurement;
       }
       // Into whichever of the two labels THIS docket prints - see PKGS_ROW_AIR/PKGS_ROW_SEA.
       if (!(pkgsRow in prev) && cartons) {
@@ -580,6 +603,11 @@ export function EDocketPage() {
           savedValues[ETA_ROW] = savedValues[OLD_ETA_ROW];
         }
         delete savedValues[OLD_ETA_ROW];
+        // Same for the vessel row, renamed on 2026-11-26 to carry the voyage number.
+        if (savedValues[OLD_MOTHER_VESSEL_ROW] && !savedValues[MOTHER_VESSEL_ROW]) {
+          savedValues[MOTHER_VESSEL_ROW] = savedValues[OLD_MOTHER_VESSEL_ROW];
+        }
+        delete savedValues[OLD_MOTHER_VESSEL_ROW];
         setValues((prev) => ({ ...prev, ...savedValues }));
       }
       if (Array.isArray(st.feedback)) setFeedback(st.feedback as string[][]);
@@ -832,41 +860,38 @@ export function EDocketPage() {
         <table className="w-full border-collapse text-sm">
           <tbody>
             {docketRows.map((row) => {
-              const key = row.pairWith ? row.pairWith.label + "\u0000" + row.label : row.label;
+              // The table is SIX columns wide: the label, then the row's own value, then a
+              // label+value pair for each extra box. A row with fewer boxes spans the slack,
+              // so every row still lines up: 0 extras -> value spans 5, 1 -> spans 3, 2 -> 1.
+              const extras = [row.pairWith, row.pairWith2].filter(Boolean) as
+                { label: string }[];
+              const keyFor = (label: string) => label + "\u0000" + row.label;
+              const box = (k: string) => (
+                <input
+                  value={values[k] ?? ""}
+                  onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.value }))}
+                  className="w-full bg-transparent font-mono text-xs"
+                />
+              );
               return (
                 <tr key={row.label}>
                   <td className="border border-black px-2 py-1 align-top font-medium" style={{ width: "37%" }}>
                     {row.label}
                   </td>
-                  {row.pairWith ? (
-                    <>
-                      <td className="border border-black px-1.5 py-1 align-top">
-                        <input
-                          value={values[row.label] ?? ""}
-                          onChange={(e) => setValues((v) => ({ ...v, [row.label]: e.target.value }))}
-                          className="w-full bg-transparent font-mono text-xs"
-                        />
-                      </td>
+                  <td className="border border-black px-1.5 py-1 align-top"
+                      colSpan={5 - 2 * extras.length}>
+                    {box(row.label)}
+                  </td>
+                  {extras.map((extra) => (
+                    <Fragment key={extra.label}>
                       <td className="w-24 border border-black px-2 py-1 align-top font-medium">
-                        {row.pairWith.label}
+                        {extra.label}
                       </td>
                       <td className="border border-black px-1.5 py-1 align-top">
-                        <input
-                          value={values[key] ?? ""}
-                          onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-                          className="w-full bg-transparent font-mono text-xs"
-                        />
+                        {box(keyFor(extra.label))}
                       </td>
-                    </>
-                  ) : (
-                    <td className="border border-black px-1.5 py-1 align-top" colSpan={3}>
-                      <input
-                        value={values[row.label] ?? ""}
-                        onChange={(e) => setValues((v) => ({ ...v, [row.label]: e.target.value }))}
-                        className="w-full bg-transparent font-mono text-xs"
-                      />
-                    </td>
-                  )}
+                    </Fragment>
+                  ))}
                 </tr>
               );
             })}
