@@ -2922,6 +2922,40 @@ def _validation_errors(page) -> list[str]:
 _IMPORT_REJECTED = ("invalid data found",)
 
 
+def _rejection_in(scope) -> str | None:
+    """The "Invalid Data Found" block's own text inside one page or frame, or None.
+
+    Read straight off the body text rather than through a selector list. The dialog is a
+    plain ASP.NET panel - it carries no role=dialog, no .modal, nothing _VALIDATION_SELECTORS
+    knows to look for - so the selector route found it only by luck, and on JOB-D22706 (Air,
+    production 2026-11-26) it did not find it at all.
+    """
+    try:
+        txt = scope.locator("body").first.inner_text(timeout=1500) or ""
+    except Exception:  # noqa: BLE001 - a frame can go away mid-read
+        return None
+    low = txt.lower()
+    if "invalid data found" not in low:
+        return None
+    # From the heading down: everything above it is the form behind the dialog.
+    return txt[low.index("invalid data found"):][:1500]
+
+
+def _scopes(page):
+    """The page and every frame in it, so a dialog inside #ifrmInfo is still seen.
+
+    SOFTLINK renders the whole entry screen inside an iframe (#ifrmInfo), and
+    `page.locator(...)` does NOT descend into one. That is the entire reason the import
+    rejection went unnoticed on JOB-D22706 while the operator was looking straight at it.
+    """
+    out = [page]
+    try:
+        out.extend(f for f in (page.frames or []) if f is not None)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def _import_rejection(page) -> str | None:
     """The ERP's own "Invalid Data Found" import dialog, summarised - or None.
 
@@ -2937,10 +2971,12 @@ def _import_rejection(page) -> str | None:
     a session prompt, a confirmation, a notice - still goes to the AI exactly as before.
     """
     try:
-        for txt in _validation_errors(page):
-            low = txt.lower()
-            if not any(m in low for m in _IMPORT_REJECTED):
-                continue
+        # The frames first - that is where this dialog actually lives - then the validation
+        # selectors, which still catch an inline validator rendered into the page itself.
+        found = [t for t in (_rejection_in(s) for s in _scopes(page)) if t]
+        found += [t for t in _validation_errors(page)
+                  if any(m in t.lower() for m in _IMPORT_REJECTED)]
+        for txt in found:
             lines = [" ".join(ln.split()) for ln in txt.splitlines() if ln.strip()]
             # Drop the heading and the table's own header row; keep what names the problem.
             rows = [ln for ln in lines
