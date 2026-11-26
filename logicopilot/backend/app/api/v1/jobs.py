@@ -10734,6 +10734,10 @@ def run_extraction(
             "template_document_id": d.template_document_id,
             "file_index": d.file_index,
             "name": d.original_name or f"{tdoc.name} #{d.file_index + 1}",
+            # Which slots are per-invoice and which cover the whole job - see
+            # doc_sets._pair_orphans_by_source, which must never pull a Bill of Lading or an
+            # Air Waybill into one invoice's set.
+            "doc_type": tdoc.doc_type,
             "key": pairing_key(per_file.get(d.id, {})),
         }
         for tdoc in group.documents
@@ -12968,6 +12972,10 @@ def recompute_doc_sets(
             "template_document_id": d.template_document_id,
             "file_index": d.file_index,
             "name": d.original_name or f"{tdoc.name} #{d.file_index + 1}",
+            # Which slots are per-invoice and which cover the whole job - see
+            # doc_sets._pair_orphans_by_source, which must never pull a Bill of Lading or an
+            # Air Waybill into one invoice's set.
+            "doc_type": tdoc.doc_type,
             "key": pairing_key(per_file.get(d.id, {})),
         }
         for tdoc in group.documents
