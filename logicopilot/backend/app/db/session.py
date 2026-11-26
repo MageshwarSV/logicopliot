@@ -25,6 +25,17 @@ connect_args = {"check_same_thread": False} if is_sqlite else {}
 # room for even a single direct psql session.
 # SQLite has no such pool to size - its own dialect manages file-handle pooling differently
 # and rejects these kwargs outright, so they are Postgres-only.
-pool_kwargs = {} if is_sqlite else {"pool_size": 30, "max_overflow": 30, "pool_timeout": 30}
+#
+# 2026-11-26: the split app server's website now runs several worker processes (gunicorn,
+# 4-8 with load - see gunicorn.conf.py), each with its own pool. 8 x 60 would be far past
+# Postgres' max_connections, so gunicorn.conf.py sets DB_POOL_SIZE / DB_MAX_OVERFLOW lower for
+# those web workers. Every other process (and every server without the variables) keeps 30/30.
+import os as _os
+
+pool_kwargs = {} if is_sqlite else {
+    "pool_size": int(_os.environ.get("DB_POOL_SIZE") or 30),
+    "max_overflow": int(_os.environ.get("DB_MAX_OVERFLOW") or 30),
+    "pool_timeout": 30,
+}
 engine = create_engine(settings.database_url, connect_args=connect_args, **pool_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -30,6 +30,7 @@
 !/logicopilot/backend/uv.lock
 !/logicopilot/backend/alembic.ini
 !/logicopilot/backend/README.md
+!/logicopilot/backend/gunicorn.conf.py
 
 /logicopilot/backend/app/__pycache__/
 /logicopilot/backend/**/__pycache__/
