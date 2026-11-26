@@ -6182,6 +6182,18 @@ function ExtractedField({
           {formatError}
         </p>
       )}
+      {/* Indian Customs Tariff: the dump had no tariff code for this line, so the code in this
+          box came from the tariff (backend customs_tariff_jobs) - say so until somebody changes it. */}
+      {!(fv.corrected_value ?? "").trim() && (fv.extracted_value ?? "").trim() !== ""
+        && (fv.value_source === "tariff_ai" || fv.value_source === "tariff_doc" || fv.value_source === "tariff_fallback") && (
+        <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+          {fv.value_source === "tariff_ai"
+            ? "AI suggestion from the Indian Customs Tariff — not from the dump."
+            : fv.value_source === "tariff_doc"
+              ? "Document CTH, found in the Indian Customs Tariff — not from the dump."
+              : "Fallback: the subheading's \"Other\" code from the Indian Customs Tariff — not from the dump. Check it."}
+        </p>
+      )}
       {note && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{note}</p>}
       {flagged && flagNote && (
         <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
