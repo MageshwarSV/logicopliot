@@ -91,3 +91,34 @@ export async function downloadTariff(includeInactive = false): Promise<void> {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+export interface TariffTryResult {
+  cth: string;
+  how: "document" | "ai" | "fallback" | "";
+  confidence: string;
+  note: string;
+  code: TariffCode | null;
+}
+
+export async function tryTariffMatch(body: { doc_cth: string; part_code: string; description: string }): Promise<TariffTryResult> {
+  const { data } = await apiClient.post<TariffTryResult>(`${BASE}/try`, body);
+  return data;
+}
+
+export interface DumpCheck {
+  group_id: string;
+  template: string;
+  tenant: string;
+  ready: boolean;
+  rows?: number;
+  rows_with_cth?: number;
+  distinct_codes?: number;
+  codes_not_in_tariff?: number;
+  rows_not_in_tariff?: number;
+  examples?: { cth: string; part_code: string; description: string }[];
+}
+
+export async function getDumpCheck(): Promise<DumpCheck[]> {
+  const { data } = await apiClient.get<{ templates: DumpCheck[] }>(`${BASE}/dump-check`);
+  return data.templates;
+}

@@ -7,6 +7,8 @@
   GET  /customs-tariff/uploads          upload history - SaaS Admin
   POST /customs-tariff/upload/preview   what a file would change, nothing written - SaaS Admin
   POST /customs-tariff/upload           replace the master with a file - SaaS Admin
+  POST /customs-tariff/try              the matching engine on one line - SaaS Admin
+  GET  /customs-tariff/dump-check       customer CTH dumps vs the tariff - SaaS Admin
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import io
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core import customs_tariff as ct
@@ -106,3 +109,30 @@ def download(include_inactive: bool = False, db: Session = Depends(get_db),
     return Response(content=buf.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": 'attachment; filename="Indian_Customs_Tariff.xlsx"'})
+
+
+class TryIn(BaseModel):
+    doc_cth: str = Field("", max_length=40)
+    part_code: str = Field("", max_length=255)
+    description: str = Field("", max_length=2000)
+
+
+@router.post("/try")
+def try_match(payload: TryIn, db: Session = Depends(get_db),
+              _user: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """The matching engine on one line, for checking it - nothing is remembered."""
+    from app.core.customs_tariff_match import suggest_one
+
+    s = suggest_one(db, payload.doc_cth, payload.part_code, payload.description,
+                    tenant_id=None, remember=False)
+    row = ct.get_code(db, s.cth) if s.cth else None
+    return {"cth": s.cth, "how": s.how, "confidence": s.confidence, "note": s.note,
+            "code": ct.row_out(row) if row else None}
+
+
+@router.get("/dump-check")
+def dump_check(db: Session = Depends(get_db), _user: User = Depends(require_role(SUPER_ADMIN))) -> dict:
+    """Each customer CTH dump against the tariff: how many of its codes are not in it."""
+    from app.core.customs_tariff_match import dump_check as check
+
+    return {"templates": check(db)}

@@ -9,6 +9,7 @@ import { Pagination } from "../../components/ui/Pagination";
 import { DownloadIcon, SearchIcon, UploadIcon } from "../../components/ui/icons";
 import { FIELD_CLASS, OUTLINE_BTN } from "../../components/tenant-admin/masterDataUi";
 import { formatDateTime } from "../../utils/dateTime";
+import { DumpCheckCard, TariffTryCard } from "../../components/CustomsTariffTools";
 import * as api from "../../api/customsTariff";
 import type { TariffCode, TariffPreview, TariffSummary, TariffUpload } from "../../api/customsTariff";
 
@@ -170,6 +171,13 @@ export function CustomsTariffPage({ readOnly = false }: { readOnly?: boolean }) 
               </details>
             )}
           </Card>
+        )}
+
+        {!readOnly && summary && summary.active > 0 && (
+          <>
+            <TariffTryCard />
+            <DumpCheckCard />
+          </>
         )}
 
         <Card className="overflow-hidden">

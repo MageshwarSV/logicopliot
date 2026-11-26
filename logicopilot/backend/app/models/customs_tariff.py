@@ -50,3 +50,20 @@ class CustomsTariff(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36), ForeignKey("customs_tariff_uploads.id", ondelete="SET NULL"), nullable=True,
     )
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CthTariffSuggestion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """An AI answer from the tariff, remembered per tenant on the line's own words (document
+    CTH + part code + description), so the same line never costs a second AI call and always
+    gets the same code. Kept apart from the operators' "Previous entry" store on purpose:
+    this is the AI's answer, not a person's."""
+
+    __tablename__ = "cth_tariff_suggestions"
+
+    tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    line_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    doc_cth: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    part_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cth: Mapped[str] = mapped_column(String(8), nullable=False)
+    confidence: Mapped[str | None] = mapped_column(String(10), nullable=True)
