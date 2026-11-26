@@ -293,6 +293,20 @@ def edit_mark(
                 detail=(f"{updates['dropdown_style']!r} is not a dropdown style. Use one of: "
                         + ", ".join(DROPDOWN_STYLES)),
             )
+    # The box, its colour and the cross-check flag are NOT NULL columns: a null sent for one of
+    # them means "leave it", never "clear it".
+    for key in ("page_number", "x", "y", "width", "height", "color", "verify_with_other_document"):
+        if key in updates and updates[key] is None:
+            updates.pop(key)
+    if any(k in updates for k in ("x", "width")) and \
+            updates.get("x", mark.x) + updates.get("width", mark.width) > 1.0001:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The box runs off the page.")
+    if any(k in updates for k in ("y", "height")) and \
+            updates.get("y", mark.y) + updates.get("height", mark.height) > 1.0001:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The box runs off the page.")
+    for key in ("correction_prompt", "tenant_format_prompt"):
+        if key in updates and updates[key] is not None:
+            updates[key] = updates[key].strip() or None
     for field, value in updates.items():
         setattr(mark, field, value)
     new_label = updates.get("label_name")

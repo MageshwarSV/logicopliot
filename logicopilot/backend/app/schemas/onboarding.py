@@ -141,6 +141,7 @@ class CustomFieldOut(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    composite_separators: list[str] | None = None
     # A "Manual Entry" field (created from the ERP Script Recorder): a closed dropdown of
     # exactly these choices instead of free text, and which document's own tab it is grouped
     # under instead of Additional Details. See CustomField.fixed_options/display_document_id.
@@ -194,6 +195,7 @@ class CustomFieldCreate(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    composite_separators: list[str] | None = None
     # See CustomFieldOut's own comment - a "Manual Entry" field's closed dropdown choices and
     # which document tab it renders under.
     fixed_options: list[str] | None = None
@@ -246,6 +248,7 @@ class CustomFieldEdit(BaseModel):
     # Each piece is either another field's label_name (a string) or a fixed literal value
     # typed straight in ({"fixed": "<text>"}) - see app.api.v1.jobs._composite_piece_value.
     composite_source_labels: list[str | dict[str, str]] | None = None
+    composite_separators: list[str] | None = None
     # See CustomFieldOut's own comment - a "Manual Entry" field's closed dropdown choices and
     # which document tab it renders under.
     fixed_options: list[str] | None = None
@@ -294,6 +297,7 @@ class TemplateGroupOut(BaseModel):
     large_zip_hold: bool = False
     large_zip_mb: int = 5
     large_job_lane: bool = False
+    use_customs_tariff: bool = False
 
 
 class TemplateGroupDetailOut(TemplateGroupOut):
@@ -373,6 +377,20 @@ class MarkEdit(BaseModel):
     # wrong one actively misleads it - and until now nothing could correct them.
     detected_anchor: str | None = None
     example_value: str | None = None
+    # Customer Onboarding edits the live field in place, so the settings the wizard only offered
+    # at create time (or behind their own endpoints) can be changed here too: the box itself
+    # (redrawn), its colour, the cross-document check, and the two prompts with separate routes.
+    # correction_prompt is saved exactly as typed (PATCH /correct regenerates it with the AI);
+    # tenant_format_prompt is the Data Transformation rule.
+    page_number: int | None = Field(default=None, ge=1)
+    x: float | None = Field(default=None, ge=0, le=1)
+    y: float | None = Field(default=None, ge=0, le=1)
+    width: float | None = Field(default=None, gt=0, le=1)
+    height: float | None = Field(default=None, gt=0, le=1)
+    color: str | None = None
+    verify_with_other_document: bool | None = None
+    correction_prompt: str | None = None
+    tenant_format_prompt: str | None = None
 
 
 # --------------------------------------------------------------------------- #

@@ -252,6 +252,10 @@ def maybe_auto_submit(db: Session, job) -> bool:
     from app.core.auto_erp_complete import fill_job_values
 
     filled += fill_job_values(db, job)
+    # Indian Customs Tariff (template switch on): each line's tariff code goes without a tick.
+    from app.core.customs_tariff_jobs import auto_apply as _tariff_auto
+
+    tariff_notes = _tariff_auto(db, job)
     job.auto_erp_submitted = True
     job.gk2_skipped = True      # no GK2 review - and lets a failed run be retried (gk2_approve)
     job.erp_submitted_by_id = None
@@ -262,6 +266,8 @@ def maybe_auto_submit(db: Session, job) -> bool:
         note += " Sent without: " + ", ".join(missing) + " (not received)."
     if filled:
         note += " Picked automatically: " + "; ".join(filled) + "."
+    if tariff_notes:
+        note += " " + ". ".join(tariff_notes) + "."
     job.auto_erp_note = note
     db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status="extracted",
                     stage="ERP Entry", note=note[:2000]))

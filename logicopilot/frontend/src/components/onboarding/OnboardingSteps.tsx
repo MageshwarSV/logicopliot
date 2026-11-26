@@ -46,11 +46,16 @@ const STEPS = [
   { n: 0, label: "Choose Template", path: "/super-admin/onboarding/start", param: "customer" },
   { n: 1, label: "ERP Field Mapping", path: "/super-admin/onboarding/erp-fields", param: "customer" },
   { n: 2, label: "Document Mapping", path: "/super-admin/onboarding/document-mapping", param: "customer" },
-  { n: 3, label: "Screen Designer", path: "/super-admin/onboarding/screen-designer", param: "group" },
+  { n: 3, label: "Prompts & Test", path: "/super-admin/onboarding/prompts", param: "customer" },
   { n: 4, label: "Field Configuration", path: "/super-admin/onboarding/field-config", param: "customer" },
+  { n: 5, label: "Screen Designer", path: "/super-admin/onboarding/screen-designer", param: "group" },
+  { n: 6, label: "Template Settings & Go Live", path: "/super-admin/onboarding/template-settings", param: "customer" },
 ] as const;
 
-export function OnboardingSteps({ current, groupId }: { current: 0 | 1 | 2 | 3 | 4; groupId: string }) {
+// The recommended workflow (2026-11-26): one owner per setting - 2 where a value sits, 3 how it
+// is read and tested, 4 how every field behaves, 5 the screen layout once the fields are final,
+// 6 the template as a whole and Go Live.
+export function OnboardingSteps({ current, groupId }: { current: 0 | 1 | 2 | 3 | 4 | 5 | 6; groupId: string }) {
   return (
     <nav aria-label="Onboarding steps" className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 px-1 py-2">
       {STEPS.map((s, i) => {

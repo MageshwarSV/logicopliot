@@ -1430,6 +1430,41 @@ def _customer_name(
     return None
 
 
+def _branch_field_for(db: Session, group_id: str | None) -> str | None:
+    """The job field a template's ready ERP script picks its branch login by (ErpScript.
+    branch_field, e.g. "Destination"), cached for the request on the session."""
+    cache = db.info.setdefault("_branch_field_by_group", {})
+    if group_id not in cache:
+        from app.models.erp_script import ErpScript
+
+        field = None
+        for s in db.query(ErpScript).filter(ErpScript.status == "ready").all():
+            if group_id in (s.template_ids or []) and (s.branch_field or "").strip():
+                field = s.branch_field.strip()
+                break
+        cache[group_id] = field
+    return cache[group_id]
+
+
+def _erp_branch(db: Session, job: Job, rows: list | None = None) -> str | None:
+    """The ERP branch a job is entered on - the value of its template's ERP script branch field
+    (e.g. Destination = "Bangalore"). For the Jobs list's ERP Branch column / filter. `rows` =
+    this job's job-level values already fetched for the list (see _hbl_no)."""
+    field = _branch_field_for(db, job.group_id)
+    if not field:
+        return None
+    try:
+        if rows is None:
+            rows = (db.query(JobFieldValue)
+                    .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.is_(None)).all())
+    except Exception:  # noqa: BLE001 - never worth failing the list over
+        return None
+    for fv in rows:
+        if fv.label_name == field and (fv.value or "").strip():
+            return fv.value.strip()
+    return None
+
+
 def _hbl_no(db: Session, job: Job, rows: list | None = None) -> str | None:
     """The House Bill of Lading number, read off this job's own documents - for the Jobs
     list's own BL No column. Job-level only (row_index is None), first non-blank "HBL No"
@@ -1711,6 +1746,10 @@ def _job_out(
         hardcoded_ids=hardcoded_ids_by_group.get(job.group_id) if hardcoded_ids_by_group is not None else None,
     )
     out.hbl_no = _hbl_no(
+        db, job,
+        rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
+    )
+    out.erp_branch = _erp_branch(
         db, job,
         rows=job_level_fvs_by_job.get(job.id, []) if job_level_fvs_by_job is not None else None,
     )
@@ -2128,7 +2167,7 @@ def _count_bound_day_range(date_from: str | None, date_to: str | None) -> tuple[
 
 def _job_passes_extra_filters(
     db: Session, job: Job, *, assigned_to: str | None, customer: str | None,
-    status: str | None, shipment_type: str | None,
+    status: str | None, shipment_type: str | None, erp_branch: str | None = None,
 ) -> bool:
     """The remaining Jobs-list filters (Assigned To/Customer/Status/Shipment Type) - none of
     these are plain columns (see _operator_name/_customer_name/_outer_status/_shipment_mode's
@@ -2143,6 +2182,8 @@ def _job_passes_extra_filters(
     if status and _outer_status(db, job) != status:
         return False
     if shipment_type and _shipment_mode(db, job) != shipment_type:
+        return False
+    if erp_branch and (_erp_branch(db, job) or "") != erp_branch:
         return False
     return True
 
@@ -2164,6 +2205,7 @@ def job_category_counts(
     customer: str | None = None,
     status: str | None = None,
     shipment_type: str | None = None,
+    erp_branch: str | None = None,
 ) -> JobCategoryCounts:
     """Badge counts for the Jobs list's four left-side screens - New Jobs / Missing Documents /
     ERP Failed Jobs / Submitted Jobs - under the exact same tenant/role visibility list_jobs
@@ -2198,7 +2240,7 @@ def job_category_counts(
     def _extra(j: Job) -> bool:
         return _job_passes_extra_filters(
             db, j, assigned_to=assigned_to, customer=customer,
-            status=status, shipment_type=shipment_type,
+            status=status, shipment_type=shipment_type, erp_branch=erp_branch,
         )
 
     # Cannot be a single SQL predicate like the other three (see _is_missing_documents) - the
@@ -3591,6 +3633,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
                     script.url, None, script.steps or [], values, headless=True, rows=rows,
                     downloads_dir=dl_dir, uploads=up_map, progress=_live,
                     checkpoint_index=script.checkpoint_index, branch_session=sess,
+                    ai_scope=("all" if job.auto_erp_submitted else "marked"),
                 ))
             else:
                 # A script with no session to share has to take turns, however many workers
@@ -3602,6 +3645,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
                         downloads_dir=dl_dir, uploads=up_map, progress=_live,
                         checkpoint_index=ckpt, session_file=sess_file,
                         cancel=erp_priority.manual_active,
+                        ai_scope=("all" if job.auto_erp_submitted else "marked"),
                     )
         except Exception as exc:  # noqa: BLE001
             _fail(f"The ERP entry could not be run: {exc}")
@@ -4357,6 +4401,8 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                                 or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                value_source=fv.value_source,
+                source_note=fv.source_note,
                 full_width=(
                     mark_full_width.get(fv.mark_id, False)
                     or cf_full_width.get(fv.custom_field_id, False)
@@ -4493,6 +4539,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         gk2_skipped=job.gk2_skipped,
         auto_erp_submitted=job.auto_erp_submitted,
         auto_erp_note=job.auto_erp_note,
+        customs_tariff_on=bool(getattr(group, "use_customs_tariff", False)),
         # Predictive, unlike gk2_skipped (only ever set AFTER GK1 has already submitted) - lets
         # GK1's own screen say up front where Final Submit is actually headed, before they press
         # it. See Tenant.gk2_required_by_mode / _gk2_required_for_job.
@@ -5747,8 +5794,12 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
     # from having to be retyped by hand to "confirm" a code more authoritative than anything
     # the operator would type.
     sync_targets = {sid for c in all_per_row for sid in (c.sync_field_ids or [])}
+    # Indian Customs Tariff (only when the template has it on): unconfirmed suggestions and
+    # codes outside the tariff - see app/core/customs_tariff_jobs.submit_problems.
+    from app.core.customs_tariff_jobs import submit_problems as tariff_problems
+
     if not asked_marks and not asked_customs and not per_row_ids:
-        return []
+        return tariff_problems(db, job)
 
     # A field counts as answered once the operator has saved a corrected value on it.
     corrected = db.query(JobFieldValue).filter(
@@ -5831,6 +5882,7 @@ def _unanswered_operator_fields(db: Session, job: Job) -> list[str]:
         [label for mid, label in asked_marks.items() if mid not in answered_marks]
         + [label for cid, label in asked_customs.items() if cid not in answered_customs]
         + unanswered_rows
+        + tariff_problems(db, job)
     )
 
 
@@ -6217,7 +6269,8 @@ def complete_job(
                 # parked session is busy or wedged, this returns None and we run normally.
                 from app.core.parked import MANAGER
 
-                result = MANAGER.run_job(script.id, values, rows, job.reference or job.id)
+                result = MANAGER.run_job(script.id, values, rows, job.reference or job.id,
+                                         ai_scope="all" if job.auto_erp_submitted else "marked")
                 if result is not None:
                     logger.info("job %s ran on the parked session for script %s", job.id, script.id)
             if result is None:
@@ -6359,6 +6412,7 @@ def complete_job(
                             rows=rows, downloads_dir=dl_dir,
                             checkpoint_index=script.checkpoint_index, branch_session=sess,
                             uploads=up_map, progress=_live,
+                            ai_scope=("all" if job.auto_erp_submitted else "marked"),
                         ))
                     else:
                         with erp_priority.queued_run(job.id), \
@@ -6368,6 +6422,7 @@ def complete_job(
                                 rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
                                 session_file=sess_file, uploads=up_map, progress=_live,
                                 cancel=erp_priority.manual_active,
+                                ai_scope=("all" if job.auto_erp_submitted else "marked"),
                             )
                     if not erp_priority.was_preempted(result):
                         break
@@ -10692,6 +10747,10 @@ def run_extraction(
             "template_document_id": d.template_document_id,
             "file_index": d.file_index,
             "name": d.original_name or f"{tdoc.name} #{d.file_index + 1}",
+            # Which slots are per-invoice and which cover the whole job - see
+            # doc_sets._pair_orphans_by_source, which must never pull a Bill of Lading or an
+            # Air Waybill into one invoice's set.
+            "doc_type": tdoc.doc_type,
             "key": pairing_key(per_file.get(d.id, {})),
         }
         for tdoc in group.documents
@@ -11250,6 +11309,13 @@ def run_extraction(
     _ensure_manual_entry_fields(db, job, group)
     # A waybill generated from a pre-alert has no dates on it - see the helper.
     _blank_dates_on_generated_waybills(db, job)
+    # Indian Customs Tariff (off unless the template has it on): CTH codes outside the tariff
+    # are not used, empty lines get the nearest tariff code for the operator to confirm.
+    # After the dump lookup above, which is unchanged. See app/core/customs_tariff_jobs.py.
+    from app.core.customs_tariff_jobs import apply_to_job as _apply_customs_tariff
+
+    db.flush()
+    _apply_customs_tariff(db, job, group)
 
     # Make sure every uploaded document's raw OCR is captured, including ones with no
     # marks of their own (a document can exist purely to be cross-checked against).
@@ -11846,6 +11912,22 @@ def carry_across_rows(
     sync_ids = _synced_partner_ids(db, cf)
     previous = (payload.previous or "").strip()
     written = 0
+    # Indian Customs Tariff (template switch on): a typed code must be a tariff code; a picked
+    # side whose code is not in the tariff is skipped on that line, and the lines are reported.
+    from app.core.customs_tariff import active_codes, clean_cth
+    from app.core.customs_tariff_jobs import check_correction, is_tariff_field, tariff_on
+    from app.models.template_group import TemplateGroup as _TGt
+
+    tariff_codes = None
+    if tariff_on(db, db.get(_TGt, job.group_id)) and (
+            is_tariff_field(db, cf) or any(is_tariff_field(db, db.get(CustomField, sid)) for sid in sync_ids)):
+        tariff_codes = active_codes(db)
+    if payload.mode != "pick" and tariff_codes is not None and (payload.value or "").strip():
+        try:
+            payload.value = check_correction(db, job, cf, payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    not_in_tariff: list[int] = []
 
     for by_cf in rows.values():
         primary = by_cf.get(cf.id)
@@ -11881,6 +11963,11 @@ def carry_across_rows(
             # it means: a line with nothing on the chosen side keeps what it has.
             if not value:
                 continue
+            if tariff_codes is not None:
+                if clean_cth(value) not in tariff_codes:
+                    not_in_tariff.append(primary.row_index)
+                    continue
+                value = clean_cth(value)
             # A tick says WHICH candidate is right, and that is all it says. It does not move
             # the candidate: the dump box keeps the customer's master code and the document box
             # keeps what the supplier printed, so the two stay there to be compared on every
@@ -11911,7 +11998,10 @@ def carry_across_rows(
         written += 1
 
     db.commit()
-    return {"rows_written": written}
+    out: dict = {"rows_written": written}
+    if not_in_tariff:
+        out["not_in_tariff_lines"] = sorted(not_in_tariff)
+    return out
 
 
 @router.patch("/job-field-values/{value_id}", response_model=JobFieldValueOut)
@@ -11959,6 +12049,15 @@ def correct_field_value(
         if db.query(_CFm).filter(_CFm.group_id == job_for_rules.group_id,
                                  _CFm.requires_value_of == fv.label_name).first() is not None:
             saved = "NO MAWB"
+    # A CTH on a template using the Indian Customs Tariff must be a tariff code.
+    if fv.custom_field_id and fv.row_index is not None and saved.strip():
+        from app.core.customs_tariff_jobs import check_correction
+        from app.models.custom_field import CustomField as _CFt
+
+        try:
+            saved = check_correction(db, job_for_rules, db.get(_CFt, fv.custom_field_id), saved)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     from app.core import field_edits
 
     field_edits.record(db, fv, fv.value, saved, user, source="edit")
@@ -12008,6 +12107,8 @@ def correct_field_value(
         found_y=fv.found_y,
         found_width=fv.found_width,
         found_height=fv.found_height,
+        value_source=fv.value_source,
+        source_note=fv.source_note,
     )
 
 
@@ -12926,6 +13027,10 @@ def recompute_doc_sets(
             "template_document_id": d.template_document_id,
             "file_index": d.file_index,
             "name": d.original_name or f"{tdoc.name} #{d.file_index + 1}",
+            # Which slots are per-invoice and which cover the whole job - see
+            # doc_sets._pair_orphans_by_source, which must never pull a Bill of Lading or an
+            # Air Waybill into one invoice's set.
+            "doc_type": tdoc.doc_type,
             "key": pairing_key(per_file.get(d.id, {})),
         }
         for tdoc in group.documents

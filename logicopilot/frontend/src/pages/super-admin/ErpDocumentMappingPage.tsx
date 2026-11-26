@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/Button";
 import * as erpApi from "../../api/onboardingErp";
 import type { DocMapping, DocMappingField, ErpCustomer } from "../../api/onboardingErp";
 import { OnboardingCustomer, OnboardingSteps, useOnboardingCustomer, useOnboardingFullScreen } from "../../components/onboarding/OnboardingSteps";
+import { putTemplateBox } from "../../api/onboardingTemplate";
 
 // Customer Onboarding - Step 2: Document Mapping. One sample per customer document; each of its
 // Document fields (from Step 1) gets a box drawn where its value sits. The value read inside
@@ -172,6 +173,8 @@ export function ErpDocumentMappingPage() {
   const [fieldSearch, setFieldSearch] = useState("");
   const [fullScreen, setFullScreen] = useOnboardingFullScreen();
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  // The live template field a box belongs to - its full settings popup (like the old Document
+  // Templates "Name this field" popup) opens after a box is drawn, or from the field's row.
 
   const customer = customers.find((c) => c.group_id === groupId) ?? null;
   const workbookId = customer?.workbook?.id ?? "";
@@ -233,6 +236,17 @@ export function ErpDocumentMappingPage() {
       setSelected(next?.id ?? null);
     } catch (err) {
       setMessage({ tone: "warn", text: errorText(err, "Could not save the box.") });
+      return;
+    }
+    // The same box on the live template (created or moved). Step 2 is only WHERE a value sits:
+    // how it is read is Step 3, how it behaves Step 4 - no settings popup here.
+    try {
+      const live = await putTemplateBox(selectedField.id, { page, ...b, line_item: lineDefault });
+      setMessage(live.warning
+        ? { tone: "warn", text: live.warning }
+        : { tone: "ok", text: `${live.created ? "Created" : "Moved"} "${live.label}" on the live template.` });
+    } catch (err) {
+      setMessage({ tone: "warn", text: `Box saved here, but not on the live template: ${errorText(err, "unknown error")}` });
     }
   };
 
@@ -242,7 +256,7 @@ export function ErpDocumentMappingPage() {
       selected: f.id === selected, tone: TONE[compare(f) ?? "no-excel"] }));
 
   return (
-    <AppShell title="Document Mapping" subtitle="Customer Onboarding · Step 2 of 4 - mark where each document field sits on the sample">
+    <AppShell title="Document Mapping" subtitle="Customer Onboarding · Step 2 - mark where each document field sits on the sample">
       <div className={fullScreen ? "fixed inset-0 z-40 overflow-auto bg-slate-50 p-4 dark:bg-slate-950" : ""}>
         <OnboardingSteps current={2} groupId={groupId} />
         <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
@@ -450,22 +464,35 @@ export function ErpDocumentMappingPage() {
                       {f.mark && on && (
                         <div className="mt-1">
                           <p className="truncate font-mono text-[11px] text-slate-600 dark:text-slate-300">Read: {f.mark.detected_value || "—"}</p>
+                          {f.mark.anchor && (
+                            <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title="The caption printed next to the value - it finds the value on other layouts">
+                              Anchor: <span className="font-medium text-slate-700 dark:text-slate-200">{f.mark.anchor}</span>
+                            </p>
+                          )}
                           <p className="text-[11px] font-medium" style={{ color: TONE[res ?? "no-excel"] }}>
                             {res === "match" ? "✓ matches the Excel" : res === "differs" ? "⚠ differs from the Excel - check the box" : res === "no-read" ? "Nothing read inside the box" : "No Excel value to compare"}
                             {" · page "}{f.mark.page}
                           </p>
                           <div className="mt-1 flex items-center gap-3 text-[11px]" onClick={(e) => e.stopPropagation()}>
-                            <label className="flex items-center gap-1 text-slate-500">
+                            <label className="flex items-center gap-1 text-slate-500" title="Tick for a product-table column: draw the box on its first row and every row is read">
                               <input type="checkbox" checked={f.mark.line_item}
                                 onChange={(e) => erpApi.setMarkLineItem(f.id, e.target.checked).then((mark) => replaceField(f.id, { mark }))
                                   .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not save.") }))} />
                               line item (first row)
                             </label>
                             <button type="button" className="text-rose-500 hover:underline"
-                              onClick={() => erpApi.clearMark(f.id).then(() => replaceField(f.id, { mark: null }))
+                              onClick={() => erpApi.clearMark(f.id).then((r) => {
+                                  replaceField(f.id, { mark: null });
+                                  if (r?.message) setMessage({ tone: r.message.includes("kept") ? "warn" : "ok", text: r.message });
+                                })
                                 .catch((err) => setMessage({ tone: "warn", text: errorText(err, "Could not clear.") }))}>
                               Clear box
                             </button>
+                            <Link to={`/super-admin/onboarding/prompts?customer=${groupId}`}
+                              className="font-semibold text-indigo-600 hover:underline dark:text-indigo-300"
+                              title="How this value is read - prompt, label variations, format rule and a test - is Step 3">
+                              Reading &amp; test → Step 3
+                            </Link>
                           </div>
                         </div>
                       )}
@@ -475,8 +502,8 @@ export function ErpDocumentMappingPage() {
               </div>
               <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
                 <Link to={`/super-admin/onboarding/erp-fields?customer=${groupId}`} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">← Step 1</Link>
-                <Button size="sm" onClick={() => navigate(`/super-admin/onboarding/screen-designer?group=${groupId}`)}>
-                  Next: Layout →
+                <Button size="sm" onClick={() => navigate(`/super-admin/onboarding/prompts?customer=${groupId}`)}>
+                  Next: Prompts &amp; Test →
                 </Button>
               </div>
             </Card>

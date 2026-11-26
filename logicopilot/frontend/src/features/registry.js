@@ -21,6 +21,8 @@ export const superAdminFeatures = [
   { path: "/super-admin/data-transformation", navLabel: "Data Transformation", group: "Platform Configuration", order: 5 },
   // Pages removed from every document before classification (a supplier's terms and
   // conditions, a recurring cover sheet) - the page existed but had no menu entry.
+  // The global Indian Customs Tariff (ICEGATE) CTH master - every tenant, every stream.
+  { path: "/super-admin/customs-tariff", navLabel: "Indian Customs Tariff (ICEGATE)", group: "Platform Configuration", order: 5.4 },
   { path: "/super-admin/filter-pages", navLabel: "Filter Pages", group: "Platform Configuration", order: 5.5 },
   // Per template: start extraction automatically, hold it for a large zip, Excel by sheet and
   // the Excel files never used - how documents are processed, so Super Admin only.
@@ -39,9 +41,12 @@ export const superAdminFeatures = [
   { path: "/super-admin/onboarding/start", navLabel: "Step 0 - Choose Template", group: "Customer Onboarding", order: 5.94 },
   { path: "/super-admin/onboarding/erp-fields", navLabel: "Step 1 - ERP Field Mapping", group: "Customer Onboarding", order: 5.95 },
   { path: "/super-admin/onboarding/document-mapping", navLabel: "Step 2 - Document Mapping", group: "Customer Onboarding", order: 5.96 },
-  // Step 3 is the Screen Designer itself, reached from the onboarding flow.
-  { path: "/super-admin/onboarding/screen-designer", navLabel: "Step 3 - Screen Designer", group: "Customer Onboarding", order: 5.97 },
-  { path: "/super-admin/onboarding/field-config", navLabel: "Step 4 - Field Configuration", group: "Customer Onboarding", order: 5.98 },
+  // Recommended workflow (2026-11-26): 3 Prompts & Test, 4 Field Configuration, 5 Screen Designer
+  // (layout once the fields are final), 6 Template Settings & Go Live.
+  { path: "/super-admin/onboarding/prompts", navLabel: "Step 3 - Prompts & Test", group: "Customer Onboarding", order: 5.965 },
+  { path: "/super-admin/onboarding/field-config", navLabel: "Step 4 - Field Configuration", group: "Customer Onboarding", order: 5.97 },
+  { path: "/super-admin/onboarding/screen-designer", navLabel: "Step 5 - Screen Designer", group: "Customer Onboarding", order: 5.98 },
+  { path: "/super-admin/onboarding/template-settings", navLabel: "Step 6 - Template Settings & Go Live", group: "Customer Onboarding", order: 5.99 },
 
   { path: "/super-admin/email-puller", navLabel: "Email Puller", group: "Integrations & Automation", order: 6 },
   { path: "/super-admin/erp-scripts", navLabel: "ERP Script Management", group: "Integrations & Automation", order: 7 },

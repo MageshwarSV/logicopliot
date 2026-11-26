@@ -610,7 +610,7 @@ export async function readExcelTemplateHeaders(
 export async function setProcessingSettings(
   groupId: string,
   body: {
-    auto_extract?: boolean; large_zip_hold?: boolean; large_zip_mb?: number; large_job_lane?: boolean;
+    auto_extract?: boolean; large_zip_hold?: boolean; large_zip_mb?: number; large_job_lane?: boolean; use_customs_tariff?: boolean;
     excel_mode?: string; excel_ignore_patterns?: string[];
   },
 ): Promise<TemplateGroup> {

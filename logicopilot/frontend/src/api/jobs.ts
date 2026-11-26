@@ -80,6 +80,8 @@ export interface JobCategoryCountFilters {
   customer?: string;
   status?: string;
   shipmentType?: string;
+  /** The ERP branch a job is entered on (Jobs list ERP Branch filter). */
+  erpBranch?: string;
 }
 
 export async function getJobCategoryCounts(filters?: JobCategoryCountFilters): Promise<JobCategoryCounts> {
@@ -91,6 +93,7 @@ export async function getJobCategoryCounts(filters?: JobCategoryCountFilters): P
       customer: filters?.customer || undefined,
       status: filters?.status || undefined,
       shipment_type: filters?.shipmentType || undefined,
+      erp_branch: filters?.erpBranch || undefined,
     },
   });
   return data;

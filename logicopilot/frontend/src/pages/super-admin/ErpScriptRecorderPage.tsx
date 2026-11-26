@@ -295,6 +295,9 @@ export function ErpScriptRecorderPage() {
    *  option, say) - Playwright otherwise just waits out the full click timeout on it.
    *  Composes with Double Click (arm both for "unblock, then double-click"). */
   const [forceEnableArmed, setForceEnableArmed] = useState(false);
+  /** 🧠 The first step of an AI zone being marked: press the brain on one step, then on the
+   *  last step of the range - every step from the one to the other becomes an AI zone. */
+  const [brainStart, setBrainStart] = useState<number | null>(null);
   /** Armed "Search & Select": the next thing touched opens the value popup, but confirming it
    *  records a click/double-click matched to whichever field's value is on screen — not a
    *  fill. For a search popup's result row, where the recorded position is never trustworthy
@@ -2708,7 +2711,11 @@ export function ErpScriptRecorderPage() {
           {steps.length === 0 && <p className="text-sm text-slate-400">No steps yet — start the recorder and interact with the page.</p>}
           {steps.map((s, i) => (
             <div key={i} className="flex flex-col gap-1">
-            <div className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+            <div className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-sm ${
+              s.ai_zone
+                ? "border-violet-300 bg-violet-50/50 dark:border-violet-500/40 dark:bg-violet-500/5"
+                : "border-slate-200 dark:border-slate-800"
+            }`}>
               <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">{i + 1}</span>
               <span className="flex shrink-0 items-center gap-1">
                 <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">{s.action}</span>
@@ -2766,6 +2773,18 @@ export function ErpScriptRecorderPage() {
                   added from a real job — check the button
                 </span>
               )}
+              {s.ai_zone && !steps[i - 1]?.ai_zone && (() => {
+                let end = i;
+                while (steps[end + 1]?.ai_zone) end++;
+                return (
+                  <span
+                    className="whitespace-nowrap rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-500/20 dark:text-violet-300"
+                    title="On a manual job the AI may take over only inside these steps. Auto ERP jobs: anywhere."
+                  >
+                    🧠 AI zone {end > i ? `steps ${i + 1}–${end + 1}` : `step ${i + 1}`}
+                  </span>
+                );
+              })()}
               {s.is_success_check && (
                 <span className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
                   🏆 proof of success
@@ -2840,6 +2859,56 @@ export function ErpScriptRecorderPage() {
                   className={`rounded px-1 text-xs ${s.force_enable ? "text-amber-600" : "text-slate-300 hover:bg-slate-100 hover:text-amber-600 dark:hover:bg-slate-800"}`}
                 >
                   🔓
+                </button>
+                {/* 🧠 AI zone, a range "from this step to this step". On a MANUAL job the AI may
+                    take over only inside it; everywhere else a missing element is skipped.
+                    Auto ERP jobs let the AI take over anywhere, so this changes nothing there.
+                    Press on the first step, then on the last (the same step twice = just that
+                    one). Pressing a step already in a zone clears that whole zone. */}
+                <button
+                  type="button"
+                  title={brainStart === i
+                    ? "Start of the AI zone. Now press 🧠 on the LAST step of the range (or here again for just this step)."
+                    : brainStart !== null
+                      ? `Press to mark steps ${Math.min(brainStart, i) + 1}–${Math.max(brainStart, i) + 1} as an AI zone`
+                      : s.ai_zone
+                        ? "AI zone: on a manual job the AI may take over here if something unexpected is on screen. Press to clear this whole zone."
+                        : "AI zone: press here, then on the last step of the range. On manual jobs the AI may take over only inside these steps (Auto ERP jobs: everywhere)."}
+                  onClick={() => {
+                    if (brainStart !== null) {
+                      const lo = Math.min(brainStart, i);
+                      const hi = Math.max(brainStart, i);
+                      setSteps((arr) => arr.map((st, j) => (j >= lo && j <= hi ? { ...st, ai_zone: true } : st)));
+                      setBrainStart(null);
+                      return;
+                    }
+                    if (s.ai_zone) {
+                      // Clear the whole contiguous zone this step belongs to.
+                      setSteps((arr) => {
+                        let lo = i;
+                        let hi = i;
+                        while (lo > 0 && arr[lo - 1]?.ai_zone) lo--;
+                        while (hi < arr.length - 1 && arr[hi + 1]?.ai_zone) hi++;
+                        return arr.map((st, j) => {
+                          if (j < lo || j > hi) return st;
+                          const next = { ...st };
+                          delete next.ai_zone;
+                          return next;
+                        });
+                      });
+                      return;
+                    }
+                    setBrainStart(i);
+                  }}
+                  // 🧠 is a colour emoji (CSS colour does nothing) - grey it out when off,
+                  // like the trophy, and pulse it while waiting for the end of the range.
+                  className={`rounded px-1 text-xs transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                    brainStart === i
+                      ? "animate-pulse bg-violet-100 ring-1 ring-violet-400 dark:bg-violet-500/20"
+                      : s.ai_zone ? "" : "grayscale opacity-40 hover:opacity-70"
+                  }`}
+                >
+                  🧠
                 </button>
                 {/* Marks ANY already-recorded step as proof the entry actually succeeded - the
                     same thing the live Scan panel's "✓ Success" button does for a fresh

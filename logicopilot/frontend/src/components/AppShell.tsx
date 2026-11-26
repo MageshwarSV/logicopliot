@@ -32,6 +32,8 @@ const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) 
   "/super-admin/onboarding/document-mapping": DocumentIcon,
   "/super-admin/onboarding/screen-designer": FolderIcon,
   "/super-admin/onboarding/field-config": GearIcon,
+  "/super-admin/onboarding/prompts": GearIcon,
+  "/super-admin/onboarding/template-settings": GearIcon,
   "/super-admin/email-puller": MailIcon,
   "/super-admin/erp-scripts": CodeIcon,
   "/super-admin/entry-browser": MonitorIcon,
@@ -200,19 +202,20 @@ export function AppShell({
   const ccfCustomer = categoryCountFilters?.customer;
   const ccfStatus = categoryCountFilters?.status;
   const ccfShipmentType = categoryCountFilters?.shipmentType;
+  const ccfErpBranch = categoryCountFilters?.erpBranch;
   useEffect(() => {
     if (!showsJobCategories) return;
     let alive = true;
     const load = () => {
       jobsApi.getJobCategoryCounts({
         dateFrom: ccfDateFrom, dateTo: ccfDateTo, assignedTo: ccfAssignedTo,
-        customer: ccfCustomer, status: ccfStatus, shipmentType: ccfShipmentType,
+        customer: ccfCustomer, status: ccfStatus, shipmentType: ccfShipmentType, erpBranch: ccfErpBranch,
       }).then((c) => { if (alive) setCategoryCounts(c); }).catch(() => {});
     };
     load();
     const t = window.setInterval(load, 30000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType]);
+  }, [showsJobCategories, ccfDateFrom, ccfDateTo, ccfAssignedTo, ccfCustomer, ccfStatus, ccfShipmentType, ccfErpBranch]);
 
   // "Fix now · Failed jobs (n)" in the top bar: the logged-in user's OWN ERP-failed jobs (the
   // ones assigned to them - same rule as the Jobs list's "Assigned To" filter), all dates, so a
@@ -406,6 +409,7 @@ export function AppShell({
                         { label: "ERP Master Data – Importer", to: "/tenant-admin/master-data/importer" },
                         { label: "ERP Master Data – Quotation", to: "/tenant-admin/master-data/quotation" },
                         { label: "CTH Master", to: "/tenant-admin/master-data/cth" },
+                        { label: "Indian Customs Tariff (ICEGATE)", to: "/tenant-admin/master-data/customs-tariff" },
                         { label: "Zip Passwords", to: "/tenant-admin/master-data/zip-passwords" },
                         { label: "Shipments", to: "/tenant-admin/customers" },
                         { label: "Shipment Type", to: "/tenant-admin/masters" },

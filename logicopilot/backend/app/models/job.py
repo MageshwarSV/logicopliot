@@ -433,6 +433,12 @@ class JobFieldValue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     found_width: Mapped[float | None] = mapped_column(Float, nullable=True)
     found_height: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Where an automatic value came from when it is not the plain reading - today only the
+    # Indian Customs Tariff: "tariff_doc" (the document's own code, in the tariff), "tariff_ai"
+    # (the AI's nearest tariff code), "tariff_fallback" (the subheading's "Other" code).
+    # source_note says why, e.g. "Dump code 85371000 is not in the Indian Customs Tariff".
+    value_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     job: Mapped["Job"] = relationship(back_populates="field_values")
 
     @property

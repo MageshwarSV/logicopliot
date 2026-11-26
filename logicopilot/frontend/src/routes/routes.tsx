@@ -45,8 +45,11 @@ import { ScreenDesignerPage } from "../pages/super-admin/ScreenDesignerPage";
 import { ErpFieldMappingPage } from "../pages/super-admin/ErpFieldMappingPage";
 import { OnboardingStartPage } from "../pages/super-admin/OnboardingStartPage";
 import { ErpFieldConfigPage } from "../pages/super-admin/ErpFieldConfigPage";
+import { OnboardingTemplateSettingsPage } from "../pages/super-admin/OnboardingTemplateSettingsPage";
+import { OnboardingPromptsPage } from "../pages/super-admin/OnboardingPromptsPage";
 import { ErpDocumentMappingPage } from "../pages/super-admin/ErpDocumentMappingPage";
 import { ApiCostPage } from "../pages/super-admin/ApiCostPage";
+import { CustomsTariffPage } from "../pages/super-admin/CustomsTariffPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
@@ -170,6 +173,22 @@ export function AppRoutes() {
         }
       />
       <Route
+        path="/super-admin/customs-tariff"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <CustomsTariffPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tenant-admin/master-data/customs-tariff"
+        element={
+          <ProtectedRoute allowedRoles={["tenant_admin"]}>
+            <CustomsTariffPage readOnly />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/super-admin/api-cost"
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
@@ -206,6 +225,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["super_admin"]}>
             <ErpFieldConfigPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/onboarding/prompts"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <OnboardingPromptsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/onboarding/template-settings"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <OnboardingTemplateSettingsPage />
           </ProtectedRoute>
         }
       />

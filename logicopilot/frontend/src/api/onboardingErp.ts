@@ -158,7 +158,12 @@ export async function setHeaderRow(workbookId: string, sheet: string, headerRow:
   return data;
 }
 
-export async function updateField(fieldId: string, patch: ErpFieldPatch): Promise<{ field: ErpField; summary: ErpSummary; status: string }> {
+export async function updateField(fieldId: string, patch: ErpFieldPatch): Promise<{
+  field: ErpField; summary: ErpSummary; status: string;
+  /** The live field this configuration was written onto (one data store), or null when the
+   *  field is not connected to a live field yet. */
+  live?: { ref: string; label: string } | null;
+}> {
   const { data } = await apiClient.patch(`/onboarding/erp/fields/${fieldId}`, patch);
   return data;
 }
@@ -272,8 +277,11 @@ export async function setMarkLineItem(fieldId: string, lineItem: boolean): Promi
   return data.mark;
 }
 
-export async function clearMark(fieldId: string): Promise<void> {
-  await apiClient.delete(`/onboarding/erp/fields/${fieldId}/mark`);
+/** Removes the box; the live box goes too unless the template is live or jobs used it -
+ *  `message` says which. */
+export async function clearMark(fieldId: string): Promise<{ ok: boolean; message: string | null }> {
+  const { data } = await apiClient.delete(`/onboarding/erp/fields/${fieldId}/mark`);
+  return data;
 }
 
 export interface ImportResult {

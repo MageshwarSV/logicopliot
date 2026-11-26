@@ -20,6 +20,7 @@ import { Input } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import { FloatingPanel } from "../../components/ui/FloatingPanel";
 import * as jobsApi from "../../api/jobs";
+import { searchTariff, type TariffCode } from "../../api/customsTariff";
 import { CombinedDescriptionConfigModal } from "./CombinedDescriptionConfigModal";
 import { ProductQuantityUnitsModal } from "./ProductQuantityUnitsModal";
 import { useAuth } from "../../auth/useAuth";
@@ -6451,7 +6452,11 @@ function DualSourcePicker({
   applyToAllRows,
   applyValueToAllRows,
   flagged,
+  tariffOn = false,
 }: {
+  /** Indian Customs Tariff on for this template: the code box searches the tariff, and a
+   *  code outside it is refused by the server (shown under the box). */
+  tariffOn?: boolean;
   primary: JobFieldValue;
   other: JobFieldValue | undefined;
   syncTargets: JobFieldValue[];
@@ -6475,6 +6480,12 @@ function DualSourcePicker({
 }) {
   const otherValue = (other?.corrected_value ?? other?.extracted_value ?? "").trim();
   const [saving, setSaving] = useState(false);
+  // A save the server refused (a CTH outside the Indian Customs Tariff), shown under the box.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [tariffHits, setTariffHits] = useState<TariffCode[]>([]);
+  const refused = (err: unknown) => {
+    setSaveError(axios.isAxiosError(err) ? err.response?.data?.detail ?? "Could not save." : "Could not save.");
+  };
 
   const ownPrimaryValueRef = useRef<string | null>(null);
   if (ownPrimaryValueRef.current === null) {
@@ -6568,6 +6579,22 @@ function DualSourcePicker({
     setPrimaryDraft(incomingPrimary);
   }, [incomingPrimary, isCthPairing]);
 
+  // Indian Customs Tariff: while a code is being typed (4-7 digits), the tariff codes that
+  // start with it are offered under the box - only codes from the list can be saved.
+  useEffect(() => {
+    if (!tariffOn || !isCthPairing || primaryDraft.length < 4 || primaryDraft.length >= CTH_LENGTH) {
+      setTariffHits([]);
+      return;
+    }
+    let live = true;
+    const t = window.setTimeout(() => {
+      searchTariff({ q: primaryDraft, page: 1, page_size: 30 })
+        .then((r) => { if (live) setTariffHits(r.rows); })
+        .catch(() => { if (live) setTariffHits([]); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(t); };
+  }, [tariffOn, isCthPairing, primaryDraft]);
+
   // `other` missing entirely (no such field on this row at all) is the only real bail-out -
   // guards the unconditional other.id/other.label_name reads below. A BLANK otherValue used
   // to bail out here too, which looked right (nothing to pick between) but actually broke
@@ -6594,6 +6621,8 @@ function DualSourcePicker({
         }
         setSelected(null);
         await reload();
+      } catch (err) {
+        refused(err);
       } finally {
         setSaving(false);
       }
@@ -6620,6 +6649,10 @@ function DualSourcePicker({
       // one exists only to cover the round trip; left standing afterwards it reports a choice
       // the database may not have taken, which is exactly how an empty pick looked like it had
       // worked. If the write landed, the derivation agrees and nothing moves.
+      setPickedOverride(undefined);
+      setSaveError(null);
+    } catch (err) {
+      refused(err);
       setPickedOverride(undefined);
     } finally {
       setSaving(false);
@@ -6657,6 +6690,12 @@ function DualSourcePicker({
         for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, primaryDraft);
         await reload();
       }
+      setSaveError(null);
+    } catch (err) {
+      // Refused (e.g. not in the Indian Customs Tariff): the box keeps what was typed so it
+      // can be fixed, and nothing counts as saved.
+      ownPrimaryValueRef.current = primaryValue;
+      refused(err);
     } finally {
       setSaving(false);
     }
@@ -6676,6 +6715,9 @@ function DualSourcePicker({
         for (const target of syncTargets) await jobsApi.correctFieldValue(target.id, otherDraft);
       }
       await reload();
+      setSaveError(null);
+    } catch (err) {
+      refused(err);
     } finally {
       setSaving(false);
     }
@@ -6805,10 +6847,37 @@ function DualSourcePicker({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            placeholder="—"
+            placeholder={tariffOn && isCthPairing ? "type 4+ digits to search the tariff" : "—"}
+            list={tariffOn && isCthPairing ? `tariff-${primary.id}` : undefined}
             className={boxClass("primary")}
           />
+          {tariffOn && isCthPairing && (
+            <datalist id={`tariff-${primary.id}`}>
+              {tariffHits.map((h) => (
+                <option key={h.cth} value={h.cth}>{[h.description, h.unit, h.rate].filter(Boolean).join(" · ")}</option>
+              ))}
+            </datalist>
+          )}
         </label>
+        {/* Indian Customs Tariff: where an automatic code came from, until the operator confirms
+            it (a tick, or typing a code). Amber - it is a suggestion, not the customer's dump. */}
+        {tariffOn && !(primary.corrected_value ?? "").trim() && primary.value_source && (
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            {primary.value_source === "tariff_ai"
+              ? "AI suggestion from the Indian Customs Tariff — not from the dump. Tick to confirm."
+              : primary.value_source === "tariff_doc"
+                ? "Document CTH, found in the Indian Customs Tariff — not from the dump. Tick to confirm."
+                : "Fallback: the subheading's \"Other\" code from the tariff — check it, then tick."}
+          </p>
+        )}
+        {tariffOn && (primary.source_note ?? "").includes("is not in the Indian Customs Tariff") && (
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] text-slate-500 dark:text-slate-400">
+            {primary.source_note!.split(".")[0]}.
+          </p>
+        )}
+        {saveError && (
+          <p className="-mt-0.5 pl-[1.65rem] text-[11px] font-medium text-rose-600 dark:text-rose-400">{saveError}</p>
+        )}
         {/* WHICH key of the customer's sheet produced this code, directly under the box it
             came from rather than adrift at the bottom of the card. Matched on the part number
             it is the precise answer; matched only on the wording it is worth a second look -
@@ -6816,7 +6885,7 @@ function DualSourcePicker({
             thing that could have matched at all. Shown only when the value really did come
             from the sheet that way (see JobFieldValueOut.lookup_source), never over a code
             typed by hand and never when the sheet had nothing for this line. */}
-        {primary.lookup_source === "Previous entry" ? (
+        {tariffOn && primary.value_source ? null : primary.lookup_source === "Previous entry" ? (
           /* NOT from the customer's sheet. The sheet had nothing for this line, so the code
              came from what an operator typed for this same part once before - a real answer,
              but a colleague's answer, not the customer's own declared classification. Said
@@ -7897,10 +7966,15 @@ function ExtractionReview({
   // 2's lines are a different supplier's goods, and a choice made on Invoice 1 must not
   // reach them. Same (set, row) scoping as the product cards (lookedUpByRow).
   const applyPairChoiceToAllRows = async (customFieldId: string, which: "primary" | "other") => {
-    await jobsApi.carryAcrossRows(jobId, {
+    const r = await jobsApi.carryAcrossRows(jobId, {
       custom_field_id: customFieldId, mode: "pick", which, set_index: active?.set_index ?? 1,
     });
     await reload();
+    // Indian Customs Tariff: lines whose picked code is not in the tariff were left as they were.
+    const skipped = (r as { not_in_tariff_lines?: number[] } | undefined)?.not_in_tariff_lines;
+    if (skipped?.length) {
+      window.alert(`The picked code is not in the Indian Customs Tariff on line(s) ${skipped.join(", ")} - those lines were not changed. Pick or type a tariff code there.`);
+    }
   };
 
   // Removing a whole product line - every value read for it, plus its reference-sheet
@@ -8739,6 +8813,7 @@ function ExtractionReview({
                                       : undefined
                                   }
                                   applyValueToAllRows={applyCthValueToAllRows}
+                                  tariffOn={Boolean(job.customs_tariff_on)}
                                   // The CTH field is hidden above when this pairing feeds
                                   // one, so its "mandatory and still blank" state has to
                                   // travel with it - otherwise a job is blocked from

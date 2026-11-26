@@ -566,7 +566,66 @@ def assign_sets(files: list[dict]) -> dict[str, int | None]:
         if out.get(f["id"]) is None:
             next_set += 1
             out[f["id"]] = next_set
+    # LAST, so every invoice already has its final set number - including the ones just given
+    # one above, which an unkeyed packing list beside them should still be able to join.
+    _pair_orphans_by_source(files, out)
     return out
+
+
+def _pair_orphans_by_source(files: list[dict], out: dict[str, int | None]) -> None:
+    """Give a per-invoice document that could not be keyed the set of the invoice it was cut
+    out beside.
+
+    Sets are paired by invoice NUMBER. A packing list that prints no readable invoice number
+    gets no key, so it lands on set=None - unpaired - even when it plainly belongs to one
+    invoice. Its fields then land nowhere: the invoice's own set shows only the invoice's
+    half, which on screen reads as "the second invoice shows fewer fields than the first".
+
+    Live, BLR/AI/3993/26-27 (production). One PDF split into three invoices:
+
+        fidx=0  Invoice  set=1   InvoiceNo 5001457558     Packing List set=1
+        fidx=1  Invoice  set=2   InvoiceNo 5001457557     Packing List set=None  <- 4 pages, no number read
+        fidx=2  Invoice  set=3   InvoiceNo 5001457556     Packing List set=3
+
+    Set 2 came out with 9 filled fields where sets 1 and 3 had 17-18 - the missing ones (Net
+    Weight, Net Weight Unit, package_count) are exactly the packing list's.
+
+    Two things must both hold before anything is paired, and together they are what make this
+    safe rather than a guess:
+
+    * SAME SOURCE FILE AND SAME SPLIT POSITION. `name` is the uploaded file and `file_index`
+      is the splitter's own ordering within a slot, so an Invoice and a Packing List sharing
+      both came out of the same chunk of the same PDF. Where `name` falls back to a per-slot
+      label ("Invoice #2" vs "Packing List #2") the names simply never match and nothing is
+      paired - it fails closed.
+    * BOTH SIDES ARE PER-INVOICE DOCUMENTS (GROUPABLE_DOC_TYPES). An Air Waybill, a Bill of
+      Lading or a Freight Certificate covers the WHOLE job - forcing one into set 1 would
+      stop its values applying to the other invoices, which is the very thing assign_sets'
+      own docstring warns about. Measured on 14 days of production: without this restriction
+      28 whole-job documents would have been wrongly pulled into a single set.
+
+    Ambiguity is left alone: if the mates point at more than one set, nothing is decided.
+    """
+    for f in files:
+        if out.get(f["id"]) is not None:
+            continue
+        if (f.get("doc_type") or "") not in GROUPABLE_DOC_TYPES:
+            continue
+        source = f.get("name")
+        if not source:
+            continue
+        mates = {
+            out[g["id"]]
+            for g in files
+            if g is not f
+            and out.get(g["id"]) is not None
+            and (g.get("doc_type") or "") in GROUPABLE_DOC_TYPES
+            and g.get("template_document_id") != f.get("template_document_id")
+            and g.get("name") == source
+            and (g.get("file_index") or 0) == (f.get("file_index") or 0)
+        }
+        if len(mates) == 1:
+            out[f["id"]] = mates.pop()
 
 
 def _count(files: list[dict], f: dict) -> int:

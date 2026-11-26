@@ -431,6 +431,7 @@ class ProcessingSettingsPayload(BaseModel):
     large_zip_hold: bool | None = None
     large_zip_mb: int | None = None
     large_job_lane: bool | None = None
+    use_customs_tariff: bool | None = None
     excel_mode: str | None = None                     # "legacy" | "sheet"
     excel_ignore_patterns: list[str] | None = None
 
@@ -462,6 +463,13 @@ def set_group_processing_settings(
         group.large_zip_hold = payload.large_zip_hold
     if payload.large_job_lane is not None:
         group.large_job_lane = payload.large_job_lane
+    if payload.use_customs_tariff is not None:
+        if payload.use_customs_tariff:
+            from app.core.customs_tariff import is_loaded
+
+            if not is_loaded(db):
+                raise HTTPException(status_code=422, detail="Upload the Indian Customs Tariff first (Platform Configuration).")
+        group.use_customs_tariff = payload.use_customs_tariff
     if payload.excel_ignore_patterns is not None:
         group.excel_ignore_patterns = [p.strip() for p in payload.excel_ignore_patterns if p.strip()][:50]
     db.commit()
