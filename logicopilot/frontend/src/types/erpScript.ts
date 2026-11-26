@@ -50,6 +50,10 @@ export interface ErpStep {
    *  enable it (e.g. a dependent dropdown auto-filled and locked when there's only one option).
    *  Playwright otherwise just waits out the full click timeout on a disabled element. */
   force_enable?: boolean | null;
+  /** 🧠 AI zone: on a MANUAL job the AI may take over only inside these steps (when a step's
+   *  element is not on screen, the AI clears whatever is in the way). Outside them the step is
+   *  just skipped. Auto ERP jobs let the AI take over anywhere regardless. */
+  ai_zone?: boolean | null;
   /** This step is THE success signal — the text/element proving the ERP accepted the entry.
    *  Passes -> job completed. Fails -> the screen is diagnosed by AI and the job is failed. */
   is_success_check?: boolean | null;

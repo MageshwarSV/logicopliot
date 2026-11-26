@@ -75,6 +75,11 @@ class ErpStep(BaseModel):
     # breaks every run where it does. Optional is the honest answer: dismiss it when it is
     # there, ignore it when it is not.
     is_optional: bool | None = None
+    # The brain (2026-11-26): on a MANUAL job the AI may take over only inside these steps -
+    # when one's element is not on screen, the AI clears whatever is in the way. Outside them
+    # the step is skipped as usual. Auto ERP jobs let the AI take over anywhere regardless.
+    # See browser._play_steps(ai_scope=...).
+    ai_zone: bool | None = None
     # A `dialog` step marked is_optional is an "if this alert comes" step: whenever an alert
     # whose wording matches `description` pops up - anywhere in the run - it gets the button in
     # `value` (accept = OK, dismiss = Cancel); when it never pops up, nothing happens. True here

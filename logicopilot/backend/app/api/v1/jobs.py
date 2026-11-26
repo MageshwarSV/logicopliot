@@ -3633,6 +3633,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
                     script.url, None, script.steps or [], values, headless=True, rows=rows,
                     downloads_dir=dl_dir, uploads=up_map, progress=_live,
                     checkpoint_index=script.checkpoint_index, branch_session=sess,
+                    ai_scope=("all" if job.auto_erp_submitted else "marked"),
                 ))
             else:
                 # A script with no session to share has to take turns, however many workers
@@ -3644,6 +3645,7 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
                         downloads_dir=dl_dir, uploads=up_map, progress=_live,
                         checkpoint_index=ckpt, session_file=sess_file,
                         cancel=erp_priority.manual_active,
+                        ai_scope=("all" if job.auto_erp_submitted else "marked"),
                     )
         except Exception as exc:  # noqa: BLE001
             _fail(f"The ERP entry could not be run: {exc}")
@@ -6259,7 +6261,8 @@ def complete_job(
                 # parked session is busy or wedged, this returns None and we run normally.
                 from app.core.parked import MANAGER
 
-                result = MANAGER.run_job(script.id, values, rows, job.reference or job.id)
+                result = MANAGER.run_job(script.id, values, rows, job.reference or job.id,
+                                         ai_scope="all" if job.auto_erp_submitted else "marked")
                 if result is not None:
                     logger.info("job %s ran on the parked session for script %s", job.id, script.id)
             if result is None:
@@ -6401,6 +6404,7 @@ def complete_job(
                             rows=rows, downloads_dir=dl_dir,
                             checkpoint_index=script.checkpoint_index, branch_session=sess,
                             uploads=up_map, progress=_live,
+                            ai_scope=("all" if job.auto_erp_submitted else "marked"),
                         ))
                     else:
                         with erp_priority.queued_run(job.id), \
@@ -6410,6 +6414,7 @@ def complete_job(
                                 rows=rows, downloads_dir=dl_dir, checkpoint_index=ckpt,
                                 session_file=sess_file, uploads=up_map, progress=_live,
                                 cancel=erp_priority.manual_active,
+                                ai_scope=("all" if job.auto_erp_submitted else "marked"),
                             )
                     if not erp_priority.was_preempted(result):
                         break

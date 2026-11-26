@@ -88,9 +88,11 @@ class JobGate:
         """Only one job may use a given parked session. Non-blocking."""
         return self._claimed.acquire(blocking=False)
 
-    def deliver(self, values: dict, rows: dict | None, job_ref: str, timeout: int) -> dict | None:
-        """Hand the job over and wait for the entry to finish. None means it never completed."""
-        self._job = {"values": values, "rows": rows or {}, "job_ref": job_ref}
+    def deliver(self, values: dict, rows: dict | None, job_ref: str, timeout: int,
+                ai_scope: str = "marked") -> dict | None:
+        """Hand the job over and wait for the entry to finish. None means it never completed.
+        `ai_scope` - where the AI may take over for THIS job (browser._play_steps)."""
+        self._job = {"values": values, "rows": rows or {}, "job_ref": job_ref, "ai_scope": ai_scope}
         self._job_ready.set()
         if not self._result_ready.wait(timeout=timeout):
             return None
@@ -245,7 +247,7 @@ class _Manager:
             return [s.snapshot() for s in self._sessions.values()]
 
     def run_job(self, script_id: str, values: dict, rows: dict | None, job_ref: str,
-                timeout: int = 240) -> dict | None:
+                timeout: int = 240, ai_scope: str = "marked") -> dict | None:
         """Give a job to this script's parked session.
 
         Returns the run result, or None when there is no usable parked session — in which case
@@ -263,7 +265,7 @@ class _Manager:
         sess.detail = f"running job {job_ref}"
         sess.since = time.time()
         try:
-            res = gate.deliver(values, rows, job_ref, timeout=timeout)
+            res = gate.deliver(values, rows, job_ref, timeout=timeout, ai_scope=ai_scope)
             if res is None or res.get("status") == "parked_released":
                 # The browser stopped waiting before we got there (idle refresh raced us).
                 # Report no parked session so the caller runs the script the ordinary way.

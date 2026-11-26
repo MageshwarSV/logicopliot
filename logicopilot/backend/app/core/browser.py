@@ -5602,13 +5602,23 @@ def _play_steps(
     cancel=None,          # callable() -> True when somebody has pressed Stop
     stall_after: int = STALL_SECONDS,   # give up on ONE step that never moves on
     branch_session: dict | None = None,  # {"state", "url"} of a live branch login - see below
+    ai_scope: str = "marked",   # "all": AI may take over anywhere (Auto ERP jobs) - see below
     _unscripted_alerts: list | None = None,   # filled by play_steps' own wrapper - see there
 ) -> dict:
     """Replay a saved step sequence. `values` maps field_label -> value; a step's value
     may be a literal or a [[field_label]] placeholder resolved from values. Returns status
     'ok' when the final ERP action ran, else 'failed'. `progress(screenshot_b64, log)` is
     called as the run proceeds (for the live Entry Browser). `headless` overrides the
-    global setting (the Entry Browser streams screenshots, so it runs headless)."""
+    global setting (the Entry Browser streams screenshots, so it runs headless).
+
+    `ai_scope` - where the AI may take over when a recorded step's element is not on screen
+    (2026-11-26, 4S: the AI had grown too eager on ordinary jobs):
+      * "all"    - anywhere, top to bottom. Auto ERP Submission jobs only (nobody is watching
+                   them, so the AI is the only thing that can get past a surprise).
+      * "marked" - only on steps the Super Admin marked with the brain (step["ai_zone"]) in the
+                   ERP script recorder. Everywhere else the step is simply skipped, as before
+                   the AI existed. Every manual job, the Entry Browser and test plays.
+    An explicit "AI action" step always runs - somebody put it there on purpose."""
     import time as _time
 
     from playwright.sync_api import sync_playwright
@@ -6241,6 +6251,7 @@ def _play_steps(
                     if payload.get("rows"):
                         rows = {**(rows or {}), **payload["rows"]}
                     job_ref = payload.get("job_ref") or ""
+                    ai_scope = payload.get("ai_scope") or ai_scope
                     log.append(f"job {job_ref} received — running the entry steps")
                     # Time spent parked must not count against the run budget.
                     start = _time.monotonic()
@@ -6927,7 +6938,9 @@ def _play_steps(
                                         log.append(f"Form locked after step {i + 1} — {blocked['outcome']}: {blocked['reason']}")
                                 i += 1
                                 resumed = True
-                    for attempt in (range(ai_attempts) if not resumed else ()):
+                    # Manual jobs: the AI only inside the brain-marked steps (see ai_scope).
+                    ai_here = ai_scope == "all" or bool(step.get("ai_zone"))
+                    for attempt in (range(ai_attempts if ai_here else 1) if not resumed else ()):
                         # A "close the form?" popup can fire PARTWAY THROUGH an AI attempt, not
                         # only before the loop starts (see the identical check above it) - found
                         # live on JOB-3DA007: the popup first appeared partway through the FIRST
@@ -6989,6 +7002,10 @@ def _play_steps(
                             }
                             log.append(f"step {i + 1} {action}: the ERP rejected the import — "
                                        f"{rejected}")
+                            break
+                        if not ai_here:
+                            log.append(f"step {i + 1} {action}: AI takeover is off here (not an Auto "
+                                       "ERP job, and this step is not inside a brain-marked range)")
                             break
                         msg = ai_takeover(
                             f"An unexpected screen/dialog is blocking the recorded flow (e.g. an "
