@@ -1,5 +1,9 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
+# The website / API process runs under gunicorn with uvicorn workers, scaled with load - see
+# gunicorn.conf.py (only PROCESS_ROLE=web scales; every other role stays at one worker).
+gunicorn==23.0.0
+uvicorn-worker==0.4.0
 sqlalchemy>=2.0
 pydantic[email]>=2.6
 pydantic-settings>=2.2
