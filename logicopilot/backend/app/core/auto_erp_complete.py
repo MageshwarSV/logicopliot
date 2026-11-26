@@ -46,6 +46,26 @@ _NUMBER_HINTS = ("qty", "quantity", "value", "amount", "amt", "weight", "wt", "p
 _QTY_UNIT_LABELS = ("total quantity unit", "quantity unit", "qty unit", "total qty unit")
 
 
+_TOI_LABELS = {"toi", "terms of invoice", "terms_of_invoice", "incoterm", "incoterms"}
+_ORIGIN_LABELS = {"origin", "countryoforigincode", "country of origin", "country of origin code",
+                  "country_of_origin", "country_of_origin_code", "origin country code"}
+# Where the shipper's country is, best first: the supplier / shipper country the template reads,
+# else the country the goods were shipped from (an import's AWB / B/L).
+_SHIPPER_COUNTRY_LABELS = ("supplier country", "shipper country", "supplier_country", "shipper_country",
+                           "countryofshipmentcode", "country of shipment code")
+
+
+def _shipper_country_code(header: dict) -> str | None:
+    """The shipper's 2-letter country code from the job's header values, or None."""
+    by_label = {label.strip().lower(): fv for label, fv in header.items()}
+    for key in _SHIPPER_COUNTRY_LABELS:
+        fv = by_label.get(key)
+        v = (fv.value or "").strip().upper() if fv is not None else ""
+        if re.fullmatch(r"[A-Z]{2}", v):
+            return v
+    return None
+
+
 def _code(opt) -> str:
     v = opt.get("value") or opt.get("label") if isinstance(opt, dict) else opt
     v = str(v or "").strip()
@@ -303,6 +323,21 @@ def fill_job_values(db: Session, job) -> list[str]:
         if hit:
             return hit, "most used on this template's jobs"
         return options[0], "first choice"
+
+    # Two business defaults, auto jobs only (4S, 2026-11-26) - before the list rules below, so a
+    # field that also has a list of choices gets these values, not "the first choice":
+    #   * Terms of Invoice not printed -> FOB, on every invoice of the job;
+    #   * Country of Origin not printed (the job's Origin and every product line's) -> the
+    #     shipper's country code (Supplier Country, else the AWB's country of shipment).
+    for fv in fvs:
+        if fv.corrected_value is None and _empty(fv.value) and fv.label_name.strip().lower() in _TOI_LABELS:
+            set_value(fv, "FOB", "Terms of Invoice not on the invoice", f"invoice {fv.set_index}" if fv.set_index else "")
+    shipper_cc = _shipper_country_code(header)
+    if shipper_cc:
+        for fv in fvs:
+            if fv.corrected_value is None and _empty(fv.value) and fv.label_name.strip().lower() in _ORIGIN_LABELS:
+                set_value(fv, shipper_cc, "Country of Origin not printed - the shipper's country",
+                          f"line {fv.row_index}" if fv.row_index is not None else "")
 
     # Product lines first, so an empty header quantity unit can take the lines' unit.
     for (label, set_index), group in lines.items():
