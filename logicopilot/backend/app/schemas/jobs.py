@@ -436,6 +436,8 @@ class JobDetailOut(BaseModel):
     erp_captured: dict | None = None
     # What the AI saw on the screen where the run stopped, in plain words for the operator.
     erp_diagnosis: str | None = None
+    # The ERP refused the Excel import: what to fix, per Cargora box (erp_rejection.build_help).
+    erp_help: dict | None = None
     # See JobOut.category.
     category: str = "new"
     # A human confirming the AI/ERP automation actually submitted this job - see

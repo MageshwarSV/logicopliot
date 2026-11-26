@@ -2749,6 +2749,7 @@ def _put_back_on_entry(db: Session, job: Job) -> None:
     job.erp_failed_value = None
     job.erp_log = None
     job.erp_diagnosis = None
+    job.erp_help = None
     if completed_without_job_no and job.gk2_status == "submitted":
         # A GK2-involved run that reported "submitted" but never proved a job number actually
         # went in - clear this so the UI re-offers the normal Final Submit flow instead of
@@ -3436,6 +3437,7 @@ def _kick_off_real_erp_submission(db: Session, job: Job) -> None:
     job.erp_status = None
     job.erp_reason = None
     job.erp_diagnosis = None
+    job.erp_help = None
     job.erp_failed_field = None
     job.erp_failed_value = None
     db.commit()
@@ -4564,6 +4566,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
         erp_status=job.erp_status,
         erp_reason=job.erp_reason,
         erp_diagnosis=job.erp_diagnosis,
+        erp_help=job.erp_help,
         erp_final_url=job.erp_final_url,
         erp_failed_field=job.erp_failed_field,
         erp_failed_value=job.erp_failed_value,
@@ -6055,6 +6058,16 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
     job.erp_failed_field = result.get("failed_field")
     job.erp_failed_value = result.get("failed_value")
     job.erp_log = result.get("log")
+    # The ERP refused the Excel import: turn its table into "which box, what to type" so the
+    # operator can fix it alone. Never allowed to break the run's own record.
+    job.erp_help = None
+    if result.get("rejection_text") and result.get("status") != "ok":
+        try:
+            from app.core.erp_rejection import build_help
+
+            job.erp_help = build_help(db, job, result["rejection_text"])
+        except Exception:  # noqa: BLE001
+            logger.exception("job %s: could not explain the ERP's import rejection", job.id)
     db.commit()
 
     erp = {
@@ -6067,6 +6080,7 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
         "erp_failed_field": job.erp_failed_field,
         "erp_failed_value": job.erp_failed_value,
         "erp_diagnosis": job.erp_diagnosis,
+        "erp_help": job.erp_help,
     }
     status = result.get("status")
 

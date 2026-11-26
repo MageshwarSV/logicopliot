@@ -3010,7 +3010,7 @@ def _validation_errors(page) -> list[str]:
 _IMPORT_REJECTED = ("invalid data found",)
 
 
-def _rejected_import_block(said: str) -> dict:
+def _rejected_import_block(said: str, raw: str | None = None) -> dict:
     """The outcome an import rejection produces, written for the operator who has to fix it.
 
     One wording for both places it can be found - when it blocks a click mid-run, and when it
@@ -3027,10 +3027,13 @@ def _rejected_import_block(said: str) -> dict:
                    f"The ERP says: \u201c{said}\u201d. Correct those values on the job - or "
                    "press 'Reset to generated' if the Excel was edited by hand - then press "
                    "Retry."),
+        # The ERP's whole table, every row - read by erp_rejection.build_help to tell the
+        # operator which Cargora box to fix. `reason` above keeps only the first three rows.
+        "rejection_text": raw or said,
     }
 
 
-def _rejection_in(scope) -> str | None:
+def _rejection_in(scope, limit: int = 1500) -> str | None:
     """The "Invalid Data Found" block's own text inside one page or frame, or None.
 
     Read straight off the body text rather than through a selector list. The dialog is a
@@ -3046,7 +3049,21 @@ def _rejection_in(scope) -> str | None:
     if "invalid data found" not in low:
         return None
     # From the heading down: everything above it is the form behind the dialog.
-    return txt[low.index("invalid data found"):][:1500]
+    return txt[low.index("invalid data found"):][:limit]
+
+
+def _import_rejection_raw(page) -> str | None:
+    """The ERP's "Invalid Data Found" block as it reads on screen, every row (up to 8000
+    characters), for erp_rejection.build_help. None when it cannot be read."""
+    try:
+        for s in _scopes(page):
+            txt = _rejection_in(s, limit=8000)
+            if txt:
+                return txt
+        found = [t for t in _validation_errors(page) if any(m in t.lower() for m in _IMPORT_REJECTED)]
+        return found[0] if found else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _scopes(page):
@@ -7085,7 +7102,7 @@ def _play_steps(
                         # so the operator can fix the file and press Retry.
                         rejected = _import_rejection(page)
                         if rejected:
-                            blocked = _rejected_import_block(rejected)
+                            blocked = _rejected_import_block(rejected, _import_rejection_raw(page))
                             log.append(f"step {i + 1} {action}: the ERP rejected the import — "
                                        f"{rejected}")
                             break
@@ -7219,7 +7236,10 @@ def _play_steps(
                 i = len(steps)
                 maybe_save_checkpoint()
             ai_diagnosis = ""
-            if shot and (value_error or blocked or aborted or _incomplete):
+            # An import rejection is explained from the ERP's own table (erp_rejection), so
+            # the screenshot read would only be a second, vaguer copy of it.
+            if shot and (value_error or blocked or aborted or _incomplete) \
+                    and not (blocked or {}).get("rejection_text"):
                 try:
                     from app.core.llm import describe_failure_screen
 
@@ -7246,7 +7266,7 @@ def _play_steps(
                 except Exception:  # noqa: BLE001 - never let the last look be what breaks a run
                     leftover = None
                 if leftover:
-                    blocked = _rejected_import_block(leftover)
+                    blocked = _rejected_import_block(leftover, _import_rejection_raw(page))
                     log.append("STOPPED - the ERP's rejection was still on screen when the run "
                                f"finished: {leftover}")
 
@@ -7296,6 +7316,7 @@ def _play_steps(
                     "log": log,
                     "screenshot": shot,
                     "reason": blocked.get("reason"),
+                    "rejection_text": blocked.get("rejection_text"),
                     # Anything already read off the ERP is worth keeping even on a bad outcome.
                     "captured": captured,
                     "ai_diagnosis": ai_diagnosis,

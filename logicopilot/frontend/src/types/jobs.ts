@@ -351,6 +351,8 @@ export interface JobDetail {
   erp_captured?: Record<string, CapturedItem | string> | null;
   /** Plain-words description of the screen the run stopped on, read by AI from a screenshot. */
   erp_diagnosis?: string | null; // the value that wasn't found in the ERP
+  /** The ERP refused the Excel import: what to fix, per Cargora box (erp_rejection.py). */
+  erp_help?: ErpHelp | null;
   /** See Job.category. */
   category?: "new" | "submitted" | "completed";
   /** A human confirmed the AI/ERP automation actually submitted this job - see verifyJob.
@@ -391,4 +393,30 @@ export interface CapturedItem {
   file?: string | null;
   /** internal = reused in a later step only; output/both = shown to the operator. */
   usage?: "internal" | "output" | "both";
+}
+
+/** One thing to fix after the ERP refused the Excel import - see backend erp_rejection.py. */
+export interface ErpHelpItem {
+  field: string | null;
+  display: string;
+  erp_columns: string[];
+  sheet: string;
+  places: [number | null, number | null][];
+  where: string;
+  sent: string[];
+  rules: string[];
+  needs: string;
+  example: string;
+  suggest: string;
+  fixable: boolean;
+  support_reason: string | null;
+  field_value_ids: string[];
+}
+
+export interface ErpHelp {
+  kind: "import_rejected";
+  items: ErpHelpItem[];
+  erp_rows: { sheet: string; column: string; invoice: number | null; product: number | null; rule: string; text: string }[];
+  excel_edited: boolean;
+  ai: boolean;
 }

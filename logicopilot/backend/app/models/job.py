@@ -167,6 +167,9 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     erp_final_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     erp_failed_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     erp_failed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The ERP refused the Excel import: what to fix, per Cargora box, in plain words
+    # (erp_rejection.build_help). None for every other outcome.
+    erp_help: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Set ONCE, the first time the AI/ERP automation (_kick_off_real_erp_submission, either
     # via a real GK2 review or a GK2-skipped tenant/mode - see gk2_skipped) successfully
