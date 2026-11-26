@@ -9,11 +9,13 @@ Then, for the template's CTH lookup fields ("Dump CTH Number", "CTH"):
   emptied, with a note saying so;
 - an empty line gets the nearest tariff code from customs_tariff_match (document CTH in the
   tariff -> as is; otherwise the AI), marked value_source = tariff_doc / tariff_ai /
-  tariff_fallback.
+  tariff_fallback. It goes in the ANSWER box ("CTH"), not in "Dump CTH Number" - that box only
+  ever shows what the customer's dump really gave (4S, 2026-11-26). The screen labels the CTH
+  box "AI suggestion from the Indian Customs Tariff - not from the dump"; the operator may
+  change it, and it goes to the ERP as it is.
 
-A suggestion is not an answer: the operator confirms it (a tick in the picker, or typing a code)
-before the job can be submitted - submit_problems(). A code typed or picked must be in the
-tariff - check_correction().
+A code typed or picked must be in the tariff - check_correction(); submit_problems() blocks
+only a CTH outside the tariff.
 """
 from __future__ import annotations
 
@@ -93,6 +95,8 @@ def _apply(db: Session, job, group) -> dict:
     need: dict[tuple, Line] = {}
     targets: list = []
     stats = {"kept": 0, "rejected": 0, "suggested": 0}
+    # Per line, the empty boxes: "answer" (CTH, the one the picker feeds) and "dump".
+    empty: dict[tuple, dict[str, object]] = {}
     for fv in rows:
         if fv.custom_field_id not in field_ids:
             continue
@@ -109,13 +113,19 @@ def _apply(db: Session, job, group) -> dict:
             fv.extracted_value = ""
             fv.source_note = f"Dump code {val} is not in the Indian Customs Tariff."
             stats["rejected"] += 1
-        if fv.custom_field_id in fed:
-            continue
+        empty.setdefault(k, {}).setdefault("answer" if fv.custom_field_id in fed else "dump", fv)
+
+    for k, boxes in empty.items():
+        dump_fv = boxes.get("dump")
+        if dump_fv is None:
+            continue            # the dump gave this line a tariff code - nothing to suggest
+        # The suggestion goes in the CTH answer box; a template without one keeps it in the dump box.
+        target = boxes.get("answer") or dump_fv
         t = text.get(k, {})
-        label = key_labels.get(fv.custom_field_id) or ""
+        label = key_labels.get(dump_fv.custom_field_id) or ""
         part = (t.get(label) if label else "") or t.get("item_material_code", "")
         need.setdefault(k, Line(k, doc_cth.get(k, ""), part, t.get("product_description", "")))
-        targets.append(fv)
+        targets.append(target)
 
     if need:
         out = suggest_many(db, list(need.values()), job.tenant_id)
@@ -135,7 +145,8 @@ def _apply(db: Session, job, group) -> dict:
 
 
 def suggestion_needs_confirmation(fv) -> bool:
-    """A tariff suggestion nobody has confirmed yet - not an answer for the submit check."""
+    """A tariff suggestion nobody has confirmed yet. Since 2026-11-26 the suggestion sits in the
+    CTH answer box and goes as it is, so nothing blocks on this any more; kept for callers."""
     return (fv.value_source or "") in SUGGESTED and not (fv.corrected_value or "").strip()
 
 
@@ -157,9 +168,8 @@ def check_correction(db: Session, job, cf, saved: str) -> str:
 
 
 def submit_problems(db: Session, job) -> list[str]:
-    """Submit check, per line: a tariff suggestion nobody confirmed (no CTH box on that line
-    has an operator's value - a tick in the picker or a typed code saves one), and any CTH
-    answer that is not in the tariff."""
+    """Submit check, per line: any CTH answer that is not in the tariff. A tariff suggestion is
+    already in the CTH box (labelled as one on screen), so it does not need a tick first."""
     from app.models.job import JobFieldValue
     from app.models.template_group import TemplateGroup
 
@@ -174,13 +184,8 @@ def submit_problems(db: Session, job) -> list[str]:
                                          JobFieldValue.custom_field_id.in_(list(fields)),
                                          JobFieldValue.row_index.isnot(None)
                                          ).order_by(JobFieldValue.set_index, JobFieldValue.row_index).all()
-    confirmed = {(fv.set_index or 1, fv.row_index) for fv in fvs if (fv.corrected_value or "").strip()}
-    out, asked = [], set()
+    out = []
     for fv in fvs:
-        k = (fv.set_index or 1, fv.row_index)
-        if suggestion_needs_confirmation(fv) and k not in confirmed and k not in asked:
-            asked.add(k)
-            out.append(f"CTH (line {fv.row_index}): confirm the suggested tariff code {fv.extracted_value}")
         val = (fv.corrected_value or fv.extracted_value or "").strip()
         if val and clean_cth(val) not in codes:
             out.append(f"{fields[fv.custom_field_id]} (line {fv.row_index}): {val} is not in the Indian Customs Tariff")

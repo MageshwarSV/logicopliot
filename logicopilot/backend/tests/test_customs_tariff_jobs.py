@@ -84,15 +84,16 @@ def test_pass_keeps_rejects_and_suggests(db_session, fake_ai):
     # line 1: in the tariff - untouched
     assert _fv(db_session, job, "Dump CTH Number", 1).extracted_value == "85177990"
     assert _fv(db_session, job, "Dump CTH Number", 1).value_source is None
-    # line 2: dump 85371000 not in the tariff - AI picks under 853710
+    # line 2: dump 85371000 not in the tariff - emptied; the dump box shows only the dump
     d2 = _fv(db_session, job, "Dump CTH Number", 2)
-    assert (d2.extracted_value, d2.value_source) == ("85371090", "tariff_ai")
+    assert (d2.extracted_value, d2.value_source) == ("", None)
     assert "Dump code 85371000 is not in the Indian Customs Tariff" in d2.source_note
-    # the answer box the picker feeds gets no suggestion: emptied, the tick fills it
+    # ...and the AI's pick under 853710 goes in the CTH answer box itself (4S, 2026-11-26)
     c2 = _fv(db_session, job, "CTH", 2)
-    assert c2.extracted_value == "" and c2.value_source is None
-    # line 3: nothing in the dump, no document code - guess then pick
-    assert _fv(db_session, job, "Dump CTH Number", 3).extracted_value == "39232100"
+    assert (c2.extracted_value, c2.value_source) == ("85371090", "tariff_ai")
+    # line 3: nothing in the dump, no document code - guess then pick, into CTH
+    assert _fv(db_session, job, "CTH", 3).extracted_value == "39232100"
+    assert _fv(db_session, job, "Dump CTH Number", 3).extracted_value == ""
 
 
 def test_switch_off_changes_nothing(db_session, fake_ai):
@@ -102,18 +103,13 @@ def test_switch_off_changes_nothing(db_session, fake_ai):
     assert tj.submit_problems(db_session, job) == []
 
 
-def test_submit_needs_confirmation_and_tariff_codes(db_session, fake_ai):
+def test_submit_takes_the_suggestion_and_blocks_codes_outside_tariff(db_session, fake_ai):
     t, g, job, dump, cth = _setup(db_session)
     tj.apply_to_job(db_session, job, g)
     db_session.commit()
+    # the suggestion already sits in CTH - nothing to tick before submitting
     problems = _unanswered_operator_fields(db_session, job)
-    assert any("line 2): confirm the suggested tariff code 85371090" in p for p in problems)
-    assert any("line 3): confirm" in p for p in problems)
-    assert not any("line 1)" in p for p in problems)
-    # a tick writes the CTH answer box -> the line is confirmed
-    _fv(db_session, job, "CTH", 2).corrected_value = "85371090"
-    _fv(db_session, job, "CTH", 3).corrected_value = "39232100"
-    db_session.commit()
+    assert not any("confirm the suggested tariff code" in p for p in problems)
     assert tj.submit_problems(db_session, job) == []
     # a code outside the tariff (e.g. restored from before the switch) blocks
     _fv(db_session, job, "CTH", 1).corrected_value = "85179090"
@@ -141,11 +137,7 @@ def test_save_and_carry_refuse_codes_outside_tariff(client, db_session, fake_ai)
     r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows",
                     json={"custom_field_id": dump.id, "mode": "pick", "which": "other"})
     assert r.json()["not_in_tariff_lines"] == [2]
-    # ticking the dump side confirms every line with the suggestion
-    r = client.post(f"/api/v1/jobs/{job.id}/carry-across-rows",
-                    json={"custom_field_id": dump.id, "mode": "pick", "which": "primary"})
     db_session.expire_all()
-    assert _fv(db_session, job, "CTH", 2).corrected_value == "85371090"
     assert tj.submit_problems(db_session, job) == []
 
 
@@ -158,8 +150,10 @@ def test_detail_carries_source(client, db_session, fake_ai):
     login(client, op.email)
     d = client.get(f"/api/v1/jobs/{job.id}").json()
     assert d["customs_tariff_on"] is True
-    fv = next(f for f in d["field_values"] if f["label_name"] == "Dump CTH Number" and f["row_index"] == 2)
-    assert fv["value_source"] == "tariff_ai" and "85371000" in fv["source_note"]
+    dump2 = next(f for f in d["field_values"] if f["label_name"] == "Dump CTH Number" and f["row_index"] == 2)
+    assert "85371000" in dump2["source_note"]
+    cth2 = next(f for f in d["field_values"] if f["label_name"] == "CTH" and f["row_index"] == 2)
+    assert cth2["value_source"] == "tariff_ai"
 
 
 # ---------------------------------------------------------------- phase 4: Auto ERP
