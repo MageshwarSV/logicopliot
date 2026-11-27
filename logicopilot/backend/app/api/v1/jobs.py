@@ -65,7 +65,7 @@ from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
-from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
+from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, SUPPORT, TENANT_ADMIN, User
 from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
@@ -3246,7 +3246,7 @@ def gk2_approve(
     job_id: str,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN, SUPPORT)),
 ) -> JobDetailOut:
     """GK2 presses "Final Approve & Proceed" — moves to "preparing_erp" (shown as "AI -
     Preparing for ERP") right away, and a background thread does the actual work, landing on
@@ -3279,7 +3279,8 @@ def gk2_approve(
     shape as every other state guard here.
     """
     job = _load_job(db, job_id, scope, user)
-    if user.role == OPERATOR and job.gk2_status != "failed":
+    # Production Support may press Retry too - on a FAILED run only, same as GK1.
+    if user.role in (OPERATOR, SUPPORT) and job.gk2_status != "failed":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only a failed ERP submission can be corrected and resubmitted here - "
@@ -3302,6 +3303,10 @@ def gk2_approve(
         )
     # Whoever pressed it - GK2, or GK1 retrying a failed run - is told how it ends.
     job.erp_submitted_by_id = user.id
+    if user.role == SUPPORT:
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
+                        stage="ERP Submission",
+                        note=f"ERP entry retried by Production Support - {user.full_name or user.email}"))
     _finalize_job_approval(db, job)
     return _build_detail(db, job)
 
@@ -11440,7 +11445,7 @@ def extract_job(
     job_document_id: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, SUPPORT)),
 ) -> JobDetailOut:
     """Manual Extract / Re-run extraction. Backgrounded the same way the auto-trigger is, so
     pressing it does not sit the operator's browser on OCR + model calls — the response comes
@@ -11496,6 +11501,19 @@ def extract_job(
     # run_extraction's own docstring. Read before _begin_extraction flips status to
     # "extracting" below.
     is_rerun = job.status != "draft"
+    # Production Support retries an extraction that never finished (a crash puts the job back
+    # on "draft") - never a re-read of a job already extracted, which would replace the
+    # operator's reviewed values.
+    if user.role == SUPPORT:
+        if job.status != "draft" or job_document_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Support can retry only an extraction that did not finish. This job "
+                       "has already been read - re-reading it would replace the operator's work.",
+            )
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
+                        stage="Data Validation",
+                        note=f"Extraction retried by Production Support - {user.full_name or user.email}"))
     _begin_extraction(db, job, only_job_document_id=job_document_id, is_rerun=is_rerun)
     db.refresh(job)
     return _build_detail(db, job)

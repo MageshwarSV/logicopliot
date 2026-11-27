@@ -884,14 +884,17 @@ export function JobRunPage() {
   const fromCategory = searchParams.get("from");
   const backToJobsPath = fromCategory ? `/jobs?category=${fromCategory}` : "/jobs";
   const { user } = useAuth();
-  const readOnly = user?.role === "tenant_admin" || user?.role === "super_admin" || user?.role === "manager";
+  // Production Support watches every customer's jobs read-only; its one action, Retry on a
+  // failed job, is the Support bar at the top of the page (see supportRetry).
+  const isSupport = user?.role === "support";
+  const readOnly = user?.role === "tenant_admin" || user?.role === "super_admin" || user?.role === "manager" || isSupport;
   // Correcting a value is separated from the rest of readOnly. An admin watching a job should
   // not upload documents, accept its cross-checks or submit its entry — those belong to the
   // operator the job is assigned to. But a Super Admin who can rewrite the whole template was
   // barred from fixing one misread value, which is the smallest and most obvious repair there
   // is, and the person most likely to spot it. A Tenant Admin stays observing. Manager is
   // strictly read-only, no exception — unlike Super Admin, never gets canEditValues.
-  const canEditValues = (!readOnly || user?.role === "super_admin") && user?.role !== "manager";
+  const canEditValues = (!readOnly || user?.role === "super_admin") && user?.role !== "manager" && !isSupport;
   // The step-by-step replay log, the ERP's internal URL and the progress bar are diagnostics
   // for whoever RECORDED the script — step numbers, selector names and timings mean nothing
   // to an operator, and the final-page URL exposes the ERP's internals. The operator is told
@@ -2776,6 +2779,24 @@ export function JobRunPage() {
     </div>
   );
 
+  // Support's Retry - the same endpoints the operator's buttons use; the server allows Support
+  // only on a failed ERP entry / an extraction that did not finish.
+  const supportCanRetryErp = isSupport && job.gk2_status === "failed";
+  const supportCanRetryExtraction = isSupport && job.status === "draft" && (job.documents ?? []).some((d) => d.is_uploaded);
+  async function supportRetry(what: "erp" | "extraction") {
+    if (!job) return;
+    const label = what === "erp" ? "ERP entry" : "extraction";
+    if (!window.confirm(`Retry the ${label} for ${job.reference}?`)) return;
+    setError(null);
+    try {
+      if (what === "erp") await jobsApi.gk2Approve(job.id);
+      else await jobsApi.extractJob(job.id);
+      await load();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? `Could not retry the ${label}.`);
+    }
+  }
+
   return (
     <AppShell
       title={`Job · ${job.reference}`}
@@ -2847,7 +2868,7 @@ export function JobRunPage() {
             )}
           </div>
           <Link
-            to={backToJobsPath}
+            to={isSupport ? "/support" : backToJobsPath}
             className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             Back to dashboard
@@ -2855,6 +2876,31 @@ export function JobRunPage() {
         </div>
       }
     >
+      {isSupport && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-200">
+          <span>
+            <b>Production Support</b> — viewing read-only.
+            {!supportCanRetryErp && !supportCanRetryExtraction && " Nothing to retry on this job."}
+          </span>
+          <div className="flex gap-2">
+            {supportCanRetryErp && (
+              <button type="button" onClick={() => supportRetry("erp")}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">
+                Retry ERP entry
+              </button>
+            )}
+            {supportCanRetryExtraction && (
+              <button type="button" onClick={() => supportRetry("extraction")}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">
+                Retry extraction
+              </button>
+            )}
+            <Link to="/support/issues" className="rounded-lg border border-orange-300 px-3 py-1.5 text-xs font-semibold hover:bg-orange-100 dark:border-orange-500/40">
+              ← Failed jobs
+            </Link>
+          </div>
+        </div>
+      )}
       {/* A single-template mailbox's job exists from the moment OCR starts, long before any
           document lands in a slot - this is the one place that says what's actually happening
           in that gap, instead of Document Capture just sitting there looking frozen. */}

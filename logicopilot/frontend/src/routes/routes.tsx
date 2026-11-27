@@ -53,6 +53,8 @@ import { CustomsTariffPage } from "../pages/super-admin/CustomsTariffPage";
 import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
+import { SupportOverviewPage } from "../pages/support/SupportOverviewPage";
+import { SupportIssuesPage } from "../pages/support/SupportIssuesPage";
 import { SaasFinanceCustomersPage } from "../pages/saas-finance/CustomersPage";
 import { SaasFinanceCustomerDetailPage } from "../pages/saas-finance/CustomerDetailPage";
 import { SaasFinanceUsageBillingPage } from "../pages/saas-finance/UsageBillingPage";
@@ -463,7 +465,7 @@ export function AppRoutes() {
       <Route
         path="/jobs/:jobId"
         element={
-          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin"]}>
+          <ProtectedRoute allowedRoles={["operator", "super_admin", "admin", "gk2", "manager", "tenant_admin", "support"]}>
             <JobRunPage />
           </ProtectedRoute>
         }
@@ -479,8 +481,24 @@ export function AppRoutes() {
       <Route
         path="/account"
         element={
-          <ProtectedRoute allowedRoles={["super_admin", "tenant_admin", "admin", "operator", "gk2", "manager", "saas_finance"]}>
+          <ProtectedRoute allowedRoles={["super_admin", "tenant_admin", "admin", "operator", "gk2", "manager", "saas_finance", "support"]}>
             <AccountSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportOverviewPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/issues"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportIssuesPage />
           </ProtectedRoute>
         }
       />

@@ -15,12 +15,16 @@ export function CreateFinanceUserModal({
   onClose,
   onCreated,
   editUser = null,
+  role = "saas_finance",
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
   editUser?: User | null;
+  /** The same cross-tenant form serves Production Support logins too. */
+  role?: "saas_finance" | "support";
 }) {
+  const noun = role === "support" ? "Support User" : "Finance User";
   const isEdit = !!editUser;
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -55,13 +59,13 @@ export function CreateFinanceUserModal({
         });
       } else {
         await usersApi.createUser({
-          email, password, full_name: fullName, role: "saas_finance",
+          email, password, full_name: fullName, role,
         });
       }
       onCreated();
     } catch (err) {
       if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.detail ?? "Could not save this Finance user.");
+        setError(err.response?.data?.detail ?? `Could not save this ${noun}.`);
       }
     } finally {
       setIsSubmitting(false);
@@ -69,10 +73,10 @@ export function CreateFinanceUserModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? "Edit Finance User" : "New Finance User"}>
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit ${noun}` : `New ${noun}`}>
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         <Input label="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Jane Doe" required />
-        <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="finance@company.com" required />
+        <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={role === "support" ? "support@axioralabs.ai" : "finance@company.com"} required />
         <Input
           label={isEdit ? "New password (leave blank to keep current)" : "Temporary password"}
           type="text"

@@ -9,6 +9,7 @@ const ROLE_CLASSES: Record<Role, string> = {
   manager: "bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-300",
   saas_finance: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300",
   app_manager: "bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-500/10 dark:text-fuchsia-300",
+  support: "bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-300",
 };
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -22,6 +23,7 @@ const ROLE_LABELS: Record<Role, string> = {
   // Named for what it IS to whoever reads the list, not for the role string - these
   // never appear in the web portal, so "Manager" alone would read as the web role.
   app_manager: "Mobile App Login",
+  support: "Production Support",
 };
 
 export function RoleBadge({ role }: { role: Role }) {

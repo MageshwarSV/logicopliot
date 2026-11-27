@@ -22,6 +22,7 @@ from app.api.v1.custom_filter_pages import router as custom_filter_pages_router
 from app.api.v1.duplicate_emails import router as duplicate_emails_router
 from app.api.v1.public_irn import router as public_irn_router
 from app.api.v1.saas_finance import router as saas_finance_router
+from app.api.v1.support import router as support_router
 from app.api.v1.payments import router as payments_router
 from app.api.v1.classifier_test import router as classifier_test_router
 from app.api.v1.manager_app import router as manager_app_router
@@ -61,6 +62,7 @@ api_router.include_router(custom_filter_pages_router)
 api_router.include_router(duplicate_emails_router)
 api_router.include_router(public_irn_router)
 api_router.include_router(saas_finance_router)
+api_router.include_router(support_router)
 api_router.include_router(payments_router)
 # The native Manager app's own read-only API. Registered last because it is the newest,
 # and kept as its own router so every route the app can reach is listed in one file.

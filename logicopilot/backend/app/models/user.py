@@ -45,7 +45,13 @@ SAAS_FINANCE = "saas_finance"
 # app/api/v1/manager_app.py. What the phone's own multi-select picks is only ever a narrowing
 # WITHIN that, never a way out of it.
 APP_MANAGER = "app_manager"
-ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER)
+# Production Support (2026-11-27): cross-tenant like Admin, for Axiora's own support desk -
+# sees every customer's jobs, read-only, plus Retry on a FAILED job (ERP entry, or an
+# extraction that never finished). Lands on /support. Created by the Super Admin alone.
+SUPPORT = "support"
+ROLES = (SUPER_ADMIN, TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER, SUPPORT)
+# Roles that belong to no tenant (tenant_id NULL).
+CROSS_TENANT_ROLES = ("super_admin", "admin", "saas_finance", "support")
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -53,8 +59,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         CheckConstraint(f"role IN {ROLES}", name="ck_users_role_valid"),
         CheckConstraint(
-            "(role IN ('super_admin', 'admin', 'saas_finance') AND tenant_id IS NULL) OR "
-            "(role NOT IN ('super_admin', 'admin', 'saas_finance') AND tenant_id IS NOT NULL)",
+            "(role IN ('super_admin', 'admin', 'saas_finance', 'support') AND tenant_id IS NULL) OR "
+            "(role NOT IN ('super_admin', 'admin', 'saas_finance', 'support') AND tenant_id IS NOT NULL)",
             name="ck_users_tenant_scope",
         ),
     )
