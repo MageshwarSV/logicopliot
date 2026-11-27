@@ -8221,6 +8221,48 @@ function ExtractionReview({
   // "Combine fields" modal entirely (confirmed with the user) - saving there recomputes this
   // job immediately too, via the jobId passed below, so the change is visible right away.
   const [compositeOpen, setCompositeOpen] = useState(false);
+  // The Combined Description builder offers EXACTLY the boxes of a product card - same fields,
+  // same order, same names as the operator sees them (the document's line fields in the
+  // template / Screen Designer order, then the looked-up ones like Customer Part Code and CTH).
+  // Taken from the first product card, built the same way the cards below are.
+  const compositeCardFields = useMemo(() => {
+    if (!active || lineRows.length === 0) return undefined;
+    const [firstRow, cells] = lineRows[0];
+    if (cells.every((fv) => fv.standalone_multi_value)) return undefined;
+    const visible = cells.filter((fv) => fv.label_name !== "Product Description Language" && !fv.standalone_multi_value);
+    let ordered = visible.length > 0 && visible.every((fv) => fv.field_order != null)
+      ? [...visible].sort((a, b) => (a.field_order as number) - (b.field_order as number))
+      : visible;
+    const layout = activeLayout?.product_card;
+    if (layout) {
+      const byRef = new Map<string, JobFieldValue>();
+      for (const fv of visible) {
+        const ref = screenLayoutRef(fv);
+        if (ref) byRef.set(ref, fv);
+      }
+      const used = new Set<string>();
+      const pick = (refs: string[]) => refs.flatMap((ref) => {
+        const fv = byRef.get(ref);
+        if (!fv || used.has(ref)) return [];
+        used.add(ref);
+        return [fv];
+      });
+      ordered = [...pick(layout.fields), ...layout.groups.flatMap((g) => pick(g.fields)),
+        ...visible.filter((fv) => { const ref = screenLayoutRef(fv); return !ref || !used.has(ref); })];
+    }
+    const looked = (lookedUpByRow.get(firstRow) ?? [])
+      .filter((fv) => !fv.standalone_multi_value)
+      .slice()
+      .sort((a, b) => (a.label_name ?? "").localeCompare(b.label_name ?? "", undefined, { sensitivity: "base" }));
+    const seen = new Set<string>();
+    const out: { label: string; name: string }[] = [];
+    for (const fv of [...ordered, ...looked]) {
+      if (seen.has(fv.label_name)) continue;
+      seen.add(fv.label_name);
+      out.push({ label: fv.label_name, name: fieldLabelOverride(fv.display_label, job.group_id, active.doc_type, fv.label_name) ?? fv.label_name });
+    }
+    return out;
+  }, [active, lineRows, lookedUpByRow, activeLayout, job.group_id]);
   // Apply All Product Units - bulk-set a per-row "unit" field (PCS/BOX/KG/...) across some or
   // all of this document's product lines at once. See ProductQuantityUnitsModal.
   const [unitsOpen, setUnitsOpen] = useState(false);
@@ -9091,6 +9133,7 @@ function ExtractionReview({
         jobId={jobId}
         productCount={lineRows.length}
         fieldName={compositeFieldNamer(job)}
+        cardFields={compositeCardFields}
         onSaved={() => { void reload(); }}
       />
       <ProductQuantityUnitsModal

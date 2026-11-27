@@ -12696,12 +12696,18 @@ def _available_composite_labels(db: Session, group_id: str, exclude_label: str |
     from app.models.field_mark import FieldMark
     from app.models.template_document import TemplateDocument
 
-    mark_labels = [
-        m.label_name for m in db.query(FieldMark)
-        .join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
-        .filter(TemplateDocument.group_id == group_id, FieldMark.is_multi_value.is_(True)).all()
-    ]
-    cf_rows = db.query(CustomField).filter(CustomField.group_id == group_id).all()
+    # Product-line fields only (2026-11-27, by request: "the same fields as the product card").
+    # A mark that is its own table (a Bill of Lading's containers - standalone_multi_value) and
+    # a lookup keyed on one (ContainerTypeCode) never appear on a product card, nor does the
+    # hidden "Product Description Language".
+    marks = (db.query(FieldMark)
+             .join(TemplateDocument, TemplateDocument.id == FieldMark.document_id)
+             .filter(TemplateDocument.group_id == group_id, FieldMark.is_multi_value.is_(True)).all())
+    standalone = {m.label_name for m in marks if getattr(m, "standalone_multi_value", False)}
+    mark_labels = [m.label_name for m in marks
+                   if m.label_name not in standalone and m.label_name != "Product Description Language"]
+    cf_rows = [c for c in db.query(CustomField).filter(CustomField.group_id == group_id).all()
+               if (c.lookup_key_label or "") not in standalone]
     # Only a per-row custom field that ACTUALLY shows on the Product Detail card - the same
     # rule the frontend's own lookedUpByRow uses (self_filled, i.e. kind="lookup"/"composite",
     # or paired with one). A plain ask_operator per-row field with no pairing (a duty
