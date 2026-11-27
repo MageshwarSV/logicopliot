@@ -224,8 +224,70 @@ def _country_iso2(value: str) -> str:
     return normalize_country(value)
 
 
+# Sea Export (4S, 2026-11-27): the Indian place a shipment is loaded at -> its ICEGATE code, for
+# the CustomHouseCode / Loading_Port columns. Read off the job's own Port of Loading box, so an
+# operator's correction on screen is what reaches the Excel. The same list is the box's own
+# dropdown (FieldMark.fixed_options); each port also answers to its other common names.
+SEA_PORTS: dict[str, tuple[str, ...]] = {
+    "INMAA1": ("Chennai", "Madras"),
+    "INKAT1": ("Kattupalli", "Kattupally", "Katupalli", "Kattupalli Port"),
+    "INENR1": ("Ennore", "Kamarajar", "Kamarajar Port"),
+    "INTUT1": ("Tuticorin", "Thoothukudi", "Thoothukkudi", "VOC Port", "V.O. Chidambaranar"),
+    "INCOK1": ("Cochin", "Kochi"),
+    "INVTZ1": ("Vizag", "Visakhapatnam", "Vishakhapatnam"),
+    "INCCU1": ("Kolkata", "Calcutta"),
+    "INNSA1": ("Nhava Sheva", "JNPT", "Jawaharlal Nehru Port", "JN Port"),
+    "INBOM1": ("Mumbai", "Bombay"),
+    "INMUN1": ("Mundra",),
+    "INIXY1": ("Kandla", "Deendayal"),
+    "INMRM1": ("Goa", "Marmagao", "Mormugao", "Marmugao"),
+    "INWFD6": ("ICD Whitefield", "Whitefield"),
+}
+_PORT_NOISE = re.compile(r"\b(port|sea ?port|harbou?r|india|in|sea|tamil ?nadu|tn)\b")
+
+
+def _port_key(text: str) -> str:
+    t = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", _PORT_NOISE.sub(" ", t)).strip()
+
+
+_PORT_AI_CACHE: dict[str, str] = {}
+
+
+def _sea_port_code(value: str) -> str:
+    """Port of Loading -> ICEGATE code: blank stays blank; a code typed as a code is kept; one of
+    SEA_PORTS (any of its names, any case, "CHENNAI PORT, INDIA" too) gives its code; a near
+    spelling ("katupilli") gives the nearest port's code; anything else (an ICD / CFS not on the
+    list, e.g. "ICD CONCOR") is asked of the AI once and remembered. "" when nobody is sure."""
+    import difflib
+
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"IN[A-Z]{3}[0-9A-Z]", raw.upper()):
+        return raw.upper()
+    key = _port_key(raw)
+    names = [(code, _port_key(n)) for code, ns in SEA_PORTS.items() for n in ns]
+    for code, n in names:                      # exactly one of the names
+        if key == n:
+            return code
+    for code, n in names:                      # the name inside a longer text: "CHENNAI SEA PORT"
+        if n and re.search(rf"\b{re.escape(n)}\b", key):
+            return code
+    best = max(((difflib.SequenceMatcher(None, key, n).ratio(), code) for code, n in names if n),
+               default=(0.0, ""))
+    if best[0] >= 0.8:                         # a near spelling: "katupilli", "tutucorin"
+        return best[1]
+    if key not in _PORT_AI_CACHE:
+        from app.core.llm import sea_port_code_with_ai
+
+        _PORT_AI_CACHE[key] = sea_port_code_with_ai(raw)
+    return _PORT_AI_CACHE[key]
+
+
 _TRANSFORMS = {
     "leading_digits": _leading_digits,
+    "sea_port_code": _sea_port_code,
 }
 
 # Set only by the ERP column rules (app/core/erp_rules.py effective_config) - never offered in
