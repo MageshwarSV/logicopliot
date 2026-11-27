@@ -50,6 +50,8 @@ export const superAdminFeatures = [
 
   { path: "/super-admin/email-puller", navLabel: "Email Puller", group: "Integrations & Automation", order: 6 },
   { path: "/super-admin/erp-scripts", navLabel: "ERP Script Management", group: "Integrations & Automation", order: 7 },
+  // What each ERP Excel column accepts, checked before anything goes to the ERP (erp_rules.py).
+  { path: "/super-admin/erp-column-rules", navLabel: "ERP Column Rules", group: "Integrations & Automation", order: 7.5 },
   { path: "/super-admin/entry-browser", navLabel: "Entry Browser", group: "Integrations & Automation", order: 8 },
 
   { path: "/jobs", navLabel: "Jobs", group: "Operations", order: 9 },

@@ -3543,7 +3543,12 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     dl_dir = Path(get_settings().uploads_dir) / "jobs" / "_erp_captured" / job.id
     dl_dir.mkdir(parents=True, exist_ok=True)
     try:
-        book = _build_job_excel(db, job, out_dir=dl_dir)
+        book = _build_job_excel(db, job, out_dir=dl_dir, check_rules=True)
+    except ErpRulesFailed as exc:
+        job.erp_help = exc.help
+        job.erp_failed_at = datetime.now(timezone.utc)
+        _fail(str(exc))
+        return
     except ExcelBuildFailed as exc:
         _fail(str(exc))
         return
@@ -5619,6 +5624,15 @@ class ExcelBuildFailed(Exception):
     operator-readable reason, never a bare exception."""
 
 
+class ErpRulesFailed(ExcelBuildFailed):
+    """A value would break an ERP column rule (app/core/erp_rules.py) - stopped BEFORE the ERP.
+    `help` is the card the job screen shows (Fix -> box outlined in red)."""
+
+    def __init__(self, message: str, help_: dict):
+        super().__init__(message)
+        self.help = help_
+
+
 _FILL_MARK = " Correct in ERP (filled so no mandatory column was empty): "
 
 
@@ -5628,7 +5642,8 @@ def _note_auto_fills(job: Job, fills: list[str]) -> None:
     job.auto_erp_note = (base + (_FILL_MARK + "; ".join(fills) + "." if fills else ""))[:8000] or None
 
 
-def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False) -> Path:
+def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False,
+                     check_rules: bool = False) -> Path:
     """Build this job's ERP-import workbook fresh from its CURRENT extracted values.
 
     The same build complete_job's Excel-entry path already uses (see entry_uploads below),
@@ -5653,7 +5668,11 @@ def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool
     if not ignore_edited and edited_file(job.id) is not None:
         target = Path(out_dir) if out_dir else Path(get_settings().uploads_dir) / "job_excel" / job.id
         return use_edited_or_build(job.id, target, lambda: None)
-    cfg = grp.excel_config or {}
+    # The template's columns plus the conversions its ERP column rules call for ("POLAND" ->
+    # "PL" on a country-code column) - app/core/erp_rules.py.
+    from app.core.erp_rules import effective_config
+
+    cfg = effective_config(grp)
     values, rows = entry_values_and_rows(db, job)
     # Auto ERP Submission: no mandatory ERP column may go out empty (app/core/auto_erp_complete.py).
     # Only the workbook gets the filled values; the job keeps what was read, and the note lists
@@ -5663,6 +5682,14 @@ def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool
 
         values, rows, fills = complete_for_erp(db, job, cfg, values, rows)
         _note_auto_fills(job, fills)
+    # Going to the ERP: a value it would refuse stops here, before the run (downloads and the
+    # in-app Excel view still build, so the operator can see what is wrong).
+    if check_rules:
+        from app.core.erp_rules import pre_check, summary
+
+        help_ = pre_check(db, job, values, rows)
+        if help_:
+            raise ErpRulesFailed(summary(help_), help_)
     filled, mapped = _column_fill(cfg, values, rows)
     if mapped and not filled:
         raise ExcelBuildFailed(
@@ -5703,9 +5730,10 @@ def entry_uploads(db: Session, job: Job, values: dict, rows: dict, out_dir) -> d
             up_map.setdefault(str(key), str(jd.file_path))
     grp = db.get(TemplateGroup, job.group_id)
     if grp is not None and (grp.entry_mode or "fields") == "excel":
+        from app.core.erp_rules import effective_config
         from app.core.excel_entry import build_for_job
 
-        cfg = grp.excel_config or {}
+        cfg = effective_config(grp)
         tpl_dir = _P(get_settings().uploads_dir) / "excel_templates" / grp.id
         tpl = (next((x for x in tpl_dir.glob("template.*")), None)
                if cfg.get("source") == "template" else None)
@@ -6259,6 +6287,18 @@ def complete_job(
         # The same inputs the Entry Browser's replay gets - one function, so a fix to how
         # line items are collapsed can never land on only one of the two paths.
         values, rows = entry_values_and_rows(db, job)
+        # A value the ERP would refuse stops here, before anything is entered (erp_rules.py).
+        from app.core.erp_rules import pre_check, summary
+
+        _help = pre_check(db, job, values, rows)
+        if _help:
+            job.erp_status = "failed"
+            job.erp_reason = summary(_help)
+            job.erp_help = _help
+            job.erp_diagnosis = None
+            job.erp_failed_at = datetime.now(timezone.utc)
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=job.erp_reason)
         login = (
             {"username": script.login_username or "", "password": script.login_password or ""}
             if script.has_login
@@ -6337,9 +6377,10 @@ def complete_job(
                 # resolves. Built here, where the job's values and line-item rows already are.
                 grp = grp_for_mode
                 if grp is not None and (grp.entry_mode or "fields") == "excel":
+                    from app.core.erp_rules import effective_config
                     from app.core.excel_entry import build_for_job, describe
 
-                    cfg = grp.excel_config or {}
+                    cfg = effective_config(grp)
                     tpl_dir = Path(get_settings().uploads_dir) / "excel_templates" / grp.id
                     tpl = (next((p for p in tpl_dir.glob("template.*")), None)
                            if cfg.get("source") == "template" else None)

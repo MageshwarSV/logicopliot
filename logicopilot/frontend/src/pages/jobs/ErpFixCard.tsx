@@ -53,6 +53,7 @@ export function ErpFixCard({
   const done = fixable.filter((i) => isFixed(i, byId)).length;
   const allDone = fixable.length > 0 && done === fixable.length && support.length === 0;
   const n = items.length;
+  const preCheck = help.kind === "pre_check";
 
   const copyForSupport = async () => {
     const text = [
@@ -78,9 +79,12 @@ export function ErpFixCard({
     <div className="rounded-xl border border-rose-200 bg-white p-4 text-slate-800 shadow-sm dark:border-rose-500/30 dark:bg-slate-900 dark:text-slate-100">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-base font-semibold text-slate-900 dark:text-slate-50">ERP did not accept this job</p>
+          <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
+            {preCheck ? "Not sent to ERP - ERP would refuse these values" : "ERP did not accept this job"}
+          </p>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
-            Nothing was saved in ERP. {fixable.length > 0 ? "Fix the detail" + (n === 1 ? "" : "s") + " below and press Retry." : "See below."}
+            {preCheck ? "Cargora checked the ERP Excel before sending it. " : "Nothing was saved in ERP. "}
+            {fixable.length > 0 ? "Fix the detail" + (n === 1 ? "" : "s") + " below and press Retry." : "See below."}
           </p>
         </div>
         <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">
@@ -196,7 +200,7 @@ export function ErpFixCard({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <button type="button" onClick={() => setShowRaw((v) => !v)} className="text-slate-500 underline hover:text-slate-700 dark:hover:text-slate-300">
-            {showRaw ? "Hide" : "Show"} ERP's original message
+            {showRaw ? "Hide" : "Show"} {preCheck ? "the check details" : "ERP's original message"}
           </button>
           <span className="text-slate-400">Still stuck?</span>
           <button type="button" onClick={copyForSupport} className="font-medium text-sky-700 underline dark:text-sky-300">

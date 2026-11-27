@@ -215,8 +215,24 @@ def _leading_digits(value: str) -> str:
 # AFTER the ordinary field/literal lookup below, so adding one here is the only step needed
 # to let any column derive a narrower value from what extraction actually produced, without
 # that derivation needing its own separate CustomField/FieldMark.
+def _country_iso2(value: str) -> str:
+    """A country written in full -> its 2-letter code, only when certain ("POLAND" -> "PL").
+    Set on country-code columns by app/core/erp_rules.py (effective_config); anything it cannot
+    place is left as it was, for the rule check to report."""
+    from app.core.erp_masters import normalize_country
+
+    return normalize_country(value)
+
+
 _TRANSFORMS = {
     "leading_digits": _leading_digits,
+}
+
+# Set only by the ERP column rules (app/core/erp_rules.py effective_config) - never offered in
+# the column editor, which accepts the _TRANSFORMS names above.
+_RULE_TRANSFORMS = {
+    "country_iso2": _country_iso2,
+    "upper": lambda value: (value or "").strip().upper(),
 }
 
 
@@ -376,7 +392,8 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
             # see _TRANSFORMS. Applied last, after every other source (literal, serial,
             # per-invoice, per-line, job-level), so it works the same regardless of where the
             # raw value came from.
-            transform = _TRANSFORMS.get(col.get("transform") or "")
+            transform = (_TRANSFORMS.get(col.get("transform") or "")
+                         or _RULE_TRANSFORMS.get(col.get("transform") or ""))
             if transform is not None:
                 val = transform(val if isinstance(val, str) else str(val or ""))
             line.append(val)
