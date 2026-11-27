@@ -5926,8 +5926,10 @@ function ExtractedField({
   // See EMPTY_PLACEHOLDER_BY_LABEL. Every field keeps "not found" unless it is listed there.
   const emptyPlaceholder = EMPTY_PLACEHOLDER_BY_LABEL[fv.label_name] ?? "not found";
   return (
-    <div id={id} className="min-w-0">
-      <div className="mb-1 flex items-center gap-1.5">
+    // flex-1 + items-end: in a grid row whose labels wrap to different line counts, every
+    // box still sits on the same line - the label takes up the slack above it.
+    <div id={id} className="flex min-w-0 flex-1 flex-col">
+      <div className="mb-1 flex flex-1 items-end gap-1.5">
         <p
           className={`${wrapLabel || !small ? "break-words" : "truncate"} font-semibold text-slate-900 dark:text-slate-100 ${
             small ? "text-[11px] font-medium text-slate-500 dark:text-slate-400" : "text-sm"
@@ -8554,11 +8556,13 @@ function ExtractionReview({
                       key={fv.id}
                       id={`field-${fv.id}`}
                       className={
-                        FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
-                          ? "sm:col-span-4"
-                          : fv.quarter_width
-                          ? "sm:col-span-1"
-                          : "sm:col-span-2"
+                        `flex flex-col ${
+                          FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
+                            ? "sm:col-span-4"
+                            : fv.quarter_width
+                            ? "sm:col-span-1"
+                            : "sm:col-span-2"
+                        }`
                       }
                     >
                       <ExtractedField
