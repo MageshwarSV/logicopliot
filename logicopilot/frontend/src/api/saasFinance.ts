@@ -199,3 +199,50 @@ export const GST_STATES: [string, string][] = [
   ["35", "Andaman and Nicobar Islands"], ["36", "Telangana"], ["37", "Andhra Pradesh"], ["38", "Ladakh"],
   ["97", "Other Territory"],
 ];
+
+/** Manual (one-off) invoices - backend app/api/v1/manual_invoices.py. */
+export interface ManualInvoiceLine { description: string; sac: string; qty: number; rate: number; amount?: number }
+export interface ManualInvoice {
+  id: string; tenant_id: string; tenant_name: string;
+  status: "draft" | "issued" | "paid" | "cancelled";
+  invoice_number: string | null; invoice_date: string; due_date: string; period_label: string | null;
+  lines: ManualInvoiceLine[]; gst_percent: number; subtotal: number; gst_amount: number; total_amount: number;
+  notes: string | null; issued_at: string | null; paid_at: string | null; cancelled_at: string | null;
+  cancel_reason: string | null; created_at: string | null;
+}
+export interface ManualInvoiceDraft {
+  tenant_id: string; invoice_date: string; due_date: string; period_label: string;
+  lines: ManualInvoiceLine[]; gst_percent: number; notes: string;
+}
+
+export async function listManualInvoices(): Promise<ManualInvoice[]> {
+  const { data } = await apiClient.get<ManualInvoice[]>("/finance/manual-invoices");
+  return data;
+}
+export async function createManualInvoice(body: ManualInvoiceDraft): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>("/finance/manual-invoices", body);
+  return data;
+}
+export async function updateManualInvoice(id: string, body: ManualInvoiceDraft): Promise<ManualInvoice> {
+  const { data } = await apiClient.put<ManualInvoice>(`/finance/manual-invoices/${id}`, body);
+  return data;
+}
+export async function deleteManualInvoice(id: string): Promise<void> {
+  await apiClient.delete(`/finance/manual-invoices/${id}`);
+}
+export async function issueManualInvoice(id: string): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/issue`);
+  return data;
+}
+export async function markManualInvoicePaid(id: string, paid: boolean): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/mark-paid`, { paid });
+  return data;
+}
+export async function cancelManualInvoice(id: string, reason: string): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/cancel`, { reason });
+  return data;
+}
+export async function getManualTaxInvoice(id: string): Promise<TaxInvoice> {
+  const { data } = await apiClient.get<TaxInvoice>(`/finance/manual-invoices/${id}/print`);
+  return data;
+}

@@ -8,6 +8,7 @@ import { DataTable, type Column } from "../../components/ui/DataTable";
 import type { FinanceInvoiceRow } from "../../api/saasFinance";
 import { useFinanceInvoices } from "./useFinanceInvoices";
 import { formatInr, isOverdue, monthLabel } from "./financeFormat";
+import { ManualInvoicesPanel } from "./ManualInvoices";
 
 function InvoiceStatusBadge({ row }: { row: FinanceInvoiceRow }) {
   if (row.status === "paid") {
@@ -26,6 +27,7 @@ function InvoiceStatusBadge({ row }: { row: FinanceInvoiceRow }) {
 export function SaasFinanceInvoicesPage() {
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<"" | "unpaid" | "paid">("");
+  const [tab, setTab] = useState<"usage" | "manual">("usage");
   const { rows, loading, error, markingId, markPaid } = useFinanceInvoices(
     statusFilter ? { status: statusFilter } : {},
   );
@@ -59,6 +61,15 @@ export function SaasFinanceInvoicesPage() {
 
   return (
     <AppShell title="Invoices" subtitle="Every customer's invoice history, in one place.">
+      <div className="mb-4 inline-flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+        {([["usage", "Monthly usage invoices"], ["manual", "Manual invoices"]] as const).map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setTab(k)}
+            className={`rounded-lg px-4 py-1.5 text-sm font-medium ${tab === k ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+            {l}
+          </button>
+        ))}
+      </div>
+      {tab === "manual" ? <ManualInvoicesPanel /> : (<>
       <Card className="mb-4 flex items-center gap-3 p-4">
         <label className="text-sm font-medium text-slate-600 dark:text-slate-300">Status</label>
         <select
@@ -81,6 +92,7 @@ export function SaasFinanceInvoicesPage() {
           <DataTable columns={columns} rows={rows} keyFor={(r) => r.id} emptyMessage="No invoices raised yet." />
         )}
       </Card>
+      </>)}
     </AppShell>
   );
 }
