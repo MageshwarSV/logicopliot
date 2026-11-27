@@ -126,7 +126,7 @@ export interface SupportJobs {
   customers: { id: string; name: string }[];
 }
 
-export async function getJobs(params: { date_from: string; date_to: string; tenant_id?: string; stage?: string; q?: string }): Promise<SupportJobs> {
+export async function getJobs(params: { date_from: string; date_to: string; tenant_id?: string; stage?: string; q?: string; limit?: number }): Promise<SupportJobs> {
   const { data } = await apiClient.get<SupportJobs>("/support/jobs", { params });
   return data;
 }

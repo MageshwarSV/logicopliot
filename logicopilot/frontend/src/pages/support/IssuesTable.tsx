@@ -1,11 +1,13 @@
 /** Failed / delayed jobs for Production Support - shared by the Overview and the full list.
- *  Investigate opens the job (read-only for Support); Retry is shown only where the server
- *  allows it (a failed ERP entry, or an extraction that did not finish). */
+ *  Investigate opens the job (read-only for Support); Retry only where the server allows it
+ *  (a failed ERP entry, or an extraction that did not finish); Mark handled with a note. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import * as supportApi from "../../api/support";
 import type { IssueTab, SupportIssue, SupportIssues } from "../../api/support";
+import { ArrowPathIcon, CheckCircleIcon, EyeIcon } from "../../components/ui/icons";
+import { Badge, EmptyRow, KIND_TONE, Pager, ROW_EDGE, T, TypeCell, usePaged } from "./supportUi";
 
 const TAB_LABEL: Record<IssueTab, string> = { all: "All", extraction: "Extraction", erp: "ERP Submission", other: "Other" };
 
@@ -15,14 +17,6 @@ export function formatAge(min: number | null): string {
   const h = Math.floor(min / 60);
   if (h < 48) return `${h} h ${min % 60} min`;
   return `${Math.floor(h / 24)} days`;
-}
-
-function stageClass(kind: SupportIssue["kind"]): string {
-  return kind === "erp_failed" || kind === "erp_slow"
-    ? "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300"
-    : kind === "missing_documents"
-      ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-      : "bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300";
 }
 
 export function IssuesTable({
@@ -40,139 +34,125 @@ export function IssuesTable({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const rows = (data?.items ?? []).slice(0, limit ?? undefined);
+  const all = data?.items ?? [];
+  const paged = usePaged(limit ? all.slice(0, limit) : all, tab);
 
-  async function handled(issue: SupportIssue) {
-    const note = window.prompt(`Mark ${issue.reference} as handled. What was done? (optional)`, "");
-    if (note === null) return;
-    setBusy(issue.job_id);
-    setMessage(null);
-    try {
-      await supportApi.markHandled(issue.job_id, note);
-      setMessage({ ok: true, text: `${issue.reference}: marked handled. It comes back here if it fails again.` });
-      onChanged();
-    } catch (err) {
-      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      setMessage({ ok: false, text: `${issue.reference}: ${typeof detail === "string" ? detail : "could not mark it handled."}` });
-    } finally {
-      setBusy(null);
+  async function run(issue: SupportIssue, what: "erp" | "extraction" | "handled") {
+    let note = "";
+    if (what === "handled") {
+      const typed = window.prompt(`Mark ${issue.reference} as handled. What was done? (optional)`, "");
+      if (typed === null) return;
+      note = typed;
+    } else if (!window.confirm(`Retry the ${what === "erp" ? "ERP entry" : "extraction"} for ${issue.reference} (${issue.client})?`)) {
+      return;
     }
-  }
-
-  async function retry(issue: SupportIssue, what: "erp" | "extraction") {
-    const label = what === "erp" ? "ERP entry" : "extraction";
-    if (!window.confirm(`Retry the ${label} for ${issue.reference} (${issue.client})?`)) return;
     setBusy(issue.job_id);
     setMessage(null);
     try {
       if (what === "erp") await supportApi.retryErp(issue.job_id);
-      else await supportApi.retryExtraction(issue.job_id);
-      setMessage({ ok: true, text: `${issue.reference}: ${label} restarted. It will drop off this list once it succeeds.` });
+      else if (what === "extraction") await supportApi.retryExtraction(issue.job_id);
+      else await supportApi.markHandled(issue.job_id, note);
+      setMessage({
+        ok: true,
+        text: what === "handled"
+          ? `${issue.reference}: marked handled. It comes back here if it fails again.`
+          : `${issue.reference}: ${what === "erp" ? "ERP entry" : "extraction"} restarted. It drops off this list once it succeeds.`,
+      });
       onChanged();
     } catch (err) {
       const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      setMessage({ ok: false, text: `${issue.reference}: ${typeof detail === "string" ? detail : `could not retry the ${label}.`}` });
+      setMessage({ ok: false, text: `${issue.reference}: ${typeof detail === "string" ? detail : "that did not work."}` });
     } finally {
       setBusy(null);
     }
   }
 
+  const btn = "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50";
   return (
     <div>
-      <div className="mb-3 flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-1 border-b border-slate-100 px-4 pt-3 dark:border-slate-800">
         {(Object.keys(TAB_LABEL) as IssueTab[]).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => onTab(t)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
-              tab === t
-                ? "bg-indigo-600 text-white"
-                : "border border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-            }`}
-          >
-            {TAB_LABEL[t]} ({data?.counts?.[t] ?? 0})
+          <button key={t} type="button" onClick={() => onTab(t)}
+            className={`-mb-px border-b-2 px-3 pb-2.5 pt-1 text-sm font-medium transition-colors ${tab === t
+              ? "border-indigo-600 text-indigo-700 dark:text-indigo-300"
+              : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"}`}>
+            {TAB_LABEL[t]}
+            <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${tab === t ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+              {data?.counts?.[t] ?? 0}
+            </span>
           </button>
         ))}
       </div>
       {message && (
-        <p className={`mb-3 rounded-lg px-3 py-2 text-sm ${message.ok ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300" : "bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300"}`}>
+        <p className={`mx-4 mt-3 rounded-lg px-3 py-2 text-sm ${message.ok ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300" : "bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300"}`}>
           {message.text}
         </p>
       )}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+      <div className={T.wrap}>
+        <table className={T.table}>
+          <thead className={T.thead}>
             <tr>
-              <th className="px-3 py-2 font-semibold">Job No.</th>
-              <th className="px-3 py-2 font-semibold">Client</th>
-              <th className="px-3 py-2 font-semibold">Type</th>
-              <th className="px-3 py-2 font-semibold">Stage</th>
-              <th className="px-3 py-2 text-right font-semibold">Pages</th>
-              <th className="px-3 py-2 font-semibold">Issue / Reason</th>
-              <th className="px-3 py-2 font-semibold">Age</th>
-              <th className="px-3 py-2 text-right font-semibold">Action</th>
+              <th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
+              <th className={T.th}>Problem</th><th className={T.thRight}>Pages</th><th className={T.th}>Reason</th>
+              <th className={T.th}>Age</th><th className={T.thRight}>Action</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
-                  {data ? "Nothing needs attention here." : "Loading…"}
-                </td>
-              </tr>
-            )}
-            {rows.map((r) => (
-              <tr key={r.job_id} className="align-top">
-                <td className="px-3 py-2 font-semibold text-indigo-700 dark:text-indigo-300">
-                  <Link to={`/jobs/${r.job_id}`} className="hover:underline">{r.reference}</Link>
-                </td>
-                <td className="px-3 py-2">{r.client}</td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  {r.type && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{r.type}</span>}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stageClass(r.kind)}`}>{r.stage}</span>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">{r.pages}</td>
-                <td className="max-w-md px-3 py-2 text-slate-700 dark:text-slate-300">
-                  {r.reason}
-                  {r.handled && (
-                    <span className="mt-1 block text-xs text-emerald-700 dark:text-emerald-300">✓ Handled{r.handled_note ? ` — ${r.handled_note}` : ""}</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap font-medium text-rose-600 dark:text-rose-400">{formatAge(r.age_minutes)}</td>
-                <td className="px-3 py-2">
-                  <div className="flex justify-end gap-2">
-                    {r.can_retry_erp && (
-                      <button type="button" disabled={busy === r.job_id} onClick={() => retry(r, "erp")}
-                        className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60">
-                        Retry ERP
-                      </button>
+          <tbody>
+            {paged.shown.length === 0 && <EmptyRow cols={8} loading={!data} text="✓ Nothing needs attention here." />}
+            {paged.shown.map((r) => {
+              const tone = KIND_TONE[r.kind] ?? "slate";
+              return (
+                <tr key={r.job_id} className={`${T.row} ${ROW_EDGE[r.handled ? "green" : tone]} ${tone === "red" && !r.handled ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
+                  <td className={T.td}><Link to={`/jobs/${r.job_id}`} className={T.link}>{r.reference}</Link></td>
+                  <td className={T.td}>{r.client}</td>
+                  <td className={T.td}><TypeCell type={r.type} /></td>
+                  <td className={T.td}><Badge tone={tone}>{r.kind === "erp_slow" || r.kind === "extraction_slow" ? `${r.stage} · slow` : r.kind === "missing_documents" ? "Waiting for docs" : `${r.stage} · failed`}</Badge></td>
+                  <td className={T.tdRight}>{r.pages}</td>
+                  <td className={`${T.td} max-w-md text-slate-700 dark:text-slate-300`}>
+                    {r.reason}
+                    {r.handled && (
+                      <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                        <CheckCircleIcon className="h-3.5 w-3.5" />Handled{r.handled_note ? ` — ${r.handled_note}` : ""}
+                      </span>
                     )}
-                    {r.can_retry_extraction && (
-                      <button type="button" disabled={busy === r.job_id} onClick={() => retry(r, "extraction")}
-                        className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60">
-                        Retry extraction
-                      </button>
-                    )}
-                    {!r.handled && (
-                      <button type="button" disabled={busy === r.job_id} onClick={() => handled(r)}
-                        className="rounded-lg border border-emerald-300 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-500/40 dark:text-emerald-300 dark:hover:bg-emerald-500/10">
-                        Mark handled
-                      </button>
-                    )}
-                    <Link to={`/jobs/${r.job_id}`}
-                      className="rounded-lg border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-500/40 dark:text-indigo-300 dark:hover:bg-indigo-500/10">
-                      Investigate
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className={`${T.td} whitespace-nowrap font-semibold ${tone === "red" ? "text-rose-600 dark:text-rose-400" : "text-amber-700 dark:text-amber-300"}`}>{formatAge(r.age_minutes)}</td>
+                  <td className={T.td}>
+                    <div className="flex justify-end gap-1.5">
+                      {r.can_retry_erp && (
+                        <button type="button" disabled={busy === r.job_id} onClick={() => run(r, "erp")} className={`${btn} bg-indigo-600 text-white hover:bg-indigo-500`}>
+                          <ArrowPathIcon className="h-3.5 w-3.5" />Retry ERP
+                        </button>
+                      )}
+                      {r.can_retry_extraction && (
+                        <button type="button" disabled={busy === r.job_id} onClick={() => run(r, "extraction")} className={`${btn} bg-indigo-600 text-white hover:bg-indigo-500`}>
+                          <ArrowPathIcon className="h-3.5 w-3.5" />Retry extraction
+                        </button>
+                      )}
+                      {!r.handled && (
+                        <button type="button" disabled={busy === r.job_id} onClick={() => run(r, "handled")}
+                          className={`${btn} border border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-500/40 dark:text-emerald-300 dark:hover:bg-emerald-500/10`}>
+                          <CheckCircleIcon className="h-3.5 w-3.5" />Handled
+                        </button>
+                      )}
+                      <Link to={`/jobs/${r.job_id}`}
+                        className={`${btn} border border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800`}>
+                        <EyeIcon className="h-3.5 w-3.5" />Investigate
+                      </Link>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      {!limit && <Pager {...paged} />}
+      {limit && all.length > limit && (
+        <p className="border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500 dark:border-slate-800">
+          Showing the newest {limit} of {all.length} - open Failed / Delayed Jobs for all.
+        </p>
+      )}
     </div>
   );
 }

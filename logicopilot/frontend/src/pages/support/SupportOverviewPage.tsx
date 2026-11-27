@@ -1,37 +1,41 @@
 /** Production Support - Overview. Every customer, from data the system keeps
  *  (backend api/v1/support.py): tiles, health, pipeline, performance vs SLA, volume,
- *  attention, failed / delayed jobs and the support activity log. */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+ *  attention, failed / delayed jobs and the support activity log. Today by default. */
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { AppShell } from "../../components/AppShell";
-import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
+import {
+  ArrowPathIcon, BriefcaseIcon, CheckBadgeIcon, CheckCircleIcon, ChartBarIcon, ClockIcon, DocumentIcon,
+  ExclamationTriangleIcon, LayersIcon, MonitorIcon, UploadIcon,
+} from "../../components/ui/icons";
 import * as supportApi from "../../api/support";
 import type { IssueTab, SupportHealth, SupportIssues, SupportOverview, SupportPerformance } from "../../api/support";
 import { IssuesTable } from "./IssuesTable";
-import { ActivityList, PeriodPicker, STATUS_STYLE, mins, rangeFor, type Period } from "./supportUi";
+import {
+  ActivityList, Badge, DEFAULT_PERIOD, PeriodPicker, STAGE_TONE, STATUS_STYLE, SectionCard, StatTile, mins, rangeFor, type Period,
+} from "./supportUi";
 
-function Tile({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone: string }) {
-  return (
-    <div className={`rounded-2xl border p-4 ${tone}`}>
-      <p className="text-2xl font-bold tabular-nums">{value}</p>
-      <p className="text-sm font-medium">{label}</p>
-      {sub && <p className="text-xs opacity-75">{sub}</p>}
-    </div>
-  );
-}
+const PIPE_TONE: Record<string, string> = {
+  red: "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30",
+  green: "bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-500/30",
+  blue: "bg-sky-50 text-sky-800 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-200 dark:ring-sky-500/30",
+  amber: "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30",
+  violet: "bg-violet-50 text-violet-800 ring-violet-200 dark:bg-violet-500/10 dark:text-violet-200 dark:ring-violet-500/30",
+  slate: "bg-slate-50 text-slate-800 ring-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700",
+};
 
 function VolumeBars({ data }: { data: SupportOverview["volume"] }) {
   const shown = data.slice(-14);
   const max = Math.max(1, ...shown.map((d) => d.jobs));
   if (shown.length === 0) return null;
   return (
-    <div className="flex h-40 items-end gap-2">
+    <div className="flex h-44 items-end gap-2">
       {shown.map((d) => (
         <div key={d.day} className="flex flex-1 flex-col items-center justify-end gap-1" title={`${d.day}: ${d.jobs} jobs, ${d.pages} pages`}>
           <span className="text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{d.jobs}</span>
-          <div className="w-full rounded-t bg-sky-500" style={{ height: `${Math.max(2, (d.jobs / max) * 110)}px` }} />
+          <div className="w-full rounded-t-md bg-gradient-to-t from-indigo-500 to-sky-400" style={{ height: `${Math.max(3, (d.jobs / max) * 120)}px` }} />
           <span className="text-[10px] text-slate-500">{d.day.slice(8)}/{d.day.slice(5, 7)}</span>
         </div>
       ))}
@@ -39,29 +43,23 @@ function VolumeBars({ data }: { data: SupportOverview["volume"] }) {
   );
 }
 
-function SectionHead({ title, to, extra }: { title: ReactNode; to?: string; extra?: ReactNode }) {
-  return (
-    <div className="mb-3 flex items-center justify-between gap-2">
-      <h2 className="font-semibold text-slate-900 dark:text-slate-50">{title}</h2>
-      <div className="flex items-center gap-3">
-        {extra}
-        {to && <Link to={to} className="text-sm text-indigo-700 dark:text-indigo-300">View details →</Link>}
-      </div>
-    </div>
-  );
-}
+const ATTENTION_TONE: Record<string, "red" | "orange" | "amber"> = {
+  erp_failed: "red", extraction_failed: "red", erp_reports: "red", erp_slow: "orange", extraction_slow: "orange", missing_documents: "amber",
+};
 
 export function SupportOverviewPage() {
-  const [period, setPeriod] = useState<Period>("7d");
+  const [period, setPeriod] = useState<Period>(DEFAULT_PERIOD);
   const [data, setData] = useState<SupportOverview | null>(null);
   const [issues, setIssues] = useState<SupportIssues | null>(null);
   const [health, setHealth] = useState<SupportHealth | null>(null);
   const [perf, setPerf] = useState<SupportPerformance | null>(null);
   const [tab, setTab] = useState<IssueTab>("all");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
+    setLoading(true);
     try {
       const [from, to] = rangeFor(period);
       const [o, i, h, p] = await Promise.all([
@@ -73,6 +71,8 @@ export function SupportOverviewPage() {
       setPerf(p);
     } catch (err) {
       setError(axios.isAxiosError(err) ? (err.response?.data?.detail ?? "Could not load the overview.") : "Could not load the overview.");
+    } finally {
+      setLoading(false);
     }
   }, [period, tab]);
 
@@ -83,105 +83,103 @@ export function SupportOverviewPage() {
   }, [load]);
 
   const t = data?.tiles;
-  const overall = health ? STATUS_STYLE[health.status] : null;
+  const viewAll = (to: string) => <Link to={to} className="text-sm font-medium text-indigo-700 hover:underline dark:text-indigo-300">View all →</Link>;
   return (
-    <AppShell title="Production Support" subtitle="Every customer's jobs - what is moving, what failed, what needs action.">
+    <AppShell title="Production Support" icon={<MonitorIcon className="h-6 w-6" />}
+      subtitle="Every customer's jobs - what is moving, what failed, what needs action.">
       <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <PeriodPicker value={period} onChange={setPeriod} />
-          <button type="button" onClick={load} className="text-sm text-indigo-700 underline dark:text-indigo-300">Refresh</button>
+          <button type="button" onClick={load}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+            <ArrowPathIcon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
+          </button>
         </div>
         {error && <Alert>{error}</Alert>}
 
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Tile label="Total Jobs" value={t?.total_jobs ?? "—"} tone="border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-100" />
-          <Tile label="Total Pages" value={t?.pages ?? "—"} sub={t?.avg_pages != null ? `Avg ${t.avg_pages} pages/job` : undefined}
-            tone="border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-violet-100" />
-          <Tile label="Attachments" value={t?.attachments ?? "—"} tone="border-teal-200 bg-teal-50 text-teal-900 dark:border-teal-500/20 dark:bg-teal-500/10 dark:text-teal-100" />
-          <Tile label="Submitted to ERP" value={t?.submitted ?? "—"} sub={t?.submitted_pct != null ? `${t.submitted_pct}%` : undefined}
-            tone="border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100" />
-          <Tile label="Failed" value={t?.failed ?? "—"} sub={t?.failed_pct != null ? `${t.failed_pct}%` : undefined}
-            tone="border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-100" />
-          <Tile label="Delayed (> SLA)" value={t?.delayed ?? "—"} sub={t?.delayed_pct != null ? `${t.delayed_pct}%` : undefined}
-            tone="border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-100" />
+          <StatTile label="Total jobs" value={t?.total_jobs ?? "—"} icon={<BriefcaseIcon className="h-5 w-5" />} tone="blue" />
+          <StatTile label="Pages" value={t?.pages ?? "—"} sub={t?.avg_pages != null ? `Avg ${t.avg_pages} / job` : undefined} icon={<DocumentIcon className="h-5 w-5" />} tone="violet" />
+          <StatTile label="Attachments" value={t?.attachments ?? "—"} icon={<UploadIcon className="h-5 w-5" />} tone="slate" />
+          <StatTile label="Submitted to ERP" value={t?.submitted ?? "—"} sub={t?.submitted_pct != null ? `${t.submitted_pct}%` : undefined} icon={<CheckCircleIcon className="h-5 w-5" />} tone="green" />
+          <StatTile label="Failed" value={t?.failed ?? "—"} sub={t?.failed_pct != null ? `${t.failed_pct}%` : undefined} icon={<ExclamationTriangleIcon className="h-5 w-5" />} tone="red" />
+          <StatTile label="Delayed (> SLA)" value={t?.delayed ?? "—"} sub={t?.delayed_pct != null ? `${t.delayed_pct}%` : undefined} icon={<ClockIcon className="h-5 w-5" />} tone="amber" />
         </div>
 
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-          <Card className="p-5">
-            <SectionHead title="Application Health" to="/support/health"
-              extra={overall && <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${overall.pill}`}>{health?.status === "ok" ? "All systems healthy" : overall.label}</span>} />
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
+          <SectionCard className="xl:col-span-2" title="Application Health" icon={<MonitorIcon className="h-5 w-5" />}
+            extra={<>
+              {health && <Badge tone={STATUS_STYLE[health.status].tone}>{health.status === "ok" ? "All systems healthy" : STATUS_STYLE[health.status].label}</Badge>}
+              {viewAll("/support/health")}
+            </>}>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {(health?.components ?? []).map((c) => (
                 <div key={c.key} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2 dark:border-slate-800" title={c.detail}>
-                  <span className="flex items-center gap-2 text-sm">
-                    <span className={`h-2.5 w-2.5 rounded-full ${STATUS_STYLE[c.status].dot}`} />
-                    {c.label}
+                  <span className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-100">
+                    <span className={`h-2.5 w-2.5 rounded-full ${STATUS_STYLE[c.status].dot}`} />{c.label}
                   </span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[c.status].pill}`}>{STATUS_STYLE[c.status].label}</span>
+                  <span className={`text-xs font-semibold ${c.status === "ok" ? "text-emerald-600" : c.status === "down" ? "text-rose-600" : c.status === "warn" ? "text-amber-600" : "text-slate-500"}`}>
+                    {STATUS_STYLE[c.status].label}
+                  </span>
                 </div>
               ))}
             </div>
-          </Card>
-          <Card className="p-5">
-            <SectionHead title={<>Job Pipeline <span className="text-sm font-normal text-slate-500">(where this period's jobs stand now)</span></>} />
-            <div className="flex flex-wrap items-stretch gap-2">
-              {(data?.pipeline ?? []).map((p) => (
-                <Link key={p.key} to={`/support/jobs?stage=${p.key}&period=${period}`}
-                  className={`min-w-24 rounded-xl px-3 py-2 text-center hover:ring-2 hover:ring-indigo-200 ${p.key === "failed" ? "bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-200" : p.key === "erp_submitted" ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200" : "bg-slate-50 text-slate-800 dark:bg-slate-800 dark:text-slate-100"}`}>
-                  <p className="text-xl font-bold tabular-nums">{p.count}</p>
-                  <p className="text-xs">{p.label}</p>
-                </Link>
+          </SectionCard>
+          <SectionCard className="xl:col-span-3" title={<>Job Pipeline <span className="text-sm font-normal text-slate-500">(where this period's jobs are now)</span></>}
+            icon={<LayersIcon className="h-5 w-5" />}>
+            <div className="flex flex-wrap items-center gap-2">
+              {(data?.pipeline ?? []).map((p, i, all) => (
+                <div key={p.key} className="flex items-center gap-2">
+                  <Link to={`/support/jobs?stage=${p.key}&period=${period}`}
+                    className={`min-w-[6.5rem] rounded-xl px-3 py-2.5 text-center ring-1 ring-inset transition hover:-translate-y-0.5 hover:shadow ${PIPE_TONE[STAGE_TONE[p.key] ?? "slate"]}`}>
+                    <p className="text-2xl font-bold tabular-nums">{p.count}</p>
+                    <p className="text-xs font-medium">{p.label}</p>
+                  </Link>
+                  {i < all.length - 2 && <span className="text-slate-300 dark:text-slate-600">→</span>}
+                </div>
               ))}
             </div>
-          </Card>
+          </SectionCard>
         </div>
 
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-          <Card className="p-5">
-            <SectionHead title={<>Processing Performance <span className="text-sm font-normal text-slate-500">(avg time)</span></>} to="/support/performance" />
-            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          <SectionCard title="Processing Performance" icon={<ClockIcon className="h-5 w-5" />} extra={viewAll("/support/performance")}>
+            <ul className="space-y-2">
               {(perf?.stages ?? []).map((s) => (
-                <li key={s.key} className="flex items-center justify-between py-2 text-sm">
-                  <span className="text-slate-700 dark:text-slate-300">{s.label}</span>
+                <li key={s.key} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800/60">
+                  <span className="text-slate-700 dark:text-slate-200">{s.label}</span>
                   <span className="flex items-center gap-2">
-                    <span className={`rounded-md px-2 py-0.5 font-semibold tabular-nums ${s.avg == null ? "bg-slate-100 text-slate-500 dark:bg-slate-800" : s.ok ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" : "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`}>{mins(s.avg)}</span>
-                    <span className="text-xs text-slate-500">SLA ≤ {s.sla} min</span>
+                    <span className={`rounded-md px-2 py-0.5 font-semibold tabular-nums ${s.avg == null ? "text-slate-400" : s.ok ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" : "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`}>{mins(s.avg)}</span>
+                    <span className="text-xs text-slate-500">≤ {s.sla} min</span>
                   </span>
                 </li>
               ))}
             </ul>
-          </Card>
-          <Card className="p-5">
-            <SectionHead title="Jobs per day" />
+          </SectionCard>
+          <SectionCard title="Jobs per day" icon={<ChartBarIcon className="h-5 w-5" />}>
             {data && <VolumeBars data={data.volume} />}
-          </Card>
-          <Card className="p-5">
-            <SectionHead title="Attention Required" to="/support/issues" />
-            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          </SectionCard>
+          <SectionCard title="Attention Required" icon={<ExclamationTriangleIcon className="h-5 w-5" />} extra={viewAll("/support/issues")}>
+            <ul className="space-y-1.5">
               {(data?.attention ?? []).map((a) => (
-                <li key={a.key} className="flex items-center justify-between py-2 text-sm">
+                <li key={a.key} className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <span className="text-slate-700 dark:text-slate-300">{a.label}</span>
-                  <span className={`min-w-10 rounded-full px-2.5 py-0.5 text-center font-semibold tabular-nums ${a.count > 0 ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`}>
-                    {a.count}
-                  </span>
+                  {a.count > 0 ? <Badge tone={ATTENTION_TONE[a.key] ?? "red"} dot={false}>{a.count}</Badge>
+                    : <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-500 dark:bg-slate-800">0</span>}
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-xs text-slate-500">
-              Open now, across all customers - jobs from the last {data?.attention_window_days ?? 60} days (not only this period). Handled ones are hidden.
-            </p>
-          </Card>
+            <p className="mt-3 text-xs text-slate-500">Open now, all customers, jobs from the last {data?.attention_window_days ?? 60} days. Handled ones are hidden.</p>
+          </SectionCard>
         </div>
 
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-          <Card className="p-5 xl:col-span-2">
-            <SectionHead title={<>Failed / Delayed Jobs <span className="text-sm font-normal text-slate-500">(recent)</span></>} to="/support/issues" />
+          <SectionCard className="xl:col-span-2" padded={false} title="Failed / Delayed Jobs" icon={<ExclamationTriangleIcon className="h-5 w-5" />} extra={viewAll("/support/issues")}>
             <IssuesTable data={issues} tab={tab} onTab={setTab} onChanged={load} limit={8} />
-          </Card>
-          <Card className="p-5">
-            <SectionHead title="Recent Activity" to="/support/activity" />
+          </SectionCard>
+          <SectionCard title="Recent Activity" icon={<CheckBadgeIcon className="h-5 w-5" />} extra={viewAll("/support/activity")}>
             <ActivityList items={data?.activity ?? []} />
-          </Card>
+          </SectionCard>
         </div>
       </div>
     </AppShell>

@@ -98,3 +98,15 @@ def test_the_dropdown_text_with_its_code_gives_that_code(fake_ai):
     assert xe._sea_port_code("Ennore (INENR1)") == "INENR1"
     assert xe._sea_port_code("ICD Whitefield (INWFD6)") == "INWFD6"
     assert fake_ai == []
+
+
+def test_a_fixed_value_with_fields_inside_fills_each_one():
+    """Sea Export GENERAL X is built from the three invoice fields, not a separate AI reading."""
+    cfg = {"sheets": [{"sheet": "GENERAL", "scope": "job", "columns": [
+        {"column": "X", "header": "Terms_of_Delivery_&_Payment", "field": "",
+         "value": "TOI:[[TOI]]\nNature of Payment:[[Nature_of_Payment]]\nPayment Days: [[delivery_term]]"},
+        {"column": "Y", "header": "Whole", "field": "", "value": "[[TOI]]"},
+    ]}]}
+    plan = xe.sheet_plans(cfg)[0]
+    assert xe._rows_for_plan(plan, {"TOI": "FOB", "Nature_of_Payment": "DA", "delivery_term": "60 Days"}, {}) \
+        == [["TOI:FOB\nNature of Payment:DA\nPayment Days: 60 Days", "FOB"]]

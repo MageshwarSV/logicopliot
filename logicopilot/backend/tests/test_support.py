@@ -211,3 +211,35 @@ def test_job_monitoring_and_customers(client, db_session):
     cust = client.get("/api/v1/support/customers", params={"date_from": _today(), "date_to": _today()}).json()["items"]
     four_s = next(c for c in cust if c["name"].startswith("4S"))
     assert four_s["failed"] == 1 and four_s["submitted"] == 1 and four_s["open_issues"] >= 2
+
+
+def test_backup_box_reads_the_nightly_backup_status(db_session, monkeypatch):
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    from app.core import support_health
+
+    store = {}
+
+    class FakeRedis:
+        def scan_iter(self, match=None, count=None):
+            return list(store)
+
+        def get(self, k):
+            return store.get(k)
+
+    monkeypatch.setattr("app.core.erp_redis_queue._redis", lambda: FakeRedis())
+
+    def box():
+        return next(b for b in support_health.components(db_session)["components"] if b["key"] == "backup")
+
+    assert box()["status"] == "warn"
+    store["cargora:backup:prod"] = _json.dumps({"status": "ok", "at": datetime.now(timezone.utc).isoformat(),
+                                                "detail": "prod-cargora-x.dump, 20000000 bytes"})
+    assert box()["status"] == "ok"
+    store["cargora:backup:prod"] = _json.dumps({"status": "ok", "at": (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(),
+                                                "detail": "old"})
+    assert box()["status"] == "down"
+    store["cargora:backup:prod"] = _json.dumps({"status": "failed", "at": datetime.now(timezone.utc).isoformat(),
+                                                "detail": "the dump cannot be read back"})
+    assert box()["status"] == "down" and "FAILED" in box()["detail"]
