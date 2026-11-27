@@ -3304,9 +3304,13 @@ def gk2_approve(
     # Whoever pressed it - GK2, or GK1 retrying a failed run - is told how it ends.
     job.erp_submitted_by_id = user.id
     if user.role == SUPPORT:
+        from app.models.support_activity import SupportActivity
+
         db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                         stage="ERP Submission",
                         note=f"ERP entry retried by Production Support - {user.full_name or user.email}"))
+        db.add(SupportActivity(kind="retry_erp", tenant_id=job.tenant_id, job_id=job.id, user_id=user.id,
+                               text=f"{job.reference} - ERP entry retried"))
     _finalize_job_approval(db, job)
     return _build_detail(db, job)
 
@@ -9913,6 +9917,9 @@ def run_extraction(
         # try/except just logs and leaves the job routed but not yet field-extracted -
         # either way, pressing Extract again once resumed is all that is needed.
         raise AIServiceUnavailable("extraction is paused")
+    # When reading actually began (Production Support's queue-wait / extraction times).
+    job.extraction_started_at = datetime.now(timezone.utc)
+    job.extraction_finished_at = None
     # Read ONCE, up front, before anything in this run is ever flushed - the first-ever read
     # of a system setting lazily creates (and commits) its row if none exists yet (see
     # get_system_settings), and doing that lazily deep inside this function, after a
@@ -11427,6 +11434,7 @@ def run_extraction(
                     job.reference, emptied_importer)
 
     job.status = "extracted"
+    job.extraction_finished_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(job)
 
@@ -11511,9 +11519,13 @@ def extract_job(
                 detail="Support can retry only an extraction that did not finish. This job "
                        "has already been read - re-reading it would replace the operator's work.",
             )
+        from app.models.support_activity import SupportActivity
+
         db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
                         stage="Data Validation",
                         note=f"Extraction retried by Production Support - {user.full_name or user.email}"))
+        db.add(SupportActivity(kind="retry_extraction", tenant_id=job.tenant_id, job_id=job.id, user_id=user.id,
+                               text=f"{job.reference} - extraction retried"))
     _begin_extraction(db, job, only_job_document_id=job_document_id, is_rerun=is_rerun)
     db.refresh(job)
     return _build_detail(db, job)

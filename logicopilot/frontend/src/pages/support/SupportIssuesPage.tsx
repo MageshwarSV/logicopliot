@@ -12,15 +12,16 @@ export function SupportIssuesPage() {
   const [tab, setTab] = useState<IssueTab>("all");
   const [data, setData] = useState<SupportIssues | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showHandled, setShowHandled] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      setData(await supportApi.getIssues(tab));
+      setData(await supportApi.getIssues(tab, showHandled));
     } catch (err) {
       setError(axios.isAxiosError(err) ? (err.response?.data?.detail ?? "Could not load the list.") : "Could not load the list.");
     }
-  }, [tab]);
+  }, [tab, showHandled]);
 
   useEffect(() => {
     load();
@@ -32,6 +33,10 @@ export function SupportIssuesPage() {
     <AppShell title="Failed / Delayed Jobs" subtitle="Every customer. Open a job to investigate; retry where it is allowed.">
       {error && <Alert>{error}</Alert>}
       <Card className="p-5">
+        <label className="mb-3 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+          <input type="checkbox" checked={showHandled} onChange={(e) => setShowHandled(e.target.checked)} />
+          Show ones already marked handled
+        </label>
         <IssuesTable data={data} tab={tab} onTab={setTab} onChanged={load} />
         <p className="mt-3 text-xs text-slate-500">
           Retry ERP: only a failed ERP entry. Retry extraction: only an extraction that did not finish -

@@ -395,6 +395,17 @@ def create_app() -> FastAPI:
         except Exception:  # noqa: BLE001 - visibility must never stop the app starting
             logging.getLogger(__name__).exception("could not start the queue heartbeat")
 
+    @app.on_event("startup")
+    def _start_support_alerts() -> None:
+        """Production Support alerts (app/core/support_alerts.py) - website processes only,
+        one of them sends. Never stops the app starting."""
+        try:
+            from app.core.support_alerts import start_alert_loop
+
+            start_alert_loop()
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("could not start support alerts")
+
     @app.on_event("shutdown")
     def _stop_parked_sessions() -> None:
         """Close parked browsers on the way down, so a restart cannot leak a Chromium."""

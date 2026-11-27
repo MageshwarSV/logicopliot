@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     #   REDIS_URL=redis://127.0.0.1:6379/3
     redis_url: str = ""
 
+    # Outbound email for Production Support alerts (app/core/support_alerts.py). Empty host =
+    # alerts are still raised and shown on the support screen, just not emailed. Port 465 =
+    # SSL, 587 = STARTTLS. A Gmail / Zoho app password works here. Never commit these.
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+
     # Which background work THIS process starts (app/core/process_role.py) - for running the app
     # split over several servers. "all" (the default, and every box today) = one process does
     # everything, exactly as before. "web" = website/API only; "worker" = mail, extraction

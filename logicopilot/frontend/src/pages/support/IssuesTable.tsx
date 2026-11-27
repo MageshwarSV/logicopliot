@@ -18,7 +18,7 @@ export function formatAge(min: number | null): string {
 }
 
 function stageClass(kind: SupportIssue["kind"]): string {
-  return kind === "erp_failed"
+  return kind === "erp_failed" || kind === "erp_slow"
     ? "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300"
     : kind === "missing_documents"
       ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
@@ -41,6 +41,23 @@ export function IssuesTable({
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const rows = (data?.items ?? []).slice(0, limit ?? undefined);
+
+  async function handled(issue: SupportIssue) {
+    const note = window.prompt(`Mark ${issue.reference} as handled. What was done? (optional)`, "");
+    if (note === null) return;
+    setBusy(issue.job_id);
+    setMessage(null);
+    try {
+      await supportApi.markHandled(issue.job_id, note);
+      setMessage({ ok: true, text: `${issue.reference}: marked handled. It comes back here if it fails again.` });
+      onChanged();
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setMessage({ ok: false, text: `${issue.reference}: ${typeof detail === "string" ? detail : "could not mark it handled."}` });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function retry(issue: SupportIssue, what: "erp" | "extraction") {
     const label = what === "erp" ? "ERP entry" : "extraction";
@@ -118,7 +135,12 @@ export function IssuesTable({
                   <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stageClass(r.kind)}`}>{r.stage}</span>
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{r.pages}</td>
-                <td className="max-w-md px-3 py-2 text-slate-700 dark:text-slate-300">{r.reason}</td>
+                <td className="max-w-md px-3 py-2 text-slate-700 dark:text-slate-300">
+                  {r.reason}
+                  {r.handled && (
+                    <span className="mt-1 block text-xs text-emerald-700 dark:text-emerald-300">✓ Handled{r.handled_note ? ` — ${r.handled_note}` : ""}</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 whitespace-nowrap font-medium text-rose-600 dark:text-rose-400">{formatAge(r.age_minutes)}</td>
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-2">
@@ -132,6 +154,12 @@ export function IssuesTable({
                       <button type="button" disabled={busy === r.job_id} onClick={() => retry(r, "extraction")}
                         className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60">
                         Retry extraction
+                      </button>
+                    )}
+                    {!r.handled && (
+                      <button type="button" disabled={busy === r.job_id} onClick={() => handled(r)}
+                        className="rounded-lg border border-emerald-300 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-500/40 dark:text-emerald-300 dark:hover:bg-emerald-500/10">
+                        Mark handled
                       </button>
                     )}
                     <Link to={`/jobs/${r.job_id}`}

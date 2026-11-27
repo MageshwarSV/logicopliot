@@ -127,3 +127,87 @@ def test_operator_cannot_open_support(client, db_session):
     make_user(db_session, role=TENANT_ADMIN, tenant=t, email=_email("ta"))
     assert login(client, make_user(db_session, role="operator", tenant=t, email=_email("op")).email).status_code == 200
     assert client.get("/api/v1/support/issues").status_code == 403
+
+
+# ---------------------------------------------------------------- S2-S5
+
+def _today():
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+
+
+def test_performance_measures_stages_and_delayed(client, db_session):
+    failed, _ = _world(db_session)
+    now = datetime.now(timezone.utc)
+    # created -> "extracting" 1 min later -> read 6 min (over the 4 min SLA)
+    failed.extraction_started_at = now - timedelta(minutes=20)
+    failed.extraction_finished_at = now - timedelta(minutes=14)
+    failed.erp_submitted_at = now - timedelta(minutes=12)
+    failed.erp_failed_at = now - timedelta(minutes=10)
+    db_session.query(JobEvent).filter(JobEvent.job_id == failed.id, JobEvent.status == "extracting").delete()
+    db_session.add(JobEvent(tenant_id=failed.tenant_id, job_id=failed.id, status="extracting",
+                            created_at=now - timedelta(minutes=21)))
+    db_session.commit()
+    _support(client, db_session)
+    body = client.get("/api/v1/support/performance", params={"date_from": _today(), "date_to": _today()}).json()
+    st = {s["key"]: s for s in body["stages"]}
+    assert st["extraction"]["avg"] == 6.0 and st["extraction"]["over_sla"] == 1 and st["extraction"]["sla"] == 4
+    assert st["queue_wait"]["avg"] == 1.0 and st["erp"]["avg"] == 2.0
+    assert any(d["reference"] == "JOB-ERR" for d in body["delayed"])
+    tiles = client.get("/api/v1/support/overview", params={"date_from": _today(), "date_to": _today()}).json()["tiles"]
+    assert tiles["delayed"] >= 1
+
+
+def test_handled_hides_the_issue_and_logs_it(client, db_session):
+    failed, _ = _world(db_session)
+    _support(client, db_session)
+    r = client.post(f"/api/v1/support/issues/{failed.id}/handled", json={"text": "Told 4S to fix the country"})
+    assert r.status_code == 200
+    refs = {i["reference"] for i in client.get("/api/v1/support/issues").json()["items"]}
+    assert "JOB-ERR" not in refs
+    refs_all = {i["reference"]: i for i in client.get("/api/v1/support/issues", params={"include_handled": True}).json()["items"]}
+    assert refs_all["JOB-ERR"]["handled"] is True
+    act = client.get("/api/v1/support/activity").json()["items"]
+    assert act[0]["kind"] == "handled" and "Told 4S" in act[0]["text"] and act[0]["by"] == "Desk One"
+
+
+def test_customer_call_and_note(client, db_session):
+    failed, _ = _world(db_session)
+    _support(client, db_session)
+    r = client.post("/api/v1/support/activity", json={"kind": "customer_call", "text": "4S called about failed jobs",
+                                                      "tenant_id": failed.tenant_id})
+    assert r.status_code == 200 and r.json()["client"].startswith("4S")
+    assert client.post("/api/v1/support/activity", json={"kind": "alert", "text": "x"}).status_code == 422
+    ov = client.get("/api/v1/support/overview", params={"date_from": _today(), "date_to": _today()}).json()
+    assert ov["activity"][0]["kind"] == "customer_call"
+
+
+def test_health_settings_and_alerts(client, db_session, monkeypatch):
+    from app.core import support_alerts
+
+    failed, _ = _world(db_session)
+    _support(client, db_session)
+    h = client.get("/api/v1/support/health").json()
+    keys = {c["key"] for c in h["components"]}
+    assert {"web", "database", "servers", "queues", "email", "ai", "erp", "disk"} <= keys
+    s = client.put("/api/v1/support/settings", json={"sla": {"extraction": 6}, "alert_emails": ["Ops@Example.com", "bad"]}).json()
+    assert s["sla"]["extraction"] == 6 and s["sla"]["erp"] == 5 and s["alert_emails"] == ["ops@example.com"]
+    # alerts: a failed job since the last check is raised once, logged, not repeated
+    sent = []
+    monkeypatch.setattr(support_alerts, "email_configured", lambda: True)
+    monkeypatch.setattr(support_alerts, "send_email", lambda to, subj, body: sent.append((to, body)))
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    raised = support_alerts.check_once(db_session, since)
+    assert any("JOB-ERR" in t for t in raised) and sent and sent[0][0] == ["ops@example.com"]
+    assert not any("JOB-ERR" in t for t in support_alerts.check_once(db_session, since))
+
+
+def test_job_monitoring_and_customers(client, db_session):
+    _world(db_session)
+    _support(client, db_session)
+    body = client.get("/api/v1/support/jobs", params={"date_from": _today(), "date_to": _today(), "stage": "failed"}).json()
+    assert {r["reference"] for r in body["items"]} == {"JOB-ERR"}
+    found = client.get("/api/v1/support/jobs", params={"date_from": _today(), "date_to": _today(), "q": "kcl"}).json()
+    assert [r["reference"] for r in found["items"]] == ["JOB-KCL"]
+    cust = client.get("/api/v1/support/customers", params={"date_from": _today(), "date_to": _today()}).json()["items"]
+    four_s = next(c for c in cust if c["name"].startswith("4S"))
+    assert four_s["failed"] == 1 and four_s["submitted"] == 1 and four_s["open_issues"] >= 2

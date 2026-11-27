@@ -55,6 +55,11 @@ import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
 import { SupportOverviewPage } from "../pages/support/SupportOverviewPage";
 import { SupportIssuesPage } from "../pages/support/SupportIssuesPage";
+import { SupportHealthPage } from "../pages/support/SupportHealthPage";
+import { SupportPerformancePage } from "../pages/support/SupportPerformancePage";
+import { SupportJobsPage } from "../pages/support/SupportJobsPage";
+import { SupportCustomersPage } from "../pages/support/SupportCustomersPage";
+import { SupportActivityPage } from "../pages/support/SupportActivityPage";
 import { SaasFinanceCustomersPage } from "../pages/saas-finance/CustomersPage";
 import { SaasFinanceCustomerDetailPage } from "../pages/saas-finance/CustomerDetailPage";
 import { SaasFinanceUsageBillingPage } from "../pages/saas-finance/UsageBillingPage";
@@ -499,6 +504,46 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["support"]}>
             <SupportIssuesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/health"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportHealthPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/performance"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportPerformancePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/jobs"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportJobsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/customers"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportCustomersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/support/activity"
+        element={
+          <ProtectedRoute allowedRoles={["support"]}>
+            <SupportActivityPage />
           </ProtectedRoute>
         }
       />

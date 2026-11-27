@@ -170,6 +170,11 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # The ERP refused the Excel import: what to fix, per Cargora box, in plain words
     # (erp_rejection.build_help). None for every other outcome.
     erp_help: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # When run_extraction actually began reading, and when it finished (Production Support's
+    # Processing Performance: queue wait = start - the "extracting" event; extraction = end -
+    # start). Overwritten by every run.
+    extraction_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extraction_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Set ONCE, the first time the AI/ERP automation (_kick_off_real_erp_submission, either
     # via a real GK2 review or a GK2-skipped tenant/mode - see gk2_skipped) successfully
