@@ -464,8 +464,14 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
             # [[field]] form the engine uses elsewhere. EXCHANGE_RATE needs it: row one is
             # always the rupee at 1.000000, row two is the month's customs rate, which has
             # to live in one editable place rather than inside the mapping.
-            if isinstance(v, str) and v.startswith("[[") and v.endswith("]]"):
+            if isinstance(v, str) and v.startswith("[[") and v.endswith("]]") and v.count("[[") == 1:
                 v = str(values.get(v[2:-2], "") or "")
+            elif isinstance(v, str) and "[[" in v:
+                # Text with fields inside it (4S, 2026-11-27): Sea Export's GENERAL X is
+                # "TOI:[[TOI]]\nNature of Payment:[[Nature_of_Payment]]\nPayment Days:
+                # [[delivery_term]]" - built from the three fields the operator checks on the
+                # invoice, so the column can never disagree with them.
+                v = re.sub(r"\[\[(.+?)\]\]", lambda m: str(values.get(m.group(1), "") or ""), v)
             return v
 
         def _field_value(lbl: str):
