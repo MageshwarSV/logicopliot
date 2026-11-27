@@ -108,17 +108,18 @@ export function IssuesTable({
         <table className={T.table}>
           <thead className={T.thead}>
             <tr>
-              <th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
+              <th className={T.thSno}>S.No</th><th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
               <th className={T.th}>Problem</th><th className={T.th}>Arrived</th><th className={T.th}>First sent to ERP</th>
               <th className={T.th}>Delay</th><th className={T.th}>Reason</th><th className={T.thRight}>Action</th>
             </tr>
           </thead>
           <tbody>
-            {paged.shown.length === 0 && <EmptyRow cols={8} loading={!data} text="✓ Nothing needs attention here." />}
-            {paged.shown.map((r) => {
+            {paged.shown.length === 0 && <EmptyRow cols={9} loading={!data} text="✓ Nothing needs attention here." />}
+            {paged.shown.map((r, i) => {
               const tone = KIND_TONE[r.kind] ?? "slate";
               return (
                 <tr key={r.job_id} className={`${T.row} ${ROW_EDGE[r.handled ? "green" : tone]} ${tone === "red" && !r.handled ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
+                  <td className={T.tdSno}>{(paged.page - 1) * paged.size + i + 1}</td>
                   <td className={`${T.td} whitespace-nowrap`}><Link to={`/jobs/${r.job_id}`} className={T.link}>{r.reference}</Link></td>
                   <td className={T.td}>{r.client}</td>
                   <td className={T.td}><TypeCell type={r.type} /></td>

@@ -38,15 +38,16 @@ export function SupportCustomersPage() {
             <table className={T.table}>
               <thead className={T.thead}>
                 <tr>
-                  <th className={T.th}>Customer</th><th className={T.thRight}>Jobs</th><th className={T.thRight}>Submitted</th>
+                  <th className={T.thSno}>S.No</th><th className={T.th}>Customer</th><th className={T.thRight}>Jobs</th><th className={T.thRight}>Submitted</th>
                   <th className={T.thRight}>Failed</th><th className={T.thRight}>In progress</th>
                   <th className={T.th}>Open problems</th><th className={T.th}>Last job</th><th className={T.th} />
                 </tr>
               </thead>
               <tbody>
-                {paged.shown.length === 0 && <EmptyRow cols={8} loading={!rows} text="No customers with jobs." />}
-                {paged.shown.map((r) => (
+                {paged.shown.length === 0 && <EmptyRow cols={9} loading={!rows} text="No customers with jobs." />}
+                {paged.shown.map((r, i) => (
                   <tr key={r.tenant_id} className={`${T.row} ${ROW_EDGE[r.open_issues ? "red" : r.jobs ? "green" : "slate"]}`}>
+                    <td className={T.tdSno}>{(paged.page - 1) * paged.size + i + 1}</td>
                     <td className={`${T.td} font-semibold text-slate-900 dark:text-slate-50`}>{r.name}</td>
                     <td className={T.tdRight}>{r.jobs}</td>
                     <td className={`${T.tdRight} text-emerald-700 dark:text-emerald-300`}>{r.submitted}</td>

@@ -58,12 +58,13 @@ export function SupportPerformancePage() {
           extra={<span className="text-xs text-slate-500">{data?.note}</span>}>
           <div className={T.wrap}>
             <table className={T.table}>
-              <thead className={T.thead}><tr><th className={T.th}>Job</th><th className={T.th}>Client</th><th className={T.th}>Arrived</th><th className={T.th}>Over the SLA</th></tr></thead>
+              <thead className={T.thead}><tr><th className={T.thSno}>S.No</th><th className={T.th}>Job</th><th className={T.th}>Client</th><th className={T.th}>Arrived</th><th className={T.th}>Over the SLA</th></tr></thead>
               <tbody>
-                {paged.shown.length === 0 && <EmptyRow cols={4} loading={!data} text="✓ No job went over the SLA in this period." />}
-                {paged.shown.map((d) => (
+                {paged.shown.length === 0 && <EmptyRow cols={5} loading={!data} text="✓ No job went over the SLA in this period." />}
+                {paged.shown.map((d, i) => (
                   <tr key={d.job_id} className={`${T.row} ${ROW_EDGE.orange}`}>
-                    <td className={T.td}><Link to={`/jobs/${d.job_id}`} className={T.link}>{d.reference}</Link></td>
+                    <td className={T.tdSno}>{(paged.page - 1) * paged.size + i + 1}</td>
+                    <td className={`${T.td} whitespace-nowrap`}><Link to={`/jobs/${d.job_id}`} className={T.link}>{d.reference}</Link></td>
                     <td className={T.td}>{d.client}</td>
                     <td className={`${T.td} whitespace-nowrap`}>{formatWhen(d.created_at)}</td>
                     <td className={T.td}>

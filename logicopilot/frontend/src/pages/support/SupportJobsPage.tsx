@@ -86,16 +86,17 @@ export function SupportJobsPage() {
             <table className={T.table}>
               <thead className={T.thead}>
                 <tr>
-                  <th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
+                  <th className={T.thSno}>S.No</th><th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
                   <th className={T.th}>Stage</th><th className={T.thRight}>Pages</th><th className={T.th}>Arrived</th>
                   <th className={T.thRight}>Email → AI</th><th className={T.thRight}>Queue</th>
                   <th className={T.thRight}>Extraction</th><th className={T.thRight}>ERP</th>
                 </tr>
               </thead>
               <tbody>
-                {paged.shown.length === 0 && <EmptyRow cols={10} loading={loading && !data} text="No jobs match these filters." />}
-                {paged.shown.map((j) => (
+                {paged.shown.length === 0 && <EmptyRow cols={11} loading={loading && !data} text="No jobs match these filters." />}
+                {paged.shown.map((j, i) => (
                   <tr key={j.job_id} className={`${T.row} ${ROW_EDGE[STAGE_TONE[j.stage] ?? "slate"]} ${j.stage === "failed" ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
+                    <td className={T.tdSno}>{(paged.page - 1) * paged.size + i + 1}</td>
                     <td className={`${T.td} whitespace-nowrap`}>
                       <Link to={`/jobs/${j.job_id}`} className={T.link}>{j.reference}</Link>
                       {j.delayed && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">SLA</span>}

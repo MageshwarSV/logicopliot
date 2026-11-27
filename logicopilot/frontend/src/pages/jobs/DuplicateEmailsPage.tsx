@@ -8,14 +8,11 @@ import { Button } from "../../components/ui/Button";
 import { DataTable, type Column } from "../../components/ui/DataTable";
 import { Pagination } from "../../components/ui/Pagination";
 import * as dupApi from "../../api/duplicateEmails";
+import { formatDateTime } from "../../utils/dateTime";
 
-/** "14 Nov, 10:35" - the shape the Jobs list already prints its dates in. */
+/** "14 Nov, 10:35 AM" - the app's one date format (utils/dateTime), the same on every machine. */
 function when(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return `${d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}, ${d
-    .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  return formatDateTime(iso) || "—";
 }
 
 type QuickKey = "today" | "yesterday" | "7" | "30" | "this_month" | "prev_month" | "all" | "custom";
