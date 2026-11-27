@@ -3421,6 +3421,12 @@ def _click_through(page, loc, sel_for_log: str | None = None, timeout: int = 800
             # click just opened.
             if "intercepts pointer events" not in str(exc):
                 raise
+            # What is in the way may be the ERP's "Invalid Data Found" popup itself - a click
+            # sent past it would carry the entry on behind a rejection. Fail the click instead;
+            # the step loop then stops the run as Failed with the ERP's own words.
+            rejected = _import_rejection(page)
+            if rejected:
+                raise RuntimeError(f"the ERP shows 'Invalid Data Found' - not clicking past it: {rejected}") from exc
             logger.info("click on %r refused - %s; sending the click to the element directly",
                         sel_for_log,
                         next((ln.strip() for ln in str(exc).splitlines()
@@ -6419,6 +6425,21 @@ def _play_steps(
                     log.append(f"ABORTED: step {i + 1} ({what}) made no progress for "
                                f"{stall_after}s — returning failed")
                     aborted = True
+                    break
+                # The ERP's "Invalid Data Found" popup is on screen: stop HERE, as Failed, with
+                # its own words and a screenshot (outcome "validation"). Live Impex's update of
+                # 2026-11-27 no longer lets that popup block the screen behind it, and clicks
+                # refused by the new layout are sent to the element directly (_click_through) -
+                # so the steps carried on behind the popup, saving an entry the ERP had refused.
+                # Checked before EVERY step, not only when a step's element is missing.
+                try:
+                    _rejected_now = _import_rejection(page)
+                except Exception:  # noqa: BLE001 - a frame can vanish mid-read
+                    _rejected_now = None
+                if _rejected_now:
+                    blocked = _rejected_import_block(_rejected_now, _import_rejection_raw(page))
+                    log.append(f"STOPPED before step {i + 1} - the ERP shows 'Invalid Data Found': "
+                               f"{_rejected_now}")
                     break
                 emit(page, steps[i], i)  # the page AND what this step is waiting for
                 step = steps[i]
