@@ -260,6 +260,13 @@ def ai_map_value(value, spec: dict | None) -> str:
     ignore = tuple(str(w).strip().lower() for w in (spec.get("ignore_words") or []) if str(w).strip())
     if pattern and re.fullmatch(pattern, raw.upper()):
         return raw.upper()
+    # The box already says it: "Paranagua (BRPNG)", "BRAZIL (BR)" - the code in brackets, when it
+    # has the code's shape, is exactly what the Excel takes. Only brackets count: a plain word in
+    # the text ("CAMPO") can look like a code and is not one.
+    if pattern:
+        for inside in re.findall(r"\(([^()]+)\)", raw):
+            if re.fullmatch(pattern, inside.strip().upper()):
+                return inside.strip().upper()
     # The dropdown shows each value with its code - "Ennore (INENR1)" - and saves that text. A
     # code from the list written inside the value (in brackets or not) is the answer as it is.
     codes = {str(o["code"]).strip().upper(): str(o["code"]).strip() for o in options}
@@ -326,8 +333,17 @@ def _sea_port_code(value: str) -> str:
     return ai_map_value(value, SEA_PORT_MAP)
 
 
+def _code_in_brackets(value: str) -> str:
+    """"Paranagua (BRPNG)" -> "BRPNG", "BRAZIL (BR)" -> "BR": an AI-aided field shows the value
+    with the code the ERP takes in brackets - this column sends that code. No brackets: the value
+    as it is."""
+    found = re.findall(r"\(([^()]+)\)\s*$", value or "")
+    return found[-1].strip() if found else (value or "").strip()
+
+
 _TRANSFORMS = {
     "leading_digits": _leading_digits,
+    "code_in_brackets": _code_in_brackets,
     "sea_port_code": _sea_port_code,
 }
 

@@ -95,6 +95,9 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Shown when validation_pattern fails. None = a generic auto-worded message naming the
     # field.
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-aided (4S, 2026-11-27): the condition a typed value is converted by - e.g. "Port Name
+    # (UN/LOCODE)". Null = an ordinary field. See app/api/v1/jobs.py correct_field_value.
+    ai_aided_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # A closed list of choices for this field - the operator PICKS one on the job screen instead
     # of typing. Mirrors CustomField.fixed_options / dropdown_style exactly (same "CODE:Label"
     # form, same None/"plain" | "search" | "search_free" styles), which until now only a custom

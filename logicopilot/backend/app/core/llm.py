@@ -662,6 +662,48 @@ def normalize_place_name_with_ai(
         return ""
 
 
+def ai_aided_convert(value: str, condition: str, field_name: str = "",
+                     tenant_id: str | None = None) -> str:
+    """An AI-aided field's conversion: what an operator typed, rewritten by the field's own
+    condition (e.g. "Port Name (UN/LOCODE)": 'santos' -> 'Santos (BRSSZ)'). Returns the value
+    unchanged when it already satisfies the condition, and "" only when the condition itself says
+    so. On any failure the typed value is returned as it was - never lost. Never raises."""
+    settings = get_settings()
+    raw = (value or "").strip()
+    if not settings.openai_api_key or not raw or not (condition or "").strip():
+        return raw
+    try:
+        resp = create_chat_completion_with_retry(
+            timeout=20,
+            tenant_id=tenant_id,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "An operator typed a value into a form field. Rewrite it so it follows the "
+                        "field's CONDITION exactly. If it already follows the condition, return it "
+                        "unchanged. Keep the operator's meaning - never replace it with a different "
+                        "place, company or thing. When the condition asks for a code you are not sure "
+                        "of, return the value without that code rather than guess.\n\n"
+                        f"FIELD: {field_name or 'this field'}\n"
+                        f"CONDITION: {condition}\n\n"
+                        'Reply with JSON: {"value": "<the value as the condition wants it>"}.'
+                    ),
+                },
+                {"role": "user", "content": f"Typed value: {raw!r}"},
+            ],
+        )
+        out = json.loads(resp.choices[0].message.content or "{}").get("value")
+        return str(out).strip() if isinstance(out, str) and out.strip() else raw
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai_aided_convert failed for %r: %s", raw, exc)
+        return raw
+
+
 def ai_map_with_ai(raw: str, options: list[tuple[str, str]], instruction: str,
                    pattern: str = "", tenant_id: str | None = None) -> str:
     """An AI-aided field's last resort (excel_entry.ai_map_value): `raw` - what an operator typed,

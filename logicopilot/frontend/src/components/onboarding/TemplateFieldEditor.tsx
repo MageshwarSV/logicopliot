@@ -359,6 +359,15 @@ export function TemplateFieldEditor({
                     </Row>
                   )}
                   <Check checked={Boolean(v("validation_uppercase"))} onChange={(b) => set("validation_uppercase", b)} label="Always UPPERCASE" help="Converted on save, whatever the operator types." />
+                  <Check checked={v("ai_aided_prompt") !== null && v("ai_aided_prompt") !== undefined}
+                    onChange={(b) => set("ai_aided_prompt", b ? asStr(v("ai_aided_prompt")) : null)}
+                    label="AI-aided field"
+                    help="Whatever the operator types and saves is rewritten by the condition below before it is stored - the screen shows exactly what the Excel gets." />
+                  {v("ai_aided_prompt") !== null && v("ai_aided_prompt") !== undefined && (
+                    <textarea className={INPUT} rows={3} value={asStr(v("ai_aided_prompt"))}
+                      placeholder="Condition, e.g.: Port Name (UN/LOCODE) - the port's name in title case, then its 5-letter UN/LOCODE in brackets."
+                      onChange={(e) => set("ai_aided_prompt", e.target.value)} />
+                  )}
                 </>
               )}
 

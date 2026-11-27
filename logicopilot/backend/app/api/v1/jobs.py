@@ -12197,6 +12197,23 @@ def correct_field_value(
             saved = check_correction(db, job_for_rules, db.get(_CFt, fv.custom_field_id), saved)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # AI-aided field (4S, 2026-11-27): what the operator typed is rewritten by the field's own
+    # condition before it is stored - "santos" -> "Santos (BRSSZ)" - so the screen shows exactly
+    # what the Excel will carry. A failed or unsure conversion keeps what was typed.
+    if saved.strip():
+        _owner = None
+        if fv.mark_id:
+            _owner = db.get(FieldMark, fv.mark_id)
+        elif fv.custom_field_id:
+            from app.models.custom_field import CustomField as _CFa
+
+            _owner = db.get(_CFa, fv.custom_field_id)
+        _condition = (getattr(_owner, "ai_aided_prompt", None) or "").strip() if _owner else ""
+        if _condition:
+            from app.core.llm import ai_aided_convert
+
+            saved = ai_aided_convert(saved, _condition, getattr(_owner, "display_label", None) or fv.label_name,
+                                     tenant_id=job_for_rules.tenant_id) or saved
     from app.core import field_edits
 
     field_edits.record(db, fv, fv.value, saved, user, source="edit")

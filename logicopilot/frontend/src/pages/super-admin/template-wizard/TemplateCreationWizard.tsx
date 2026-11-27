@@ -133,6 +133,34 @@ const GENERATED_COLUMNS = [
 
 const flatten = (v: string) => (v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
+
+// AI-aided field (4S, 2026-11-27): the condition a typed value is rewritten by when an operator
+// saves it - e.g. "Port Name (UN/LOCODE)": 'santos' -> 'Santos (BRSSZ)'. Null = an ordinary field.
+function AiAidedOption({ value, onChange, small }: { value: string | null; onChange: (v: string | null) => void; small?: boolean }) {
+  const on = value !== null;
+  return (
+    <div className={`mt-3 rounded-lg border border-violet-200 p-2 dark:border-violet-500/30 ${small ? "text-xs" : "text-sm"}`}>
+      <label className="flex items-center gap-2 font-medium text-slate-800 dark:text-slate-100">
+        <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked ? "" : null)} />
+        AI-aided field
+      </label>
+      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+        Whatever the operator types and saves is rewritten by this condition before it is stored - so the
+        screen shows exactly what the Excel gets. E.g. typed &quot;santos&quot; becomes &quot;Santos (BRSSZ)&quot;.
+      </p>
+      {on && (
+        <textarea
+          rows={3}
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Condition, e.g.: Port Name (UN/LOCODE) - the port's name in title case, then its 5-letter UN/LOCODE in brackets, e.g. Rotterdam (NLRTM)."
+          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
+      )}
+    </div>
+  );
+}
+
 export function TemplateCreationWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -211,6 +239,7 @@ export function TemplateCreationWizard() {
   const [validationCustom, setValidationCustom] = useState("");
   const [validationUppercase, setValidationUppercase] = useState(false);
   const [validationMessage, setValidationMessage] = useState("");
+  const [aiAidedPrompt, setAiAidedPrompt] = useState<string | null>(null);
   // Spans the full row on the job screen instead of sharing it with whatever sits beside it -
   // see FieldMark.full_width's own docstring.
   const [fullWidth, setFullWidth] = useState(false);
@@ -396,6 +425,7 @@ export function TemplateCreationWizard() {
   const [editValidationCustom, setEditValidationCustom] = useState("");
   const [editValidationUppercase, setEditValidationUppercase] = useState(false);
   const [editValidationMessage, setEditValidationMessage] = useState("");
+  const [editAiAidedPrompt, setEditAiAidedPrompt] = useState<string | null>(null);
   const [editFullWidth, setEditFullWidth] = useState(false);
   const [editMultiline, setEditMultiline] = useState(false);
   const [editDatePicker, setEditDatePicker] = useState(false);
@@ -442,6 +472,7 @@ export function TemplateCreationWizard() {
   const [cfValidationCustom, setCfValidationCustom] = useState("");
   const [cfValidationUppercase, setCfValidationUppercase] = useState(false);
   const [cfValidationMessage, setCfValidationMessage] = useState("");
+  const [cfAiAidedPrompt, setCfAiAidedPrompt] = useState<string | null>(null);
   const [cfFullWidth, setCfFullWidth] = useState(false);
   const [cfMultiline, setCfMultiline] = useState(false);
   const [cfFieldOrder, setCfFieldOrder] = useState("");
@@ -579,6 +610,7 @@ export function TemplateCreationWizard() {
     setCfPairedFieldId(""); setCfPickerHeading(""); setCfSyncFieldIds([]); setCfCompositeLabels([]); setCfCompositeFixedInput(""); setCfSectionHeading(""); setCfDisplayLabel(""); setCfDisplayDocumentId("");
     setCfInputType("text"); setCfFixedOptionsText(""); setCfDateFormat("");
     setCfValidationMode("none"); setCfValidationLength(""); setCfValidationCustom(""); setCfValidationUppercase(false); setCfValidationMessage("");
+    setCfAiAidedPrompt(null);
     setCfFullWidth(false); setCfMultiline(false); setCfFieldOrder("");
     setCfDocs(group?.documents.map((d) => d.id) ?? []); // default: all documents
     setError(null); setCustomOpen(true);
@@ -628,6 +660,7 @@ export function TemplateCreationWizard() {
     setCfValidationCustom(cfParsedValidation.custom);
     setCfValidationUppercase(!!cf.validation_uppercase);
     setCfValidationMessage(cf.validation_message ?? "");
+    setCfAiAidedPrompt(cf.ai_aided_prompt ?? null);
     setCfFullWidth(!!cf.full_width);
     setCfMultiline(!!cf.multiline);
     setCfFieldOrder(cf.field_order != null ? String(cf.field_order) : "");
@@ -694,6 +727,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(cfValidationMode, cfValidationLength, cfValidationCustom),
         validation_uppercase: cfValidationUppercase,
         validation_message: cfValidationMessage.trim() || null,
+        ai_aided_prompt: cfAiAidedPrompt?.trim() || null,
         full_width: cfFullWidth,
         multiline: cfMultiline,
         field_order: cfFieldOrder.trim() === "" ? null : Number(cfFieldOrder),
@@ -827,6 +861,7 @@ export function TemplateCreationWizard() {
     setStandaloneHeading("");
     setDisplayLabel("");
     setValidationMode("none"); setValidationLength(""); setValidationCustom(""); setValidationUppercase(false); setValidationMessage("");
+    setAiAidedPrompt(null);
     setFullWidth(false); setMultiline(false); setFieldOrder("");
     setDatePicker(false); setDateFormat("");
     setTargetValue(false);
@@ -862,6 +897,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(validationMode, validationLength, validationCustom),
         validation_uppercase: validationUppercase,
         validation_message: validationMessage.trim() || null,
+        ai_aided_prompt: aiAidedPrompt?.trim() || null,
         full_width: fullWidth,
         multiline: multiline,
         date_picker: datePicker,
@@ -966,6 +1002,7 @@ export function TemplateCreationWizard() {
     setEditValidationCustom(parsedValidation.custom);
     setEditValidationUppercase(!!m.validation_uppercase);
     setEditValidationMessage(m.validation_message ?? "");
+    setEditAiAidedPrompt(m.ai_aided_prompt ?? null);
     setEditFullWidth(!!m.full_width);
     setEditMultiline(!!m.multiline);
     setEditDatePicker(!!m.date_picker);
@@ -996,6 +1033,7 @@ export function TemplateCreationWizard() {
         validation_pattern: buildValidationPattern(editValidationMode, editValidationLength, editValidationCustom),
         validation_uppercase: editValidationUppercase,
         validation_message: editValidationMessage.trim() || null,
+        ai_aided_prompt: editAiAidedPrompt?.trim() || null,
         full_width: editFullWidth,
         multiline: editMultiline,
         date_picker: editDatePicker,
@@ -1844,6 +1882,7 @@ export function TemplateCreationWizard() {
                         <input type="checkbox" checked={editValidationUppercase} onChange={(e) => setEditValidationUppercase(e.target.checked)} />
                         Convert to UPPERCASE automatically on save
                       </label>
+                      <AiAidedOption value={editAiAidedPrompt} onChange={setEditAiAidedPrompt} small />
                       <label className="mt-2 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
                         <input type="checkbox" checked={editFullWidth} onChange={(e) => setEditFullWidth(e.target.checked)} />
                         Full width on the job screen (instead of sharing the row)
@@ -2690,6 +2729,7 @@ export function TemplateCreationWizard() {
               <input type="checkbox" checked={validationUppercase} onChange={(e) => setValidationUppercase(e.target.checked)} />
               Convert to UPPERCASE automatically on save
             </label>
+            <AiAidedOption value={aiAidedPrompt} onChange={setAiAidedPrompt} />
             <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={fullWidth} onChange={(e) => setFullWidth(e.target.checked)} />
               Full width on the job screen (instead of sharing the row)
@@ -3121,6 +3161,7 @@ export function TemplateCreationWizard() {
               <input type="checkbox" checked={cfValidationUppercase} onChange={(e) => setCfValidationUppercase(e.target.checked)} />
               Convert to UPPERCASE automatically on save
             </label>
+            <AiAidedOption value={cfAiAidedPrompt} onChange={setCfAiAidedPrompt} />
             <label className="mt-2 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={cfFullWidth} onChange={(e) => setCfFullWidth(e.target.checked)} />
               Full width on the job screen (instead of sharing the row)
