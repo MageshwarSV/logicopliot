@@ -47,3 +47,25 @@ def test_lines_come_from_the_per_line_boxes(db_session):
 def test_product_description_still_decides_when_present(db_session):
     j = _setup(db_session, with_product_description=True)
     assert _product_line_keys(db_session, j) == {(1, 1), (1, 2)}
+
+
+def test_the_drawn_box_beats_a_cross_check_copy(db_session):
+    """The Package List's copy of 'description' (no box, read by meaning) must not replace the
+    invoice's own reading in the Combined Description."""
+    from app.api.v1.jobs import _per_line_values
+
+    j = _setup(db_session)
+    inv_desc = db_session.query(FieldMark).filter_by(label_name="description").first()
+    pl = TemplateDocument(tenant_id=j.tenant_id, group_id=j.group_id, name="PACKAGE LIST", doc_type="PackingList")
+    db_session.add(pl); db_session.flush()
+    copy = FieldMark(tenant_id=j.tenant_id, document_id=pl.id, label_name="description", page_number=1,
+                     x=0, y=0, width=0, height=0, is_multi_value=True)
+    db_session.add(copy); db_session.flush()
+    # the copy is stored FIRST, so the old first-seen rule would have taken it
+    first = JobFieldValue(tenant_id=j.tenant_id, job_id=j.id, mark_id=copy.id, label_name="description",
+                          row_index=1, extracted_value="615-0504 03 HORN AS-DIS")
+    db_session.add(first); db_session.commit()
+    db_session.query(JobFieldValue).filter_by(job_id=j.id, mark_id=inv_desc.id, row_index=1).update(
+        {"extracted_value": "ELECTRIC HORNS-615-0504 03 HORN AS-DISC"})
+    db_session.commit()
+    assert _per_line_values(db_session, j, "description")[(1, 1)] == "ELECTRIC HORNS-615-0504 03 HORN AS-DISC"

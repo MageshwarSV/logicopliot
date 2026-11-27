@@ -9817,6 +9817,36 @@ def _backfill_missing_standalone_cells(db: Session, job: Job, group: TemplateGro
     return created
 
 
+def _per_line_values(db: Session, job: Job, label: str) -> dict[tuple[int, int], str]:
+    """One line-item field's value per line, keyed by (invoice set, line).
+
+    One line can carry the same field from MORE THAN ONE place, and only one is the answer:
+      * a blank duplicate (the same invoice attached twice, one copy reading nothing) - a real
+        value always beats a blank one (production 2026-11-23, JOB-D6BE84);
+      * a cross-check copy (a field linked to another document is copied there with no box of
+        its own, read by meaning, only to compare) - the value read from a box DRAWN on its
+        document beats the copy (Sea Export 2026-11-27: the Package List's copy of the
+        description, "615-0504 03 HORN AS-DIS", went into the Combined Description instead of
+        the invoice's "ELECTRIC HORNS-615-0504 03 HORN AS-DISC").
+    Two real values of the same kind stay first-seen, as before."""
+    rows = db.query(JobFieldValue).filter(
+        JobFieldValue.job_id == job.id,
+        JobFieldValue.row_index.isnot(None),
+        JobFieldValue.label_name == label).all()
+    mark_ids = {fv.mark_id for fv in rows if fv.mark_id}
+    drawn = {m_id for (m_id, w) in db.query(FieldMark.id, FieldMark.width)
+             .filter(FieldMark.id.in_(mark_ids)).all() if (w or 0) > 0} if mark_ids else set()
+    out: dict[tuple[int, int], str] = {}
+    rank: dict[tuple[int, int], tuple[int, int]] = {}
+    for fv in rows:
+        key = ((fv.set_index or 1), fv.row_index)
+        val = (fv.corrected_value or fv.extracted_value or "").strip()
+        r = (1 if val else 0, 1 if (not fv.mark_id or fv.mark_id in drawn) else 0)
+        if key not in rank or r > rank[key]:
+            out[key], rank[key] = val, r
+    return out
+
+
 def _product_line_keys(db: Session, job: Job) -> set[tuple[int, int]]:
     """Every product line on this job, as (invoice set, line number).
 
@@ -10998,34 +11028,7 @@ def run_extraction(
     from app.core.reference_cache import lookup_reference
 
     def _line_values(label: str) -> dict[tuple[int, int], str]:
-        """One line-item field's value per line, e.g. the material code per invoice line.
-
-        Keyed by (set, line) — with three invoices on the job, "line 3" is three different
-        products and keying on the line number alone let the last one read overwrite the
-        other two.
-        """
-        out: dict[tuple[int, int], str] = {}
-        for fv in db.query(JobFieldValue).filter(
-                JobFieldValue.job_id == job.id,
-                JobFieldValue.row_index.isnot(None),
-                JobFieldValue.label_name == label).all():
-            key = ((fv.set_index or 1), fv.row_index)
-            val = (fv.corrected_value or fv.extracted_value or "").strip()
-            # One line of one set can have a row from MORE THAN ONE document - the same
-            # invoice attached twice, say - and only one of them actually read the line.
-            # The key is (set, row) with no document in it, so whichever row the query
-            # happened to return LAST used to win: an empty duplicate silently erased a real
-            # value, and a composite field built from it came out as its fixed text alone.
-            # Seen on production 2026-11-23, JOB-D6BE84: the same invoice (94283641) sat in
-            # the job as a 2-page and a 4-page file, the second read 24 blank lines, and 24
-            # of 51 Combined Descriptions collapsed to "-PART NO.(TRANSMISSION PARTS)" with
-            # the product description and part code gone.
-            # A real value always beats a blank one. Two non-blank rows for one line stay
-            # ambiguous - first seen wins - but that case is a genuine data question, not
-            # this one, where one side simply has nothing to say.
-            if val or key not in out:
-                out[key] = val
-        return out
+        return _per_line_values(db, job, label)
 
     standalone_mark_labels = _standalone_mark_labels(group)
     def _ai_docs_text(src_ids: list[str]) -> str:
@@ -12364,28 +12367,7 @@ def _recompute_per_row_custom_field(
     # actually recomputing it - found while wiring up a second per-row AI field and
     # confirming this same endpoint would need to handle it too.
     def _row_values(label: str) -> dict[tuple[int, int], str]:
-        out: dict[tuple[int, int], str] = {}
-        for fv in db.query(JobFieldValue).filter(
-                JobFieldValue.job_id == job.id,
-                JobFieldValue.row_index.isnot(None),
-                JobFieldValue.label_name == label).all():
-            key = ((fv.set_index or 1), fv.row_index)
-            val = (fv.corrected_value or fv.extracted_value or "").strip()
-            # One line of one set can have a row from MORE THAN ONE document - the same
-            # invoice attached twice, say - and only one of them actually read the line.
-            # The key is (set, row) with no document in it, so whichever row the query
-            # happened to return LAST used to win: an empty duplicate silently erased a real
-            # value, and a composite field built from it came out as its fixed text alone.
-            # Seen on production 2026-11-23, JOB-D6BE84: the same invoice (94283641) sat in
-            # the job as a 2-page and a 4-page file, the second read 24 blank lines, and 24
-            # of 51 Combined Descriptions collapsed to "-PART NO.(TRANSMISSION PARTS)" with
-            # the product description and part code gone.
-            # A real value always beats a blank one. Two non-blank rows for one line stay
-            # ambiguous - first seen wins - but that case is a genuine data question, not
-            # this one, where one side simply has nothing to say.
-            if val or key not in out:
-                out[key] = val
-        return out
+        return _per_line_values(db, job, label)
 
     computed: dict[tuple[int, int], str] = {}
     # The product-anchored set, unless the "lookup" branch below extends it for a field keyed
