@@ -163,6 +163,8 @@ export interface JobFieldValue {
   lookup_source?: string | null;
   /** Indian Customs Tariff: tariff_doc / tariff_ai / tariff_fallback when the code is a suggestion. */
   value_source?: string | null;
+  /** This box feeds an ERP country / currency code column: a search dropdown that saves the code. */
+  erp_master?: "country" | "currency" | null;
   source_note?: string | null;
   /** Admin-settable - spans the full row in the job screen's two-column field grid instead of
    *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing

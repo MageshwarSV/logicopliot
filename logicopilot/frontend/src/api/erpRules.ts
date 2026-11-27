@@ -73,3 +73,14 @@ export async function getJobErpCheck(jobId: string): Promise<{ checked: boolean;
   const { data } = await apiClient.get(`/jobs/${jobId}/erp-check`);
   return data;
 }
+
+/** The country / currency list for a code box's search dropdown - fetched once per list. */
+export interface MasterEntry { code: string; name: string }
+const masterCache: Record<string, Promise<MasterEntry[]>> = {};
+export function getMasterList(kind: "country" | "currency"): Promise<MasterEntry[]> {
+  if (!masterCache[kind]) {
+    masterCache[kind] = apiClient.get<MasterEntry[]>(`/erp-rules/masters/${kind}`).then((r) => r.data)
+      .catch((err) => { delete masterCache[kind]; throw err; });
+  }
+  return masterCache[kind];
+}

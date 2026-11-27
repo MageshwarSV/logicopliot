@@ -195,3 +195,40 @@ def test_live_check_endpoint(client, db_session):
     assert login(client, sa.email).status_code == 200
     body = client.get(f"/api/v1/jobs/{job.id}/erp-check").json()
     assert body["checked"] and body["items"][0]["sent"] == ["Polska"] and body["items"][0]["field_value_ids"]
+
+
+# ---------------------------------------------------------------- dropdown boxes save the code
+
+def test_boxes_feeding_code_columns_and_saving_the_code(client, db_session):
+    from app.models.user import OPERATOR, TENANT_ADMIN
+
+    assert er.master_by_label(_job(db_session)[1]) == {"Origin": "country", "CountryOfOriginCode": "country",
+                                                      "currency": "currency"}
+    t, _g, job = _job(db_session)
+    make_user(db_session, role=TENANT_ADMIN, tenant=t, email=f"ta-{uuid.uuid4().hex[:6]}@example.com")
+    op = make_user(db_session, role=OPERATOR, tenant=t, email=f"op-{uuid.uuid4().hex[:6]}@example.com")
+    assert login(client, op.email).status_code == 200
+    detail = client.get(f"/api/v1/jobs/{job.id}").json()
+    origin = next(f for f in detail["field_values"] if f["label_name"] == "Origin")
+    assert origin["erp_master"] == "country"
+    r = client.patch(f"/api/v1/job-field-values/{origin['id']}", json={"corrected_value": "Poland"})
+    assert r.status_code == 200 and r.json()["corrected_value"] == "PL" and r.json()["erp_master"] == "country"
+    r = client.patch(f"/api/v1/job-field-values/{origin['id']}", json={"corrected_value": "POLLNAD"})
+    assert r.status_code == 422 and "Pick from the list" in r.json()["detail"]
+    countries = client.get("/api/v1/erp-rules/masters/country").json()
+    assert {"code": "PL", "name": "Poland"} in countries
+    assert client.get("/api/v1/erp-rules/masters/currency").json()[0] == {"code": "INR", "name": "Indian Rupee"}
+
+
+def test_ai_aided_box_keeps_its_own_conversion(db_session):
+    """A box with Mageshwar's AI-aided condition keeps it (no dropdown, no code check on save);
+    "BRAZIL (BR)" still reads as BR anywhere a code is needed."""
+    from app.models.custom_field import CustomField
+
+    assert normalize_country("BRAZIL (BR)") == "BR"
+    t, g, _j = _job(db_session)
+    db_session.add(CustomField(tenant_id=t.id, group_id=g.id, label_name="Origin", kind="ai",
+                               ai_aided_prompt="COUNTRY (ISO2)"))
+    db_session.commit()
+    assert "Origin" not in er.master_by_label(g)
+    assert er.master_by_label(g)["CountryOfOriginCode"] == "country"

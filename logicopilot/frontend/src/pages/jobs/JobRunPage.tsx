@@ -5,7 +5,7 @@ import { PrintPagesModal } from "./PrintPagesModal";
 import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
 import { ErpFixCard } from "./ErpFixCard";
 import { LiveErpCheck } from "./LiveErpCheck";
-import { getJobErpCheck } from "../../api/erpRules";
+import { getJobErpCheck, getMasterList, type MasterEntry } from "../../api/erpRules";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -5545,9 +5545,9 @@ function ExtractedField({
   wrapLabel,
   flagged,
   flagNote,
-  hint,
-  comboOptions,
-  comboPickOnly,
+  hint: hintProp,
+  comboOptions: comboOptionsProp,
+  comboPickOnly: comboPickOnlyProp,
   asyncSearchPicker,
   onBeforeSave,
   onDraftChange,
@@ -5672,6 +5672,29 @@ function ExtractedField({
   /** Shown in the field's own header row, beside its label - not below the box. */
   headerExtra?: ReactNode;
 }) {
+  // A box feeding an ERP country / currency code column (fv.erp_master, app/core/erp_rules.py):
+  // a search dropdown - type "po", pick "PL - Poland", PL is saved and sent. Only when the
+  // field has no list of its own.
+  const masterKind = !options && !asyncSearchPicker && !comboOptionsProp ? (fv.erp_master ?? null) : null;
+  const [masterList, setMasterList] = useState<MasterEntry[] | null>(null);
+  useEffect(() => {
+    if (!masterKind) { setMasterList(null); return; }
+    let live = true;
+    getMasterList(masterKind).then((l) => { if (live) setMasterList(l); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [masterKind]);
+  const comboLabels = useMemo(
+    () => (masterList ? Object.fromEntries(masterList.map((m) => [m.code, m.name])) as Record<string, string> : undefined),
+    [masterList],
+  );
+  const comboOptions = masterList ? masterList.map((m) => m.code) : comboOptionsProp;
+  const comboPickOnly = masterList ? true : comboPickOnlyProp;
+  const currentCode = (fv.value ?? "").trim().toUpperCase();
+  const hint = hintProp ?? (comboLabels && currentCode
+    ? (comboLabels[currentCode] !== undefined
+        ? `${currentCode} = ${comboLabels[currentCode] || currentCode}`
+        : `"${fv.value}" is not a ${masterKind} code - pick one from the list`)
+    : undefined);
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
   // Indian Customs Tariff: while a code is being typed (4-7 digits), the tariff codes that start
@@ -6243,7 +6266,7 @@ function ExtractedField({
                 />
                 <div className="max-h-56 overflow-y-auto">
                   {(comboOptions ?? [])
-                    .filter((opt) => opt.toLowerCase().includes(comboQuery.trim().toLowerCase()))
+                    .filter((opt) => `${opt} ${comboLabels?.[opt] ?? ""}`.toLowerCase().includes(comboQuery.trim().toLowerCase()))
                     .map((opt) => (
                       <button
                         key={opt}
@@ -6257,7 +6280,7 @@ function ExtractedField({
                         }}
                         className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
                       >
-                        {opt}
+                        {comboLabels?.[opt] ? `${opt} — ${comboLabels[opt]}` : opt}
                       </button>
                     ))}
                 </div>

@@ -4278,6 +4278,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     from app.core.reference_cache import reference_key, reference_map_for
 
     lookup_source_by_fv: dict[str, str] = {}
+    from app.core.erp_rules import master_by_label
+
+    erp_master_by_label = master_by_label(group)
     # Only the PICKER PRIMARIES - the fields with a paired candidate, i.e. "Dump CTH Number".
     # lookup_source has exactly one reader in the whole product: the line under that box in the
     # picker ("matched on Part Code"). It is not stored, not read by the manager app, and left
@@ -4448,6 +4451,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                                 or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                erp_master=erp_master_by_label.get(fv.label_name),
                 value_source=fv.value_source,
                 source_note=fv.source_note,
                 full_width=(
@@ -12200,6 +12204,7 @@ def correct_field_value(
     # AI-aided field (4S, 2026-11-27): what the operator typed is rewritten by the field's own
     # condition before it is stored - "santos" -> "Santos (BRSSZ)" - so the screen shows exactly
     # what the Excel will carry. A failed or unsure conversion keeps what was typed.
+    _condition = ""
     if saved.strip():
         _owner = None
         if fv.mark_id:
@@ -12214,6 +12219,18 @@ def correct_field_value(
 
             saved = ai_aided_convert(saved, _condition, getattr(_owner, "display_label", None) or fv.label_name,
                                      tenant_id=job_for_rules.tenant_id) or saved
+    # A box feeding an ERP country / currency code column saves the code: "Poland" -> "PL".
+    # Not on a box with its own AI-aided condition (above) - that box keeps its "Name (CODE)"
+    # form, and its Excel column sends the code in brackets.
+    if saved.strip() and not _condition:
+        from app.core.erp_rules import code_for_saving, master_by_label
+
+        _master = master_by_label(db.get(TemplateGroup, job_for_rules.group_id)).get(fv.label_name)
+        if _master:
+            try:
+                saved = code_for_saving(_master, saved)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
     from app.core import field_edits
 
     field_edits.record(db, fv, fv.value, saved, user, source="edit")
@@ -12263,9 +12280,17 @@ def correct_field_value(
         found_y=fv.found_y,
         found_width=fv.found_width,
         found_height=fv.found_height,
+        erp_master=_erp_master_of(db, job_for_rules, fv),
         value_source=fv.value_source,
         source_note=fv.source_note,
     )
+
+
+def _erp_master_of(db: Session, job: Job, fv: JobFieldValue) -> str | None:
+    """"country" / "currency" when this value's box feeds an ERP code column (erp_rules)."""
+    from app.core.erp_rules import master_by_label
+
+    return master_by_label(db.get(TemplateGroup, job.group_id)).get(fv.label_name)
 
 
 def _recompute_per_row_custom_field(

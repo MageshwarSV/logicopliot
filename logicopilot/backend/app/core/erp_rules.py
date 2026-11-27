@@ -308,3 +308,61 @@ def record_suggestions(db: Session, job, help_: dict) -> int:
         stored[SUGGESTED_KEY] = suggested
         group.erp_column_rules = stored
     return new
+
+
+# ---------------------------------------------------------------- the boxes that feed a coded column
+
+def master_by_label(group) -> dict[str, str]:
+    """{Cargora field label: "country" | "currency"} for every field that feeds an ERP column
+    whose rule is a country / currency code - the job screen turns those boxes into a search
+    dropdown that saves the code ("Poland" picked -> "PL" saved), and saving checks it."""
+    if group is None or (getattr(group, "entry_mode", None) or "fields") != "excel":
+        return {}
+    rules = effective_rules(group)
+    out: dict[str, str] = {}
+    for plan, col, header in _columns(getattr(group, "excel_config", None) or {}):
+        rule = rules.get(rule_key(plan.get("sheet"), header))
+        master = (rule or {}).get("master")
+        if master not in ("country", "currency"):
+            continue
+        for label in [col.get("field") or ""] + list(col.get("fallback_fields") or []):
+            label = str(label).split("@@")[0].strip()
+            if label and not label.startswith("#"):
+                out.setdefault(label, master)
+    # A box with its own AI-aided condition (Mageshwar, 2026-11-27) keeps it: it saves
+    # "BRAZIL (BR)" and its Excel column sends the code in brackets - no dropdown from here.
+    for label in _ai_aided_labels(group):
+        out.pop(label, None)
+    return out
+
+
+def _ai_aided_labels(group) -> set[str]:
+    from sqlalchemy.orm import object_session
+
+    labels: set[str] = set()
+    for doc in getattr(group, "documents", None) or []:
+        for m in getattr(doc, "marks", None) or []:
+            if (getattr(m, "ai_aided_prompt", None) or "").strip():
+                labels.add(m.label_name)
+    db = object_session(group)
+    if db is not None:
+        from app.models.custom_field import CustomField
+
+        for c in db.query(CustomField).filter(CustomField.group_id == group.id).all():
+            if (getattr(c, "ai_aided_prompt", None) or "").strip():
+                labels.add(c.label_name)
+    return labels
+
+
+def code_for_saving(master: str, value: str) -> str:
+    """What an operator's typed / picked value is saved as, or raises ValueError (why)."""
+    from app.core.erp_masters import COUNTRIES, CURRENCIES, MASTERS, normalize_country, normalize_currency
+
+    v = (value or "").strip()
+    if not v:
+        return value
+    code = normalize_country(v) if master == "country" else normalize_currency(v)
+    ok = code.upper() in (COUNTRIES if master == "country" else CURRENCIES)
+    if not ok:
+        raise ValueError(f"Pick from the list - {MASTERS[master][0]}")
+    return code.upper()

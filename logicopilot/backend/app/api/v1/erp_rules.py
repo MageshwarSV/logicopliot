@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_db, require_role
+from app.core.deps import get_current_user, get_db, require_role
 from app.core.erp_masters import MASTERS
 from app.core.erp_rules import (DISMISSED_KEY, SUGGESTED_KEY, _columns, builtin_rule, describe,
                                  effective_rules, rule_key)
@@ -70,6 +70,16 @@ def _clean(rule: dict) -> dict | None:
     if "length_mode" in out and "length" not in out:
         out.pop("length_mode")
     return out or None
+
+
+@router.get("/masters/{kind}")
+def masters(kind: str, _u: User = Depends(get_current_user)) -> list[dict]:
+    """The country / currency list for the job screen's search dropdown (any signed-in user)."""
+    from app.core.erp_masters import master_list
+
+    if kind not in ("country", "currency"):
+        raise HTTPException(status_code=404, detail="Unknown list")
+    return master_list(kind)
 
 
 @router.get("/templates")

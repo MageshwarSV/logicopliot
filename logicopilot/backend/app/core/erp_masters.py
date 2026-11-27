@@ -104,6 +104,10 @@ def normalize_country(value) -> str:
     up = re.sub(r"\s+", " ", v).upper().strip(" .")
     if len(up) == 2 and up in COUNTRIES:
         return up
+    # "BRAZIL (BR)" - the form an AI-aided box saves: the code in brackets.
+    m = re.search(r"\(([A-Z]{2})\)\s*$", up)
+    if m and m.group(1) in COUNTRIES:
+        return m.group(1)
     hit = _NAME_TO_CODE.get(up) or _NAME_TO_CODE.get(up.replace("&", "AND"))
     return hit or raw
 
@@ -138,4 +142,32 @@ def normalize_currency(value) -> str:
     up = re.sub(r"\s+", " ", v).upper().strip()
     if len(up) == 3 and up in CURRENCIES:
         return up
+    m = re.search(r"\(([A-Z]{3})\)\s*$", up)
+    if m and m.group(1) in CURRENCIES:
+        return m.group(1)
     return _CURRENCY_ALIASES.get(up) or _CURRENCY_ALIASES.get(up.rstrip(".")) or raw
+
+
+CURRENCY_NAMES = {
+    "USD": "US Dollar", "EUR": "Euro", "GBP": "British Pound", "INR": "Indian Rupee", "CNY": "Chinese Yuan",
+    "JPY": "Japanese Yen", "SGD": "Singapore Dollar", "HKD": "Hong Kong Dollar", "AUD": "Australian Dollar",
+    "CAD": "Canadian Dollar", "CHF": "Swiss Franc", "AED": "UAE Dirham", "SAR": "Saudi Riyal",
+    "MYR": "Malaysian Ringgit", "THB": "Thai Baht", "KRW": "Korean Won", "TWD": "New Taiwan Dollar",
+    "SEK": "Swedish Krona", "NOK": "Norwegian Krone", "DKK": "Danish Krone", "NZD": "New Zealand Dollar",
+    "ZAR": "South African Rand", "IDR": "Indonesian Rupiah", "PHP": "Philippine Peso", "VND": "Vietnamese Dong",
+    "BDT": "Bangladeshi Taka", "LKR": "Sri Lankan Rupee", "PKR": "Pakistani Rupee", "NPR": "Nepalese Rupee",
+    "RUB": "Russian Ruble", "TRY": "Turkish Lira", "BRL": "Brazilian Real", "MXN": "Mexican Peso",
+    "PLN": "Polish Zloty", "CZK": "Czech Koruna", "HUF": "Hungarian Forint", "ILS": "Israeli Shekel",
+    "KWD": "Kuwaiti Dinar", "QAR": "Qatari Riyal", "OMR": "Omani Rial", "BHD": "Bahraini Dinar",
+}
+
+
+def master_list(kind: str) -> list[dict]:
+    """[{"code", "name"}] for the job screen's search dropdown."""
+    if kind == "country":
+        return sorted(({"code": c, "name": n} for c, n in COUNTRIES.items()), key=lambda r: r["name"])
+    if kind == "currency":
+        common = ["INR", "USD", "EUR", "GBP", "CNY", "JPY", "SGD", "AED"]
+        rest = sorted(c for c in CURRENCIES if c not in common)
+        return [{"code": c, "name": CURRENCY_NAMES.get(c, "")} for c in common + rest]
+    return []
