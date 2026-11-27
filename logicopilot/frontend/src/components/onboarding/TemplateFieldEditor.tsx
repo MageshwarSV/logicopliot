@@ -459,8 +459,9 @@ export function TemplateFieldEditor({
               {section === "screen" && (
                 <>
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <Check checked={Boolean(v("full_width"))} onChange={(b) => { set("full_width", b); if (b) set("quarter_width", false); }} label="Full width" />
-                    <Check checked={Boolean(v("quarter_width"))} onChange={(b) => { set("quarter_width", b); if (b) set("full_width", false); }} label="Quarter width (3-4 short fields on one line)" />
+                    <Check checked={Boolean(v("full_width"))} onChange={(b) => { set("full_width", b); if (b) { set("quarter_width", false); set("third_width", false); } }} label="Full width" />
+                    <Check checked={Boolean(v("third_width"))} onChange={(b) => { set("third_width", b); if (b) { set("full_width", false); set("quarter_width", false); } }} label="Third width (3 fields on one line)" />
+                    <Check checked={Boolean(v("quarter_width"))} onChange={(b) => { set("quarter_width", b); if (b) { set("full_width", false); set("third_width", false); } }} label="Quarter width (4 fields on one line)" />
                     <Check checked={Boolean(v("multiline"))} onChange={(b) => set("multiline", b)} label="Multi-line box" />
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">

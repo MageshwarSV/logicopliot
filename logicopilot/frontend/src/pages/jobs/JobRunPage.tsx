@@ -8422,7 +8422,7 @@ function ExtractionReview({
                   if (fv.label_name === "insurance_amount") return null;
                   if (fv.label_name === "insurance_percentage") {
                     return (
-                      <div key={fv.id} id={`field-${fv.id}`} className="sm:col-span-4">
+                      <div key={fv.id} id={`field-${fv.id}`} className="sm:col-span-12">
                         <InsuranceModeField
                           percentageFv={insurancePercentageFv}
                           amountFv={insuranceAmountFv}
@@ -8558,10 +8558,12 @@ function ExtractionReview({
                       className={
                         `flex flex-col ${
                           FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
-                            ? "sm:col-span-4"
+                            ? "sm:col-span-12"
                             : fv.quarter_width
-                            ? "sm:col-span-1"
-                            : "sm:col-span-2"
+                            ? "sm:col-span-3"
+                            : fv.third_width
+                            ? "sm:col-span-4"
+                            : "sm:col-span-6"
                         }`
                       }
                     >
@@ -8731,14 +8733,14 @@ function ExtractionReview({
                         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                           {heading}
                         </p>
-                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-4">
+                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-12">
                           {items.map(renderField)}
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-4">
+                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-12">
                     {visibleFields.map(renderField)}
                     {relocatedFields.map(renderField)}
                   </div>

@@ -99,6 +99,7 @@ export async function createCustomField(
     ai_aided_prompt?: string | null;
     full_width?: boolean;
     quarter_width?: boolean;
+    third_width?: boolean;
     multiline?: boolean;
     date_picker?: boolean;
     date_format?: string | null;
@@ -323,6 +324,7 @@ export async function createMark(
     /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
     full_width?: boolean;
     quarter_width?: boolean;
+    third_width?: boolean;
     multiline?: boolean;
     date_picker?: boolean;
     date_format?: string | null;
@@ -367,6 +369,7 @@ export async function editMark(
     ai_aided_prompt: string | null;
     full_width: boolean;
     quarter_width?: boolean;
+    third_width?: boolean;
     multiline: boolean;
     date_picker: boolean;
     date_format: string | null;
@@ -479,6 +482,7 @@ export async function updateCustomField(
     ai_aided_prompt: string | null;
     full_width: boolean;
     quarter_width?: boolean;
+    third_width?: boolean;
     multiline: boolean;
     date_picker: boolean;
     date_format: string | null;

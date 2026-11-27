@@ -317,6 +317,7 @@ class JobFieldValueOut(BaseModel):
     full_width: bool = False
     # Admin-settable - a quarter of the row (see FieldMark.quarter_width).
     quarter_width: bool = False
+    third_width: bool = False
     # Admin-settable - renders as a multi-line, auto-growing box instead of a single-line box
     # scrolled sideways through. See FieldMark.multiline's own docstring. False (single line)
     # is today's existing behavior for every field that predates this column.
