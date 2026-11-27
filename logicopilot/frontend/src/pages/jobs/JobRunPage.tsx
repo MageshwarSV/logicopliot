@@ -4,6 +4,8 @@ import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
 import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
 import { ErpFixCard } from "./ErpFixCard";
+import { LiveErpCheck } from "./LiveErpCheck";
+import { getJobErpCheck } from "../../api/erpRules";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -2000,6 +2002,29 @@ export function JobRunPage() {
   // The boxes the ERP refused (ErpFixCard's Fix button): outlined in red on Required Details
   // Review until the operator moves on.
   const [erpFixIds, setErpFixIds] = useState<Set<string>>(new Set());
+  // P4: what the ERP would refuse in the job's current values - re-checked after every save
+  // (job.field_values changes), outlined in red on Review and listed above it.
+  const [liveErpItems, setLiveErpItems] = useState<ErpHelpItem[]>([]);
+  const liveCheckOn = !!job && !!job.excel_entry && job.status === "extracted";
+  const fieldValuesRef = job?.field_values;
+  useEffect(() => {
+    if (!liveCheckOn) {
+      setLiveErpItems([]);
+      return;
+    }
+    let gone = false;
+    const t = window.setTimeout(() => {
+      getJobErpCheck(jobId)
+        .then((r) => { if (!gone) setLiveErpItems(r.items ?? []); })
+        .catch(() => { if (!gone) setLiveErpItems([]); });
+    }, 600);
+    return () => { gone = true; window.clearTimeout(t); };
+  }, [jobId, liveCheckOn, fieldValuesRef]);
+  const outlinedIds = useMemo(() => {
+    const all = new Set(erpFixIds);
+    for (const it of liveErpItems) for (const id of it.field_value_ids) all.add(id);
+    return all;
+  }, [erpFixIds, liveErpItems]);
   const fixErpItem = (item: ErpHelpItem) => {
     if (!job) return;
     const ids = item.field_value_ids;
@@ -4000,6 +4025,9 @@ export function JobRunPage() {
           {/* The last entry failed. Say what was rejected, point at the red field, and make the
               retry obvious — it re-runs the ERP script with the corrected values, WITHOUT
               re-extracting the documents, so a fixed value is all that changes. */}
+          {!job.erp_help?.items?.length && liveErpItems.length > 0 && (
+            <LiveErpCheck items={liveErpItems} onFix={canEditValues ? fixErpItem : undefined} />
+          )}
           {!readOnly && entryFailed && !job.erp_help?.items?.length && (
             <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm dark:border-rose-500/30 dark:bg-rose-500/10">
               <p className="font-semibold text-rose-800 dark:text-rose-300">
@@ -4382,6 +4410,9 @@ export function JobRunPage() {
           one screen — nothing about what they show or how a value gets saved has changed. */}
       {activeTab === "extraction" && (
         <div className="flex flex-col gap-4">
+          {liveErpItems.length > 0 && (
+            <LiveErpCheck items={liveErpItems} onFix={canEditValues ? fixErpItem : undefined} />
+          )}
           {!isAdditionalDetailsActive && (
             <ExtractionReview
               job={job}
@@ -4392,7 +4423,7 @@ export function JobRunPage() {
               setActiveFileId={setActiveFileId}
               insuranceMode={insuranceMode}
               onToggleInsuranceMode={switchInsuranceMode}
-              erpFixIds={erpFixIds}
+              erpFixIds={outlinedIds}
             />
           )}
 

@@ -3738,6 +3738,29 @@ class ErpExcelSheets(BaseModel):
     sheets: list[dict]
 
 
+@router.get("/jobs/{job_id}/erp-check")
+def erp_rule_check(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """What the ERP would refuse in this job's CURRENT values - the same check that runs
+    before the ERP (app/core/erp_rules.py), asked while the operator is still reviewing, so a
+    wrong value is fixed on Review instead of stopping the submit. Read-only."""
+    from app.core.erp_excel_edit import edited_file
+    from app.core.erp_rules import pre_check
+
+    job = _load_job(db, job_id, scope, user)
+    grp = db.get(TemplateGroup, job.group_id) if job.group_id else None
+    if grp is None or (grp.entry_mode or "fields") != "excel" or job.status != "extracted":
+        return {"checked": False, "items": [], "excel_edited": False}
+    values, rows = entry_values_and_rows(db, job)
+    help_ = pre_check(db, job, values, rows)
+    return {"checked": True, "items": (help_ or {}).get("items") or [],
+            "excel_edited": edited_file(job.id) is not None}
+
+
 @router.get("/jobs/{job_id}/erp-excel/sheets")
 def open_job_excel(
     job_id: str,
@@ -6127,6 +6150,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
             job.erp_help = build_help(db, job, result["rejection_text"])
         except Exception:  # noqa: BLE001
             logger.exception("job %s: could not explain the ERP's import rejection", job.id)
+        # ...and remember a rule for each refused column, so the same refusal can be stopped
+        # before the ERP next time (Super Admin > ERP Column Rules > Suggested).
+        if job.erp_help:
+            try:
+                from app.core.erp_rules import record_suggestions
+
+                record_suggestions(db, job, job.erp_help)
+            except Exception:  # noqa: BLE001
+                logger.exception("job %s: could not record ERP rule suggestions", job.id)
     db.commit()
 
     erp = {

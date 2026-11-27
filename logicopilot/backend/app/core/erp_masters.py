@@ -106,3 +106,36 @@ def normalize_country(value) -> str:
         return up
     hit = _NAME_TO_CODE.get(up) or _NAME_TO_CODE.get(up.replace("&", "AND"))
     return hit or raw
+
+
+# Currency written as a symbol or a name -> its code, only where there is no doubt ("$" alone
+# could be several dollars, "¥" yen or yuan - those are left for a person).
+_CURRENCY_ALIASES = {
+    "US$": "USD", "US $": "USD", "USD$": "USD", "U.S. DOLLAR": "USD", "U.S. DOLLARS": "USD",
+    "US DOLLAR": "USD", "US DOLLARS": "USD", "UNITED STATES DOLLAR": "USD", "AMERICAN DOLLAR": "USD",
+    "RS": "INR", "RS.": "INR", "₹": "INR", "RUPEE": "INR", "RUPEES": "INR", "INDIAN RUPEE": "INR",
+    "INDIAN RUPEES": "INR", "INR.": "INR",
+    "€": "EUR", "EURO": "EUR", "EUROS": "EUR",
+    "£": "GBP", "GB POUND": "GBP", "POUND STERLING": "GBP", "POUNDS STERLING": "GBP", "STERLING": "GBP",
+    "BRITISH POUND": "GBP", "UK POUND": "GBP",
+    "RMB": "CNY", "YUAN": "CNY", "RENMINBI": "CNY", "CHINESE YUAN": "CNY", "CNY.": "CNY",
+    "YEN": "JPY", "JAPANESE YEN": "JPY", "S$": "SGD", "SG$": "SGD", "SINGAPORE DOLLAR": "SGD",
+    "HK$": "HKD", "HONG KONG DOLLAR": "HKD", "A$": "AUD", "AU$": "AUD", "AUSTRALIAN DOLLAR": "AUD",
+    "C$": "CAD", "CA$": "CAD", "CANADIAN DOLLAR": "CAD", "SWISS FRANC": "CHF", "SWISS FRANCS": "CHF",
+    "UAE DIRHAM": "AED", "DIRHAM": "AED", "DIRHAMS": "AED", "SAUDI RIYAL": "SAR",
+    "MALAYSIAN RINGGIT": "MYR", "RINGGIT": "MYR", "THAI BAHT": "THB", "BAHT": "THB",
+    "KOREAN WON": "KRW", "WON": "KRW", "NT$": "TWD", "NEW TAIWAN DOLLAR": "TWD",
+}
+
+
+def normalize_currency(value) -> str:
+    """The 3-letter code for a currency written as a symbol or name, when certain; else the
+    value as it was (a valid code is upper-cased)."""
+    raw = "" if value is None else str(value)
+    v = raw.strip()
+    if not v:
+        return raw
+    up = re.sub(r"\s+", " ", v).upper().strip()
+    if len(up) == 3 and up in CURRENCIES:
+        return up
+    return _CURRENCY_ALIASES.get(up) or _CURRENCY_ALIASES.get(up.rstrip(".")) or raw

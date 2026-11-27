@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, require_role
 from app.core.erp_masters import MASTERS
-from app.core.erp_rules import _columns, builtin_rule, describe, effective_rules, rule_key
+from app.core.erp_rules import (DISMISSED_KEY, SUGGESTED_KEY, _columns, builtin_rule, describe,
+                                 effective_rules, rule_key)
 from app.models.job import Job
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
@@ -76,7 +77,8 @@ def templates(db: Session = Depends(get_db), _u: User = Depends(_admin)) -> list
     tenants = {t.id: t.name for t in db.query(Tenant).all()}
     rows = [g for g in db.query(TemplateGroup).all() if (g.entry_mode or "fields") == "excel" and g.excel_config]
     return sorted(({"id": g.id, "name": g.name, "tenant": tenants.get(g.tenant_id) or "", "mode": g.mode,
-                    "rules_saved": len(g.erp_column_rules or {})} for g in rows),
+                    "rules_saved": len([k for k in (g.erp_column_rules or {}) if not k.startswith("_")]),
+                    "suggestions": len((g.erp_column_rules or {}).get(SUGGESTED_KEY) or {})} for g in rows),
                   key=lambda r: (r["tenant"].lower(), r["name"].lower()))
 
 
@@ -96,7 +98,20 @@ def columns(group_id: str, db: Session = Depends(get_db), _u: User = Depends(_ad
             "builtin": b, "builtin_text": describe(b) if b else None,
             "rule": stored.get(key), "active_text": describe(active[key]) if key in active else None,
         })
-    return {"id": g.id, "name": g.name, "columns": cols,
+    by_key = {c["key"]: c for c in cols}
+    suggestions = []
+    for key, sug in ((stored.get(SUGGESTED_KEY) or {}).items()):
+        c = by_key.get(key)
+        if c is None:
+            continue
+        rule = sug.get("rule") or {}
+        suggestions.append({"key": key, "sheet": c["sheet"], "header": c["header"], "field": c["field"],
+                            "rule": rule, "rule_text": ("Needs a list or pattern - the ERP refused a value it does not know"
+                                                        if rule.get("needs_list") else describe(rule)),
+                            "erp_text": sug.get("erp_text"), "count": sug.get("count") or 1,
+                            "last_job": sug.get("last_job"), "last_at": sug.get("last_at")})
+    suggestions.sort(key=lambda x: x.get("last_at") or "", reverse=True)
+    return {"id": g.id, "name": g.name, "columns": cols, "suggestions": suggestions,
             "masters": {k: v[0] for k, v in MASTERS.items()}}
 
 
@@ -115,6 +130,10 @@ def save(group_id: str, payload: RulesIn, db: Session = Depends(get_db), _u: Use
         cleaned = _clean(rule)
         if cleaned:
             out[key] = cleaned
+    # suggestions and dismissals are not rules - kept as they were
+    for k, v in (g.erp_column_rules or {}).items():
+        if k.startswith("_"):
+            out[k] = v
     g.erp_column_rules = out or None
     db.commit()
     return {"saved": len(out)}
@@ -124,10 +143,11 @@ def save(group_id: str, payload: RulesIn, db: Session = Depends(get_db), _u: Use
 def copy_from(group_id: str, other_id: str, db: Session = Depends(get_db), _u: User = Depends(_admin)) -> dict:
     g, other = _group(db, group_id), _group(db, other_id)
     mine = {rule_key(p.get("sheet"), h) for p, _c, h in _columns(g.excel_config or {})}
-    taken = {k: v for k, v in (other.erp_column_rules or {}).items() if k in mine}
+    taken = {k: v for k, v in (other.erp_column_rules or {}).items() if k in mine and not k.startswith("_")}
     g.erp_column_rules = {**(g.erp_column_rules or {}), **taken} or None
     db.commit()
-    return {"copied": len(taken), "skipped": len(other.erp_column_rules or {}) - len(taken)}
+    theirs = [k for k in (other.erp_column_rules or {}) if not k.startswith("_")]
+    return {"copied": len(taken), "skipped": len(theirs) - len(taken)}
 
 
 @router.get("/{group_id}/check")
@@ -144,3 +164,46 @@ def check_job(group_id: str, reference: str, db: Session = Depends(get_db), _u: 
     problems = check(db, job, g, values, rows)
     return {"reference": job.reference, "problems": problems,
             "items": build_items(db, job, problems) if problems else []}
+
+
+class SuggestionIn(BaseModel):
+    key: str
+
+
+@router.post("/{group_id}/suggestions/accept")
+def accept_suggestion(group_id: str, payload: SuggestionIn, db: Session = Depends(get_db),
+                      _u: User = Depends(_admin)) -> dict:
+    """Add a suggested rule to the column's rule (merged with what is there)."""
+    g = _group(db, group_id)
+    stored = dict(g.erp_column_rules or {})
+    sugs = dict(stored.get(SUGGESTED_KEY) or {})
+    sug = sugs.pop(payload.key, None)
+    if sug is None:
+        raise HTTPException(status_code=404, detail="No such suggestion")
+    rule = {k: v for k, v in (sug.get("rule") or {}).items() if k != "needs_list"}
+    if not rule:
+        raise HTTPException(status_code=422, detail="This one needs a list or pattern - set it on the column itself")
+    stored[payload.key] = _clean({**(stored.get(payload.key) or {}), **rule}) or {}
+    stored[SUGGESTED_KEY] = sugs
+    g.erp_column_rules = stored
+    db.commit()
+    return {"ok": True, "rule": stored[payload.key]}
+
+
+@router.post("/{group_id}/suggestions/dismiss")
+def dismiss_suggestion(group_id: str, payload: SuggestionIn, db: Session = Depends(get_db),
+                       _u: User = Depends(_admin)) -> dict:
+    """Not a rule for this template - the same suggestion is not raised again."""
+    g = _group(db, group_id)
+    stored = dict(g.erp_column_rules or {})
+    sugs = dict(stored.get(SUGGESTED_KEY) or {})
+    sug = sugs.pop(payload.key, None)
+    if sug is None:
+        raise HTTPException(status_code=404, detail="No such suggestion")
+    dismissed = list(stored.get(DISMISSED_KEY) or [])
+    dismissed.append(f"{payload.key}::{sorted((sug.get('rule') or {}).items())}")
+    stored[SUGGESTED_KEY] = sugs
+    stored[DISMISSED_KEY] = dismissed[-500:]
+    g.erp_column_rules = stored
+    db.commit()
+    return {"ok": True}

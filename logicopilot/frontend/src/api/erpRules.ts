@@ -13,7 +13,7 @@ export interface ErpRule {
   off?: boolean;
 }
 
-export interface RuleTemplate { id: string; name: string; tenant: string; mode: string | null; rules_saved: number }
+export interface RuleTemplate { id: string; name: string; tenant: string; mode: string | null; rules_saved: number; suggestions: number }
 
 export interface RuleColumn {
   key: string;
@@ -34,7 +34,7 @@ export async function listTemplates(): Promise<RuleTemplate[]> {
   return data;
 }
 
-export async function getColumns(groupId: string): Promise<{ id: string; name: string; columns: RuleColumn[]; masters: Record<string, string> }> {
+export async function getColumns(groupId: string): Promise<{ id: string; name: string; columns: RuleColumn[]; suggestions: RuleSuggestion[]; masters: Record<string, string> }> {
   const { data } = await apiClient.get(`/erp-rules/${groupId}`);
   return data;
 }
@@ -51,5 +51,25 @@ export async function copyFrom(groupId: string, otherId: string): Promise<{ copi
 
 export async function checkJob(groupId: string, reference: string): Promise<{ reference: string; items: RuleCheckItem[] }> {
   const { data } = await apiClient.get(`/erp-rules/${groupId}/check`, { params: { reference } });
+  return data;
+}
+
+export interface RuleSuggestion {
+  key: string; sheet: string; header: string; field: string;
+  rule: ErpRule & { needs_list?: boolean };
+  rule_text: string; erp_text: string | null; count: number; last_job: string | null; last_at: string | null;
+}
+
+export async function acceptSuggestion(groupId: string, key: string): Promise<void> {
+  await apiClient.post(`/erp-rules/${groupId}/suggestions/accept`, { key });
+}
+
+export async function dismissSuggestion(groupId: string, key: string): Promise<void> {
+  await apiClient.post(`/erp-rules/${groupId}/suggestions/dismiss`, { key });
+}
+
+/** P4 - what the ERP would refuse in the job's current values (GET /jobs/{id}/erp-check). */
+export async function getJobErpCheck(jobId: string): Promise<{ checked: boolean; items: import("../types/jobs").ErpHelpItem[]; excel_edited: boolean }> {
+  const { data } = await apiClient.get(`/jobs/${jobId}/erp-check`);
   return data;
 }

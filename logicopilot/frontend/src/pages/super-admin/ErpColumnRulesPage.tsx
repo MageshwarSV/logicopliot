@@ -8,7 +8,7 @@ import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import * as rulesApi from "../../api/erpRules";
-import type { ErpRule, RuleCheckItem, RuleColumn, RuleTemplate } from "../../api/erpRules";
+import type { ErpRule, RuleCheckItem, RuleColumn, RuleSuggestion, RuleTemplate } from "../../api/erpRules";
 
 function errText(err: unknown, fallback: string): string {
   return axios.isAxiosError(err) && typeof err.response?.data?.detail === "string" ? err.response.data.detail : fallback;
@@ -18,6 +18,7 @@ export function ErpColumnRulesPage() {
   const [templates, setTemplates] = useState<RuleTemplate[]>([]);
   const [groupId, setGroupId] = useState("");
   const [columns, setColumns] = useState<RuleColumn[]>([]);
+  const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
   const [masters, setMasters] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Record<string, ErpRule>>({});
   const [filter, setFilter] = useState("");
@@ -44,6 +45,7 @@ export function ErpColumnRulesPage() {
     try {
       const d = await rulesApi.getColumns(id);
       setColumns(d.columns);
+      setSuggestions(d.suggestions ?? []);
       setMasters(d.masters);
       setDraft(Object.fromEntries(d.columns.filter((c) => c.rule).map((c) => [c.key, { ...c.rule }])));
     } catch (err) {
@@ -75,6 +77,23 @@ export function ErpColumnRulesPage() {
       setTemplates(await rulesApi.listTemplates());
     } catch (err) {
       setError(errText(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decide(s: RuleSuggestion, accept: boolean) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      if (accept) await rulesApi.acceptSuggestion(groupId, s.key);
+      else await rulesApi.dismissSuggestion(groupId, s.key);
+      setNote(accept ? `Rule added to ${s.header}.` : `Suggestion for ${s.header} dismissed.`);
+      await loadColumns(groupId);
+      setTemplates(await rulesApi.listTemplates());
+    } catch (err) {
+      setError(errText(err, "Could not update the suggestion."));
     } finally {
       setBusy(false);
     }
@@ -126,7 +145,7 @@ export function ErpColumnRulesPage() {
             <select value={groupId} onChange={(e) => setGroupId(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900">
               <option value="">Choose a template (Excel entry)…</option>
               {templates.map((t) => (
-                <option key={t.id} value={t.id}>{t.tenant} — {t.name}{t.rules_saved ? ` (${t.rules_saved} rules)` : ""}</option>
+                <option key={t.id} value={t.id}>{t.tenant} — {t.name}{t.rules_saved ? ` (${t.rules_saved} rules)` : ""}{t.suggestions ? ` · ${t.suggestions} suggested` : ""}</option>
               ))}
             </select>
             {groupId && (
@@ -149,6 +168,34 @@ export function ErpColumnRulesPage() {
 
         {groupId && (
           <>
+            {suggestions.length > 0 && (
+              <Card className="border-amber-200 p-4 dark:border-amber-500/30">
+                <h2 className="font-semibold text-slate-900 dark:text-slate-50">Suggested from ERP rejections ({suggestions.length})</h2>
+                <p className="mb-3 text-xs text-slate-500">The ERP refused these columns on real jobs. Add the rule and the same value is stopped in Cargora next time, before the ERP.</p>
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {suggestions.map((s) => (
+                    <li key={s.key} className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm">
+                      <div>
+                        <p><span className="text-xs text-slate-500">{s.sheet}</span> <b>{s.header}</b>{s.field ? <span className="text-xs text-slate-500"> ← {s.field}</span> : null}</p>
+                        <p className="text-xs text-slate-600 dark:text-slate-300">
+                          ERP said: “{s.erp_text}” · {s.count}× · last {s.last_job}
+                        </p>
+                        <p className="text-xs font-medium text-indigo-700 dark:text-indigo-300">Rule: {s.rule_text}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        {!s.rule.needs_list && (
+                          <button type="button" disabled={busy} onClick={() => decide(s, true)} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60">Add rule</button>
+                        )}
+                        {s.rule.needs_list && (
+                          <button type="button" onClick={() => setFilter(s.header)} className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300">Set list on the column</button>
+                        )}
+                        <button type="button" disabled={busy} onClick={() => decide(s, false)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium disabled:opacity-60 dark:border-slate-700">Dismiss</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
             <Card className="p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -200,7 +247,7 @@ export function ErpColumnRulesPage() {
                           <td className="text-xs text-slate-600 dark:text-slate-300">
                             {r.off ? <span className="text-slate-400">Not checked</span>
                               : draft[c.key] ? <span className="text-indigo-700 dark:text-indigo-300">Your rule (save to apply)</span>
-                                : c.builtin_text ? <span title={c.builtin_text}>Built in: country code</span>
+                                : c.builtin_text ? <span title={c.builtin_text}>Built in: {c.builtin?.master === "currency" ? "currency code" : "country code"}</span>
                                   : <span className="text-slate-400">—</span>}
                           </td>
                         </tr>

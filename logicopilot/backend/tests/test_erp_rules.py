@@ -131,3 +131,67 @@ def test_super_admin_rules_api(client, db_session):
     assert set(db_session.get(TemplateGroup, g.id).erp_column_rules) == {"GENERAL|Currency", "ITEMS|Desc"}
     chk = client.get(f"/api/v1/erp-rules/{g.id}/check", params={"reference": job.reference}).json()
     assert {p["column"] for p in chk["problems"]} == {"Country_of_Origin", "COO_Issuing_Country"}
+
+
+# ---------------------------------------------------------------- currency, P3, P4
+
+@pytest.mark.parametrize("raw,code", [("US$", "USD"), ("Rs.", "INR"), ("euro", "EUR"), ("usd", "USD"), ("RMB", "CNY")])
+def test_currency_names_become_codes_when_certain(raw, code):
+    from app.core.erp_masters import normalize_currency
+
+    assert normalize_currency(raw) == code
+
+
+def test_currency_column_converted_and_checked(db_session, tmp_path):
+    from app.core.excel_entry import build_for_job
+
+    _t, g, job = _job(db_session, coo=("CN", "CN"))
+    fv = db_session.query(JobFieldValue).filter_by(job_id=job.id, label_name="currency").one()
+    fv.extracted_value = "US$"
+    db_session.commit()
+    values, rows = _values(db_session, job)
+    assert er.check(db_session, job, g, values, rows) == []
+    book = build_for_job(er.effective_config(g), values, rows, tmp_path)
+    assert openpyxl.load_workbook(book)["GENERAL"]["C2"].value == "USD"
+    fv.extracted_value = "Dollars"            # ambiguous - left for a person
+    db_session.commit()
+    values, rows = _values(db_session, job)
+    probs = er.check(db_session, job, g, values, rows)
+    assert [(p["column"], p["rule"][:19]) for p in probs] == [("Currency", "A 3-letter currency")]
+
+
+def test_rejection_becomes_a_suggestion(client, db_session):
+    _t, g, job = _job(db_session, coo=("CN", "CN"))
+    help_ = {"erp_rows": [
+        {"sheet": "ITEMS", "column": "Desc", "rule": "Entry should be of 40 characters"},
+        {"sheet": "GENERAL", "column": "OriginName", "rule": "This field is mandatory"},
+        {"sheet": "ITEMS", "column": "Country_of_Origin", "rule": "Entry should be of 2 characters"},  # already covered
+        {"sheet": "GENERAL", "column": "Currency", "rule": "The selected currency is not available"},
+    ]}
+    assert er.record_suggestions(db_session, job, help_) == 3
+    db_session.commit()
+    sa = make_user(db_session, role=SUPER_ADMIN, email=f"sa-{uuid.uuid4().hex[:6]}@example.com")
+    assert login(client, sa.email).status_code == 200
+    sugs = {s["key"]: s for s in client.get(f"/api/v1/erp-rules/{g.id}").json()["suggestions"]}
+    assert set(sugs) == {"ITEMS|Desc", "GENERAL|OriginName", "GENERAL|Currency"}
+    assert sugs["ITEMS|Desc"]["rule_text"] == "Exactly 40 characters." and sugs["ITEMS|Desc"]["last_job"] == job.reference
+    assert client.post(f"/api/v1/erp-rules/{g.id}/suggestions/accept", json={"key": "ITEMS|Desc"}).json()["rule"] == {"length": 40, "length_mode": "exact"}
+    assert client.post(f"/api/v1/erp-rules/{g.id}/suggestions/accept", json={"key": "GENERAL|Currency"}).status_code == 422
+    assert client.post(f"/api/v1/erp-rules/{g.id}/suggestions/dismiss", json={"key": "GENERAL|OriginName"}).status_code == 200
+    # saving rules keeps the remaining suggestion; a dismissed one is not raised again
+    client.put(f"/api/v1/erp-rules/{g.id}", json={"rules": {"ITEMS|Desc": {"length": 40, "length_mode": "exact"}}})
+    db_session.expire_all()
+    stored = db_session.get(TemplateGroup, g.id).erp_column_rules
+    assert set(stored["_suggested"]) == {"GENERAL|Currency"}
+    assert er.record_suggestions(db_session, job, {"erp_rows": [help_["erp_rows"][1]]}) == 0
+
+
+def test_live_check_endpoint(client, db_session):
+    from app.models.user import TENANT_ADMIN
+
+    t, _g, job = _job(db_session)
+    make_user(db_session, role=TENANT_ADMIN, tenant=t, email=f"ta-{uuid.uuid4().hex[:6]}@example.com")
+    sa = make_user(db_session, role=SUPER_ADMIN, email=f"sa-{uuid.uuid4().hex[:6]}@example.com")
+    assert login(client, sa.email).status_code == 200
+    body = client.get(f"/api/v1/jobs/{job.id}/erp-check").json()
+    assert body["checked"] and body["items"][0]["sent"] == ["Polska"] and body["items"][0]["field_value_ids"]

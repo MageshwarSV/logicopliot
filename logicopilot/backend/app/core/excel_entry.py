@@ -230,8 +230,17 @@ _TRANSFORMS = {
 
 # Set only by the ERP column rules (app/core/erp_rules.py effective_config) - never offered in
 # the column editor, which accepts the _TRANSFORMS names above.
+def _currency_code(value: str) -> str:
+    """A currency written as a symbol or name -> its 3-letter code, only when certain
+    ("US$" -> "USD", "Rs." -> "INR"). Set on currency columns by app/core/erp_rules.py."""
+    from app.core.erp_masters import normalize_currency
+
+    return normalize_currency(value)
+
+
 _RULE_TRANSFORMS = {
     "country_iso2": _country_iso2,
+    "currency_code": _currency_code,
     "upper": lambda value: (value or "").strip().upper(),
 }
 

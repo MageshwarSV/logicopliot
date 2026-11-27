@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.core.erp_masters import MASTERS
 
 COUNTRY_TRANSFORM = "country_iso2"
+CURRENCY_TRANSFORM = "currency_code"
 UPPER_TRANSFORM = "upper"
 _NO_COUNTRY_RULE = ("certificate", "percent", "amount", "%", "name", "address")
 
@@ -51,6 +52,11 @@ def builtin_rule(header: str | None) -> dict | None:
     n = _norm(header)
     if "country" in n and not any(w in h for w in _NO_COUNTRY_RULE):
         return {"master": "country", "builtin": True}
+    # Inv_Currency, Frt_Currency, Misc_Charge_Currency, CURRENCY_CODE ... - 3-letter codes
+    # (SOFTLINK: "Entry should be of 3 characters", 2026-11-27). Production held only valid
+    # codes or blanks in every one of them over the 14 days before this was added.
+    if "currency" in n:
+        return {"master": "currency", "builtin": True}
     return None
 
 
@@ -103,6 +109,8 @@ def effective_config(group) -> dict:
                 continue
             if rule.get("master") == "country":
                 col["transform"] = COUNTRY_TRANSFORM
+            elif rule.get("master") == "currency":
+                col["transform"] = CURRENCY_TRANSFORM
             elif rule.get("uppercase"):
                 col["transform"] = UPPER_TRANSFORM
     return cfg
@@ -219,3 +227,84 @@ def summary(help_: dict) -> str:
     more = f" (and {len(items) - 3} more)" if len(items) > 3 else ""
     return ("Not sent to the ERP - it would refuse these values. Fix them and submit again: "
             + " | ".join(parts) + more)[:2000]
+
+
+# ---------------------------------------------------------------- P3: rejections -> suggestions
+
+SUGGESTED_KEY = "_suggested"
+DISMISSED_KEY = "_dismissed"
+_LEN = re.compile(r"should be (?:of\s+)?(\d+)\s+char", re.I)
+_REQUIRED = ("mandatory", "required", "cannot be blank", "can not be blank", "should not be blank",
+             "should not be empty", "cannot be empty")
+_UNKNOWN = ("not available", "does not exist", "not found", "invalid", "not valid", "not in")
+
+
+def infer_rule(erp_text: str) -> dict | None:
+    """A rule from the ERP's own wording, or {"needs_list": True} when the ERP refused a
+    value it does not know (only a person can give the list), or None."""
+    t = (erp_text or "").lower()
+    m = _LEN.search(t)
+    if m:
+        return {"length": int(m.group(1)), "length_mode": "exact"}
+    if any(w in t for w in _REQUIRED):
+        return {"required": True}
+    if any(w in t for w in _UNKNOWN):
+        return {"needs_list": True}
+    return None
+
+
+def _covered(rule: dict, active: dict | None) -> bool:
+    """The column's current rule already stops what the suggestion would."""
+    if not active:
+        return False
+    if rule.get("required"):
+        return bool(active.get("required"))
+    if rule.get("length"):
+        n = rule["length"]
+        if active.get("master") == "country" and n == 2:
+            return True
+        if active.get("master") == "currency" and n == 3:
+            return True
+        return active.get("length") == n and (active.get("length_mode") or "max") == "exact"
+    return False
+
+
+def record_suggestions(db: Session, job, help_: dict) -> int:
+    """After the ERP refused an import: remember, on the template, a rule per refused column so
+    a Super Admin can add it with one click (ERP Column Rules). Returns how many are new.
+    Never raises into the run (the caller wraps it)."""
+    from datetime import datetime, timezone
+
+    from app.models.template_group import TemplateGroup
+
+    group = db.get(TemplateGroup, job.group_id) if job.group_id else None
+    if group is None or not (help_ or {}).get("erp_rows"):
+        return 0
+    keys = {(_norm(p.get("sheet")), _norm(h)): rule_key(p.get("sheet"), h)
+            for p, _c, h in _columns(group.excel_config or {})}
+    stored = dict(group.erp_column_rules or {})
+    suggested = dict(stored.get(SUGGESTED_KEY) or {})
+    dismissed = set(stored.get(DISMISSED_KEY) or [])
+    active = effective_rules(group)
+    new = 0
+    for row in help_["erp_rows"]:
+        key = keys.get((_norm(row.get("sheet")), _norm(row.get("column"))))
+        rule = infer_rule(row.get("rule") or row.get("text") or "")
+        if not key or not rule:
+            continue
+        sig = f"{key}::{sorted(rule.items())}"
+        if sig in dismissed or _covered(rule, active.get(key)):
+            continue
+        cur = suggested.get(key)
+        if cur and cur.get("rule") == rule:
+            cur["count"] = int(cur.get("count") or 1) + (0 if cur.get("last_job") == job.reference else 1)
+        else:
+            cur = {"rule": rule, "count": 1}
+            new += 1
+        cur.update({"erp_text": (row.get("rule") or "")[:200], "last_job": job.reference,
+                    "last_at": datetime.now(timezone.utc).isoformat()})
+        suggested[key] = cur
+    if suggested != (stored.get(SUGGESTED_KEY) or {}):
+        stored[SUGGESTED_KEY] = suggested
+        group.erp_column_rules = stored
+    return new
