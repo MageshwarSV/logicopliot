@@ -185,7 +185,10 @@ def _ai_map_dropdown(db: Session, group: TemplateGroup, col: dict) -> list[str]:
     label = (col.get("field") or "").strip()
     if not spec.get("dropdown") or not label or label.startswith("#") or "[[" in label:
         return []
-    choices = [o["label"] for o in spec.get("options") or []]
+    # Each value with its code, "Chennai (INMAA1)", so the operator sees what the ERP will get -
+    # the saved text carries the code, which ai_map_value reads back as it is.
+    choices = [o["label"] if o["label"].strip().upper() == o["code"].strip().upper()
+               else f'{o["label"]} ({o["code"]})' for o in spec.get("options") or []]
     done = []
     docs = _template_docs(db, group.id)
     for m in _marks(db, docs):

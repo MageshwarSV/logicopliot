@@ -91,3 +91,10 @@ def test_the_api_checks_the_setting():
         _clean_ai_map({"options": []})
     with pytest.raises(HTTPException):                     # a code that breaks its own format
         _clean_ai_map({"options": [{"label": "Chennai", "code": "MAA"}], "pattern": "IN[A-Z]{3}[0-9A-Z]"})
+
+
+def test_the_dropdown_text_with_its_code_gives_that_code(fake_ai):
+    """The box saves "Ennore (INENR1)" - the code inside is the answer, no AI."""
+    assert xe._sea_port_code("Ennore (INENR1)") == "INENR1"
+    assert xe._sea_port_code("ICD Whitefield (INWFD6)") == "INWFD6"
+    assert fake_ai == []

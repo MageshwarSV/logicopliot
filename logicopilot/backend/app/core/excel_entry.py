@@ -260,6 +260,12 @@ def ai_map_value(value, spec: dict | None) -> str:
     ignore = tuple(str(w).strip().lower() for w in (spec.get("ignore_words") or []) if str(w).strip())
     if pattern and re.fullmatch(pattern, raw.upper()):
         return raw.upper()
+    # The dropdown shows each value with its code - "Ennore (INENR1)" - and saves that text. A
+    # code from the list written inside the value (in brackets or not) is the answer as it is.
+    codes = {str(o["code"]).strip().upper(): str(o["code"]).strip() for o in options}
+    for tok in re.findall(r"[A-Za-z0-9&]+", raw):
+        if tok.upper() in codes and len(tok) > 1:
+            return codes[tok.upper()]
     key = _map_key(raw, ignore)
     names = []
     for o in options:
