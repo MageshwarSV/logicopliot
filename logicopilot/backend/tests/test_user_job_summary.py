@@ -1,5 +1,6 @@
 """Reports -> User Job Summary: per user, jobs that arrived in the period for one operation,
-how many reached the ERP, and how many are pending (Total = Completed + Pending)."""
+how many reached the ERP, how many failed, and how many are pending
+(Total = Completed + Failed + Pending; a failed job is never counted as pending)."""
 import io
 import uuid
 from datetime import datetime, timezone
@@ -33,11 +34,12 @@ def _setup(client, db_session):
     db_session.commit()
     n = [0]
 
-    def job(group, creator, created, done=False, routed=None):
+    def job(group, creator, created, done=False, routed=None, failed=None):
         n[0] += 1
         db_session.add(Job(
             tenant_id=tenant.id, group_id=group.id, reference=f"JOB-{n[0]}",
-            status="completed" if done else "extracted",
+            status="completed" if done else ("failed" if failed == "status" else "extracted"),
+            gk2_status="failed" if failed == "erp" else None,
             created_by_id=creator.id if creator else None,
             assigned_operator_id=routed.id if routed else None,
             created_at=created,
@@ -47,9 +49,9 @@ def _setup(client, db_session):
     nov17 = datetime(2026, 11, 17, 6, 0, tzinfo=timezone.utc)   # 11:30 IST, 17 Nov
     job(sea, ashraf, nov17, done=True)
     job(sea, ashraf, nov17)
-    job(sea, ashraf, nov17)
+    job(sea, ashraf, nov17, failed="erp")                          # ERP entry failed, retryable
     job(sea, None, nov17, routed=magesh, done=True)                 # mail-routed to Magesh
-    job(sea, None, nov17)                                          # nobody: Unassigned
+    job(sea, None, nov17, failed="status")                         # nobody: Unassigned, failed
     job(air, ashraf, nov17, done=True)                             # other operation
     job(sea, magesh, datetime(2026, 11, 16, 19, 0, tzinfo=timezone.utc))  # 00:30 IST 17 Nov
     job(sea, magesh, datetime(2026, 11, 16, 18, 0, tzinfo=timezone.utc))  # 23:30 IST 16 Nov
@@ -62,19 +64,21 @@ def test_per_user_counts_for_one_day_and_operation(client, db_session):
     _setup(client, db_session)
     body = client.get(URL, params={"mode": "Sea Import", "date_from": "2026-11-17", "date_to": "2026-11-17"}).json()
     assert body["modes"] == ["Air Import", "Sea Import"]
-    rows = [(r["name"], r["total"], r["completed"], r["pending"]) for r in body["users"]]
+    rows = [(r["name"], r["total"], r["completed"], r["failed"], r["pending"]) for r in body["users"]]
     # Magesh: the mail-routed job plus the one created 00:30 IST on 17 Nov (still 16 Nov in UTC);
     # his 23:30 IST 16 Nov job is not today's.
     # Ashraf and Magesh have no modes set, so they work every operation; Idle Sea shows with 0s;
     # Idle Air (other operation) and the disabled operator do not appear.
-    assert rows == [("Ashraf", 3, 1, 2), ("Magesh", 2, 1, 1), ("Idle Sea", 0, 0, 0), ("Unassigned", 1, 0, 1)]
-    assert body["totals"] == {"total": 6, "completed": 2, "pending": 4}
+    # Failed jobs are counted on their own, not in Pending.
+    assert rows == [("Ashraf", 3, 1, 1, 1), ("Magesh", 2, 1, 0, 1), ("Idle Sea", 0, 0, 0, 0),
+                    ("Unassigned", 1, 0, 1, 0)]
+    assert body["totals"] == {"total": 6, "completed": 2, "failed": 2, "pending": 2}
 
 
 def test_ist_day_boundaries_and_ranges(client, db_session):
     _setup(client, db_session)
     yday = client.get(URL, params={"mode": "Sea Import", "date_from": "2026-11-16", "date_to": "2026-11-16"}).json()
-    assert yday["totals"] == {"total": 1, "completed": 0, "pending": 1}
+    assert yday["totals"] == {"total": 1, "completed": 0, "failed": 0, "pending": 1}
     both = client.get(URL, params={"mode": "Sea Import", "date_from": "2026-11-16", "date_to": "2026-11-17"}).json()
     assert both["totals"]["total"] == 7
 
@@ -99,8 +103,8 @@ def test_export_has_rows_and_total(client, db_session):
     r = client.get(f"{URL}/export", params={"mode": "Sea Import", "date_from": "2026-11-17", "date_to": "2026-11-17"})
     assert r.status_code == 200
     ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
-    assert [c.value for c in ws[3]] == ["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"]
-    assert [c.value for c in ws[ws.max_row]][1:] == ["Total", 6, 2, 4]
+    assert [c.value for c in ws[3]] == ["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Failed Jobs", "Pending Jobs"]
+    assert [c.value for c in ws[ws.max_row]][1:] == ["Total", 6, 2, 2, 2]
 
 
 def test_operator_cannot_open_the_report(client, db_session):

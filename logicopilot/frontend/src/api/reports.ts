@@ -7,6 +7,8 @@ export interface UserJobSummaryRow {
   avatar_url: string | null;
   total: number;
   completed: number;
+  /** The red "Failed" badge's jobs - counted on their own, never in pending. */
+  failed: number;
   pending: number;
 }
 
@@ -16,7 +18,7 @@ export interface UserJobSummary {
   date_from: string;
   date_to: string;
   users: UserJobSummaryRow[];
-  totals: { total: number; completed: number; pending: number };
+  totals: { total: number; completed: number; failed: number; pending: number };
 }
 
 export interface UserJobSummaryParams {

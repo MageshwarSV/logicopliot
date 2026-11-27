@@ -5,7 +5,7 @@ import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import { Avatar } from "../../components/ui/Avatar";
 import {
-  CalendarIcon, ChartBarIcon, CheckBadgeIcon, ClockIcon, DownloadIcon, LayersIcon, PlaneIcon, ShipIcon,
+  CalendarIcon, ChartBarIcon, CheckBadgeIcon, ClockIcon, DownloadIcon, ExclamationTriangleIcon, LayersIcon, PlaneIcon, ShipIcon,
 } from "../../components/ui/icons";
 import { FIELD_CLASS, OUTLINE_BTN } from "../../components/tenant-admin/masterDataUi";
 import * as reportsApi from "../../api/reports";
@@ -100,7 +100,7 @@ export function UserJobSummaryPage() {
     }
   }
 
-  const totals = data?.totals ?? { total: 0, completed: 0, pending: 0 };
+  const totals = data?.totals ?? { total: 0, completed: 0, failed: 0, pending: 0 };
   const showData = Boolean(data) && (data?.mode ?? "") === mode;
 
   return (
@@ -149,13 +149,16 @@ export function UserJobSummaryPage() {
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryCard label="Total Jobs" value={showData ? totals.total : null} icon={<LayersIcon className="h-7 w-7" />}
             box="border-sky-200 bg-gradient-to-br from-sky-50 to-white dark:border-sky-500/20 dark:from-sky-500/10 dark:to-slate-900"
             tile="bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300" valueCls="text-slate-900 dark:text-slate-50" />
           <SummaryCard label="ERP Completed Jobs" value={showData ? totals.completed : null} icon={<CheckBadgeIcon className="h-7 w-7" />}
             box="border-emerald-200 bg-gradient-to-br from-emerald-50 to-white dark:border-emerald-500/20 dark:from-emerald-500/10 dark:to-slate-900"
             tile="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300" valueCls="text-slate-900 dark:text-slate-50" />
+          <SummaryCard label="Failed Jobs" value={showData ? totals.failed : null} icon={<ExclamationTriangleIcon className="h-7 w-7" />}
+            box="border-rose-200 bg-gradient-to-br from-rose-50 to-white dark:border-rose-500/20 dark:from-rose-500/10 dark:to-slate-900"
+            tile="bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300" valueCls="text-rose-700 dark:text-rose-300" />
           <SummaryCard label="Pending Jobs" value={showData ? totals.pending : null} icon={<ClockIcon className="h-7 w-7" />}
             box="border-amber-200 bg-gradient-to-br from-amber-50 to-white dark:border-amber-500/20 dark:from-amber-500/10 dark:to-slate-900"
             tile="bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300" valueCls="text-amber-800 dark:text-amber-300" />
@@ -167,7 +170,7 @@ export function UserJobSummaryPage() {
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">User-wise Job Summary</h2>
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 Jobs that arrived {range.from === range.to ? `on ${fmt(range.from)}` : `from ${fmt(range.from)} to ${fmt(range.to)}`}
-                {mode ? ` · ${mode}` : " · all operations"}. ERP Completed = reached the ERP; Pending = not yet.
+                {mode ? ` · ${mode}` : " · all operations"}. ERP Completed = reached the ERP; Failed = the ERP entry failed; Pending = not yet.
               </p>
             </div>
             <button type="button" className={OUTLINE_BTN} disabled={!showData || exporting || customInvalid} onClick={exportReport}>
@@ -190,6 +193,7 @@ export function UserJobSummaryPage() {
                     <th className="border-r border-slate-200 px-4 py-3 text-left font-semibold dark:border-slate-700">User</th>
                     <th className="border-r border-slate-200 px-4 py-3 text-center font-semibold dark:border-slate-700">Total Jobs</th>
                     <th className="border-r border-slate-200 px-4 py-3 text-center font-semibold dark:border-slate-700">ERP Completed Jobs</th>
+                    <th className="border-r border-slate-200 px-4 py-3 text-center font-semibold dark:border-slate-700">Failed Jobs</th>
                     <th className="px-4 py-3 text-center font-semibold">Pending Jobs</th>
                   </tr>
                 </thead>
@@ -205,6 +209,7 @@ export function UserJobSummaryPage() {
                       </td>
                       <td className="border-r border-slate-100 px-4 py-2.5 text-center tabular-nums text-slate-800 dark:border-slate-800 dark:text-slate-100">{r.total}</td>
                       <td className="border-r border-slate-100 px-4 py-2.5 text-center tabular-nums text-slate-800 dark:border-slate-800 dark:text-slate-100">{r.completed}</td>
+                      <td className="border-r border-slate-100 px-4 py-2.5 text-center dark:border-slate-800"><FailedPill value={r.failed} /></td>
                       <td className="px-4 py-2.5 text-center"><PendingPill value={r.pending} /></td>
                     </tr>
                   ))}
@@ -214,6 +219,7 @@ export function UserJobSummaryPage() {
                     <td colSpan={2} className="border-r border-slate-200 px-4 py-3 text-center dark:border-slate-700">Total</td>
                     <td className="border-r border-slate-200 px-4 py-3 text-center tabular-nums dark:border-slate-700">{totals.total}</td>
                     <td className="border-r border-slate-200 px-4 py-3 text-center tabular-nums dark:border-slate-700">{totals.completed}</td>
+                    <td className="border-r border-slate-200 px-4 py-3 text-center dark:border-slate-700"><FailedPill value={totals.failed} large /></td>
                     <td className="px-4 py-3 text-center"><PendingPill value={totals.pending} large /></td>
                   </tr>
                 </tfoot>
@@ -258,6 +264,16 @@ function SummaryCard({ label, value, icon, box, tile, valueCls }: { label: strin
         <p className={`mt-1 text-3xl font-bold tabular-nums ${valueCls}`}>{value ?? "—"}</p>
       </div>
     </div>
+  );
+}
+
+function FailedPill({ value, large }: { value: number; large?: boolean }) {
+  return (
+    <span className={`inline-flex min-w-12 justify-center rounded-full px-3 font-semibold tabular-nums ${
+      value > 0 ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+    } ${large ? "py-1 text-base" : "py-0.5 text-sm"}`}>
+      {value}
+    </span>
   );
 }
 

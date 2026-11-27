@@ -2374,8 +2374,9 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
     """Reports -> User Job Summary. For the chosen operation and period (IST dates, both ends
     inclusive): per user, the jobs that ARRIVED in the period (Total), how many of those have
     reached the ERP (ERP Completed - the same _category_condition("submitted") rule as the
-    ERP Submitted badge and list) and the rest (Pending = Total - Completed). The same
-    "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
+    ERP Submitted badge and list), how many FAILED (the red "Failed" badge's own rule,
+    _category_condition("failed") - counted on their own, never in Pending; by request
+    2026-11-27) and the rest (Pending = Total - Completed - Failed).
 
     The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
     else the mail-routed operator); jobs with neither are "Unassigned". Every active operator
@@ -2402,6 +2403,9 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
     submitted_ids = {
         row[0] for row in arrived.filter(_category_condition("submitted")).with_entities(Job.id).all()
     }
+    failed_ids = {
+        row[0] for row in arrived.filter(_category_condition("failed")).with_entities(Job.id).all()
+    }
     if mode:
         jobs = [j for j in jobs if (group_modes.get(j.group_id) or _shipment_mode(db, j)) == mode]
 
@@ -2413,7 +2417,7 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
             "user_id": u.id if u else None,
             "name": (u.full_name.strip() if u and u.full_name else None) or "Unassigned",
             "avatar_url": getattr(u, "avatar_url", None) if u else None,
-            "total": 0, "completed": 0, "pending": 0,
+            "total": 0, "completed": 0, "failed": 0, "pending": 0,
         })
 
     # Every active operator (Gate Keeper) of this tenant who works this operation is listed,
@@ -2436,12 +2440,15 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
             u = users_by_id[uid]
         r = _row_for(u)
         r["total"] += 1
-        if j.id in submitted_ids:
+        # Failed first: the badge reads "Failed" whatever else the job carries.
+        if j.id in failed_ids:
+            r["failed"] += 1
+        elif j.id in submitted_ids:
             r["completed"] += 1
         else:
             r["pending"] += 1
     ordered = sorted(rows.values(), key=lambda r: (r["user_id"] is None, -r["total"], r["name"].lower()))
-    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "pending")}
+    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "failed", "pending")}
     return {"modes": modes, "mode": mode, "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
             "users": ordered, "totals": totals}
 
@@ -2481,17 +2488,17 @@ def user_job_summary_export(
     ws.append([f"User Job Summary - {data['mode'] or 'All operations'} - {data['date_from']} to {data['date_to']}"])
     ws["A1"].font = Font(bold=True)
     ws.append([])
-    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"])
+    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Failed Jobs", "Pending Jobs"])
     for c in ws[3]:
         c.font = Font(bold=True)
     for i, r in enumerate(data["users"], start=1):
-        ws.append([i, r["name"], r["total"], r["completed"], r["pending"]])
+        ws.append([i, r["name"], r["total"], r["completed"], r["failed"], r["pending"]])
     t = data["totals"]
-    ws.append(["", "Total", t["total"], t["completed"], t["pending"]])
+    ws.append(["", "Total", t["total"], t["completed"], t["failed"], t["pending"]])
     for c in ws[ws.max_row]:
         c.font = Font(bold=True)
     ws.column_dimensions["B"].width = 32
-    for col in "CDE":
+    for col in "CDEF":
         ws.column_dimensions[col].width = 20
     buf = io.BytesIO()
     wb.save(buf)
