@@ -3407,7 +3407,31 @@ def _click_through(page, loc, sel_for_log: str | None = None, timeout: int = 800
         )
         page.keyboard.press("Escape")
     else:
-        loc.click(timeout=timeout, **(position or {}))
+        try:
+            loc.click(timeout=timeout, **(position or {}))
+        except Exception as exc:  # noqa: BLE001
+            # The page's own hit-test says nothing covers the element (so _wait_clickable let
+            # it through), but the BROWSER still hands the click to a container around it -
+            # Playwright: "<div id="Panel16" class="GridPanel"> intercepts pointer events".
+            # Found 2026-11-27 after the ERP's screen update: the Entity tab's "New" link and
+            # the Name search button inside Panel16 could no longer be clicked at all, on every
+            # Air and Sea Import job. A click sent to the element itself opens the form fine
+            # (checked live on the Chennai branch login). No Escape here - unlike the stuck
+            # overlay above, nothing needs dismissing, and Escape could cancel the form the
+            # click just opened.
+            if "intercepts pointer events" not in str(exc):
+                raise
+            logger.info("click on %r refused - %s; sending the click to the element directly",
+                        sel_for_log,
+                        next((ln.strip() for ln in str(exc).splitlines()
+                              if "intercepts pointer events" in ln), "a container intercepts it"))
+            loc.first.evaluate(
+                r"""el => {
+                     for (const type of ['mousedown', 'mouseup', 'click']) {
+                       el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                     }
+                   }"""
+            )
 
 
 def _wait_clickable(page, loc, timeout: int = OVERLAY_WAIT_MS,
