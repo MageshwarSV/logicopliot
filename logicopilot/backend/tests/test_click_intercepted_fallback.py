@@ -37,6 +37,7 @@ class FakePage:
 @pytest.fixture(autouse=True)
 def nothing_covers(monkeypatch):
     monkeypatch.setattr(browser, "_wait_clickable", lambda *a, **k: None)
+    monkeypatch.setattr(browser, "_import_rejection", lambda page: None)
 
 
 def test_intercepted_click_is_sent_to_the_element():
@@ -57,4 +58,15 @@ def test_any_other_click_failure_still_fails():
     loc = FakeLoc("Locator.click: Timeout 8000ms exceeded.\n  - element is not visible")
     with pytest.raises(RuntimeError):
         browser._click_through(FakePage(), loc, "#missing")
+    assert not loc.dispatched
+
+
+def test_never_clicks_past_an_invalid_data_found_popup(monkeypatch):
+    """After the ERP update the popup no longer blocks the screen behind it - a click sent
+    through would carry the entry on behind a rejection (GENERAL CountryOfOriginCode)."""
+    monkeypatch.setattr(browser, "_import_rejection",
+                        lambda page: "GENERAL CountryOfOriginCode Entry should be of 2 characters")
+    loc = FakeLoc('Locator.click: Timeout 8000ms exceeded.\n  - <div id="blueFilterDivLayer"></div> intercepts pointer events')
+    with pytest.raises(RuntimeError, match="Invalid Data Found"):
+        browser._click_through(FakePage(), loc, "#lnkUpdate")
     assert not loc.dispatched

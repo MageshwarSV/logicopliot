@@ -61,8 +61,11 @@ def test_both_places_that_find_it_say_the_same_thing():
     import app.core.browser as browser
 
     body = inspect.getsource(browser._play_steps)
-    assert body.count("_rejected_import_block(") == 2, (
-        "both the mid-run block and the final-screen look must build the message here")
+    # 3 since 2026-11-27: the before-every-step look (the ERP update stopped the popup from
+    # blocking clicks, so the mid-run block alone no longer saw it), the mid-run block, and the
+    # final-screen look - all three build the message with this one function.
+    assert body.count("_rejected_import_block(") == 3, (
+        "every place that finds the rejection must build the message here")
 
 
 def test_the_final_look_only_runs_when_the_run_was_otherwise_a_success():
