@@ -11,6 +11,13 @@ export async function getTenant(tenantId: string): Promise<Tenant> {
   return response.data;
 }
 
+/** Super Admin switches a customer off / back on: off = no sign-in, no mail read, no ERP
+ *  logins, no platform fee while off. Nothing is deleted. */
+export async function setTenantActive(tenantId: string, isActive: boolean): Promise<Tenant> {
+  const response = await apiClient.patch<Tenant>(`/tenants/${tenantId}/active`, { is_active: isActive });
+  return response.data;
+}
+
 export async function deleteTenant(tenantId: string): Promise<void> {
   await apiClient.delete(`/tenants/${tenantId}`);
 }

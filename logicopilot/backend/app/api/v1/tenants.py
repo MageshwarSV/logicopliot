@@ -248,6 +248,35 @@ def get_tenant_billing_config(
     )
 
 
+from pydantic import BaseModel as _BM
+
+
+class TenantActiveIn(_BM):
+    is_active: bool
+
+
+@router.patch("/{tenant_id}/active", response_model=TenantOut)
+def set_tenant_active(
+    tenant_id: str,
+    payload: TenantActiveIn,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_role(SUPER_ADMIN)),
+) -> TenantOut:
+    """Switch a customer off or back on (Super Admin > Tenants). Off: none of its users can
+    sign in (open sessions end too), its mailboxes are not read, its ERP branch logins are
+    closed, and no monthly platform fee is charged while it is off (usage it already had is
+    still billed - that was earned). Nothing is deleted; switching it back on restores all."""
+    from app.models.tenant import Tenant
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    tenant.is_active = payload.is_active
+    db.commit()
+    db.refresh(tenant)
+    return TenantOut.model_validate(tenant)
+
+
 @router.put("/{tenant_id}/billing-config", response_model=TenantBillingConfigOut)
 def update_tenant_billing_config(
     tenant_id: str,

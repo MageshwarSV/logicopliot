@@ -61,6 +61,10 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, payload.get("sub"))
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    # A customer switched off by the Super Admin (Tenants > Disable): every one of its users is
+    # out, including anyone still holding a session from before.
+    if user.tenant_id and user.tenant is not None and not user.tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your company's Cargora account is switched off. Contact Axiora support.")
 
     return user
 

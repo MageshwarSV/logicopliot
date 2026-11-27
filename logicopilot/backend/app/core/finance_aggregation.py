@@ -71,6 +71,15 @@ def summarize_tenant_bill(db: Session, tenant: Tenant, period_start: date) -> Te
         )
 
     config = db.get(TenantBillingConfig, tenant.id) or default_billing_config(tenant.id)
+    if not tenant.is_active:
+        # Switched off (Tenants > Disable): usage it already had still counts (earned), but no
+        # monthly platform fee while it is off. A transient copy - the saved config is untouched.
+        off = default_billing_config(tenant.id)
+        for col in ("cargora_tier1_rate_per_page", "cargora_tier1_page_limit", "cargora_tier2_rate_per_page",
+                    "not_required_page_rate", "gst_percent", "billing_start_date"):
+            setattr(off, col, getattr(config, col))
+        off.cargora_monthly_fee = 0.0
+        config = off
     usage = compute_usage(db, tenant.id, period_start)
     bill = calculate_bill(config, usage.total_pages, period_start, usage.final_unclassified_pages)
     return TenantBillSummary(

@@ -220,8 +220,13 @@ def _connected_mailboxes(db: Session, tenant_id: str | None = None) -> list[dict
     from app.core.mail_crypto import decrypt_secret
     from app.models.connected_mailbox import ConnectedMailbox
 
+    from app.models.tenant import Tenant
+
+    # A switched-off customer's mail is never read (Tenants > Disable).
+    active_tenants = db.query(Tenant.id).filter(Tenant.is_active.is_(True))
     query = db.query(ConnectedMailbox).filter(
         ConnectedMailbox.tenant_id.isnot(None), ConnectedMailbox.paused.is_(False),
+        ConnectedMailbox.tenant_id.in_(active_tenants),
     )
     if tenant_id:
         query = query.filter(ConnectedMailbox.tenant_id == tenant_id)
