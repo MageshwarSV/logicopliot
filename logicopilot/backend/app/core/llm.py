@@ -662,47 +662,50 @@ def normalize_place_name_with_ai(
         return ""
 
 
-def sea_port_code_with_ai(port: str, tenant_id: str | None = None) -> str:
-    """The ICEGATE location code a SEA export is filed at, for an Indian port / ICD / CFS that is
-    not in the Sea Export list (app/core/excel_entry.SEA_PORTS) - e.g. "ICD CONCOR Tondiarpet".
-    Always the ICEGATE 6-character form - IN + 3 letters + 1 digit/letter, e.g. INMAA1 - or ""
-    when the model is not sure. Never raises."""
+def ai_map_with_ai(raw: str, options: list[tuple[str, str]], instruction: str,
+                   pattern: str = "", tenant_id: str | None = None) -> str:
+    """An AI-aided field's last resort (excel_entry.ai_map_value): `raw` - what an operator typed,
+    which the field's own list could not place - converted to the code the ERP expects, by the
+    field's own `instruction`, with its list as worked examples. "" when the model is not sure,
+    or its answer does not fit `pattern`. Never raises."""
     import re as _re
 
     settings = get_settings()
-    if not settings.openai_api_key or not (port or "").strip():
+    if not settings.openai_api_key or not (raw or "").strip():
         return ""
+    examples = "\n".join(f"  {label} -> {code}" for label, code in options[:60])
     try:
         resp = create_chat_completion_with_retry(
             timeout=20,
             tenant_id=tenant_id,
             model=settings.openai_model,
             temperature=0,
-            max_tokens=40,
+            max_tokens=60,
             response_format={"type": "json_object"},
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are an Indian customs (ICEGATE) expert. You are given the INDIAN place "
-                        "a SEA export shipment is loaded / filed at - a sea port, an ICD (Inland "
-                        "Container Depot) or a CFS - as an operator typed it, possibly misspelt. "
-                        "Return the ICEGATE customs location code used for SEA shipments filed "
-                        "there: exactly 6 characters - 'IN', then the 3-letter location code, then "
-                        "one digit or letter (sea ports usually end in 1, ICDs in 6) - e.g. Chennai "
-                        "-> INMAA1, Kattupalli -> INKAT1, Nhava Sheva -> INNSA1, ICD Whitefield -> "
-                        "INWFD6. If you are not sure which real Indian location is meant, or do not "
-                        "know its code, return an empty string - never invent a code.\n\n"
+                        "You convert a value an operator typed into the CODE an ERP expects.\n\n"
+                        f"WHAT THE CODE IS: {instruction or 'the code for this value'}\n\n"
+                        f"KNOWN VALUES AND THEIR CODES (examples of the exact code format):\n{examples}\n\n"
+                        "The value given is NOT one of the known values above (or a spelling of one). "
+                        "Return the correct code for it in exactly the same format"
+                        + (f" (it must match the pattern {pattern})" if pattern else "")
+                        + ". If you are not sure what real thing the value means, or do not know its "
+                        "code, return an empty string - never invent a code.\n\n"
                         'Reply with JSON: {"code": "<code>"} or {"code": ""}.'
                     ),
                 },
-                {"role": "user", "content": f"Indian loading place: {port!r}"},
+                {"role": "user", "content": f"Value: {raw!r}"},
             ],
         )
-        code = str(json.loads(resp.choices[0].message.content or "{}").get("code", "")).strip().upper()
-        return code if _re.fullmatch(r"IN[A-Z]{3}[0-9A-Z]", code) else ""
+        code = str(json.loads(resp.choices[0].message.content or "{}").get("code", "")).strip()
+        if pattern:
+            code = code.upper() if _re.fullmatch(pattern, code.upper()) else ""
+        return code
     except Exception as exc:  # noqa: BLE001
-        logger.warning("sea_port_code_with_ai failed for %r: %s", port, exc)
+        logger.warning("ai_map_with_ai failed for %r: %s", raw, exc)
         return ""
 
 

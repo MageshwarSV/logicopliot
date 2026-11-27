@@ -113,6 +113,18 @@ export interface PickBy {
   default?: string;
 }
 
+export interface AiMapOption { label: string; code: string; aliases?: string[] }
+export interface AiMap {
+  options: AiMapOption[];
+  /** What the code is - read by the AI only when the list cannot place a value. */
+  instruction?: string;
+  /** The shape every code has (a regular expression), e.g. IN[A-Z]{3}[0-9A-Z]. */
+  pattern?: string;
+  /** Filler a typed value may carry, ignored when matching (port, sea, india). */
+  ignore_words?: string[];
+  /** Also make the field's box a searchable dropdown of these values (typing still allowed). */
+  dropdown?: boolean;
+}
 export interface ExcelColumnRule {
   field?: string;
   value?: string;
@@ -121,6 +133,9 @@ export interface ExcelColumnRule {
   from_document?: string;
   fallback_fields?: string[];
   transform?: string;
+  /** AI-aided field: the value in the box -> the ERP's code, by this list first and the AI only
+   *  for a value the list cannot place (backend excel_entry.ai_map_value). */
+  ai_map?: AiMap;
   max_len?: number;
 }
 

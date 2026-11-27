@@ -224,65 +224,100 @@ def _country_iso2(value: str) -> str:
     return normalize_country(value)
 
 
-# Sea Export (4S, 2026-11-27): the Indian place a shipment is loaded at -> its ICEGATE code, for
-# the CustomHouseCode / Loading_Port columns. Read off the job's own Port of Loading box, so an
-# operator's correction on screen is what reaches the Excel. The same list is the box's own
-# dropdown (FieldMark.fixed_options); each port also answers to its other common names.
-SEA_PORTS: dict[str, tuple[str, ...]] = {
-    "INMAA1": ("Chennai", "Madras"),
-    "INKAT1": ("Kattupalli", "Kattupally", "Katupalli", "Kattupalli Port"),
-    "INENR1": ("Ennore", "Kamarajar", "Kamarajar Port"),
-    "INTUT1": ("Tuticorin", "Thoothukudi", "Thoothukkudi", "VOC Port", "V.O. Chidambaranar"),
-    "INCOK1": ("Cochin", "Kochi"),
-    "INVTZ1": ("Vizag", "Visakhapatnam", "Vishakhapatnam"),
-    "INCCU1": ("Kolkata", "Calcutta"),
-    "INNSA1": ("Nhava Sheva", "JNPT", "Jawaharlal Nehru Port", "JN Port"),
-    "INBOM1": ("Mumbai", "Bombay"),
-    "INMUN1": ("Mundra",),
-    "INIXY1": ("Kandla", "Deendayal"),
-    "INMRM1": ("Goa", "Marmagao", "Mormugao", "Marmugao"),
-    "INWFD6": ("ICD Whitefield", "Whitefield"),
-}
-_PORT_NOISE = re.compile(r"\b(port|sea ?port|harbou?r|india|in|sea|tamil ?nadu|tn)\b")
+# ---- AI-aided field (4S, 2026-11-27) ---------------------------------------------------------
+# A column whose field is one of a known list on screen, but must reach the ERP as a CODE - and
+# where an operator may type a value the list does not hold. The column's "ai_map" setting:
+#
+#   {"options": [{"label": "Chennai", "code": "INMAA1", "aliases": ["Madras"]}, ...],
+#    "instruction": "what the code is - used only when the list cannot place a value",
+#    "pattern": "IN[A-Z]{3}[0-9A-Z]",          # optional: the shape every code has
+#    "ignore_words": ["port", "sea", "india"]} # optional: filler a typed value may carry
+#
+# The value in the box -> blank stays blank; a code typed as a code is kept; a label, alias or
+# code from the list (filler words ignored, any case) gives its code; a near spelling gives the
+# nearest one's; anything else is asked of the AI once (remembered) and kept only when it fits
+# `pattern`. Nobody sure -> "" - never a guess in the Excel.
+_AI_MAP_CACHE: dict[tuple, str] = {}
 
 
-def _port_key(text: str) -> str:
+def _map_key(text: str, ignore: tuple[str, ...]) -> str:
     t = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
-    return re.sub(r"\s+", " ", _PORT_NOISE.sub(" ", t)).strip()
+    if ignore:
+        t = re.sub(r"\b(" + "|".join(re.escape(w) for w in ignore) + r")\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
-_PORT_AI_CACHE: dict[str, str] = {}
+def ai_map_value(value, spec: dict | None) -> str:
+    import difflib
+
+    raw = str(value or "").strip()
+    if not isinstance(spec, dict):
+        return raw
+    if not raw:
+        return ""
+    options = [o for o in (spec.get("options") or []) if isinstance(o, dict) and str(o.get("code") or "").strip()]
+    pattern = (spec.get("pattern") or "").strip()
+    ignore = tuple(str(w).strip().lower() for w in (spec.get("ignore_words") or []) if str(w).strip())
+    if pattern and re.fullmatch(pattern, raw.upper()):
+        return raw.upper()
+    key = _map_key(raw, ignore)
+    names = []
+    for o in options:
+        code = str(o["code"]).strip()
+        for n in [o.get("label"), code, *(o.get("aliases") or [])]:
+            k = _map_key(str(n or ""), ignore)
+            if k:
+                names.append((code, k))
+    for code, n in names:
+        if key == n:
+            return code
+    best = max(((difflib.SequenceMatcher(None, key, n).ratio(), code) for code, n in names),
+               default=(0.0, ""))
+    if best[0] >= 0.8:
+        return best[1]
+    cache_key = (str(spec.get("instruction") or ""), pattern,
+                 tuple((str(o.get("label")), str(o["code"])) for o in options), key)
+    if cache_key not in _AI_MAP_CACHE:
+        from app.core import llm
+
+        got = llm.ai_map_with_ai(raw, [(str(o.get("label") or ""), str(o["code"])) for o in options],
+                                 str(spec.get("instruction") or ""), pattern)
+        if pattern and got and not re.fullmatch(pattern, got):
+            got = ""
+        _AI_MAP_CACHE[cache_key] = got
+    return _AI_MAP_CACHE[cache_key]
+
+
+# Sea Export's Port of Loading -> ICEGATE code (CustomHouseCode / Loading_Port). Kept as a ready
+# ai_map so the "sea_port_code" transform and a column's own ai_map read the same list.
+SEA_PORT_MAP: dict = {
+    "options": [
+        {"label": "Chennai", "code": "INMAA1", "aliases": ["Madras"]},
+        {"label": "Kattupalli", "code": "INKAT1", "aliases": ["Kattupally", "Katupalli"]},
+        {"label": "Ennore", "code": "INENR1", "aliases": ["Kamarajar"]},
+        {"label": "Tuticorin", "code": "INTUT1", "aliases": ["Thoothukudi", "Thoothukkudi", "VOC", "V O Chidambaranar"]},
+        {"label": "Cochin", "code": "INCOK1", "aliases": ["Kochi"]},
+        {"label": "Vizag", "code": "INVTZ1", "aliases": ["Visakhapatnam", "Vishakhapatnam"]},
+        {"label": "Kolkata", "code": "INCCU1", "aliases": ["Calcutta"]},
+        {"label": "Nhava Sheva", "code": "INNSA1", "aliases": ["JNPT", "Jawaharlal Nehru", "JN"]},
+        {"label": "Mumbai", "code": "INBOM1", "aliases": ["Bombay"]},
+        {"label": "Mundra", "code": "INMUN1"},
+        {"label": "Kandla", "code": "INIXY1", "aliases": ["Deendayal"]},
+        {"label": "Goa", "code": "INMRM1", "aliases": ["Marmagao", "Mormugao", "Marmugao"]},
+        {"label": "ICD Whitefield", "code": "INWFD6", "aliases": ["Whitefield"]},
+    ],
+    "instruction": (
+        "The INDIAN place a SEA export shipment is loaded / filed at - a sea port, an ICD (Inland "
+        "Container Depot) or a CFS. Return its ICEGATE customs location code for SEA shipments: "
+        "'IN' + the 3-letter location code + one digit or letter (sea ports usually end in 1, "
+        "ICDs in 6)."),
+    "pattern": "IN[A-Z]{3}[0-9A-Z]",
+    "ignore_words": ["port", "seaport", "sea", "harbour", "harbor", "india", "tamil nadu", "tn"],
+}
 
 
 def _sea_port_code(value: str) -> str:
-    """Port of Loading -> ICEGATE code: blank stays blank; a code typed as a code is kept; one of
-    SEA_PORTS (any of its names, any case, "CHENNAI PORT, INDIA" too) gives its code; a near
-    spelling ("katupilli") gives the nearest port's code; anything else (an ICD / CFS not on the
-    list, e.g. "ICD CONCOR") is asked of the AI once and remembered. "" when nobody is sure."""
-    import difflib
-
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    if re.fullmatch(r"IN[A-Z]{3}[0-9A-Z]", raw.upper()):
-        return raw.upper()
-    key = _port_key(raw)
-    names = [(code, _port_key(n)) for code, ns in SEA_PORTS.items() for n in ns]
-    for code, n in names:                      # exactly one of the names
-        if key == n:
-            return code
-    for code, n in names:                      # the name inside a longer text: "CHENNAI SEA PORT"
-        if n and re.search(rf"\b{re.escape(n)}\b", key):
-            return code
-    best = max(((difflib.SequenceMatcher(None, key, n).ratio(), code) for code, n in names if n),
-               default=(0.0, ""))
-    if best[0] >= 0.8:                         # a near spelling: "katupilli", "tutucorin"
-        return best[1]
-    if key not in _PORT_AI_CACHE:
-        from app.core.llm import sea_port_code_with_ai
-
-        _PORT_AI_CACHE[key] = sea_port_code_with_ai(raw)
-    return _PORT_AI_CACHE[key]
+    return ai_map_value(value, SEA_PORT_MAP)
 
 
 _TRANSFORMS = {
@@ -467,6 +502,8 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
                          or _RULE_TRANSFORMS.get(col.get("transform") or ""))
             if transform is not None:
                 val = transform(val if isinstance(val, str) else str(val or ""))
+            if isinstance(col.get("ai_map"), dict):
+                val = ai_map_value(val, col["ai_map"])
             line.append(val)
         # Apply each column's own width limit, if it has one.
         line = [(v if cap is None or v is None or len(str(v)) <= cap else str(v)[:cap])

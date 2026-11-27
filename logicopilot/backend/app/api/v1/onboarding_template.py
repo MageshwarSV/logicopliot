@@ -45,7 +45,8 @@ from app.models.user import SUPER_ADMIN, User
 router = APIRouter(prefix="/onboarding/template", tags=["onboarding: live template"])
 
 # Every per-column key app.core.excel_entry reads.
-RULE_KEYS = ("field", "value", "values", "pick_by", "from_document", "fallback_fields", "transform", "max_len")
+RULE_KEYS = ("field", "value", "values", "pick_by", "from_document", "fallback_fields", "transform", "max_len",
+             "ai_map")
 SCOPES = ("job", "line", "invoice", "fixed")
 
 
@@ -137,6 +138,66 @@ def _labels(db: Session, group: TemplateGroup) -> set[str]:
     return out
 
 
+def _clean_ai_map(val) -> dict:
+    """An AI-aided field's setting (see excel_entry.ai_map_value), checked and tidied."""
+    import re as _re
+
+    if not isinstance(val, dict):
+        raise HTTPException(status_code=422, detail="AI-aided field: expected the list and the instruction.")
+    options = []
+    for o in val.get("options") or []:
+        if not isinstance(o, dict):
+            continue
+        label, code = str(o.get("label") or "").strip(), str(o.get("code") or "").strip()
+        if not label and not code:
+            continue
+        if not code:
+            raise HTTPException(status_code=422, detail=f"AI-aided field: {label!r} has no code.")
+        aliases = [str(a).strip() for a in (o.get("aliases") or []) if str(a).strip()]
+        options.append({"label": label or code, "code": code, **({"aliases": aliases} if aliases else {})})
+    if not options:
+        raise HTTPException(status_code=422, detail="AI-aided field: add at least one value and its code.")
+    pattern = str(val.get("pattern") or "").strip()
+    if pattern:
+        try:
+            rx = _re.compile(pattern)
+        except _re.error as exc:
+            raise HTTPException(status_code=422, detail=f"AI-aided field: the code format is not valid ({exc}).")
+        bad = [o["code"] for o in options if not rx.fullmatch(o["code"].upper())]
+        if bad:
+            raise HTTPException(status_code=422, detail=f"AI-aided field: these codes do not fit the code format: {', '.join(bad[:5])}.")
+    out = {"options": options, "instruction": str(val.get("instruction") or "").strip()}
+    if pattern:
+        out["pattern"] = pattern
+    ignore = [str(w).strip() for w in (val.get("ignore_words") or []) if str(w).strip()]
+    if ignore:
+        out["ignore_words"] = ignore
+    if val.get("dropdown"):
+        out["dropdown"] = True
+    return out
+
+
+def _ai_map_dropdown(db: Session, group: TemplateGroup, col: dict) -> list[str]:
+    """"Show as a dropdown": the field the column reads becomes a searchable list of the AI-aided
+    field's values that still takes typed text (dropdown_style "search_free"). Returns the
+    labels it was set on."""
+    spec = col.get("ai_map") or {}
+    label = (col.get("field") or "").strip()
+    if not spec.get("dropdown") or not label or label.startswith("#") or "[[" in label:
+        return []
+    choices = [o["label"] for o in spec.get("options") or []]
+    done = []
+    docs = _template_docs(db, group.id)
+    for m in _marks(db, docs):
+        if m.label_name == label and (m.width or 0) > 0:
+            m.fixed_options, m.dropdown_style = choices, "search_free"
+            done.append(label)
+    for cf in db.query(CustomField).filter(CustomField.group_id == group.id, CustomField.label_name == label):
+        cf.fixed_options, cf.dropdown_style = choices, "search_free"
+        done.append(label)
+    return done
+
+
 def _clean_rule(db: Session, group: TemplateGroup, rule: dict) -> dict:
     """Validate one column's rule keys exactly the way excel_entry will read them."""
     out: dict = {}
@@ -191,6 +252,8 @@ def _clean_rule(db: Session, group: TemplateGroup, rule: dict) -> dict:
             if not isinstance(val, list):
                 raise HTTPException(status_code=422, detail="Fallback fields must be a list.")
             out[key] = [label_ok(str(v), "Fallback") for v in val if str(v).strip()]
+        elif key == "ai_map":
+            out[key] = _clean_ai_map(val)
         elif key == "transform":
             from app.core.excel_entry import _TRANSFORMS
 
@@ -259,9 +322,10 @@ def set_column_rule(group_id: str, body: ColumnRuleIn, db: Session = Depends(get
             col[key] = val
     if col.get("pick_by") and col.get("from_document"):
         raise HTTPException(status_code=422, detail="A column reads one document OR picks between fields, not both.")
+    dropdown_on = _ai_map_dropdown(db, group, col)
     _save_config(db, group, cfg)
     db.commit()
-    return {"sheet": plan["sheet"], "column": col}
+    return {"sheet": plan["sheet"], "column": col, "dropdown_on": dropdown_on}
 
 
 class SheetIn(BaseModel):
