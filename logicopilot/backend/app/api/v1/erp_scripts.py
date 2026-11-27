@@ -720,6 +720,26 @@ def _sample_workbook(db: Session, script: ErpScript) -> dict[str, str]:
                 if g is not None and (g.entry_mode or "fields") == "excel"), None)
     if grp is None:
         return {}
+    # A real job picked as the recording sample (excel_config.sample_job_id) beats anything
+    # built from examples: its workbook is exactly what a run of that job would upload, every
+    # column filled the way the ERP validates it - so the import screen can be recorded right
+    # through to Submit and Save. Built fresh each time, so a value corrected on that job is
+    # in the next recording too.
+    sample_job_id = (grp.excel_config or {}).get("sample_job_id")
+    if sample_job_id:
+        from app.api.v1.jobs import _build_job_excel
+        from app.models.job import Job
+
+        job = db.get(Job, sample_job_id)
+        if job is not None and job.group_id == grp.id:
+            try:
+                book = _build_job_excel(
+                    db, job, Path(get_settings().uploads_dir) / "erp_recording" / grp.id / "from_job")
+                logger.info("recording with %s's own workbook %s", job.reference, book.name)
+                return {"excel_import": str(book), book.name: str(book)}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sample job %s gave no workbook, using template samples: %s",
+                               sample_job_id, exc)
     cached = _SAMPLE_BOOKS.get(grp.id)
     if cached and Path(cached).exists():
         return {"excel_import": cached, Path(cached).name: cached}
