@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import * as systemSettingsApi from "../../api/systemSettings";
 import type { OpenAICosts, SpendAnalytics, SystemSettings, UsdInrRate } from "../../api/systemSettings";
+import { formatTime } from "../../utils/dateTime";
 
 function formatInr(usd: number, rate: UsdInrRate | null): string | null {
   if (rate === null) return null;
@@ -365,7 +366,7 @@ export function SpendAnalyticsPanel() {
           </div>
           <div className="ml-auto flex items-center gap-3">
             <span className="text-xs text-slate-500 dark:text-slate-400">
-              {loading ? "Getting from OpenAI…" : updatedAt ? `Updated ${updatedAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}` : ""}
+              {loading ? "Getting from OpenAI…" : updatedAt ? `Updated ${formatTime(updatedAt)}` : ""}
             </span>
             <button
               type="button"

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import type { HealthBox, SupportActivity } from "../../api/support";
 import { ModeIcon } from "../../components/ModeIcon";
 import { CalendarIcon } from "../../components/ui/icons";
+import { formatDateTime } from "../../utils/dateTime";
 
 // ---------------------------------------------------------------- period
 
@@ -153,6 +154,8 @@ export const T = {
   thead: "sticky top-0 z-10 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800/80 dark:text-slate-400",
   th: "px-4 py-3",
   thRight: "px-4 py-3 text-right",
+  thSno: "w-14 px-3 py-3 text-center",
+  tdSno: "px-3 py-3 text-center align-middle tabular-nums text-slate-500 dark:text-slate-400",
   row: "border-l-4 border-b border-slate-100 transition-colors hover:bg-indigo-50/40 dark:border-b-slate-800 dark:hover:bg-slate-800/40",
   td: "px-4 py-3 align-middle",
   tdRight: "px-4 py-3 text-right align-middle tabular-nums",
@@ -210,10 +213,10 @@ export function Pager({ page, pages, size, total, setPage, setSize }: {
 
 // ---------------------------------------------------------------- formatting
 
+/** "27 Nov, 06:18 PM" - the app's one date format (utils/dateTime), the same on a Mac, on
+ *  Windows and in any browser language. */
 export function formatWhen(isoText: string | null): string {
-  if (!isoText) return "—";
-  const d = new Date(isoText);
-  return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return formatDateTime(isoText) || "—";
 }
 
 export function mins(v: number | null | undefined): string {

@@ -43,6 +43,11 @@ export interface SupportIssue {
   can_retry_extraction: boolean;
   handled: boolean;
   handled_note: string | null;
+  created_at: string | null;
+  /** First time it was sent to the ERP - retries keep it. */
+  first_erp_at: string | null;
+  last_erp_at: string | null;
+  since_first_erp_minutes: number | null;
 }
 
 export interface SupportIssues {

@@ -597,7 +597,13 @@ def ensure_invoices_finalized(db: Session, tenant_id: str) -> None:
     raised = today
     fy = financial_year(raised)
     prefix = (inv_settings.number_prefix or "INV").strip() or "INV"
-    next_seq = (db.query(_func.max(Invoice.fy_sequence)).filter(Invoice.financial_year == fy).scalar() or 0) + 1
+    # One number series for usage AND manual invoices (app/core/manual_invoices.py).
+    from app.models.manual_invoice import ManualInvoice as _MI
+
+    next_seq = max(
+        db.query(_func.max(Invoice.fy_sequence)).filter(Invoice.financial_year == fy).scalar() or 0,
+        db.query(_func.max(_MI.fy_sequence)).filter(_MI.financial_year == fy).scalar() or 0,
+    ) + 1
 
     while month < current_month_start:
         exists = (

@@ -109,6 +109,70 @@ def list_finance_invoices(
     ]
 
 
+# ---------------------------------------------------------------- business analytics (2026-11-27)
+
+def _month_arg(month: str | None) -> date:
+    from app.core.finance_analytics import month_start, today_ist
+
+    if not month:
+        return month_start(today_ist())
+    try:
+        return date.fromisoformat(f"{month}-01")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="month must be YYYY-MM")
+
+
+def _fy_arg(fy: int | None) -> int:
+    from app.core.finance_analytics import fy_start_year, today_ist
+
+    return fy if fy else fy_start_year(today_ist())
+
+
+@router.get("/analytics/overview")
+def analytics_overview(db: Session = Depends(get_db), _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE))) -> dict:
+    """Headline KPIs and milestones (app/core/finance_analytics.py)."""
+    from app.core.finance_analytics import overview
+
+    return overview(db)
+
+
+@router.get("/analytics/monthly")
+def analytics_monthly(fy: int | None = None, db: Session = Depends(get_db),
+                      _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE))) -> dict:
+    """Revenue by month for a financial year (fy = its starting year, e.g. 2026 = 2026-27), the
+    year before for comparison, customer growth and shipment-type split."""
+    from app.core.finance_analytics import monthly
+
+    return monthly(db, _fy_arg(fy))
+
+
+@router.get("/analytics/daily")
+def analytics_daily(month: str | None = None, db: Session = Depends(get_db),
+                    _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE))) -> dict:
+    """Page-usage revenue and billable pages per day for one month (YYYY-MM)."""
+    from app.core.finance_analytics import daily
+
+    return daily(db, _month_arg(month))
+
+
+@router.get("/analytics/customers")
+def analytics_customers(month: str | None = None, db: Session = Depends(get_db),
+                        _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE))) -> dict:
+    """Revenue, pages, share and growth per customer for one month."""
+    from app.core.finance_analytics import customers_table
+
+    return customers_table(db, _month_arg(month))
+
+
+@router.get("/analytics/products")
+def analytics_products(fy: int | None = None, db: Session = Depends(get_db),
+                       _=Depends(require_role(SUPER_ADMIN, SAAS_FINANCE))) -> dict:
+    """Revenue by product for a financial year - by revenue type and by shipment type."""
+    from app.core.finance_analytics import products
+
+    return products(db, _fy_arg(fy))
+
+
 REPORT_TYPES = (
     "monthly-usage", "customer-billing", "revenue-summary",
     "outstanding-payments", "page-usage-charges",

@@ -511,9 +511,16 @@ def _sync_keepers() -> None:
     db = SessionLocal()
     try:
         want: dict[str, tuple] = {}
+        from app.models.tenant import Tenant
+
+        # A switched-off customer keeps no ERP login open (Tenants > Disable).
+        inactive = {t.id for t in db.query(Tenant).filter(Tenant.is_active.is_(False)).all()}
         for bs in db.query(ErpBranchSession).filter(ErpBranchSession.enabled.is_(True)).all():
+            if bs.tenant_id in inactive:
+                continue
             want[bs.id] = _config_key(bs, db.get(ErpScript, bs.login_script_id))
-        off = [bs.id for bs in db.query(ErpBranchSession).filter(ErpBranchSession.enabled.is_(False)).all()]
+        off = [bs.id for bs in db.query(ErpBranchSession).all()
+               if not bs.enabled or bs.tenant_id in inactive]
     finally:
         db.close()
     with _keepers_guard:

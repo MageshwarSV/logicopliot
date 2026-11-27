@@ -243,3 +243,18 @@ def test_backup_box_reads_the_nightly_backup_status(db_session, monkeypatch):
     store["cargora:backup:prod"] = _json.dumps({"status": "failed", "at": datetime.now(timezone.utc).isoformat(),
                                                 "detail": "the dump cannot be read back"})
     assert box()["status"] == "down" and "FAILED" in box()["detail"]
+
+
+def test_first_erp_send_is_kept_across_retries(client, db_session):
+    failed, _ = _world(db_session)
+    t1 = datetime.now(timezone.utc) - timedelta(hours=5)
+    failed.erp_submitted_at = t1
+    db_session.commit()
+    failed.erp_submitted_at = datetime.now(timezone.utc) - timedelta(minutes=10)   # a retry
+    db_session.commit()
+    db_session.refresh(failed)
+    assert abs((failed.erp_first_submitted_at.replace(tzinfo=timezone.utc) - t1).total_seconds()) < 2
+    _support(client, db_session)
+    row = next(i for i in client.get("/api/v1/support/issues").json()["items"] if i["reference"] == "JOB-ERR")
+    assert row["created_at"] and row["first_erp_at"] and row["last_erp_at"]
+    assert 295 <= row["since_first_erp_minutes"] <= 305

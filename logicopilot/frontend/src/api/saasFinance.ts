@@ -199,3 +199,94 @@ export const GST_STATES: [string, string][] = [
   ["35", "Andaman and Nicobar Islands"], ["36", "Telangana"], ["37", "Andhra Pradesh"], ["38", "Ladakh"],
   ["97", "Other Territory"],
 ];
+
+/** Manual (one-off) invoices - backend app/api/v1/manual_invoices.py. */
+export interface ManualInvoiceLine { description: string; sac: string; qty: number; rate: number; amount?: number }
+export interface ManualInvoice {
+  id: string; tenant_id: string; tenant_name: string;
+  status: "draft" | "issued" | "paid" | "cancelled";
+  invoice_number: string | null; invoice_date: string; due_date: string; period_label: string | null;
+  lines: ManualInvoiceLine[]; gst_percent: number; subtotal: number; gst_amount: number; total_amount: number;
+  notes: string | null; issued_at: string | null; paid_at: string | null; cancelled_at: string | null;
+  cancel_reason: string | null; created_at: string | null;
+}
+export interface ManualInvoiceDraft {
+  tenant_id: string; invoice_date: string; due_date: string; period_label: string;
+  lines: ManualInvoiceLine[]; gst_percent: number; notes: string;
+}
+
+export async function listManualInvoices(): Promise<ManualInvoice[]> {
+  const { data } = await apiClient.get<ManualInvoice[]>("/finance/manual-invoices");
+  return data;
+}
+export async function createManualInvoice(body: ManualInvoiceDraft): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>("/finance/manual-invoices", body);
+  return data;
+}
+export async function updateManualInvoice(id: string, body: ManualInvoiceDraft): Promise<ManualInvoice> {
+  const { data } = await apiClient.put<ManualInvoice>(`/finance/manual-invoices/${id}`, body);
+  return data;
+}
+export async function deleteManualInvoice(id: string): Promise<void> {
+  await apiClient.delete(`/finance/manual-invoices/${id}`);
+}
+export async function issueManualInvoice(id: string): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/issue`);
+  return data;
+}
+export async function markManualInvoicePaid(id: string, paid: boolean): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/mark-paid`, { paid });
+  return data;
+}
+export async function cancelManualInvoice(id: string, reason: string): Promise<ManualInvoice> {
+  const { data } = await apiClient.post<ManualInvoice>(`/finance/manual-invoices/${id}/cancel`, { reason });
+  return data;
+}
+export async function getManualTaxInvoice(id: string): Promise<TaxInvoice> {
+  const { data } = await apiClient.get<TaxInvoice>(`/finance/manual-invoices/${id}/print`);
+  return data;
+}
+
+/** Business analytics (backend app/core/finance_analytics.py). Revenue is net of GST. */
+export interface FinTotals { platform: number | null; usage: number | null; other: number | null; revenue: number | null; pages: number | null; customers: number | null }
+export interface FinOverview {
+  as_of: string; current_month: string; fy: string;
+  kpis: {
+    revenue_month: number | null; revenue_prev_month: number | null; mom_pct: number | null; month_to_date_pct_of_last: number | null;
+    arr: number; fy_to_date: number; fy_to_date_last_year: number; fy_growth_pct: number | null;
+    active_customers: number; new_customers_fy: number; pages_month: number | null; pages_prev_month: number | null;
+    pages_pct: number | null; arpc: number | null; outstanding: number;
+  };
+  milestones: { key: string; label: string; value?: string; amount?: number; count?: number }[];
+}
+export interface FinMonthRow extends FinTotals { month: string; label: string; partial: boolean }
+export interface FinMonthly {
+  fy: string; fy_start_year: number; available_years: { start_year: number; label: string }[];
+  months: FinMonthRow[]; last_year: FinMonthRow[];
+  totals: { revenue: number; platform: number; usage: number; other: number; pages: number; last_year_revenue: number };
+  customers: { month: string; label: string; customers: number | null; new: number | null }[];
+  by_shipment: Record<string, ({ pages: number; revenue: number } | null)[]>;
+}
+export interface FinDaily {
+  month: string; label: string; partial: boolean; earliest_month: string; current_month: string;
+  days: ({ day: number; date: string; pages: number | null; revenue: number | null } & Record<string, number | null | string>)[];
+  totals: FinTotals; prev_month_totals: FinTotals;
+}
+export interface FinCustomerRow {
+  tenant_id: string; name: string; is_active: boolean; revenue: number; platform: number; usage: number; other: number;
+  pages: number; prev_revenue: number; growth_pct: number | null; share_pct: number;
+}
+export interface FinProducts {
+  fy: string; by_revenue_type: { key: string; revenue: number }[];
+  by_shipment_type: { key: string; pages: number; revenue: number }[];
+}
+
+export const getFinOverview = async () => (await apiClient.get<FinOverview>("/finance/analytics/overview")).data;
+export const getFinMonthly = async (fy?: number) =>
+  (await apiClient.get<FinMonthly>("/finance/analytics/monthly", { params: fy ? { fy } : undefined })).data;
+export const getFinDaily = async (month?: string) =>
+  (await apiClient.get<FinDaily>("/finance/analytics/daily", { params: month ? { month } : undefined })).data;
+export const getFinCustomers = async (month?: string) =>
+  (await apiClient.get<{ month: string; rows: FinCustomerRow[]; total: number }>("/finance/analytics/customers", { params: month ? { month } : undefined })).data;
+export const getFinProducts = async (fy?: number) =>
+  (await apiClient.get<FinProducts>("/finance/analytics/products", { params: fy ? { fy } : undefined })).data;

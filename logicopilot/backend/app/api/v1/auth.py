@@ -116,6 +116,8 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is disabled")
+    if user.tenant_id and user.tenant is not None and not user.tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your company's Cargora account is switched off. Contact Axiora support.")
     # An operator/GK2/manager's own account can be active while the tenant that manages them
     # has nobody left to do it - every one of that tenant's own Tenant Admin accounts disabled.
     # Blocked here rather than left to work: a tenant with no active admin has no one to

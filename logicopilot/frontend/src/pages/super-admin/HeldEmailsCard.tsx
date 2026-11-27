@@ -4,14 +4,13 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { DataTable, type Column } from "../../components/ui/DataTable";
 import * as emailApi from "../../api/email";
+import { formatDateTime } from "../../utils/dateTime";
 
 function when(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value.endsWith("Z") || /[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-  });
+  return formatDateTime(d) || "—";
 }
 
 /** Super Admin → Email Puller: the mails that were tried and could not be read because the AI

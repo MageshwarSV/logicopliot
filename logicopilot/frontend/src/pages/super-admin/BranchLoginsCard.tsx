@@ -8,6 +8,7 @@ import { Alert } from "../../components/ui/Alert";
 import * as api from "../../api/erpBranchSessions";
 import type { BranchLogin } from "../../api/erpBranchSessions";
 import type { ErpScript } from "../../types/erpScript";
+import { formatTime } from "../../utils/dateTime";
 
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   live: { label: "Live", cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" },
@@ -154,7 +155,7 @@ export function BranchLoginsCard({ tenantId, scripts }: { tenantId: string; scri
       const now = rowsNow.find((x) => x.id === r.id);
       const answered = now && (now.last_check_at !== before || now.status !== "live");
       if (answered || Date.now() - started > 90000) {
-        const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const t = formatTime(new Date());
         setChecked((c) => ({
           ...c,
           [r.id]: !now

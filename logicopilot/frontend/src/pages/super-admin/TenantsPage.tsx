@@ -53,6 +53,20 @@ export function TenantsPage() {
     refresh();
   }, []);
 
+  async function handleToggleActive(t: Tenant) {
+    const off = t.is_active;
+    const ok = window.confirm(off
+      ? `Disable "${t.name}"?\n\nNone of its users can sign in (anyone signed in is signed out), its mailboxes are not read, its ERP logins are closed, and no monthly platform fee is charged while disabled (usage it already had is still billed).\n\nNothing is deleted - Enable brings everything back.`
+      : `Enable "${t.name}" again?\n\nIts users can sign in, its mailboxes are read again (unless paused) and it is billed from now on.`);
+    if (!ok) return;
+    try {
+      await tenantsApi.setTenantActive(t.id, !t.is_active);
+      refresh();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? "Could not change that tenant.");
+    }
+  }
+
   async function handleDeleteTenant(t: Tenant) {
     const count = users.filter((u) => u.tenant_id === t.id).length;
     const ok = window.confirm(
@@ -129,6 +143,11 @@ export function TenantsPage() {
             <Button variant="ghost" size="sm" onClick={() => setAutoErpTenant(t)}
               title="Send jobs to the ERP straight after extraction, with no review in Cargora">
               Auto ERP
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => handleToggleActive(t)}
+              className={t.is_active ? "text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10" : "text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-500/10"}
+              title={t.is_active ? "Switch this customer off - nothing is deleted" : "Switch this customer back on"}>
+              {t.is_active ? "Disable" : "Enable"}
             </Button>
             <Button variant="ghost" size="sm" className="text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10" onClick={() => handleDeleteTenant(t)}>
               Delete

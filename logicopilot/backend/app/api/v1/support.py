@@ -246,6 +246,13 @@ def _issues(db: Session, include_handled: bool = False) -> list[dict]:
             "pages": pages[j.id], "reason": reason,
             "since": since_at.isoformat() if since_at else None,
             "age_minutes": int((now - since_at).total_seconds() // 60) if since_at else None,
+            # When it arrived, when it first went to the ERP (retries keep this) and the last
+            # try - so the desk sees how long a customer has been waiting on the ERP.
+            "created_at": _aware(j.created_at).isoformat() if j.created_at else None,
+            "first_erp_at": _aware(j.erp_first_submitted_at).isoformat() if j.erp_first_submitted_at else None,
+            "last_erp_at": _aware(j.erp_submitted_at).isoformat() if j.erp_submitted_at else None,
+            "since_first_erp_minutes": (int((now - _aware(j.erp_first_submitted_at)).total_seconds() // 60)
+                                        if j.erp_first_submitted_at else None),
             "can_retry_erp": kind == "erp_failed" and j.gk2_status == "failed",
             "can_retry_extraction": kind == "extraction_failed",
             "handled": is_handled, "handled_note": h[1] if is_handled else None,

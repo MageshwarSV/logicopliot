@@ -5,6 +5,7 @@ import * as jobsApi from "../../api/jobs";
 import * as edocketApi from "../../api/edocket";
 import type { EDocketSaved } from "../../api/edocket";
 import type { JobDetail, JobFieldValue } from "../../types/jobs";
+import { formatTime } from "../../utils/dateTime";
 
 // The physical paper docket's own colour, reproduced exactly - this page IS that form now.
 const PAGE_BG = "#f7f700";
@@ -637,7 +638,7 @@ export function EDocketPage() {
     setSaveNote("Saving…");
     const t = setTimeout(() => {
       edocketApi.saveEDocket(jobId, JSON.parse(snapshot))
-        .then(() => { baseline.current = snapshot; setSaveNote(`Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`); })
+        .then(() => { baseline.current = snapshot; setSaveNote(`Saved ${formatTime(new Date())}`); })
         .catch(() => setSaveNote("Not saved - check your connection"));
     }, 1200);
     return () => clearTimeout(t);

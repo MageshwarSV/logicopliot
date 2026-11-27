@@ -9,6 +9,8 @@ import { DataTable, type Column } from "../../components/ui/DataTable";
 import * as financeApi from "../../api/saasFinance";
 import type { FinanceCustomerRow, FinanceDashboard, FinanceRevenuePoint } from "../../api/saasFinance";
 import { colorFor, currentMonthStr, formatInr, monthLabel, shiftMonth } from "./financeFormat";
+import { BusinessAnalytics } from "./BusinessAnalytics";
+import { ChartBarIcon, DownloadIcon } from "../../components/ui/icons";
 
 /** Pages processed per customer this month - which customer is actually driving usage.
  *  Hand-rolled inline SVG, matching house style (SpendAnalyticsPage.tsx/
@@ -143,14 +145,21 @@ export function SaasFinanceDashboardPage() {
 
   return (
     <AppShell
-      title="Finance Dashboard"
-      subtitle="Platform-wide usage, billing, and payments across every customer."
+      title="Business Performance"
+      icon={<ChartBarIcon className="h-6 w-6" />}
+      subtitle="Revenue, growth, customers and product usage - net of GST, finished months from invoices, this month live."
       actions={
         <Button variant="secondary" size="sm" isLoading={exporting} onClick={handleExport}>
-          Export
+          <DownloadIcon className="mr-1.5 h-4 w-4" />Export month
         </Button>
       }
     >
+      <BusinessAnalytics />
+
+      <h2 className="mb-3 mt-10 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-50">
+        Monthly billing detail
+        <span className="text-sm font-normal text-slate-500">(amounts incl. GST, as invoiced)</span>
+      </h2>
       <Card className="mb-6 flex items-center justify-between p-4">
         <Button variant="ghost" size="sm" onClick={() => setMonth((m) => shiftMonth(m, -1))}>
           ← Previous

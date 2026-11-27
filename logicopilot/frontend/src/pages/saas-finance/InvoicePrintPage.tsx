@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import * as financeApi from "../../api/saasFinance";
 import type { TaxInvoice } from "../../api/saasFinance";
 
@@ -12,13 +12,15 @@ const ddmmyyyy = (iso: string) => (iso && iso.length >= 10 ? `${iso.slice(8, 10)
 
 export function SaasFinanceInvoicePrintPage() {
   const { tenantId, invoiceId } = useParams<{ tenantId: string; invoiceId: string }>();
+  const manual = useSearchParams()[0].get("manual") === "1";
   const [inv, setInv] = useState<TaxInvoice | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!tenantId || !invoiceId) return;
-    financeApi.getTaxInvoice(tenantId, invoiceId).then(setInv).catch(() => setError("Could not load this invoice."));
-  }, [tenantId, invoiceId]);
+    (manual ? financeApi.getManualTaxInvoice(invoiceId) : financeApi.getTaxInvoice(tenantId, invoiceId))
+      .then(setInv).catch(() => setError("Could not load this invoice."));
+  }, [tenantId, invoiceId, manual]);
 
   if (error) return <div className="p-8 text-sm text-rose-600">{error}</div>;
   if (!inv) return <div className="p-8 text-sm text-slate-400">Loading…</div>;
@@ -33,13 +35,22 @@ export function SaasFinanceInvoicePrintPage() {
   return (
     <div className="mx-auto max-w-4xl bg-white p-8 text-[13px] text-slate-900 print:max-w-none print:p-0">
       <div className="mb-6 flex items-center justify-between print:hidden">
-        <h1 className="text-lg font-semibold">Invoice {inv.invoice_number}</h1>
+        <h1 className="text-lg font-semibold">
+          Invoice {inv.invoice_number}
+          {inv.status === "draft" && <span className="ml-2 rounded bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700">DRAFT - not issued</span>}
+          {inv.status === "cancelled" && <span className="ml-2 rounded bg-rose-100 px-2 py-0.5 text-xs font-bold text-rose-700">CANCELLED</span>}
+        </h1>
         <button type="button" onClick={() => window.print()}
           className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
           Print / Save as PDF
         </button>
       </div>
 
+      {(inv.status === "draft" || inv.status === "cancelled") && (
+        <div className={`mb-2 border-2 py-1.5 text-center text-sm font-bold uppercase tracking-widest ${inv.status === "draft" ? "border-slate-400 text-slate-600" : "border-rose-500 text-rose-600"}`}>
+          {inv.status === "draft" ? "Draft - not a valid tax invoice" : "Cancelled"}
+        </div>
+      )}
       <div className="border border-slate-400">
         {/* Seller + title */}
         <div className="flex items-start justify-between border-b border-slate-400 p-4">
