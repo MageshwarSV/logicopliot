@@ -2271,7 +2271,10 @@ export function JobRunPage() {
     const placedRefs = new Set(
       Object.values(job?.screen_layouts ?? {}).flatMap((l) => (l?.sections ?? []).flatMap((s) => s.fields)),
     );
+    // hidden_from_capture means "renders nowhere on this screen" everywhere else - an AI-filled
+    // field hidden by a Super Admin (Sea Export's Note) still showed here until this.
     const shownOnATab = (fv: JobFieldValue) =>
+      fv.hidden_from_capture === true ||
       (fv.display_document_id != null && tabDocIds.has(fv.display_document_id)) ||
       placedRefs.has(screenLayoutRef(fv) ?? "");
     const pool = [
