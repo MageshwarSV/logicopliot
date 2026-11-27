@@ -4191,6 +4191,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     mark_full_width: dict[str, bool] = {
         m.id: m.full_width for tdoc in group.documents for m in tdoc.marks
     }
+    mark_quarter_width: dict[str, bool] = {
+        m.id: m.quarter_width for tdoc in group.documents for m in tdoc.marks
+    }
     mark_multiline: dict[str, bool] = {
         m.id: m.multiline for tdoc in group.documents for m in tdoc.marks
     }
@@ -4233,6 +4236,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     cf_group_heading = {c.id: c.standalone_group_heading for c in cf_rows}
     cf_display_label = {c.id: c.display_label for c in cf_rows}
     cf_full_width = {c.id: c.full_width for c in cf_rows}
+    cf_quarter_width = {c.id: c.quarter_width for c in cf_rows}
     cf_multiline = {c.id: c.multiline for c in cf_rows}
     cf_date_picker = {c.id: c.date_picker for c in cf_rows}
     cf_date_format = {c.id: c.date_format for c in cf_rows}
@@ -4457,6 +4461,10 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                 full_width=(
                     mark_full_width.get(fv.mark_id, False)
                     or cf_full_width.get(fv.custom_field_id, False)
+                ),
+                quarter_width=(
+                    mark_quarter_width.get(fv.mark_id, False)
+                    or cf_quarter_width.get(fv.custom_field_id, False)
                 ),
                 multiline=(
                     mark_multiline.get(fv.mark_id, False)
@@ -12294,6 +12302,7 @@ def correct_field_value(
         is_custom=bool(fv.custom_field_id),
         mandatory=bool(owner_for_mandatory and owner_for_mandatory.ask_operator_required),
         full_width=bool(owner_for_mandatory and owner_for_mandatory.full_width),
+        quarter_width=bool(owner_for_mandatory and owner_for_mandatory.quarter_width),
         multiline=bool(owner_for_mandatory and owner_for_mandatory.multiline),
         date_picker=bool(owner_for_mandatory and owner_for_mandatory.date_picker),
         date_format=owner_for_mandatory.date_format if owner_for_mandatory else None,
@@ -12531,6 +12540,7 @@ def _recompute_per_row_custom_field(
             hidden_from_capture=cf.hidden_from_capture,
             mandatory=bool(cf.ask_operator_required),
             full_width=bool(cf.full_width),
+            quarter_width=bool(cf.quarter_width),
             multiline=bool(cf.multiline),
             date_picker=bool(cf.date_picker),
             date_format=cf.date_format,
@@ -12680,6 +12690,7 @@ def recompute_custom_field(
         origin="computed", hidden_from_capture=cf.hidden_from_capture,
         mandatory=bool(cf.ask_operator_required),
         full_width=bool(cf.full_width),
+        quarter_width=bool(cf.quarter_width),
         multiline=bool(cf.multiline),
         date_picker=bool(cf.date_picker),
         date_format=cf.date_format,
@@ -13165,6 +13176,7 @@ def recompute_mark(
             found_width=existing.found_width, found_height=existing.found_height,
             mandatory=bool(mark.ask_operator_required),
             full_width=bool(mark.full_width),
+            quarter_width=bool(mark.quarter_width),
             multiline=bool(mark.multiline),
             date_picker=bool(mark.date_picker),
             date_format=mark.date_format,

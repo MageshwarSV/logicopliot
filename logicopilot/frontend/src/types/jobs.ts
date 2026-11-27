@@ -170,6 +170,8 @@ export interface JobFieldValue {
    *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing
    *  behavior for every field that predates this. */
   full_width?: boolean;
+  /** Admin-settable - a quarter of the row (three or four short fields share one line). */
+  quarter_width?: boolean;
   /** Admin-settable - renders as a multi-line, auto-growing box instead of a single-line box
    *  scrolled sideways through. Undefined/false = single line, today's existing behavior for
    *  every field that predates this. */

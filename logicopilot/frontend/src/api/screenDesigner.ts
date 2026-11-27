@@ -17,6 +17,7 @@ export interface DesignerField {
   label_name: string;
   display_label: string | null;
   full_width: boolean;
+  quarter_width: boolean;
   multiline: boolean;
   mandatory: boolean;
   fixed_options: string[] | null;
@@ -79,6 +80,7 @@ export async function recentJobs(groupId: string): Promise<RecentJob[]> {
 export type FieldPatch = Partial<{
   display_label: string | null;
   full_width: boolean;
+  quarter_width: boolean;
   multiline: boolean;
   ask_operator_required: boolean;
   fixed_options: string[] | null;

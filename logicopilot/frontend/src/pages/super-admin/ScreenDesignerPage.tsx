@@ -395,7 +395,7 @@ export function ScreenDesignerPage() {
           e.stopPropagation();
           setSelected({ kind: "field", ref });
         }}
-        className={`cursor-grab rounded-lg border p-2 transition-colors ${f?.full_width ? "sm:col-span-2" : ""} ${
+        className={`cursor-grab rounded-lg border p-2 transition-colors ${f?.full_width ? "sm:col-span-4" : f?.quarter_width ? "sm:col-span-1" : "sm:col-span-2"} ${
           isSel ? "border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-500/30" : "border-transparent hover:border-slate-300 dark:hover:border-slate-600"
         } ${dragOver === key ? "border-t-4 border-t-indigo-500" : ""}`}
         title="Drag to move - click to edit - double-click the label to rename it"
@@ -414,7 +414,7 @@ export function ScreenDesignerPage() {
           />
         ) : (
           <p
-            className="mb-1.5 text-sm font-medium text-slate-800 dark:text-slate-100"
+            className="mb-1.5 break-words text-sm font-medium text-slate-800 dark:text-slate-100"
             onDoubleClick={(e) => { e.stopPropagation(); setEditingLabel(ref); }}
           >
             {fieldName(f, ref)}
@@ -436,13 +436,13 @@ export function ScreenDesignerPage() {
   const fieldGrid = (refs: string[], target: FieldTarget, emptyText: string) => {
     const endKey = `end:${target.container}:${"id" in target ? target.id : "card"}`;
     return (
-      <div className="grid gap-x-3 gap-y-1 sm:grid-cols-2">
+      <div className="grid gap-x-3 gap-y-1 sm:grid-cols-4">
         {refs.map((ref) => fieldBox(ref, target))}
         <div
           onDragOver={allowDrop(endKey)}
           onDragLeave={() => setDragOver((k) => (k === endKey ? null : k))}
           onDrop={onDropField(target)}
-          className={`rounded-md border border-dashed text-center sm:col-span-2 ${
+          className={`rounded-md border border-dashed text-center sm:col-span-4 ${
             dragOver === endKey
               ? "border-indigo-400 bg-indigo-50 py-2 text-xs text-indigo-600 dark:bg-indigo-500/10"
               : refs.length ? "border-transparent py-0.5 text-[10px] text-transparent hover:border-slate-200 hover:text-slate-400" : "border-slate-200 py-2 text-xs text-slate-400 dark:border-slate-700"
@@ -901,16 +901,20 @@ function FieldProperties({
       <div className="flex flex-col gap-1 text-xs text-slate-500">
         Width
         <div className="flex gap-1">
-          {[false, true].map((full) => (
-            <button
-              key={String(full)}
-              type="button"
-              onClick={() => field.full_width !== full && void save({ full_width: full }, { full_width: full })}
-              className={`flex-1 rounded-md border px-2 py-1 text-xs ${field.full_width === full ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
-            >
-              {full ? "Full row" : "Half row"}
-            </button>
-          ))}
+          {(["quarter", "half", "full"] as const).map((w) => {
+            const current = field.full_width ? "full" : field.quarter_width ? "quarter" : "half";
+            const patch = { full_width: w === "full", quarter_width: w === "quarter" };
+            return (
+              <button
+                key={w}
+                type="button"
+                onClick={() => current !== w && void save(patch, patch)}
+                className={`flex-1 rounded-md border px-2 py-1 text-xs ${current === w ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300"}`}
+              >
+                {w === "full" ? "Full row" : w === "half" ? "Half row" : "Quarter"}
+              </button>
+            );
+          })}
         </div>
       </div>
       <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">

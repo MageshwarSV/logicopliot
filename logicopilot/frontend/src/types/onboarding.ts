@@ -56,6 +56,7 @@ export interface Mark {
   fuzzy_match?: boolean;
   /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
   full_width?: boolean;
+    quarter_width?: boolean;
   /** Renders as a multi-line, auto-growing box instead of a single-line box. */
   multiline?: boolean;
   /** Holds a date: a calendar button sits beside the box on the job screen. */
@@ -184,6 +185,7 @@ export interface CustomField {
   ai_aided_prompt?: string | null;
   /** Mirrors Mark.full_width. */
   full_width?: boolean;
+    quarter_width?: boolean;
   /** Mirrors Mark.multiline. */
   multiline?: boolean;
   /** Mirrors Mark.date_picker. */

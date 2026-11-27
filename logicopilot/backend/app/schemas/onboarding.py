@@ -74,6 +74,7 @@ class MarkOut(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool = False
+    quarter_width: bool = False
     multiline: bool = False
     date_picker: bool = False
     date_format: str | None = None
@@ -160,6 +161,7 @@ class CustomFieldOut(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool = False
+    quarter_width: bool = False
     multiline: bool = False
     date_picker: bool = False
     date_format: str | None = None
@@ -210,6 +212,7 @@ class CustomFieldCreate(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool = False
+    quarter_width: bool = False
     multiline: bool = False
     date_picker: bool = False
     date_format: str | None = None
@@ -264,6 +267,7 @@ class CustomFieldEdit(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool | None = None
+    quarter_width: bool | None = None
     multiline: bool | None = None
     date_picker: bool | None = None
     date_format: str | None = None
@@ -336,6 +340,7 @@ class MarkCreate(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool = False
+    quarter_width: bool = False
     multiline: bool = False
     date_picker: bool = False
     date_format: str | None = None
@@ -368,6 +373,7 @@ class MarkEdit(BaseModel):
     validation_message: str | None = None
     ai_aided_prompt: str | None = None
     full_width: bool | None = None
+    quarter_width: bool | None = None
     multiline: bool | None = None
     date_picker: bool | None = None
     date_format: str | None = None
