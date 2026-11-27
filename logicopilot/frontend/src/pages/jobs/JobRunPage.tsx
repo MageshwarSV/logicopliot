@@ -2263,10 +2263,21 @@ export function JobRunPage() {
     // two labels. Every OTHER relocated manual-ask field (insurance_percentage included) keeps
     // showing here too, same as before - only these two were ever asked to be dropped from
     // this screen.
+    // A field already shown on a document tab - moved there (display_document_id names one of
+    // this job's documents) or placed in that tab's screen layout - is not shown again here
+    // (4S, 2026-11-27: Sea Export's charges, moved to the INVOICE tab's Charges section, were
+    // still repeated under Additional Details). A template that moves nothing is unaffected.
+    const tabDocIds = new Set((job?.documents ?? []).map((d) => d.template_document_id));
+    const placedRefs = new Set(
+      Object.values(job?.screen_layouts ?? {}).flatMap((l) => (l?.sections ?? []).flatMap((s) => s.fields)),
+    );
+    const shownOnATab = (fv: JobFieldValue) =>
+      (fv.display_document_id != null && tabDocIds.has(fv.display_document_id)) ||
+      placedRefs.has(screenLayoutRef(fv) ?? "");
     const pool = [
-      ...commonComputedFields,
+      ...commonComputedFields.filter((fv) => !shownOnATab(fv)),
       ...manualFields.filter(
-        (fv) => fv.row_index == null && !DUPLICATED_ADDITIONAL_DETAILS_LABELS.has(fv.label_name),
+        (fv) => fv.row_index == null && !DUPLICATED_ADDITIONAL_DETAILS_LABELS.has(fv.label_name) && !shownOnATab(fv),
       ),
     ];
     const byLabel = new Map(pool.map((fv) => [fv.label_name, fv] as const));
