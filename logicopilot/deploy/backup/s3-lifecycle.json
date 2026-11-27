@@ -1,0 +1,26 @@
+{
+  "Rules": [
+    {
+      "ID": "prod-daily-35-days",
+      "Filter": {"Prefix": "prod/db/daily/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 36},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1}
+    },
+    {
+      "ID": "prod-monthly-12-months",
+      "Filter": {"Prefix": "prod/db/monthly/"},
+      "Status": "Enabled",
+      "Transitions": [{"Days": 30, "StorageClass": "GLACIER_IR"}],
+      "Expiration": {"Days": 366},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1}
+    },
+    {
+      "ID": "sit-daily-7-days",
+      "Filter": {"Prefix": "sit/db/daily/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 8},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1}
+    }
+  ]
+}

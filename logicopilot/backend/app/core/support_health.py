@@ -131,11 +131,39 @@ def components(db: Session) -> dict:
         detail = f"{u.free // (1024 ** 3)} GB free ({free_pct}%)"
         return _box("disk", "Storage (uploads)", OK if free_pct >= 15 else (WARN if free_pct >= 5 else DOWN), detail)
 
+    def backup_box() -> dict:
+        """The nightly S3 backup (deploy/backup/cargora-db-backup.sh) writes
+        cargora:backup:<env> to Redis after every run."""
+        import json as _json
+
+        from app.core.erp_redis_queue import _redis
+
+        client = _redis()
+        if client is None:
+            return _box("backup", "Database backup", UNKNOWN, "No Redis - cannot read the backup status")
+        found = []
+        for key in client.scan_iter(match="cargora:backup:*", count=50):
+            try:
+                found.append((key.decode() if isinstance(key, bytes) else key, _json.loads(client.get(key) or "{}")))
+            except Exception:  # noqa: BLE001
+                continue
+        if not found:
+            return _box("backup", "Database backup", WARN, "No backup has reported yet")
+        key, rec = sorted(found, key=lambda kv: kv[1].get("at") or "")[-1]
+        at = datetime.fromisoformat(rec["at"]) if rec.get("at") else None
+        hours = (datetime.now(timezone.utc) - at).total_seconds() / 3600 if at else None
+        when = f"{hours:.0f} h ago" if hours is not None else "time unknown"
+        if rec.get("status") != "ok":
+            return _box("backup", "Database backup", DOWN, f"Last backup FAILED ({when}): {rec.get('detail') or ''}")
+        if hours is None or hours > 26:
+            return _box("backup", "Database backup", DOWN, f"No successful backup for {when} - last: {rec.get('detail') or ''}")
+        return _box("backup", "Database backup", OK, f"Last backup {when}: {rec.get('detail') or ''}")
+
     boxes.append(_box("web", "Web Application", OK, "Answering (this page loaded)"))
     for fn, key, label in ((servers_box, "servers", "Servers"), (db_box, "database", "Database"),
                            (queues_box, "queues", "Redis / Queues"), (mail_box, "email", "Email Puller"),
                            (ai_box, "ai", "AI / OCR Services"), (erp_box, "erp", "ERP Automation"),
-                           (disk_box, "disk", "Storage (uploads)")):
+                           (disk_box, "disk", "Storage (uploads)"), (backup_box, "backup", "Database backup")):
         boxes.append(_safe(fn, key, label))
     worst = DOWN if any(b["status"] == DOWN for b in boxes) else (
         WARN if any(b["status"] in (WARN, UNKNOWN) for b in boxes) else OK)
