@@ -9817,6 +9817,45 @@ def _backfill_missing_standalone_cells(db: Session, job: Job, group: TemplateGro
     return created
 
 
+def _product_line_keys(db: Session, job: Job) -> set[tuple[int, int]]:
+    """Every product line on this job, as (invoice set, line number).
+
+    A line is a row the job's product_description was read for - the label every import
+    template uses, and kept exactly as it was whenever a job has it. A template whose
+    description field is named otherwise (Sea Export's "description", 2026-11-27) had NO lines
+    at all: no Combined Description, no per-line custom fields. For such a job the lines are
+    the rows its per-line document boxes were read for (FieldMark.is_multi_value) - never a
+    box that is its own table (standalone_multi_value: containers, numbered from 1 too), which
+    is exactly why this is not "every row-indexed value"."""
+    from sqlalchemy import or_
+
+    keys = {
+        ((r[0] or 1), r[1])
+        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.label_name == "product_description")
+        .distinct().all()
+    }
+    if keys:
+        return keys
+    mark_ids = [
+        m_id for (m_id,) in db.query(FieldMark.id)
+        .join(TemplateDocument, FieldMark.document_id == TemplateDocument.id)
+        .filter(TemplateDocument.group_id == job.group_id, FieldMark.is_multi_value.is_(True),
+                or_(FieldMark.standalone_multi_value.is_(False), FieldMark.standalone_multi_value.is_(None)))
+        .all()
+    ]
+    if not mark_ids:
+        return set()
+    return {
+        ((r[0] or 1), r[1])
+        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
+        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
+                JobFieldValue.mark_id.in_(mark_ids))
+        .distinct().all()
+    }
+
+
 def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int:
     """Give every product line a slot on every per-row field. Returns how many were created.
 
@@ -9857,13 +9896,7 @@ def _backfill_missing_per_row_slots(db: Session, job: Job, custom_fields) -> int
     if not per_row_cfs:
         return 0
     db.flush()
-    line_keys = {
-        ((r[0] or 1), r[1])
-        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
-                JobFieldValue.label_name == "product_description")
-        .distinct().all()
-    }
+    line_keys = _product_line_keys(db, job)
     if not line_keys:
         return 0
     created = 0
@@ -10956,13 +10989,7 @@ def run_extraction(
     # slot that matched no real product at all. product_description is the one label already
     # treated everywhere else in this file as "one row = one real product line" - see
     # _line_key_values, recompute_custom_field's descs, etc.
-    line_keys: list[tuple[int, int]] = sorted({
-        ((r[0] or 1), r[1])
-        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
-                JobFieldValue.label_name == "product_description")
-        .distinct().all()
-    })
+    line_keys: list[tuple[int, int]] = sorted(_product_line_keys(db, job))
     line_count = len(line_keys)
     # The customer's material master, if they have uploaded one. Loaded once for the whole job
     # rather than per line: it is the same file for every line and every field that looks
@@ -12323,13 +12350,7 @@ def _recompute_per_row_custom_field(
     """
     # Anchored on product_description, not every row-indexed field on the job - see the
     # identical reasoning in run_extraction's own line_keys above.
-    line_keys: list[tuple[int, int]] = sorted({
-        ((r[0] or 1), r[1])
-        for r in db.query(JobFieldValue.set_index, JobFieldValue.row_index)
-        .filter(JobFieldValue.job_id == job.id, JobFieldValue.row_index.isnot(None),
-                JobFieldValue.label_name == "product_description")
-        .distinct().all()
-    })
+    line_keys: list[tuple[int, int]] = sorted(_product_line_keys(db, job))
     if not line_keys:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="This job has no line items yet — a per-row field has nothing to backfill into.")
