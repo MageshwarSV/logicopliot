@@ -14,6 +14,7 @@ import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
   CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon, FolderIcon,
+  ExclamationTriangleIcon, ClockIcon, CheckBadgeIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -533,15 +534,16 @@ export function AppShell({
               <div className="mt-2 space-y-1">
                 {/* The Overview is the Dashboard link above. */}
                 {[
-                  { to: "/support/health", label: "Application Health" },
-                  { to: "/support/jobs", label: "Job Monitoring" },
-                  { to: "/support/issues", label: "Failed / Delayed Jobs" },
-                  { to: "/support/performance", label: "Processing Performance" },
-                  { to: "/support/customers", label: "Customer View" },
-                  { to: "/support/activity", label: "Issues & Resolution" },
-                ].map((item) => (
-                  <Link key={item.to} to={item.to} className={navClass(item.to)}>
-                    {item.label}
+                  { to: "/support/health", label: "Application Health", Icon: MonitorIcon },
+                  { to: "/support/jobs", label: "Job Monitoring", Icon: BriefcaseIcon },
+                  { to: "/support/issues", label: "Failed / Delayed Jobs", Icon: ExclamationTriangleIcon },
+                  { to: "/support/performance", label: "Processing Performance", Icon: ClockIcon },
+                  { to: "/support/customers", label: "Customer View", Icon: BuildingIcon },
+                  { to: "/support/activity", label: "Issues & Resolution", Icon: CheckBadgeIcon },
+                ].map(({ to, label, Icon }) => (
+                  <Link key={to} to={to} className={navClass(to)}>
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {label}
                   </Link>
                 ))}
               </div>

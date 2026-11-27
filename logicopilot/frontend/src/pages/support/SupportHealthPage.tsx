@@ -7,7 +7,8 @@ import { Card } from "../../components/ui/Card";
 import { Alert } from "../../components/ui/Alert";
 import * as supportApi from "../../api/support";
 import type { SupportActivity, SupportHealth, SupportSettings } from "../../api/support";
-import { ActivityList, STATUS_STYLE, formatWhen } from "./supportUi";
+import { MonitorIcon } from "../../components/ui/icons";
+import { ActivityList, Badge, SectionCard, STATUS_STYLE, formatWhen } from "./supportUi";
 
 function errText(err: unknown, fallback: string): string {
   return axios.isAxiosError(err) && typeof err.response?.data?.detail === "string" ? err.response.data.detail : fallback;
@@ -81,29 +82,30 @@ export function SupportHealthPage() {
   }
 
   return (
-    <AppShell title="Application Health" subtitle="Every part of Cargora, checked every 30 seconds.">
+    <AppShell title="Application Health" icon={<MonitorIcon className="h-6 w-6" />} subtitle="Every part of Cargora, checked every 30 seconds.">
       <div className="space-y-5">
         {error && <Alert>{error}</Alert>}
-        <Card className="p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold text-slate-900 dark:text-slate-50">Systems</h2>
+        <SectionCard title="Systems" icon={<MonitorIcon className="h-5 w-5" />}
+          extra={<>
+            {health && <Badge tone={STATUS_STYLE[health.status].tone}>{health.status === "ok" ? "All systems healthy" : STATUS_STYLE[health.status].label}</Badge>}
             <span className="text-xs text-slate-500">Checked {formatWhen(health?.checked_at ?? null)}</span>
-          </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          </>}>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {(health?.components ?? []).map((c) => (
-              <div key={c.key} className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
-                <div className="flex items-center justify-between">
-                  <span className="flex items-center gap-2 font-medium">
+              <div key={c.key} className={`rounded-xl border-l-4 border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900 ${
+                c.status === "ok" ? "border-l-emerald-500" : c.status === "down" ? "border-l-rose-500 bg-rose-50/40" : c.status === "warn" ? "border-l-amber-400" : "border-l-slate-300"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-50">
                     <span className={`h-2.5 w-2.5 rounded-full ${STATUS_STYLE[c.status].dot}`} />
                     {c.label}
                   </span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS_STYLE[c.status].pill}`}>{STATUS_STYLE[c.status].label}</span>
+                  <Badge tone={STATUS_STYLE[c.status].tone} dot={false}>{STATUS_STYLE[c.status].label}</Badge>
                 </div>
-                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{c.detail}</p>
+                <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300">{c.detail}</p>
               </div>
             ))}
           </div>
-        </Card>
+        </SectionCard>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
           <Card className="p-5">
