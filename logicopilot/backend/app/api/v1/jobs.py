@@ -33,6 +33,7 @@ from app.core.deps import (
 )
 from app.core.classifier_common import AIServiceUnavailable, classifier_module
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
+from app.core.line_fallback import apply_line_fallbacks
 from app.core import document_samples
 from app.core.page_filter import (
     claim_fingerprint,
@@ -5435,6 +5436,20 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         # Which invoice each line belongs to, in the same order. Read by excel_entry to fill
         # the invoice serial, so a product stays attached to the invoice it was billed on.
         rows[LINE_SET_KEY] = [str(k[0]) for k in line_keys]
+
+    # A product whose own document left a value blank may be able to take it from ANOTHER
+    # document's table - matched on the part number, never on the line's position, because the
+    # invoice and the packing list order their products differently (see
+    # app.core.line_fallback for the ROHM job this was built from). Fills blanks only, so a
+    # value the invoice carried is never touched, and does nothing at all on a template whose
+    # packing list is not marked for it.
+    #
+    # Here, not in excel_entry, so the operator SEES the filled value on the entry screen and
+    # can correct it before submitting, rather than it appearing only inside the workbook.
+    _filled = apply_line_fallbacks(rows)
+    if _filled:
+        logger.info("job %s: filled %s from another document's table by part number",
+                    job.id, ", ".join(f"{k}x{v}" for k, v in _filled.items()))
 
     # Which sets actually hold an INVOICE. A packing list whose own "Invoice No" was blank, or
     # listed several numbers at once ("CD…210/CD…211/…"), never pairs with its invoice and
