@@ -7,7 +7,23 @@ import axios from "axios";
 import * as supportApi from "../../api/support";
 import type { IssueTab, SupportIssue, SupportIssues } from "../../api/support";
 import { ArrowPathIcon, CheckCircleIcon, EyeIcon } from "../../components/ui/icons";
-import { Badge, EmptyRow, KIND_TONE, Pager, ROW_EDGE, T, TypeCell, usePaged } from "./supportUi";
+import { Badge, EmptyRow, KIND_TONE, Pager, ROW_EDGE, T, TypeCell, formatWhen, usePaged } from "./supportUi";
+
+/** A long ERP message reads as two lines, with "more" to open it. */
+function ReasonText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 110;
+  return (
+    <span>
+      <span className={open || !long ? "" : "line-clamp-2"}>{text}</span>
+      {long && (
+        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-0.5 text-xs font-medium text-indigo-700 hover:underline dark:text-indigo-300">
+          {open ? "less" : "more"}
+        </button>
+      )}
+    </span>
+  );
+}
 
 const TAB_LABEL: Record<IssueTab, string> = { all: "All", extraction: "Extraction", erp: "ERP Submission", other: "Other" };
 
@@ -93,8 +109,8 @@ export function IssuesTable({
           <thead className={T.thead}>
             <tr>
               <th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
-              <th className={T.th}>Problem</th><th className={T.thRight}>Pages</th><th className={T.th}>Reason</th>
-              <th className={T.th}>Age</th><th className={T.thRight}>Action</th>
+              <th className={T.th}>Problem</th><th className={T.th}>Arrived</th><th className={T.th}>First sent to ERP</th>
+              <th className={T.th}>Delay</th><th className={T.th}>Reason</th><th className={T.thRight}>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -103,20 +119,31 @@ export function IssuesTable({
               const tone = KIND_TONE[r.kind] ?? "slate";
               return (
                 <tr key={r.job_id} className={`${T.row} ${ROW_EDGE[r.handled ? "green" : tone]} ${tone === "red" && !r.handled ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
-                  <td className={T.td}><Link to={`/jobs/${r.job_id}`} className={T.link}>{r.reference}</Link></td>
+                  <td className={`${T.td} whitespace-nowrap`}><Link to={`/jobs/${r.job_id}`} className={T.link}>{r.reference}</Link></td>
                   <td className={T.td}>{r.client}</td>
                   <td className={T.td}><TypeCell type={r.type} /></td>
                   <td className={T.td}><Badge tone={tone}>{r.kind === "erp_slow" || r.kind === "extraction_slow" ? `${r.stage} · slow` : r.kind === "missing_documents" ? "Waiting for docs" : `${r.stage} · failed`}</Badge></td>
-                  <td className={T.tdRight}>{r.pages}</td>
-                  <td className={`${T.td} max-w-md text-slate-700 dark:text-slate-300`}>
-                    {r.reason}
+                  <td className={`${T.td} whitespace-nowrap text-slate-600 dark:text-slate-300`}>{formatWhen(r.created_at)}</td>
+                  <td className={`${T.td} whitespace-nowrap text-slate-600 dark:text-slate-300`}>
+                    {r.first_erp_at ? formatWhen(r.first_erp_at) : <span className="text-slate-400">Not sent yet</span>}
+                    {r.first_erp_at && r.last_erp_at && r.last_erp_at !== r.first_erp_at && (
+                      <span className="block text-xs text-slate-500">last try {formatWhen(r.last_erp_at)}</span>
+                    )}
+                  </td>
+                  <td className={`${T.td} whitespace-nowrap`}>
+                    <span className={`font-semibold ${tone === "red" ? "text-rose-600 dark:text-rose-400" : "text-amber-700 dark:text-amber-300"}`}>
+                      {formatAge(r.since_first_erp_minutes ?? r.age_minutes)}
+                    </span>
+                    <span className="block text-xs text-slate-500">{r.since_first_erp_minutes != null ? "since first sent" : "since it got stuck"}</span>
+                  </td>
+                  <td className={`${T.td} min-w-[16rem] max-w-md text-slate-700 dark:text-slate-300`}>
+                    <ReasonText text={r.reason} />
                     {r.handled && (
                       <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
                         <CheckCircleIcon className="h-3.5 w-3.5" />Handled{r.handled_note ? ` — ${r.handled_note}` : ""}
                       </span>
                     )}
                   </td>
-                  <td className={`${T.td} whitespace-nowrap font-semibold ${tone === "red" ? "text-rose-600 dark:text-rose-400" : "text-amber-700 dark:text-amber-300"}`}>{formatAge(r.age_minutes)}</td>
                   <td className={T.td}>
                     <div className="flex justify-end gap-1.5">
                       {r.can_retry_erp && (

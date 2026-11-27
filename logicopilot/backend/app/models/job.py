@@ -200,6 +200,10 @@ class Job(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # listener at the end of this class, so every path that fails a job sets it, and a job that
     # fails again after a retry shows its latest failure. See migration s6erpfail01.
     erp_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The FIRST time this job was sent to the ERP - erp_submitted_at above is overwritten by
+    # every retry. Stamped once by the listener below, never cleared (Production Support's
+    # "delay since first sent to ERP").
+    erp_first_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # What came with the mail/upload but could NOT be read - a password-protected zip, a damaged
     # one, a file type we do not read, a zip-size limit hit - so nothing is missed without a
     # trace. {"skipped": [{"path", "reason"}], "locked": [{"path", "files": [...]}]}, or None
@@ -279,6 +283,13 @@ def _stamp_erp_failed_at(target: Job, value, oldvalue, initiator) -> None:
         from datetime import timezone as _tz
 
         target.erp_failed_at = datetime.now(_tz.utc)
+
+
+@event.listens_for(Job.erp_submitted_at, "set")
+def _stamp_first_erp_submit(target: Job, value, oldvalue, initiator) -> None:
+    """The first ERP send is kept: only a job that has never been sent gets it."""
+    if value is not None and target.erp_first_submitted_at is None:
+        target.erp_first_submitted_at = value
 
 
 @event.listens_for(Job.status, "set")

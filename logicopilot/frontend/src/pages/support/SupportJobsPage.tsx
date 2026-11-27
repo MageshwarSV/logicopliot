@@ -96,7 +96,7 @@ export function SupportJobsPage() {
                 {paged.shown.length === 0 && <EmptyRow cols={10} loading={loading && !data} text="No jobs match these filters." />}
                 {paged.shown.map((j) => (
                   <tr key={j.job_id} className={`${T.row} ${ROW_EDGE[STAGE_TONE[j.stage] ?? "slate"]} ${j.stage === "failed" ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
-                    <td className={T.td}>
+                    <td className={`${T.td} whitespace-nowrap`}>
                       <Link to={`/jobs/${j.job_id}`} className={T.link}>{j.reference}</Link>
                       {j.delayed && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">SLA</span>}
                     </td>
