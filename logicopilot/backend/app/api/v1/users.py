@@ -10,7 +10,7 @@ from app.core.mail_crypto import encrypt_secret
 from app.core.security import hash_password
 from app.models.tenant import Tenant
 from app.models.user import (
-    ADMIN, APP_MANAGER, GK2, MANAGER, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, TENANT_ADMIN, User,
+    ADMIN, APP_MANAGER, GK2, MANAGER, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, SUPPORT, TENANT_ADMIN, User,
 )
 from app.models.user_type import UserType
 from app.schemas.user import UserCreate, UserOut, UserUpdate
@@ -127,7 +127,7 @@ def create_user(
     Operator. Operators are blocked from this endpoint entirely by require_role above."""
     effective_role = payload.role
     user_type: UserType | None = None
-    if creator.role == SUPER_ADMIN and payload.role in (ADMIN, SAAS_FINANCE):
+    if creator.role == SUPER_ADMIN and payload.role in (ADMIN, SAAS_FINANCE, SUPPORT):
         # Cross-tenant, like Super Admin itself — no tenant to belong to, and none is
         # accepted even if one was sent (the check constraint would reject it anyway).
         tenant_id = None
@@ -135,8 +135,8 @@ def create_user(
         if payload.role not in (TENANT_ADMIN, APP_MANAGER):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Super admins may only create tenant_admin, app_manager, admin, or "
-                       "saas_finance accounts here",
+                detail="Super admins may only create tenant_admin, app_manager, admin, "
+                       "saas_finance or support accounts here",
             )
         # The mobile app's logins are issued per customer company by us, not by the customer
         # to their own staff - which is why this one sits with the Super Admin alongside
@@ -299,14 +299,23 @@ def create_user(
     return _user_out(user)
 
 
+def _not_support(user: User = Depends(get_current_user)) -> User:
+    """Production Support sees jobs, never the user accounts of every customer."""
+    if user.role == SUPPORT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    return user
+
+
 @router.get("", response_model=list[UserOut])
-def list_users(db: Session = Depends(get_db), scope: TenantScope = Depends(get_tenant_scope)) -> list[UserOut]:
+def list_users(db: Session = Depends(get_db), scope: TenantScope = Depends(get_tenant_scope),
+               _u: User = Depends(_not_support)) -> list[UserOut]:
     users = scoped_query(db, User, scope).all()
     return [_user_out(u) for u in users]
 
 
 @router.get("/{user_id}", response_model=UserOut)
-def get_user(user_id: str, db: Session = Depends(get_db), scope: TenantScope = Depends(get_tenant_scope)) -> UserOut:
+def get_user(user_id: str, db: Session = Depends(get_db), scope: TenantScope = Depends(get_tenant_scope),
+             _u: User = Depends(_not_support)) -> UserOut:
     user = scoped_query(db, User, scope).filter(User.id == user_id).first()
     if user is None:
         # 404, not 403: don't confirm to a caller that a user in another tenant exists.
@@ -331,7 +340,7 @@ def update_user(
     if user.id == actor.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot change your own account")
 
-    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, ADMIN, SAAS_FINANCE):
+    if actor.role == SUPER_ADMIN and user.role not in (TENANT_ADMIN, ADMIN, SAAS_FINANCE, SUPPORT):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Super admins may only manage tenant_admin, admin, or saas_finance accounts here",
@@ -476,7 +485,7 @@ def delete_user(
     if user.id == actor.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own account")
     if actor.role == SUPER_ADMIN and user.role not in (
-        TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER,
+        TENANT_ADMIN, OPERATOR, ADMIN, GK2, MANAGER, SAAS_FINANCE, APP_MANAGER, SUPPORT,
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete this account")
     if actor.role == TENANT_ADMIN and user.role not in (OPERATOR, GK2, MANAGER):

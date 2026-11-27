@@ -95,6 +95,8 @@ export async function createCustomField(
     validation_pattern?: string | null;
     validation_uppercase?: boolean;
     validation_message?: string | null;
+    /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+    ai_aided_prompt?: string | null;
     full_width?: boolean;
     multiline?: boolean;
     date_picker?: boolean;
@@ -315,6 +317,8 @@ export async function createMark(
     validation_pattern?: string | null;
     validation_uppercase?: boolean;
     validation_message?: string | null;
+    /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+    ai_aided_prompt?: string | null;
     /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
     full_width?: boolean;
     multiline?: boolean;
@@ -357,6 +361,8 @@ export async function editMark(
     validation_pattern: string | null;
     validation_uppercase: boolean;
     validation_message: string | null;
+    /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+    ai_aided_prompt: string | null;
     full_width: boolean;
     multiline: boolean;
     date_picker: boolean;
@@ -466,6 +472,8 @@ export async function updateCustomField(
     validation_pattern: string | null;
     validation_uppercase: boolean;
     validation_message: string | null;
+    /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+    ai_aided_prompt: string | null;
     full_width: boolean;
     multiline: boolean;
     date_picker: boolean;

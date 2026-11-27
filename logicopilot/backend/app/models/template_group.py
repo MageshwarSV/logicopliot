@@ -72,6 +72,9 @@ class TemplateGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # template only take codes from the global tariff - dump codes outside it are not used, an
     # empty line gets the AI's nearest tariff code for the operator to confirm. Off by default.
     use_customs_tariff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # What each ERP Excel column accepts, checked before the workbook goes to the ERP -
+    # {"SHEET|Header": rule} (app/core/erp_rules.py). NULL = built-in rules only.
+    erp_column_rules: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     entry_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="fields")
     # For entry_mode="excel". Shape:

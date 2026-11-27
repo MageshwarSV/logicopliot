@@ -662,6 +662,95 @@ def normalize_place_name_with_ai(
         return ""
 
 
+def ai_aided_convert(value: str, condition: str, field_name: str = "",
+                     tenant_id: str | None = None) -> str:
+    """An AI-aided field's conversion: what an operator typed, rewritten by the field's own
+    condition (e.g. "Port Name (UN/LOCODE)": 'santos' -> 'Santos (BRSSZ)'). Returns the value
+    unchanged when it already satisfies the condition, and "" only when the condition itself says
+    so. On any failure the typed value is returned as it was - never lost. Never raises."""
+    settings = get_settings()
+    raw = (value or "").strip()
+    if not settings.openai_api_key or not raw or not (condition or "").strip():
+        return raw
+    try:
+        resp = create_chat_completion_with_retry(
+            timeout=20,
+            tenant_id=tenant_id,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "An operator typed a value into a form field. Rewrite it so it follows the "
+                        "field's CONDITION exactly. If it already follows the condition, return it "
+                        "unchanged. Keep the operator's meaning - never replace it with a different "
+                        "place, company or thing. When the condition asks for a code you are not sure "
+                        "of, return the value without that code rather than guess.\n\n"
+                        f"FIELD: {field_name or 'this field'}\n"
+                        f"CONDITION: {condition}\n\n"
+                        'Reply with JSON: {"value": "<the value as the condition wants it>"}.'
+                    ),
+                },
+                {"role": "user", "content": f"Typed value: {raw!r}"},
+            ],
+        )
+        out = json.loads(resp.choices[0].message.content or "{}").get("value")
+        return str(out).strip() if isinstance(out, str) and out.strip() else raw
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai_aided_convert failed for %r: %s", raw, exc)
+        return raw
+
+
+def ai_map_with_ai(raw: str, options: list[tuple[str, str]], instruction: str,
+                   pattern: str = "", tenant_id: str | None = None) -> str:
+    """An AI-aided field's last resort (excel_entry.ai_map_value): `raw` - what an operator typed,
+    which the field's own list could not place - converted to the code the ERP expects, by the
+    field's own `instruction`, with its list as worked examples. "" when the model is not sure,
+    or its answer does not fit `pattern`. Never raises."""
+    import re as _re
+
+    settings = get_settings()
+    if not settings.openai_api_key or not (raw or "").strip():
+        return ""
+    examples = "\n".join(f"  {label} -> {code}" for label, code in options[:60])
+    try:
+        resp = create_chat_completion_with_retry(
+            timeout=20,
+            tenant_id=tenant_id,
+            model=settings.openai_model,
+            temperature=0,
+            max_tokens=60,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You convert a value an operator typed into the CODE an ERP expects.\n\n"
+                        f"WHAT THE CODE IS: {instruction or 'the code for this value'}\n\n"
+                        f"KNOWN VALUES AND THEIR CODES (examples of the exact code format):\n{examples}\n\n"
+                        "The value given is NOT one of the known values above (or a spelling of one). "
+                        "Return the correct code for it in exactly the same format"
+                        + (f" (it must match the pattern {pattern})" if pattern else "")
+                        + ". If you are not sure what real thing the value means, or do not know its "
+                        "code, return an empty string - never invent a code.\n\n"
+                        'Reply with JSON: {"code": "<code>"} or {"code": ""}.'
+                    ),
+                },
+                {"role": "user", "content": f"Value: {raw!r}"},
+            ],
+        )
+        code = str(json.loads(resp.choices[0].message.content or "{}").get("code", "")).strip()
+        if pattern:
+            code = code.upper() if _re.fullmatch(pattern, code.upper()) else ""
+        return code
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai_map_with_ai failed for %r: %s", raw, exc)
+        return ""
+
+
 # The ISO 6346 size/type codes ICEGATE's own ContainerTypeCode column expects, given to the
 # model as the closed set it must pick from - never an open-ended guess. A hand-maintained
 # reference sheet keyed on exact text ("40 HC", "40HC", "40 High Cube", ...) can never cover

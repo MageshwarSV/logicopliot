@@ -26,6 +26,8 @@ export function UsersAndAdminsPage() {
   const [editAdmin, setEditAdmin] = useState<User | null>(null);
   const [financeModalOpen, setFinanceModalOpen] = useState(false);
   const [editFinance, setEditFinance] = useState<User | null>(null);
+  const [supportModalOpen, setSupportModalOpen] = useState(false);
+  const [editSupport, setEditSupport] = useState<User | null>(null);
 
   async function refresh() {
     setError(null);
@@ -46,6 +48,7 @@ export function UsersAndAdminsPage() {
 
   const tenantAdmins = users.filter((u) => u.role === "tenant_admin");
   const financeUsers = users.filter((u) => u.role === "saas_finance");
+  const supportUsers = users.filter((u) => u.role === "support");
   const tenantNameById = new Map(tenants.map((t) => [t.id, t.name]));
 
   async function handleToggleActive(user: User) {
@@ -102,6 +105,24 @@ export function UsersAndAdminsPage() {
     },
   ];
 
+  const supportColumns: Column<User>[] = financeColumns.map((c, i, all) =>
+    i === all.length - 1
+      ? {
+          ...c,
+          render: (u: User) => (
+            <div className="flex justify-end gap-1">
+              <Button variant="ghost" size="sm" onClick={() => { setEditSupport(u); setSupportModalOpen(true); }}>
+                Edit
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => handleToggleActive(u)}>
+                {u.is_active ? "Disable" : "Enable"}
+              </Button>
+            </div>
+          ),
+        }
+      : c,
+  );
+
   return (
     <AppShell title="Users & Tenant Admins" subtitle="Everyone with cross-tenant or tenant-admin access on this platform.">
       {error && (
@@ -150,6 +171,28 @@ export function UsersAndAdminsPage() {
         )}
       </Card>
 
+      <Card className="mt-8">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+          <div>
+            <h2 className="font-semibold text-slate-900 dark:text-slate-50">Production Support Users</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Every customer's jobs, read-only, plus Retry on a failed job. They land on the Production Support screen.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setSupportModalOpen(true)}>
+            + New Support User
+          </Button>
+        </div>
+        {!isLoading && (
+          <DataTable
+            columns={supportColumns}
+            rows={supportUsers}
+            keyFor={(u) => u.id}
+            emptyMessage="No Production Support users yet."
+          />
+        )}
+      </Card>
+
       <CreateTenantAdminModal
         open={adminModalOpen}
         onClose={() => {
@@ -175,6 +218,21 @@ export function UsersAndAdminsPage() {
         onCreated={() => {
           setFinanceModalOpen(false);
           setEditFinance(null);
+          refresh();
+        }}
+      />
+
+      <CreateFinanceUserModal
+        role="support"
+        open={supportModalOpen}
+        onClose={() => {
+          setSupportModalOpen(false);
+          setEditSupport(null);
+        }}
+        editUser={editSupport}
+        onCreated={() => {
+          setSupportModalOpen(false);
+          setEditSupport(null);
           refresh();
         }}
       />

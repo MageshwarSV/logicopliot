@@ -46,6 +46,8 @@ export interface Mark {
   validation_uppercase?: boolean;
   /** Shown when validation_pattern fails. null = a generic auto-worded message. */
   validation_message?: string | null;
+  /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+  ai_aided_prompt?: string | null;
   /** The extracted value is looked up in its own reference table (keyed on itself); a
    *  match replaces it, no match returns empty. */
   is_target_value?: boolean;
@@ -178,6 +180,8 @@ export interface CustomField {
   validation_pattern?: string | null;
   validation_uppercase?: boolean;
   validation_message?: string | null;
+  /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
+  ai_aided_prompt?: string | null;
   /** Mirrors Mark.full_width. */
   full_width?: boolean;
   /** Mirrors Mark.multiline. */

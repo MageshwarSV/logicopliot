@@ -7,7 +7,7 @@ from sqlalchemy.orm import Query, Session
 
 from app.core.security import TokenType, decode_token
 from app.db.session import SessionLocal
-from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, User
+from app.models.user import ADMIN, GK2, OPERATOR, SAAS_FINANCE, SUPER_ADMIN, SUPPORT, User
 
 ACCESS_TOKEN_COOKIE = "access_token"
 REFRESH_TOKEN_COOKIE = "refresh_token"
@@ -65,8 +65,29 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+# What Production Support may READ through an Admin-readable endpoint: the job pages only
+# (job detail, documents, history, ERP Excel, the template lookups a job screen uses) and the
+# customer names. Never the user list, settings, templates or billing - those keep their own
+# role checks.
+_SUPPORT_READ_PREFIXES = ("/api/v1/jobs", "/api/v1/available-groups", "/api/v1/template-groups/",
+                          "/api/v1/tenants")
+
+
+def _support_may_read(request: Request, roles: tuple) -> bool:
+    if ADMIN not in roles or request.method not in ("GET", "HEAD"):
+        return False
+    path = request.url.path
+    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
+               for p in _SUPPORT_READ_PREFIXES)
+
+
 def require_role(*roles: str):
-    def dependency(user: User = Depends(get_current_user)) -> User:
+    def dependency(request: Request, user: User = Depends(get_current_user)) -> User:
+        # Production Support reads a job exactly as an Admin (cross-tenant, jobs only) does -
+        # see _SUPPORT_READ_PREFIXES. Writes are never granted this way: only the endpoints
+        # that name SUPPORT themselves (Retry) accept it.
+        if user.role == SUPPORT and _support_may_read(request, roles):
+            return user
         if user.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return user
@@ -124,7 +145,7 @@ def get_tenant_scope(
     require_role(...), same as any other role. See app/models/user.py for why these roles
     have no tenant_id to fall back on.
     """
-    if user.role in (SUPER_ADMIN, ADMIN, SAAS_FINANCE):
+    if user.role in (SUPER_ADMIN, ADMIN, SAAS_FINANCE, SUPPORT):
         return TenantScope(tenant_id=tenant_id, is_super_admin=True)
     return TenantScope(tenant_id=user.tenant_id, is_super_admin=False)
 

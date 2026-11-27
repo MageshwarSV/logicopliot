@@ -307,6 +307,9 @@ class JobFieldValueOut(BaseModel):
     # "tariff_fallback" when the code on screen is the tariff's suggestion (to be confirmed),
     # and why - e.g. "Dump code 85371000 is not in the Indian Customs Tariff."
     value_source: str | None = None
+    # "country" | "currency" when this box feeds an ERP column that needs that code - the job
+    # screen shows a search dropdown that saves the code (app/core/erp_rules.master_by_label).
+    erp_master: str | None = None
     source_note: str | None = None
     # Admin-settable - spans the full row in the job screen's two-column field grid instead of
     # sharing it with whatever sits beside it. See FieldMark.full_width's own docstring. False

@@ -4,6 +4,8 @@ import { HeldPasswordPanel } from "./HeldPasswordPanel";
 import { PrintPagesModal } from "./PrintPagesModal";
 import { ErpExcelEditor, type ErpExcelSubmit } from "./ErpExcelEditor";
 import { ErpFixCard } from "./ErpFixCard";
+import { LiveErpCheck } from "./LiveErpCheck";
+import { getJobErpCheck, getMasterList, type MasterEntry } from "../../api/erpRules";
 import { formatDateTime } from "../../utils/dateTime";
 import { createPortal } from "react-dom";
 import { ModeIcon } from "../../components/ModeIcon";
@@ -884,14 +886,17 @@ export function JobRunPage() {
   const fromCategory = searchParams.get("from");
   const backToJobsPath = fromCategory ? `/jobs?category=${fromCategory}` : "/jobs";
   const { user } = useAuth();
-  const readOnly = user?.role === "tenant_admin" || user?.role === "super_admin" || user?.role === "manager";
+  // Production Support watches every customer's jobs read-only; its one action, Retry on a
+  // failed job, is the Support bar at the top of the page (see supportRetry).
+  const isSupport = user?.role === "support";
+  const readOnly = user?.role === "tenant_admin" || user?.role === "super_admin" || user?.role === "manager" || isSupport;
   // Correcting a value is separated from the rest of readOnly. An admin watching a job should
   // not upload documents, accept its cross-checks or submit its entry — those belong to the
   // operator the job is assigned to. But a Super Admin who can rewrite the whole template was
   // barred from fixing one misread value, which is the smallest and most obvious repair there
   // is, and the person most likely to spot it. A Tenant Admin stays observing. Manager is
   // strictly read-only, no exception — unlike Super Admin, never gets canEditValues.
-  const canEditValues = (!readOnly || user?.role === "super_admin") && user?.role !== "manager";
+  const canEditValues = (!readOnly || user?.role === "super_admin") && user?.role !== "manager" && !isSupport;
   // The step-by-step replay log, the ERP's internal URL and the progress bar are diagnostics
   // for whoever RECORDED the script — step numbers, selector names and timings mean nothing
   // to an operator, and the final-page URL exposes the ERP's internals. The operator is told
@@ -1997,6 +2002,29 @@ export function JobRunPage() {
   // The boxes the ERP refused (ErpFixCard's Fix button): outlined in red on Required Details
   // Review until the operator moves on.
   const [erpFixIds, setErpFixIds] = useState<Set<string>>(new Set());
+  // P4: what the ERP would refuse in the job's current values - re-checked after every save
+  // (job.field_values changes), outlined in red on Review and listed above it.
+  const [liveErpItems, setLiveErpItems] = useState<ErpHelpItem[]>([]);
+  const liveCheckOn = !!job && !!job.excel_entry && job.status === "extracted";
+  const fieldValuesRef = job?.field_values;
+  useEffect(() => {
+    if (!liveCheckOn) {
+      setLiveErpItems([]);
+      return;
+    }
+    let gone = false;
+    const t = window.setTimeout(() => {
+      getJobErpCheck(jobId)
+        .then((r) => { if (!gone) setLiveErpItems(r.items ?? []); })
+        .catch(() => { if (!gone) setLiveErpItems([]); });
+    }, 600);
+    return () => { gone = true; window.clearTimeout(t); };
+  }, [jobId, liveCheckOn, fieldValuesRef]);
+  const outlinedIds = useMemo(() => {
+    const all = new Set(erpFixIds);
+    for (const it of liveErpItems) for (const id of it.field_value_ids) all.add(id);
+    return all;
+  }, [erpFixIds, liveErpItems]);
   const fixErpItem = (item: ErpHelpItem) => {
     if (!job) return;
     const ids = item.field_value_ids;
@@ -2235,10 +2263,21 @@ export function JobRunPage() {
     // two labels. Every OTHER relocated manual-ask field (insurance_percentage included) keeps
     // showing here too, same as before - only these two were ever asked to be dropped from
     // this screen.
+    // A field already shown on a document tab - moved there (display_document_id names one of
+    // this job's documents) or placed in that tab's screen layout - is not shown again here
+    // (4S, 2026-11-27: Sea Export's charges, moved to the INVOICE tab's Charges section, were
+    // still repeated under Additional Details). A template that moves nothing is unaffected.
+    const tabDocIds = new Set((job?.documents ?? []).map((d) => d.template_document_id));
+    const placedRefs = new Set(
+      Object.values(job?.screen_layouts ?? {}).flatMap((l) => (l?.sections ?? []).flatMap((s) => s.fields)),
+    );
+    const shownOnATab = (fv: JobFieldValue) =>
+      (fv.display_document_id != null && tabDocIds.has(fv.display_document_id)) ||
+      placedRefs.has(screenLayoutRef(fv) ?? "");
     const pool = [
-      ...commonComputedFields,
+      ...commonComputedFields.filter((fv) => !shownOnATab(fv)),
       ...manualFields.filter(
-        (fv) => fv.row_index == null && !DUPLICATED_ADDITIONAL_DETAILS_LABELS.has(fv.label_name),
+        (fv) => fv.row_index == null && !DUPLICATED_ADDITIONAL_DETAILS_LABELS.has(fv.label_name) && !shownOnATab(fv),
       ),
     ];
     const byLabel = new Map(pool.map((fv) => [fv.label_name, fv] as const));
@@ -2776,6 +2815,24 @@ export function JobRunPage() {
     </div>
   );
 
+  // Support's Retry - the same endpoints the operator's buttons use; the server allows Support
+  // only on a failed ERP entry / an extraction that did not finish.
+  const supportCanRetryErp = isSupport && job.gk2_status === "failed";
+  const supportCanRetryExtraction = isSupport && job.status === "draft" && (job.documents ?? []).some((d) => d.is_uploaded);
+  async function supportRetry(what: "erp" | "extraction") {
+    if (!job) return;
+    const label = what === "erp" ? "ERP entry" : "extraction";
+    if (!window.confirm(`Retry the ${label} for ${job.reference}?`)) return;
+    setError(null);
+    try {
+      if (what === "erp") await jobsApi.gk2Approve(job.id);
+      else await jobsApi.extractJob(job.id);
+      await load();
+    } catch (err) {
+      if (axios.isAxiosError(err)) setError(err.response?.data?.detail ?? `Could not retry the ${label}.`);
+    }
+  }
+
   return (
     <AppShell
       title={`Job · ${job.reference}`}
@@ -2847,7 +2904,7 @@ export function JobRunPage() {
             )}
           </div>
           <Link
-            to={backToJobsPath}
+            to={isSupport ? "/support" : backToJobsPath}
             className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             Back to dashboard
@@ -2855,6 +2912,31 @@ export function JobRunPage() {
         </div>
       }
     >
+      {isSupport && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-200">
+          <span>
+            <b>Production Support</b> — viewing read-only.
+            {!supportCanRetryErp && !supportCanRetryExtraction && " Nothing to retry on this job."}
+          </span>
+          <div className="flex gap-2">
+            {supportCanRetryErp && (
+              <button type="button" onClick={() => supportRetry("erp")}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">
+                Retry ERP entry
+              </button>
+            )}
+            {supportCanRetryExtraction && (
+              <button type="button" onClick={() => supportRetry("extraction")}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">
+                Retry extraction
+              </button>
+            )}
+            <Link to="/support/issues" className="rounded-lg border border-orange-300 px-3 py-1.5 text-xs font-semibold hover:bg-orange-100 dark:border-orange-500/40">
+              ← Failed jobs
+            </Link>
+          </div>
+        </div>
+      )}
       {/* A single-template mailbox's job exists from the moment OCR starts, long before any
           document lands in a slot - this is the one place that says what's actually happening
           in that gap, instead of Document Capture just sitting there looking frozen. */}
@@ -3954,6 +4036,9 @@ export function JobRunPage() {
           {/* The last entry failed. Say what was rejected, point at the red field, and make the
               retry obvious — it re-runs the ERP script with the corrected values, WITHOUT
               re-extracting the documents, so a fixed value is all that changes. */}
+          {!job.erp_help?.items?.length && liveErpItems.length > 0 && (
+            <LiveErpCheck items={liveErpItems} onFix={canEditValues ? fixErpItem : undefined} />
+          )}
           {!readOnly && entryFailed && !job.erp_help?.items?.length && (
             <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm dark:border-rose-500/30 dark:bg-rose-500/10">
               <p className="font-semibold text-rose-800 dark:text-rose-300">
@@ -4336,6 +4421,9 @@ export function JobRunPage() {
           one screen — nothing about what they show or how a value gets saved has changed. */}
       {activeTab === "extraction" && (
         <div className="flex flex-col gap-4">
+          {liveErpItems.length > 0 && (
+            <LiveErpCheck items={liveErpItems} onFix={canEditValues ? fixErpItem : undefined} />
+          )}
           {!isAdditionalDetailsActive && (
             <ExtractionReview
               job={job}
@@ -4346,7 +4434,7 @@ export function JobRunPage() {
               setActiveFileId={setActiveFileId}
               insuranceMode={insuranceMode}
               onToggleInsuranceMode={switchInsuranceMode}
-              erpFixIds={erpFixIds}
+              erpFixIds={outlinedIds}
             />
           )}
 
@@ -5457,9 +5545,9 @@ function ExtractedField({
   wrapLabel,
   flagged,
   flagNote,
-  hint,
-  comboOptions,
-  comboPickOnly,
+  hint: hintProp,
+  comboOptions: comboOptionsProp,
+  comboPickOnly: comboPickOnlyProp,
   asyncSearchPicker,
   onBeforeSave,
   onDraftChange,
@@ -5584,6 +5672,29 @@ function ExtractedField({
   /** Shown in the field's own header row, beside its label - not below the box. */
   headerExtra?: ReactNode;
 }) {
+  // A box feeding an ERP country / currency code column (fv.erp_master, app/core/erp_rules.py):
+  // a search dropdown - type "po", pick "PL - Poland", PL is saved and sent. Only when the
+  // field has no list of its own.
+  const masterKind = !options && !asyncSearchPicker && !comboOptionsProp ? (fv.erp_master ?? null) : null;
+  const [masterList, setMasterList] = useState<MasterEntry[] | null>(null);
+  useEffect(() => {
+    if (!masterKind) { setMasterList(null); return; }
+    let live = true;
+    getMasterList(masterKind).then((l) => { if (live) setMasterList(l); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [masterKind]);
+  const comboLabels = useMemo(
+    () => (masterList ? Object.fromEntries(masterList.map((m) => [m.code, m.name])) as Record<string, string> : undefined),
+    [masterList],
+  );
+  const comboOptions = masterList ? masterList.map((m) => m.code) : comboOptionsProp;
+  const comboPickOnly = masterList ? true : comboPickOnlyProp;
+  const currentCode = (fv.value ?? "").trim().toUpperCase();
+  const hint = hintProp ?? (comboLabels && currentCode
+    ? (comboLabels[currentCode] !== undefined
+        ? `${currentCode} = ${comboLabels[currentCode] || currentCode}`
+        : `"${fv.value}" is not a ${masterKind} code - pick one from the list`)
+    : undefined);
   const current = fv.corrected_value ?? fv.extracted_value ?? "";
   const [draft, setDraft] = useState(current || defaultValue || "");
   // Indian Customs Tariff: while a code is being typed (4-7 digits), the tariff codes that start
@@ -6155,7 +6266,7 @@ function ExtractedField({
                 />
                 <div className="max-h-56 overflow-y-auto">
                   {(comboOptions ?? [])
-                    .filter((opt) => opt.toLowerCase().includes(comboQuery.trim().toLowerCase()))
+                    .filter((opt) => `${opt} ${comboLabels?.[opt] ?? ""}`.toLowerCase().includes(comboQuery.trim().toLowerCase()))
                     .map((opt) => (
                       <button
                         key={opt}
@@ -6169,7 +6280,7 @@ function ExtractedField({
                         }}
                         className="block w-full truncate px-3 py-2 text-left text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-indigo-500/10"
                       >
-                        {opt}
+                        {comboLabels?.[opt] ? `${opt} — ${comboLabels[opt]}` : opt}
                       </button>
                     ))}
                 </div>

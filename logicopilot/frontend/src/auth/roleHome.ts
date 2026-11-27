@@ -16,6 +16,7 @@ export const ROLE_HOME: Record<Role, string> = {
   gk2: "/jobs",
   manager: "/manager",
   saas_finance: "/saas-finance",
+  support: "/support",
   // An app login has no home HERE - it exists for the Cargora Manager mobile app and
   // reaches no page in this portal (every route 403s for it server-side). LoginPage
   // turns it away with an explanation before this is ever used; it is listed only

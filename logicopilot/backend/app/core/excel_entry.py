@@ -215,8 +215,152 @@ def _leading_digits(value: str) -> str:
 # AFTER the ordinary field/literal lookup below, so adding one here is the only step needed
 # to let any column derive a narrower value from what extraction actually produced, without
 # that derivation needing its own separate CustomField/FieldMark.
+def _country_iso2(value: str) -> str:
+    """A country written in full -> its 2-letter code, only when certain ("POLAND" -> "PL").
+    Set on country-code columns by app/core/erp_rules.py (effective_config); anything it cannot
+    place is left as it was, for the rule check to report."""
+    from app.core.erp_masters import normalize_country
+
+    return normalize_country(value)
+
+
+# ---- AI-aided field (4S, 2026-11-27) ---------------------------------------------------------
+# A column whose field is one of a known list on screen, but must reach the ERP as a CODE - and
+# where an operator may type a value the list does not hold. The column's "ai_map" setting:
+#
+#   {"options": [{"label": "Chennai", "code": "INMAA1", "aliases": ["Madras"]}, ...],
+#    "instruction": "what the code is - used only when the list cannot place a value",
+#    "pattern": "IN[A-Z]{3}[0-9A-Z]",          # optional: the shape every code has
+#    "ignore_words": ["port", "sea", "india"]} # optional: filler a typed value may carry
+#
+# The value in the box -> blank stays blank; a code typed as a code is kept; a label, alias or
+# code from the list (filler words ignored, any case) gives its code; a near spelling gives the
+# nearest one's; anything else is asked of the AI once (remembered) and kept only when it fits
+# `pattern`. Nobody sure -> "" - never a guess in the Excel.
+_AI_MAP_CACHE: dict[tuple, str] = {}
+
+
+def _map_key(text: str, ignore: tuple[str, ...]) -> str:
+    t = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    if ignore:
+        t = re.sub(r"\b(" + "|".join(re.escape(w) for w in ignore) + r")\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def ai_map_value(value, spec: dict | None) -> str:
+    import difflib
+
+    raw = str(value or "").strip()
+    if not isinstance(spec, dict):
+        return raw
+    if not raw:
+        return ""
+    options = [o for o in (spec.get("options") or []) if isinstance(o, dict) and str(o.get("code") or "").strip()]
+    pattern = (spec.get("pattern") or "").strip()
+    ignore = tuple(str(w).strip().lower() for w in (spec.get("ignore_words") or []) if str(w).strip())
+    if pattern and re.fullmatch(pattern, raw.upper()):
+        return raw.upper()
+    # The box already says it: "Paranagua (BRPNG)", "BRAZIL (BR)" - the code in brackets, when it
+    # has the code's shape, is exactly what the Excel takes. Only brackets count: a plain word in
+    # the text ("CAMPO") can look like a code and is not one.
+    if pattern:
+        for inside in re.findall(r"\(([^()]+)\)", raw):
+            if re.fullmatch(pattern, inside.strip().upper()):
+                return inside.strip().upper()
+    # The dropdown shows each value with its code - "Ennore (INENR1)" - and saves that text. A
+    # code from the list written inside the value (in brackets or not) is the answer as it is.
+    codes = {str(o["code"]).strip().upper(): str(o["code"]).strip() for o in options}
+    for tok in re.findall(r"[A-Za-z0-9&]+", raw):
+        if tok.upper() in codes and len(tok) > 1:
+            return codes[tok.upper()]
+    key = _map_key(raw, ignore)
+    names = []
+    for o in options:
+        code = str(o["code"]).strip()
+        for n in [o.get("label"), code, *(o.get("aliases") or [])]:
+            k = _map_key(str(n or ""), ignore)
+            if k:
+                names.append((code, k))
+    for code, n in names:
+        if key == n:
+            return code
+    best = max(((difflib.SequenceMatcher(None, key, n).ratio(), code) for code, n in names),
+               default=(0.0, ""))
+    if best[0] >= 0.8:
+        return best[1]
+    cache_key = (str(spec.get("instruction") or ""), pattern,
+                 tuple((str(o.get("label")), str(o["code"])) for o in options), key)
+    if cache_key not in _AI_MAP_CACHE:
+        from app.core import llm
+
+        got = llm.ai_map_with_ai(raw, [(str(o.get("label") or ""), str(o["code"])) for o in options],
+                                 str(spec.get("instruction") or ""), pattern)
+        if pattern and got and not re.fullmatch(pattern, got):
+            got = ""
+        _AI_MAP_CACHE[cache_key] = got
+    return _AI_MAP_CACHE[cache_key]
+
+
+# Sea Export's Port of Loading -> ICEGATE code (CustomHouseCode / Loading_Port). Kept as a ready
+# ai_map so the "sea_port_code" transform and a column's own ai_map read the same list.
+SEA_PORT_MAP: dict = {
+    "options": [
+        {"label": "Chennai", "code": "INMAA1", "aliases": ["Madras"]},
+        {"label": "Kattupalli", "code": "INKAT1", "aliases": ["Kattupally", "Katupalli"]},
+        {"label": "Ennore", "code": "INENR1", "aliases": ["Kamarajar"]},
+        {"label": "Tuticorin", "code": "INTUT1", "aliases": ["Thoothukudi", "Thoothukkudi", "VOC", "V O Chidambaranar"]},
+        {"label": "Cochin", "code": "INCOK1", "aliases": ["Kochi"]},
+        {"label": "Vizag", "code": "INVTZ1", "aliases": ["Visakhapatnam", "Vishakhapatnam"]},
+        {"label": "Kolkata", "code": "INCCU1", "aliases": ["Calcutta"]},
+        {"label": "Nhava Sheva", "code": "INNSA1", "aliases": ["JNPT", "Jawaharlal Nehru", "JN"]},
+        {"label": "Mumbai", "code": "INBOM1", "aliases": ["Bombay"]},
+        {"label": "Mundra", "code": "INMUN1"},
+        {"label": "Kandla", "code": "INIXY1", "aliases": ["Deendayal"]},
+        {"label": "Goa", "code": "INMRM1", "aliases": ["Marmagao", "Mormugao", "Marmugao"]},
+        {"label": "ICD Whitefield", "code": "INWFD6", "aliases": ["Whitefield"]},
+    ],
+    "instruction": (
+        "The INDIAN place a SEA export shipment is loaded / filed at - a sea port, an ICD (Inland "
+        "Container Depot) or a CFS. Return its ICEGATE customs location code for SEA shipments: "
+        "'IN' + the 3-letter location code + one digit or letter (sea ports usually end in 1, "
+        "ICDs in 6)."),
+    "pattern": "IN[A-Z]{3}[0-9A-Z]",
+    "ignore_words": ["port", "seaport", "sea", "harbour", "harbor", "india", "tamil nadu", "tn"],
+}
+
+
+def _sea_port_code(value: str) -> str:
+    return ai_map_value(value, SEA_PORT_MAP)
+
+
+def _code_in_brackets(value: str) -> str:
+    """"Paranagua (BRPNG)" -> "BRPNG", "BRAZIL (BR)" -> "BR": an AI-aided field shows the value
+    with the code the ERP takes in brackets - this column sends that code. No brackets: the value
+    as it is."""
+    found = re.findall(r"\(([^()]+)\)\s*$", value or "")
+    return found[-1].strip() if found else (value or "").strip()
+
+
 _TRANSFORMS = {
     "leading_digits": _leading_digits,
+    "code_in_brackets": _code_in_brackets,
+    "sea_port_code": _sea_port_code,
+}
+
+# Set only by the ERP column rules (app/core/erp_rules.py effective_config) - never offered in
+# the column editor, which accepts the _TRANSFORMS names above.
+def _currency_code(value: str) -> str:
+    """A currency written as a symbol or name -> its 3-letter code, only when certain
+    ("US$" -> "USD", "Rs." -> "INR"). Set on currency columns by app/core/erp_rules.py."""
+    from app.core.erp_masters import normalize_currency
+
+    return normalize_currency(value)
+
+
+_RULE_TRANSFORMS = {
+    "country_iso2": _country_iso2,
+    "currency_code": _currency_code,
+    "upper": lambda value: (value or "").strip().upper(),
 }
 
 
@@ -376,9 +520,12 @@ def _rows_for_plan(plan: dict, values: dict, rows: dict) -> list[list]:
             # see _TRANSFORMS. Applied last, after every other source (literal, serial,
             # per-invoice, per-line, job-level), so it works the same regardless of where the
             # raw value came from.
-            transform = _TRANSFORMS.get(col.get("transform") or "")
+            transform = (_TRANSFORMS.get(col.get("transform") or "")
+                         or _RULE_TRANSFORMS.get(col.get("transform") or ""))
             if transform is not None:
                 val = transform(val if isinstance(val, str) else str(val or ""))
+            if isinstance(col.get("ai_map"), dict):
+                val = ai_map_value(val, col["ai_map"])
             line.append(val)
         # Apply each column's own width limit, if it has one.
         line = [(v if cap is None or v is None or len(str(v)) <= cap else str(v)[:cap])

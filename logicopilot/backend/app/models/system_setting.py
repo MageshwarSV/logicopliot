@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Boolean, Date, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -98,3 +98,6 @@ class SystemSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # keeps whatever a Super Admin has it set to; flip it from Settings if you want the new
     # default applied there too.
     extraction_engine: Mapped[str] = mapped_column(Text, nullable=False, default="gpt5_mini_vision")
+    # Production Support settings: {"sla": {...minutes}, "alert_emails": [...]}. NULL = the
+    # agreed defaults (app/api/v1/support.py DEFAULT_SLA) and no alert emails.
+    support_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)

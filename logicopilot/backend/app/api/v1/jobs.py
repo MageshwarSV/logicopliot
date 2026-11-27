@@ -33,6 +33,7 @@ from app.core.deps import (
 )
 from app.core.classifier_common import AIServiceUnavailable, classifier_module
 from app.core.docai import get_page_ocr, locate_value_bbox, ocr_page_image
+from app.core.line_fallback import apply_line_fallbacks
 from app.core import document_samples
 from app.core.page_filter import (
     claim_fingerprint,
@@ -65,7 +66,7 @@ from app.models.job_event import JobEvent
 from app.models.template_document import TemplateDocument
 from app.models.template_group import TemplateGroup
 from app.models.tenant import Tenant
-from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, TENANT_ADMIN, User
+from app.models.user import ADMIN, GK2, MANAGER, OPERATOR, SUPER_ADMIN, SUPPORT, TENANT_ADMIN, User
 from app.schemas.jobs import (
     AvailableGroup,
     DuplicateDecision,
@@ -2374,8 +2375,9 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
     """Reports -> User Job Summary. For the chosen operation and period (IST dates, both ends
     inclusive): per user, the jobs that ARRIVED in the period (Total), how many of those have
     reached the ERP (ERP Completed - the same _category_condition("submitted") rule as the
-    ERP Submitted badge and list) and the rest (Pending = Total - Completed). The same
-    "arrived in the period, not submitted yet" meaning as the dashboard's own Pending.
+    ERP Submitted badge and list), how many FAILED (the red "Failed" badge's own rule,
+    _category_condition("failed") - counted on their own, never in Pending; by request
+    2026-11-27) and the rest (Pending = Total - Completed - Failed).
 
     The user is whoever the Jobs list shows under Assigned To (_operator_name: the creator,
     else the mail-routed operator); jobs with neither are "Unassigned". Every active operator
@@ -2402,6 +2404,9 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
     submitted_ids = {
         row[0] for row in arrived.filter(_category_condition("submitted")).with_entities(Job.id).all()
     }
+    failed_ids = {
+        row[0] for row in arrived.filter(_category_condition("failed")).with_entities(Job.id).all()
+    }
     if mode:
         jobs = [j for j in jobs if (group_modes.get(j.group_id) or _shipment_mode(db, j)) == mode]
 
@@ -2413,7 +2418,7 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
             "user_id": u.id if u else None,
             "name": (u.full_name.strip() if u and u.full_name else None) or "Unassigned",
             "avatar_url": getattr(u, "avatar_url", None) if u else None,
-            "total": 0, "completed": 0, "pending": 0,
+            "total": 0, "completed": 0, "failed": 0, "pending": 0,
         })
 
     # Every active operator (Gate Keeper) of this tenant who works this operation is listed,
@@ -2436,12 +2441,15 @@ def _user_job_summary(db: Session, scope: TenantScope, user: User, mode: str | N
             u = users_by_id[uid]
         r = _row_for(u)
         r["total"] += 1
-        if j.id in submitted_ids:
+        # Failed first: the badge reads "Failed" whatever else the job carries.
+        if j.id in failed_ids:
+            r["failed"] += 1
+        elif j.id in submitted_ids:
             r["completed"] += 1
         else:
             r["pending"] += 1
     ordered = sorted(rows.values(), key=lambda r: (r["user_id"] is None, -r["total"], r["name"].lower()))
-    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "pending")}
+    totals = {k: sum(r[k] for r in ordered) for k in ("total", "completed", "failed", "pending")}
     return {"modes": modes, "mode": mode, "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
             "users": ordered, "totals": totals}
 
@@ -2481,17 +2489,17 @@ def user_job_summary_export(
     ws.append([f"User Job Summary - {data['mode'] or 'All operations'} - {data['date_from']} to {data['date_to']}"])
     ws["A1"].font = Font(bold=True)
     ws.append([])
-    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Pending Jobs"])
+    ws.append(["S.No", "User", "Total Jobs", "ERP Completed Jobs", "Failed Jobs", "Pending Jobs"])
     for c in ws[3]:
         c.font = Font(bold=True)
     for i, r in enumerate(data["users"], start=1):
-        ws.append([i, r["name"], r["total"], r["completed"], r["pending"]])
+        ws.append([i, r["name"], r["total"], r["completed"], r["failed"], r["pending"]])
     t = data["totals"]
-    ws.append(["", "Total", t["total"], t["completed"], t["pending"]])
+    ws.append(["", "Total", t["total"], t["completed"], t["failed"], t["pending"]])
     for c in ws[ws.max_row]:
         c.font = Font(bold=True)
     ws.column_dimensions["B"].width = 32
-    for col in "CDE":
+    for col in "CDEF":
         ws.column_dimensions[col].width = 20
     buf = io.BytesIO()
     wb.save(buf)
@@ -3239,7 +3247,7 @@ def gk2_approve(
     job_id: str,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, GK2, SUPER_ADMIN, SUPPORT)),
 ) -> JobDetailOut:
     """GK2 presses "Final Approve & Proceed" — moves to "preparing_erp" (shown as "AI -
     Preparing for ERP") right away, and a background thread does the actual work, landing on
@@ -3272,7 +3280,8 @@ def gk2_approve(
     shape as every other state guard here.
     """
     job = _load_job(db, job_id, scope, user)
-    if user.role == OPERATOR and job.gk2_status != "failed":
+    # Production Support may press Retry too - on a FAILED run only, same as GK1.
+    if user.role in (OPERATOR, SUPPORT) and job.gk2_status != "failed":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only a failed ERP submission can be corrected and resubmitted here - "
@@ -3295,6 +3304,14 @@ def gk2_approve(
         )
     # Whoever pressed it - GK2, or GK1 retrying a failed run - is told how it ends.
     job.erp_submitted_by_id = user.id
+    if user.role == SUPPORT:
+        from app.models.support_activity import SupportActivity
+
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
+                        stage="ERP Submission",
+                        note=f"ERP entry retried by Production Support - {user.full_name or user.email}"))
+        db.add(SupportActivity(kind="retry_erp", tenant_id=job.tenant_id, job_id=job.id, user_id=user.id,
+                               text=f"{job.reference} - ERP entry retried"))
     _finalize_job_approval(db, job)
     return _build_detail(db, job)
 
@@ -3526,7 +3543,12 @@ def _run_gk2_submission(db: Session, job_id: str, is_excel_entry: bool) -> None:
     dl_dir = Path(get_settings().uploads_dir) / "jobs" / "_erp_captured" / job.id
     dl_dir.mkdir(parents=True, exist_ok=True)
     try:
-        book = _build_job_excel(db, job, out_dir=dl_dir)
+        book = _build_job_excel(db, job, out_dir=dl_dir, check_rules=True)
+    except ErpRulesFailed as exc:
+        job.erp_help = exc.help
+        job.erp_failed_at = datetime.now(timezone.utc)
+        _fail(str(exc))
+        return
     except ExcelBuildFailed as exc:
         _fail(str(exc))
         return
@@ -3714,6 +3736,29 @@ def download_job_excel(
 
 class ErpExcelSheets(BaseModel):
     sheets: list[dict]
+
+
+@router.get("/jobs/{job_id}/erp-check")
+def erp_rule_check(
+    job_id: str,
+    db: Session = Depends(get_db),
+    scope: TenantScope = Depends(get_tenant_scope),
+    user: User = Depends(require_role(OPERATOR, SUPER_ADMIN, TENANT_ADMIN, ADMIN, GK2, MANAGER)),
+) -> dict:
+    """What the ERP would refuse in this job's CURRENT values - the same check that runs
+    before the ERP (app/core/erp_rules.py), asked while the operator is still reviewing, so a
+    wrong value is fixed on Review instead of stopping the submit. Read-only."""
+    from app.core.erp_excel_edit import edited_file
+    from app.core.erp_rules import pre_check
+
+    job = _load_job(db, job_id, scope, user)
+    grp = db.get(TemplateGroup, job.group_id) if job.group_id else None
+    if grp is None or (grp.entry_mode or "fields") != "excel" or job.status != "extracted":
+        return {"checked": False, "items": [], "excel_edited": False}
+    values, rows = entry_values_and_rows(db, job)
+    help_ = pre_check(db, job, values, rows)
+    return {"checked": True, "items": (help_ or {}).get("items") or [],
+            "excel_edited": edited_file(job.id) is not None}
 
 
 @router.get("/jobs/{job_id}/erp-excel/sheets")
@@ -4233,6 +4278,9 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
     from app.core.reference_cache import reference_key, reference_map_for
 
     lookup_source_by_fv: dict[str, str] = {}
+    from app.core.erp_rules import master_by_label
+
+    erp_master_by_label = master_by_label(group)
     # Only the PICKER PRIMARIES - the fields with a paired candidate, i.e. "Dump CTH Number".
     # lookup_source has exactly one reader in the whole product: the line under that box in the
     # picker ("matched on Part Code"). It is not stored, not read by the manager app, and left
@@ -4403,6 +4451,7 @@ def _build_detail(db: Session, job: Job) -> JobDetailOut:
                                 or mark_dropdown_style.get(fv.mark_id)),
                 display_document_id=cf_display_document_id.get(fv.custom_field_id),
                 lookup_source=lookup_source_by_fv.get(fv.id),
+                erp_master=erp_master_by_label.get(fv.label_name),
                 value_source=fv.value_source,
                 source_note=fv.source_note,
                 full_width=(
@@ -5420,6 +5469,20 @@ def entry_values_and_rows(db: Session, job: Job) -> tuple[dict, dict]:
         # the invoice serial, so a product stays attached to the invoice it was billed on.
         rows[LINE_SET_KEY] = [str(k[0]) for k in line_keys]
 
+    # A product whose own document left a value blank may be able to take it from ANOTHER
+    # document's table - matched on the part number, never on the line's position, because the
+    # invoice and the packing list order their products differently (see
+    # app.core.line_fallback for the ROHM job this was built from). Fills blanks only, so a
+    # value the invoice carried is never touched, and does nothing at all on a template whose
+    # packing list is not marked for it.
+    #
+    # Here, not in excel_entry, so the operator SEES the filled value on the entry screen and
+    # can correct it before submitting, rather than it appearing only inside the workbook.
+    _filled = apply_line_fallbacks(rows)
+    if _filled:
+        logger.info("job %s: filled %s from another document's table by part number",
+                    job.id, ", ".join(f"{k}x{v}" for k, v in _filled.items()))
+
     # Which sets actually hold an INVOICE. A packing list whose own "Invoice No" was blank, or
     # listed several numbers at once ("CD…210/CD…211/…"), never pairs with its invoice and
     # lands in a set of its own (see doc_sets.assign_sets). That set is not an invoice: counting
@@ -5588,6 +5651,15 @@ class ExcelBuildFailed(Exception):
     operator-readable reason, never a bare exception."""
 
 
+class ErpRulesFailed(ExcelBuildFailed):
+    """A value would break an ERP column rule (app/core/erp_rules.py) - stopped BEFORE the ERP.
+    `help` is the card the job screen shows (Fix -> box outlined in red)."""
+
+    def __init__(self, message: str, help_: dict):
+        super().__init__(message)
+        self.help = help_
+
+
 _FILL_MARK = " Correct in ERP (filled so no mandatory column was empty): "
 
 
@@ -5597,7 +5669,8 @@ def _note_auto_fills(job: Job, fills: list[str]) -> None:
     job.auto_erp_note = (base + (_FILL_MARK + "; ".join(fills) + "." if fills else ""))[:8000] or None
 
 
-def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False) -> Path:
+def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool = False,
+                     check_rules: bool = False) -> Path:
     """Build this job's ERP-import workbook fresh from its CURRENT extracted values.
 
     The same build complete_job's Excel-entry path already uses (see entry_uploads below),
@@ -5622,7 +5695,11 @@ def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool
     if not ignore_edited and edited_file(job.id) is not None:
         target = Path(out_dir) if out_dir else Path(get_settings().uploads_dir) / "job_excel" / job.id
         return use_edited_or_build(job.id, target, lambda: None)
-    cfg = grp.excel_config or {}
+    # The template's columns plus the conversions its ERP column rules call for ("POLAND" ->
+    # "PL" on a country-code column) - app/core/erp_rules.py.
+    from app.core.erp_rules import effective_config
+
+    cfg = effective_config(grp)
     values, rows = entry_values_and_rows(db, job)
     # Auto ERP Submission: no mandatory ERP column may go out empty (app/core/auto_erp_complete.py).
     # Only the workbook gets the filled values; the job keeps what was read, and the note lists
@@ -5632,6 +5709,14 @@ def _build_job_excel(db: Session, job: Job, out_dir=None, *, ignore_edited: bool
 
         values, rows, fills = complete_for_erp(db, job, cfg, values, rows)
         _note_auto_fills(job, fills)
+    # Going to the ERP: a value it would refuse stops here, before the run (downloads and the
+    # in-app Excel view still build, so the operator can see what is wrong).
+    if check_rules:
+        from app.core.erp_rules import pre_check, summary
+
+        help_ = pre_check(db, job, values, rows)
+        if help_:
+            raise ErpRulesFailed(summary(help_), help_)
     filled, mapped = _column_fill(cfg, values, rows)
     if mapped and not filled:
         raise ExcelBuildFailed(
@@ -5672,9 +5757,10 @@ def entry_uploads(db: Session, job: Job, values: dict, rows: dict, out_dir) -> d
             up_map.setdefault(str(key), str(jd.file_path))
     grp = db.get(TemplateGroup, job.group_id)
     if grp is not None and (grp.entry_mode or "fields") == "excel":
+        from app.core.erp_rules import effective_config
         from app.core.excel_entry import build_for_job
 
-        cfg = grp.excel_config or {}
+        cfg = effective_config(grp)
         tpl_dir = _P(get_settings().uploads_dir) / "excel_templates" / grp.id
         tpl = (next((x for x in tpl_dir.glob("template.*")), None)
                if cfg.get("source") == "template" else None)
@@ -6068,6 +6154,15 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
             job.erp_help = build_help(db, job, result["rejection_text"])
         except Exception:  # noqa: BLE001
             logger.exception("job %s: could not explain the ERP's import rejection", job.id)
+        # ...and remember a rule for each refused column, so the same refusal can be stopped
+        # before the ERP next time (Super Admin > ERP Column Rules > Suggested).
+        if job.erp_help:
+            try:
+                from app.core.erp_rules import record_suggestions
+
+                record_suggestions(db, job, job.erp_help)
+            except Exception:  # noqa: BLE001
+                logger.exception("job %s: could not record ERP rule suggestions", job.id)
     db.commit()
 
     erp = {
@@ -6228,6 +6323,18 @@ def complete_job(
         # The same inputs the Entry Browser's replay gets - one function, so a fix to how
         # line items are collapsed can never land on only one of the two paths.
         values, rows = entry_values_and_rows(db, job)
+        # A value the ERP would refuse stops here, before anything is entered (erp_rules.py).
+        from app.core.erp_rules import pre_check, summary
+
+        _help = pre_check(db, job, values, rows)
+        if _help:
+            job.erp_status = "failed"
+            job.erp_reason = summary(_help)
+            job.erp_help = _help
+            job.erp_diagnosis = None
+            job.erp_failed_at = datetime.now(timezone.utc)
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=job.erp_reason)
         login = (
             {"username": script.login_username or "", "password": script.login_password or ""}
             if script.has_login
@@ -6306,9 +6413,10 @@ def complete_job(
                 # resolves. Built here, where the job's values and line-item rows already are.
                 grp = grp_for_mode
                 if grp is not None and (grp.entry_mode or "fields") == "excel":
+                    from app.core.erp_rules import effective_config
                     from app.core.excel_entry import build_for_job, describe
 
-                    cfg = grp.excel_config or {}
+                    cfg = effective_config(grp)
                     tpl_dir = Path(get_settings().uploads_dir) / "excel_templates" / grp.id
                     tpl = (next((p for p in tpl_dir.glob("template.*")), None)
                            if cfg.get("source") == "template" else None)
@@ -9901,6 +10009,9 @@ def run_extraction(
         # try/except just logs and leaves the job routed but not yet field-extracted -
         # either way, pressing Extract again once resumed is all that is needed.
         raise AIServiceUnavailable("extraction is paused")
+    # When reading actually began (Production Support's queue-wait / extraction times).
+    job.extraction_started_at = datetime.now(timezone.utc)
+    job.extraction_finished_at = None
     # Read ONCE, up front, before anything in this run is ever flushed - the first-ever read
     # of a system setting lazily creates (and commits) its row if none exists yet (see
     # get_system_settings), and doing that lazily deep inside this function, after a
@@ -11415,6 +11526,7 @@ def run_extraction(
                     job.reference, emptied_importer)
 
     job.status = "extracted"
+    job.extraction_finished_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(job)
 
@@ -11433,7 +11545,7 @@ def extract_job(
     job_document_id: str | None = None,
     db: Session = Depends(get_db),
     scope: TenantScope = Depends(get_tenant_scope),
-    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN)),
+    user: User = Depends(require_write_access(OPERATOR, SUPER_ADMIN, ADMIN, SUPPORT)),
 ) -> JobDetailOut:
     """Manual Extract / Re-run extraction. Backgrounded the same way the auto-trigger is, so
     pressing it does not sit the operator's browser on OCR + model calls — the response comes
@@ -11489,6 +11601,23 @@ def extract_job(
     # run_extraction's own docstring. Read before _begin_extraction flips status to
     # "extracting" below.
     is_rerun = job.status != "draft"
+    # Production Support retries an extraction that never finished (a crash puts the job back
+    # on "draft") - never a re-read of a job already extracted, which would replace the
+    # operator's reviewed values.
+    if user.role == SUPPORT:
+        if job.status != "draft" or job_document_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Support can retry only an extraction that did not finish. This job "
+                       "has already been read - re-reading it would replace the operator's work.",
+            )
+        from app.models.support_activity import SupportActivity
+
+        db.add(JobEvent(tenant_id=job.tenant_id, job_id=job.id, status=job.status,
+                        stage="Data Validation",
+                        note=f"Extraction retried by Production Support - {user.full_name or user.email}"))
+        db.add(SupportActivity(kind="retry_extraction", tenant_id=job.tenant_id, job_id=job.id, user_id=user.id,
+                               text=f"{job.reference} - extraction retried"))
     _begin_extraction(db, job, only_job_document_id=job_document_id, is_rerun=is_rerun)
     db.refresh(job)
     return _build_detail(db, job)
@@ -12072,6 +12201,36 @@ def correct_field_value(
             saved = check_correction(db, job_for_rules, db.get(_CFt, fv.custom_field_id), saved)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # AI-aided field (4S, 2026-11-27): what the operator typed is rewritten by the field's own
+    # condition before it is stored - "santos" -> "Santos (BRSSZ)" - so the screen shows exactly
+    # what the Excel will carry. A failed or unsure conversion keeps what was typed.
+    _condition = ""
+    if saved.strip():
+        _owner = None
+        if fv.mark_id:
+            _owner = db.get(FieldMark, fv.mark_id)
+        elif fv.custom_field_id:
+            from app.models.custom_field import CustomField as _CFa
+
+            _owner = db.get(_CFa, fv.custom_field_id)
+        _condition = (getattr(_owner, "ai_aided_prompt", None) or "").strip() if _owner else ""
+        if _condition:
+            from app.core.llm import ai_aided_convert
+
+            saved = ai_aided_convert(saved, _condition, getattr(_owner, "display_label", None) or fv.label_name,
+                                     tenant_id=job_for_rules.tenant_id) or saved
+    # A box feeding an ERP country / currency code column saves the code: "Poland" -> "PL".
+    # Not on a box with its own AI-aided condition (above) - that box keeps its "Name (CODE)"
+    # form, and its Excel column sends the code in brackets.
+    if saved.strip() and not _condition:
+        from app.core.erp_rules import code_for_saving, master_by_label
+
+        _master = master_by_label(db.get(TemplateGroup, job_for_rules.group_id)).get(fv.label_name)
+        if _master:
+            try:
+                saved = code_for_saving(_master, saved)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
     from app.core import field_edits
 
     field_edits.record(db, fv, fv.value, saved, user, source="edit")
@@ -12121,9 +12280,17 @@ def correct_field_value(
         found_y=fv.found_y,
         found_width=fv.found_width,
         found_height=fv.found_height,
+        erp_master=_erp_master_of(db, job_for_rules, fv),
         value_source=fv.value_source,
         source_note=fv.source_note,
     )
+
+
+def _erp_master_of(db: Session, job: Job, fv: JobFieldValue) -> str | None:
+    """"country" / "currency" when this value's box feeds an ERP code column (erp_rules)."""
+    from app.core.erp_rules import master_by_label
+
+    return master_by_label(db.get(TemplateGroup, job.group_id)).get(fv.label_name)
 
 
 def _recompute_per_row_custom_field(

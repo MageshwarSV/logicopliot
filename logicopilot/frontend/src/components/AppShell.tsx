@@ -301,6 +301,8 @@ export function AppShell({
           ? "/manager"
           : user?.role === "saas_finance"
             ? "/saas-finance"
+            : user?.role === "support"
+              ? "/support"
             : user?.role === "admin" || user?.role === "gk2"
               ? "/jobs"
               : "/operator";
@@ -521,6 +523,27 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workspace</h3>
               <div className="mt-2 space-y-1">
                 {jobCategoryLinks()}
+              </div>
+            </div>
+          )}
+
+          {user?.role === "support" && (
+            <div className="mt-8">
+              <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Production Support</h3>
+              <div className="mt-2 space-y-1">
+                {/* The Overview is the Dashboard link above. */}
+                {[
+                  { to: "/support/health", label: "Application Health" },
+                  { to: "/support/jobs", label: "Job Monitoring" },
+                  { to: "/support/issues", label: "Failed / Delayed Jobs" },
+                  { to: "/support/performance", label: "Processing Performance" },
+                  { to: "/support/customers", label: "Customer View" },
+                  { to: "/support/activity", label: "Issues & Resolution" },
+                ].map((item) => (
+                  <Link key={item.to} to={item.to} className={navClass(item.to)}>
+                    {item.label}
+                  </Link>
+                ))}
               </div>
             </div>
           )}

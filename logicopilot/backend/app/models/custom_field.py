@@ -203,6 +203,9 @@ class CustomField(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     validation_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
     validation_uppercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-aided (4S, 2026-11-27): the condition a typed value is converted by - e.g. "Port Name
+    # (UN/LOCODE)". Null = an ordinary field. See app/api/v1/jobs.py correct_field_value.
+    ai_aided_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Mirrors FieldMark.full_width - see its own docstring. Admin-settable replacement for the
     # FULL_WIDTH_FIELD_LABELS hardcoded list in JobRunPage.tsx (kept there too, as a fallback).

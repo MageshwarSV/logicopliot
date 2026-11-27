@@ -27,6 +27,7 @@ from app.models.job_failure import JobFailureReport  # noqa: F401
 from app.models.duplicate_email import DuplicateEmail  # noqa: F401
 from app.models.email_seen import EmailSeen  # noqa: F401
 from app.models.job_event import JobEvent  # noqa: F401
+from app.models.support_activity import SupportActivity  # noqa: F401
 from app.models.job_deletion import JobDeletion  # noqa: F401
 from app.models.field_value_edit import FieldValueEdit  # noqa: F401
 from app.models.prompt_change import PromptChange  # noqa: F401

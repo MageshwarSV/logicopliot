@@ -163,6 +163,8 @@ export interface JobFieldValue {
   lookup_source?: string | null;
   /** Indian Customs Tariff: tariff_doc / tariff_ai / tariff_fallback when the code is a suggestion. */
   value_source?: string | null;
+  /** This box feeds an ERP country / currency code column: a search dropdown that saves the code. */
+  erp_master?: "country" | "currency" | null;
   source_note?: string | null;
   /** Admin-settable - spans the full row in the job screen's two-column field grid instead of
    *  sharing it with whatever sits beside it. Undefined/false = half width, today's existing
@@ -414,7 +416,8 @@ export interface ErpHelpItem {
 }
 
 export interface ErpHelp {
-  kind: "import_rejected";
+  /** import_rejected = the ERP refused it; pre_check = Cargora stopped it before the ERP. */
+  kind: "import_rejected" | "pre_check";
   items: ErpHelpItem[];
   erp_rows: { sheet: string; column: string; invoice: number | null; product: number | null; rule: string; text: string }[];
   excel_edited: boolean;

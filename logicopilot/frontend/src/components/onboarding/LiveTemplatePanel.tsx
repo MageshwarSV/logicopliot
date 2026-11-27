@@ -1,20 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/Button";
 import { TemplateFieldEditor } from "./TemplateFieldEditor";
-import {
-  apiError,
-  createTemplateField,
-  getExcelMapping,
-  getLinks,
-  getLiveGroup,
-  linkToLiveField,
-  setColumnRule,
-  setSheetPlan,
-  type ExcelColumnRule,
-  type ExcelSheetPlan,
-  type FieldLink,
-  type PickBy,
-} from "../../api/onboardingTemplate";
+import { apiError, createTemplateField, getExcelMapping, getLinks, getLiveGroup, linkToLiveField, setColumnRule, setSheetPlan, type ExcelColumnRule, type ExcelSheetPlan, type FieldLink, type PickBy, type AiMap, type AiMapOption } from "../../api/onboardingTemplate";
 
 // "Live template" panel for one onboarding field (an ERP Excel column / ERP UI field):
 // which live template field it fills, link / create it, open every setting of that field, and
@@ -168,6 +155,75 @@ export function LiveTemplatePanel({
   );
 }
 
+// ---- AI-aided field ---------------------------------------------------------------------------------
+// The value in the box -> the ERP's code: this list first (a label, one of its other names, or a near
+// spelling), the AI only for a value the list cannot place, blank stays blank. E.g. Sea Export's Port
+// of Loading -> CustomHouseCode: "Chennai" -> INMAA1, "katupilli" -> INKAT1, "ICD CONCOR" -> the AI.
+
+function AiMapEditor({ value, onChange }: { value?: AiMap; onChange: (v: AiMap | undefined) => void }) {
+  const on = Boolean(value);
+  const v: AiMap = value ?? { options: [] };
+  const setV = (patch: Partial<AiMap>) => onChange({ ...v, ...patch });
+  const setOpt = (i: number, patch: Partial<AiMapOption>) =>
+    setV({ options: v.options.map((o, j) => (j === i ? { ...o, ...patch } : o)) });
+  return (
+    <div className="rounded-lg border border-violet-200 p-2 dark:border-violet-500/30">
+      <label className="flex items-center gap-2 text-sm font-medium text-slate-800 dark:text-slate-100">
+        <input type="checkbox" checked={on}
+          onChange={(e) => onChange(e.target.checked ? { options: [{ label: "", code: "" }], dropdown: true } : undefined)} />
+        AI-aided field — turn the value into a code
+      </label>
+      <p className={HELP}>
+        The Excel gets the code of the value in the box: from this list first (its name, another name, or a
+        near spelling), and only when the list cannot place it does the AI convert what was typed. Blank stays blank.
+      </p>
+      {on && (
+        <div className="mt-2 flex flex-col gap-2">
+          <div className="grid grid-cols-[1fr_8rem_1fr_auto] gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <span>Value (shown)</span><span>Code (to the ERP)</span><span>Other names (comma)</span><span />
+          </div>
+          {v.options.map((o, i) => (
+            <div key={i} className="grid grid-cols-[1fr_8rem_1fr_auto] items-center gap-2">
+              <input className={INPUT} value={o.label} placeholder="Chennai" onChange={(e) => setOpt(i, { label: e.target.value })} />
+              <input className={`${INPUT} font-mono`} value={o.code} placeholder="INMAA1" onChange={(e) => setOpt(i, { code: e.target.value })} />
+              <input className={INPUT} value={(o.aliases ?? []).join(", ")} placeholder="Madras"
+                onChange={(e) => setOpt(i, { aliases: e.target.value.split(",").map((a) => a.trim()).filter(Boolean) })} />
+              <button type="button" className="text-slate-400 hover:text-rose-600"
+                onClick={() => setV({ options: v.options.filter((_, j) => j !== i) })}>✕</button>
+            </div>
+          ))}
+          <Button size="sm" variant="secondary" className="self-start" onClick={() => setV({ options: [...v.options, { label: "", code: "" }] })}>
+            + Value
+          </Button>
+          <div>
+            <span className={LABEL}>What the code is (for the AI, when the list cannot place a value)</span>
+            <textarea className={INPUT} rows={2} value={v.instruction ?? ""}
+              placeholder="e.g. The Indian sea port / ICD a SEA export is loaded at - its ICEGATE location code."
+              onChange={(e) => setV({ instruction: e.target.value })} />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <span className={LABEL}>Code format (optional)</span>
+              <input className={`${INPUT} font-mono`} value={v.pattern ?? ""} placeholder="IN[A-Z]{3}[0-9A-Z]"
+                onChange={(e) => setV({ pattern: e.target.value || undefined })} />
+              <p className={HELP}>An AI answer in any other shape is thrown away - the Excel stays blank instead.</p>
+            </div>
+            <div>
+              <span className={LABEL}>Words to ignore when matching (optional, comma)</span>
+              <input className={INPUT} value={(v.ignore_words ?? []).join(", ")} placeholder="port, sea, india"
+                onChange={(e) => setV({ ignore_words: e.target.value.split(",").map((w) => w.trim()).filter(Boolean) })} />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" checked={Boolean(v.dropdown)} onChange={(e) => setV({ dropdown: e.target.checked || undefined })} />
+            Show these values as a dropdown on the job screen (typing another value is still allowed)
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- one Excel column's rules ---------------------------------------------------------------------
 
 function ColumnRules({ groupId, link, labels, onSaved }: {
@@ -206,7 +262,7 @@ function ColumnRules({ groupId, link, labels, onSaved }: {
         await setSheetPlan(groupId, { sheet: link.sheet, ...sheetDraft });
       }
       const payload: Record<string, unknown> = {};
-      (["field", "value", "values", "pick_by", "from_document", "fallback_fields", "transform", "max_len"] as const).forEach((k) => {
+      (["field", "value", "values", "pick_by", "from_document", "fallback_fields", "transform", "max_len", "ai_map"] as const).forEach((k) => {
         const val = rule[k];
         payload[k] = val === undefined || val === "" || (Array.isArray(val) && !val.length) ? null : val;
       });
@@ -347,6 +403,8 @@ function ColumnRules({ groupId, link, labels, onSaved }: {
             value={(rule.values ?? []).join("\n")} onChange={(e) => set({ values: e.target.value ? e.target.value.split("\n") : undefined })} />
         </div>
       </div>
+
+      <AiMapEditor value={rule.ai_map} onChange={(ai_map) => set({ ai_map })} />
 
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={save} isLoading={saving} disabled={!changed}>Save column rules</Button>

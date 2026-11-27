@@ -8,7 +8,10 @@ export type Role =
   | "saas_finance"
   // The native Manager mobile app's own login. Issued per company by a Super Admin,
   // scoped to the shipment types it watches, and never signs in to this web portal.
-  | "app_manager";
+  | "app_manager"
+  // Production Support: Axiora's support desk - every customer's jobs, read-only, plus Retry
+  // on a failed job. Lands on /support.
+  | "support";
 
 export interface User {
   id: string;
