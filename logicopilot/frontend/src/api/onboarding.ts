@@ -98,6 +98,8 @@ export async function createCustomField(
     /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
     ai_aided_prompt?: string | null;
     full_width?: boolean;
+    quarter_width?: boolean;
+    third_width?: boolean;
     multiline?: boolean;
     date_picker?: boolean;
     date_format?: string | null;
@@ -321,6 +323,8 @@ export async function createMark(
     ai_aided_prompt?: string | null;
     /** Spans the full row on the job screen instead of sharing it with whatever sits beside it. */
     full_width?: boolean;
+    quarter_width?: boolean;
+    third_width?: boolean;
     multiline?: boolean;
     date_picker?: boolean;
     date_format?: string | null;
@@ -364,6 +368,8 @@ export async function editMark(
     /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
     ai_aided_prompt: string | null;
     full_width: boolean;
+    quarter_width?: boolean;
+    third_width?: boolean;
     multiline: boolean;
     date_picker: boolean;
     date_format: string | null;
@@ -475,6 +481,8 @@ export async function updateCustomField(
     /** AI-aided: the condition a typed value is converted by (null = ordinary field). */
     ai_aided_prompt: string | null;
     full_width: boolean;
+    quarter_width?: boolean;
+    third_width?: boolean;
     multiline: boolean;
     date_picker: boolean;
     date_format: string | null;

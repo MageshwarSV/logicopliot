@@ -14,7 +14,7 @@ import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
   BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
   CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon, FolderIcon,
-  ExclamationTriangleIcon, ClockIcon, CheckBadgeIcon,
+  ExclamationTriangleIcon, ClockIcon, CheckBadgeIcon, DownloadIcon,
 } from "./ui/icons";
 
 // One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
@@ -555,17 +555,18 @@ export function AppShell({
               <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Finance</h3>
               <div className="mt-2 space-y-1">
                 {[
-                  { to: "/saas-finance", label: "Dashboard" },
-                  { to: "/saas-finance/customers", label: "Customers" },
-                  { to: "/saas-finance/usage-billing", label: "Usage & Billing" },
-                  { to: "/saas-finance/invoices", label: "Invoices" },
-                  { to: "/saas-finance/payments", label: "Payments" },
-                  { to: "/saas-finance/pricing-plans", label: "Pricing & Plans" },
-                  { to: "/saas-finance/invoice-settings", label: "Invoice Settings" },
-                  { to: "/saas-finance/reports", label: "Reports" },
-                ].map((item) => (
-                  <Link key={item.to} to={item.to} className={navClass(item.to)}>
-                    {item.label}
+                  { to: "/saas-finance", label: "Dashboard", Icon: ChartBarIcon },
+                  { to: "/saas-finance/customers", label: "Customers", Icon: BuildingIcon },
+                  { to: "/saas-finance/usage-billing", label: "Usage & Billing", Icon: LayersIcon },
+                  { to: "/saas-finance/invoices", label: "Invoices", Icon: DocumentIcon },
+                  { to: "/saas-finance/payments", label: "Payments", Icon: CreditCardIcon },
+                  { to: "/saas-finance/pricing-plans", label: "Pricing & Plans", Icon: CheckBadgeIcon },
+                  { to: "/saas-finance/invoice-settings", label: "Invoice Settings", Icon: GearIcon },
+                  { to: "/saas-finance/reports", label: "Reports", Icon: DownloadIcon },
+                ].map(({ to, label, Icon }) => (
+                  <Link key={to} to={to} className={navClass(to)}>
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {label}
                   </Link>
                 ))}
               </div>

@@ -128,6 +128,10 @@ class FieldMark(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # so a field already relying on it is unaffected). False (half width) is today's existing
     # behavior for every field that predates this column.
     full_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # A quarter of the row instead of half, so three or four short fields (a currency code
+    # beside its amount) fit on one line. Ignored when full_width is also set.
+    quarter_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    third_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Renders as a multi-line, auto-growing box (wraps onto as many lines as the value needs,
     # taller as the value gets longer) instead of a single-line box the operator scrolls

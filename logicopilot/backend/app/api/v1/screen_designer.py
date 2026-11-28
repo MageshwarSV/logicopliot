@@ -157,7 +157,7 @@ def list_fields(
 
     def common(obj) -> dict:
         return {"id": obj.id, "label_name": obj.label_name, "display_label": obj.display_label,
-                "full_width": bool(obj.full_width), "multiline": bool(obj.multiline),
+                "full_width": bool(obj.full_width), "quarter_width": bool(obj.quarter_width), "third_width": bool(obj.third_width), "multiline": bool(obj.multiline),
                 "mandatory": bool(obj.ask_operator_required),
                 "fixed_options": obj.fixed_options, "dropdown_style": obj.dropdown_style}
 

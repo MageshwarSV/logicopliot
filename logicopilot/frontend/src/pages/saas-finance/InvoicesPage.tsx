@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { AppShell } from "../../components/AppShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -25,7 +24,6 @@ function InvoiceStatusBadge({ row }: { row: FinanceInvoiceRow }) {
  *  app/api/v1/saas_finance.py::list_finance_invoices), so simply loading this page finalizes
  *  every tenant's outstanding past months. */
 export function SaasFinanceInvoicesPage() {
-  const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<"" | "unpaid" | "paid">("");
   const [tab, setTab] = useState<"usage" | "manual">("usage");
   const { rows, loading, error, markingId, markPaid } = useFinanceInvoices(
@@ -44,7 +42,7 @@ export function SaasFinanceInvoicesPage() {
         <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
-            onClick={() => navigate(`/saas-finance/invoices/${r.tenant_id}/${r.id}/print`)}
+            onClick={() => window.open(`/saas-finance/invoices/${r.tenant_id}/${r.id}/print`, "_blank", "noopener")}
             className="text-sm font-medium text-indigo-600 hover:underline dark:text-indigo-400"
           >
             Preview / Download

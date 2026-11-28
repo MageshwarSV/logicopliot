@@ -2,7 +2,6 @@
  *  Issue (next number from the same series as usage invoices, locked) -> Paid / Unpaid ->
  *  Cancel (number kept). Backend: app/api/v1/manual_invoices.py. */
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Modal } from "../../components/ui/Modal";
 import { Alert } from "../../components/ui/Alert";
@@ -172,7 +171,6 @@ function Editor({ open, initial, editingId, tenants, onClose, onSaved }: {
 }
 
 export function ManualInvoicesPanel() {
-  const navigate = useNavigate();
   const [rows, setRows] = useState<ManualInvoice[] | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [editor, setEditor] = useState<{ open: boolean; id: string | null; draft: ManualInvoiceDraft }>({ open: false, id: null, draft: emptyDraft() });
@@ -252,7 +250,7 @@ export function ManualInvoicesPanel() {
                 <td className="px-4 py-3"><span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${STATUS[r.status]}`}>{STATUS_LABEL[r.status]}</span></td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap justify-end gap-1.5">
-                    <button type="button" onClick={() => navigate(`/saas-finance/invoices/${r.tenant_id}/${r.id}/print?manual=1`)}
+                    <button type="button" onClick={() => window.open(`/saas-finance/invoices/${r.tenant_id}/${r.id}/print?manual=1`, "_blank", "noopener")}
                       className={`${btn} inline-flex items-center gap-1 border border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200`}>
                       <DocumentIcon className="h-3.5 w-3.5" />{r.status === "draft" ? "Preview" : "Preview / Download"}
                     </button>
