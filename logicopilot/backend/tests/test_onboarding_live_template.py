@@ -281,3 +281,19 @@ def test_a_document_used_by_a_job_cannot_be_deleted(client, db_session, setup):
     assert r.status_code == 409 and "used by existing jobs" in r.json()["detail"]
     db_session.expire_all()
     assert db_session.get(TemplateDocument, setup["inv"].id) is not None
+
+
+def test_blank_onboarding_label_never_wipes_the_live_label():
+    """Go Live (push_to_live) with no label in onboarding leaves the live field's label alone;
+    a label set in onboarding still reaches the live field."""
+    from types import SimpleNamespace
+
+    from app.api.v1.onboarding_template import live_settings_from
+
+    blank = SimpleNamespace(display_label=None, mandatory=False, config={}, category="", default_value=None,
+                            description=None, data_type="text", formula=None, ai_prompt=None)
+    assert "display_label" not in live_settings_from(blank, "Frt_Currency")
+    same = SimpleNamespace(**{**blank.__dict__, "display_label": "Frt_Currency"})
+    assert "display_label" not in live_settings_from(same, "Frt_Currency")
+    named = SimpleNamespace(**{**blank.__dict__, "display_label": "Freight Currency"})
+    assert live_settings_from(named, "Frt_Currency")["display_label"] == "Freight Currency"
