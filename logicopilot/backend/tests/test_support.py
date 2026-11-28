@@ -75,6 +75,8 @@ def test_overview_counts_every_customer(client, db_session):
     body = client.get("/api/v1/support/overview", params={"date_from": today, "date_to": today}).json()
     tiles = body["tiles"]
     assert tiles["total_jobs"] >= 4 and tiles["failed"] >= 1 and tiles["submitted"] >= 1
+    assert tiles["auto_submitted"] + tiles["manual_submitted"] == tiles["submitted"]
+    assert tiles["manual_submitted_pct"] is not None
     stages = {p["key"]: p["count"] for p in body["pipeline"]}
     assert stages["failed"] >= 1 and stages["ai_processing"] >= 1 and stages["ready_for_review"] >= 1
     attention = {a["key"]: a["count"] for a in body["attention"]}

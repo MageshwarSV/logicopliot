@@ -25,5 +25,8 @@ class SupportActivity(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A note's status (support app, 2026-11-28): investigating | fixed | customer_informed |
+    # erp_side | not_our_issue - or None for a plain note / any other kind.
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # alert de-duplication key ("server-down:erp"), or None
     alert_key: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)

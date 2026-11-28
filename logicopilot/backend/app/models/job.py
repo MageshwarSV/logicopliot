@@ -302,6 +302,23 @@ def _stamp_failed_at_on_status(target: Job, value, oldvalue, initiator) -> None:
         target.erp_failed_at = datetime.now(_tz.utc)
 
 
+@event.listens_for(Job, "after_update")
+def _resolve_failure_reports_on_success(mapper, connection, target: Job) -> None:
+    """R6 (2026-11-28): once a job is entered in the ERP, its ERP failure reports are history,
+    not open problems - they are kept (why it failed, how often) but marked resolved, so "open"
+    means something. Only on the change into "entered" (ai_submitted_at set)."""
+    from sqlalchemy import inspect as _inspect
+
+    hist = _inspect(target).attrs.ai_submitted_at.history
+    if not hist.added or hist.added[0] is None or (hist.deleted and hist.deleted[0] is not None):
+        return
+    from app.models.job_failure import JobFailureReport
+
+    tbl = JobFailureReport.__table__
+    connection.execute(tbl.update().where(tbl.c.job_id == target.id, tbl.c.status == "open")
+                       .values(status="resolved"))
+
+
 class JobDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A real uploaded file fulfilling one of the template set's declared documents."""
 

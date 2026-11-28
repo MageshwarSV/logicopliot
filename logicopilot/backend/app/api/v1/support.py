@@ -299,7 +299,12 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
             if fp:
                 attachments += 1
     total = len(jobs)
-    submitted = sum(1 for j in jobs if _is_submitted(j) and not _is_failed(j))
+    submitted_jobs = [j for j in jobs if _is_submitted(j) and not _is_failed(j)]
+    submitted = len(submitted_jobs)
+    # Auto ERP Submission vs entered after a person approved it (2026-11-28, replaces the
+    # Attachments tile on the overview).
+    auto_submitted = sum(1 for j in submitted_jobs if getattr(j, "auto_erp_submitted", False))
+    manual_submitted = submitted - auto_submitted
     failed = sum(1 for j in jobs if _is_failed(j))
     events = _extracting_events(db, ids)
     delayed = sum(1 for j in jobs if _breaches(_timings(j, events.get(j.id, [])), sla))
@@ -336,6 +341,9 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
             "avg_pages": round(sum(pages_by_job.values()) / total, 1) if total else None,
             "attachments": attachments,
             "submitted": submitted, "submitted_pct": pct(submitted),
+            "auto_submitted": auto_submitted, "manual_submitted": manual_submitted,
+            "auto_submitted_pct": round(100.0 * auto_submitted / submitted, 1) if submitted else None,
+            "manual_submitted_pct": round(100.0 * manual_submitted / submitted, 1) if submitted else None,
             "failed": failed, "failed_pct": pct(failed),
             "delayed": delayed, "delayed_pct": pct(delayed),
         },

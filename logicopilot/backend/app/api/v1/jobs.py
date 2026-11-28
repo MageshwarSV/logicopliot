@@ -6342,7 +6342,21 @@ def complete_job(
         # A value the ERP would refuse stops here, before anything is entered (erp_rules.py).
         from app.core.erp_rules import pre_check, summary
 
-        _help = pre_check(db, job, values, rows)
+        # Auto ERP keeps filling an empty mandatory value (decided 2026-11-28) - checked on
+        # the values the workbook will really carry, the same order as _build_job_excel.
+        _check_values, _check_rows = values, rows
+        if getattr(job, "auto_erp_submitted", False):
+            try:
+                from app.core.auto_erp_complete import complete_for_erp
+                from app.core.erp_rules import effective_config
+
+                _grp = db.get(TemplateGroup, job.group_id)
+                if _grp is not None and (_grp.entry_mode or "fields") == "excel":
+                    _check_values, _check_rows, _ = complete_for_erp(
+                        db, job, effective_config(_grp), values, rows)
+            except Exception:  # noqa: BLE001 - the check then runs on the values as read
+                _check_values, _check_rows = values, rows
+        _help = pre_check(db, job, _check_values, _check_rows)
         if _help:
             job.erp_status = "failed"
             job.erp_reason = summary(_help)
@@ -6766,10 +6780,10 @@ def upload_job_document(
             detail="This job's documents are being read right now — wait for extraction to finish before adding more.",
         )
     ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS and ext not in office_convert.OFFICE_EXTS:
+    if ext not in ALLOWED_EXTENSIONS and ext not in office_convert.OFFICE_EXTS and ext not in _IMAGE_CONVERT_EXTS:
         raise HTTPException(
             status_code=422,
-            detail=f"File type not allowed — use one of {sorted(ALLOWED_EXTENSIONS | office_convert.OFFICE_EXTS)}",
+            detail="File type not allowed — use a PDF, an image (PNG, JPG, TIFF, BMP, GIF, WebP) or a Word / Excel file",
         )
     if file.size is not None and file.size > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
@@ -6780,6 +6794,14 @@ def upload_job_document(
         raise HTTPException(status_code=422, detail="Uploaded file is empty.")
 
     original_name = file.filename
+    if ext in _IMAGE_CONVERT_EXTS:
+        from app.core.image_convert import ImageConvertFailed, to_pdf
+
+        try:
+            original_name, content = to_pdf(original_name or f"upload{ext}", content)
+        except ImageConvertFailed as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        ext = ".pdf"
     if ext in office_convert.OFFICE_EXTS:
         # Converted BEFORE landing, same as Smart Upload's own pre-conversion pass (see
         # smart_upload) - this endpoint always lands exactly ONE file into ONE chosen slot, so
@@ -8097,10 +8119,12 @@ def delete_job_document_row(
 
 
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+# Any other image (TIFF, BMP, GIF, WebP ...) becomes a PDF first - app/core/image_convert.py.
+from app.core.image_convert import CONVERT_EXTS as _IMAGE_CONVERT_EXTS  # noqa: E402
 # Word/Excel files are converted to PDF before classification ever sees them (see
 # app.core.office_convert) - accepted at the upload boundary alongside CLASSIFY_EXTS, but never
 # themselves passed to the classifier.
-UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"}
+UPLOAD_EXTS = CLASSIFY_EXTS | {".doc", ".docx", ".xls", ".xlsx"} | _IMAGE_CONVERT_EXTS
 
 
 def _classify_and_place_files(
@@ -8125,6 +8149,10 @@ def _classify_and_place_files(
     import uuid
 
     import fitz  # PyMuPDF
+
+    from app.core.image_convert import convert_files
+
+    files = convert_files(files)          # TIFF / BMP / GIF / WebP ... -> PDF
 
     from app.core import doc_sets, office_convert
 
@@ -9535,7 +9563,7 @@ def unlock_held_job(
             msg = _email.message_from_bytes((job_email_dir(job.id) / "original.eml").read_bytes())
         except OSError:
             raise HTTPException(status_code=422, detail="The original mail for this job is missing.")
-        check = unpack_attachments(_extract_attachments(msg, ATTACH_EXTS), CLASSIFY_EXTS | OFFICE_EXTS,
+        check = unpack_attachments(_extract_attachments(msg, ATTACH_EXTS), CLASSIFY_EXTS | OFFICE_EXTS | _IMAGE_CONVERT_EXTS,
                                    passwords=[password])
         if check.locked:
             tries = int(notes.get("failed_attempts") or 0) + 1

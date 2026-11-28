@@ -7,7 +7,14 @@ rule applies. Stored per template on TemplateGroup.erp_column_rules, keyed "SHEE
 
     {"required": bool, "length": int, "length_mode": "exact" | "max", "master": "country" |
      "currency" | "unit", "number": bool, "pattern": "regex", "message": "shown when the
-     pattern fails", "uppercase": bool, "off": bool}
+     pattern fails", "uppercase": bool, "off": bool,
+     "allowed": ["PKG", "PLT", ...]            (R3, 2026-11-28: only these values),
+     "length_when": {"column": "TransportModeCode", "lengths": {"A": 3, "S": 5}}
+                                                (R3: the length depends on another column)}
+
+R1 (2026-11-28): the check also applies each SOURCE field's own job-screen validation pattern
+(FieldMark / CustomField validation_pattern) to the value the column sends - before, that ran
+only in the browser and never on product lines.
 
 Built in (no setup): every column whose header names a country code (Country_of_Origin,
 COO_Issuing_Country, CountryOfOriginCode, CountryOfShipmentCode, MFG_Country,
@@ -57,7 +64,16 @@ def builtin_rule(header: str | None) -> dict | None:
     # codes or blanks in every one of them over the 14 days before this was added.
     if "currency" in n:
         return {"master": "currency", "builtin": True}
+    # The ERP: "PortOfShipmentCode Entry should be of 3 characters for transport mode Air" /
+    # "... 5 characters for transport mode Sea" (production, 2026-11). Accepted jobs agree: an
+    # IATA airport (PVG, HKG) for air, a UN/LOCODE (CNSHA) for sea.
+    if n == "portofshipmentcode":
+        return {"length_when": dict(PORT_BY_MODE), "builtin": True}
     return None
+
+
+PORT_BY_MODE = {"column": "TransportModeCode", "lengths": {"A": 3, "AIR": 3, "S": 5, "SEA": 5}}
+_MODE_NAME = {"A": "Air", "S": "Sea"}
 
 
 def _columns(cfg: dict):
@@ -121,6 +137,16 @@ def describe(rule: dict) -> str:
     if rule.get("master") in MASTERS:
         return MASTERS[rule["master"]][0]
     parts = []
+    if rule.get("length_when"):
+        lw = rule["length_when"]
+        seen = {}
+        for k, n in (lw.get("lengths") or {}).items():
+            seen.setdefault(n, _MODE_NAME.get(k.upper(), k.title()))
+        parts.append(", ".join(f"{n} characters for {name}" for n, name in seen.items())
+                     + f" (by {lw.get('column')})")
+    if rule.get("allowed"):
+        vals = list(rule["allowed"])
+        parts.append("one of " + ", ".join(vals[:8]) + (f" (+{len(vals) - 8} more)" if len(vals) > 8 else ""))
     if rule.get("required"):
         parts.append("must not be empty")
     if rule.get("number"):
@@ -134,11 +160,23 @@ def describe(rule: dict) -> str:
     return text[:1].upper() + text[1:] + "."
 
 
-def validate(value, rule: dict) -> str | None:
-    """Why the value breaks the rule (in plain words), or None when it is fine."""
+def validate(value, rule: dict, row: dict | None = None) -> str | None:
+    """Why the value breaks the rule (in plain words), or None when it is fine. `row` is
+    {header: value} of the same Excel row, for a rule that depends on another column."""
     v = "" if value is None else str(value).strip()
     if not v:
         return "This must not be empty." if rule.get("required") else None
+    lw = rule.get("length_when")
+    if isinstance(lw, dict) and row is not None:
+        mode = str(row.get(lw.get("column") or "") or "").strip().upper()
+        want = (lw.get("lengths") or {}).get(mode)
+        if want and len(v) != int(want):
+            return f"Exactly {want} characters when {lw.get('column')} is {_MODE_NAME.get(mode, mode)} (this has {len(v)})."
+    if rule.get("allowed"):
+        allowed = {str(a).strip().upper() for a in rule["allowed"] if str(a).strip()}
+        if allowed and v.upper() not in allowed:
+            vals = sorted(allowed)
+            return "One of: " + ", ".join(vals[:12]) + (" ..." if len(vals) > 12 else "") + "."
     master = rule.get("master")
     if master in MASTERS:
         return None if MASTERS[master][1](v) else MASTERS[master][0]
@@ -169,7 +207,8 @@ def check(db: Session, job, group, values: dict, rows: dict) -> list[dict]:
     from app.core.excel_entry import _rows_for_plan, invoice_of, sheet_plans
 
     rules = effective_rules(group)
-    if not rules:
+    patterns = field_patterns(db, group)
+    if not rules and not patterns:
         return []
     cfg = effective_config(group)
     out: list[dict] = []
@@ -178,8 +217,16 @@ def check(db: Session, job, group, values: dict, rows: dict) -> list[dict]:
         wanted = [(ci, rules.get(rule_key(plan.get("sheet"), c.get("header") or c.get("field") or "")))
                   for ci, c in enumerate(cols)]
         wanted = [(ci, r) for ci, r in wanted if r]
-        if not wanted:
+        # The source field's own job-screen format, on a column that sends the value as typed
+        # (no conversion, no list / pattern rule of its own that already decides it).
+        own = [(ci, patterns[str(c.get("field") or "").split("@@")[0].strip()]) for ci, c in enumerate(cols)
+               if str(c.get("field") or "").split("@@")[0].strip() in patterns
+               and not c.get("transform") and not c.get("ai_map")
+               and not any(k in (rules.get(rule_key(plan.get("sheet"), c.get("header") or c.get("field") or "")) or {})
+                           for k in ("master", "pattern", "allowed", "off"))]
+        if not wanted and not own:
             continue
+        headers = [c.get("header") or c.get("field") or "" for c in cols]
         try:
             data = _rows_for_plan(plan, values, rows)
         except Exception:  # noqa: BLE001 - the build itself reports a broken mapping
@@ -193,13 +240,46 @@ def check(db: Session, job, group, values: dict, rows: dict) -> list[dict]:
                 prod = seen_in_invoice[inv]
             elif plan["scope"] == "invoice":
                 inv = i + 1
+            row_ctx = {h: (line[k] if k < len(line) else "") for k, h in enumerate(headers)}
+            flagged: set[int] = set()
             for ci, rule in wanted:
-                why = validate(line[ci] if ci < len(line) else "", rule)
+                why = validate(line[ci] if ci < len(line) else "", rule, row_ctx)
                 if why:
-                    header = cols[ci].get("header") or cols[ci].get("field") or ""
+                    flagged.add(ci)
+                    header = headers[ci]
                     out.append({"sheet": plan.get("sheet") or "", "column": header, "invoice": inv,
                                 "product": prod, "rule": why,
                                 "text": f"{plan.get('sheet')} {header} {why}"})
+            for ci, (pattern, message) in own:
+                if ci in flagged:
+                    continue
+                v = str((line[ci] if ci < len(line) else "") or "").strip()
+                try:
+                    bad = bool(v) and re.fullmatch(pattern, v) is None
+                except re.error:
+                    bad = False          # a broken pattern never blocks a job
+                if bad:
+                    header = headers[ci]
+                    why = (message or "Not in the format this field expects").rstrip(".") + "."
+                    out.append({"sheet": plan.get("sheet") or "", "column": header, "invoice": inv,
+                                "product": prod, "rule": why,
+                                "text": f"{plan.get('sheet')} {header} {why}"})
+    return out
+
+
+def field_patterns(db: Session, group) -> dict[str, tuple[str, str | None]]:
+    """{field label: (validation_pattern, validation_message)} for the template's fields."""
+    from app.models.custom_field import CustomField
+
+    out: dict[str, tuple[str, str | None]] = {}
+    for doc in getattr(group, "documents", None) or []:
+        for m in getattr(doc, "marks", None) or []:
+            if (m.validation_pattern or "").strip():
+                out.setdefault(m.label_name, (m.validation_pattern.strip(), m.validation_message))
+    if getattr(group, "id", None):
+        for c in db.query(CustomField).filter(CustomField.group_id == group.id).all():
+            if (c.validation_pattern or "").strip():
+                out.setdefault(c.label_name, (c.validation_pattern.strip(), c.validation_message))
     return out
 
 

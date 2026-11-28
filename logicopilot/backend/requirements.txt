@@ -45,6 +45,7 @@ playwright==1.64.1
 
 # Document rendering (PDF -> page images, no system deps needed)
 PyMuPDF>=1.24,<2    # 2.x pulls numpy+onnxruntime, which crash on the cargora VPS CPU (no x86-64-v2)
+Pillow>=11,<14      # only for images PyMuPDF cannot open (WebP ...) - app/core/image_convert.py
 
 # Excel reading/writing — material master lookup sheets, reference-value templates
 openpyxl>=3.1

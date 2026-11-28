@@ -25,7 +25,8 @@ from app.models.user import SUPER_ADMIN, User
 router = APIRouter(prefix="/erp-rules", tags=["erp rules"])
 _admin = require_role(SUPER_ADMIN)
 
-_ALLOWED = {"required", "length", "length_mode", "master", "number", "pattern", "message", "uppercase", "off"}
+_ALLOWED = {"required", "length", "length_mode", "master", "number", "pattern", "message", "uppercase", "off",
+            "allowed", "length_when"}
 
 
 def _group(db: Session, group_id: str) -> TemplateGroup:
@@ -65,6 +66,19 @@ def _clean(rule: dict) -> dict | None:
             out[k] = str(v)[:300]
         elif k == "message":
             out[k] = str(v)[:200]
+        elif k == "allowed":
+            vals = v if isinstance(v, list) else re.split(r"[,\n]", str(v))
+            vals = list(dict.fromkeys(str(x).strip().upper() for x in vals if str(x).strip()))[:300]
+            if vals:
+                out[k] = vals
+        elif k == "length_when":
+            if not isinstance(v, dict) or not v.get("column") or not isinstance(v.get("lengths"), dict):
+                raise HTTPException(status_code=422, detail="length_when needs a column and lengths")
+            try:
+                lengths = {str(a).strip().upper(): int(n) for a, n in v["lengths"].items() if int(n) > 0}
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail="length_when lengths must be whole numbers")
+            out[k] = {"column": str(v["column"])[:120], "lengths": lengths}
         else:
             out[k] = bool(v)
     if "length_mode" in out and "length" not in out:
@@ -217,3 +231,58 @@ def dismiss_suggestion(group_id: str, payload: SuggestionIn, db: Session = Depen
     g.erp_column_rules = stored
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- R7: ERP Field Configuration
+
+@router.get("/{group_id}/config")
+def field_config(group_id: str, db: Session = Depends(get_db), _u: User = Depends(_admin)) -> dict:
+    """Every ERP column: document -> field -> mandatory -> rules -> Excel file / sheet / column
+    -> ERP field -> mapping status (app/core/erp_field_map.py)."""
+    from app.core.erp_field_map import config_rows
+
+    g = _group(db, group_id)
+    return {"id": g.id, "name": g.name, "masters": {k: v[0] for k, v in MASTERS.items()}, **config_rows(db, g)}
+
+
+@router.post("/{group_id}/analyse")
+def analyse_jobs(group_id: str, db: Session = Depends(get_db), _u: User = Depends(_admin)) -> dict:
+    """Measure, on recent jobs the ERP accepted, how often each column had a value."""
+    from app.core.erp_field_map import analyse
+
+    return analyse(db, _group(db, group_id))
+
+
+class MandatoryIn(BaseModel):
+    keys: list[str]
+    required: bool = True
+
+
+@router.post("/{group_id}/mandatory")
+def set_mandatory(group_id: str, payload: MandatoryIn, db: Session = Depends(get_db),
+                  _u: User = Depends(_admin)) -> dict:
+    """Mark (or unmark) several columns mandatory at once - the column's rule "required",
+    the one meaning of mandatory the pre-ERP check uses. Other parts of a rule are kept."""
+    g = _group(db, group_id)
+    keys = {rule_key(p.get("sheet"), h) for p, _c, h in _columns(g.excel_config or {})}
+    stored = dict(g.erp_column_rules or {})
+    changed = 0
+    for key in payload.keys:
+        if key not in keys:
+            continue
+        rule = dict(stored.get(key) or {})
+        if bool(rule.get("required")) == payload.required:
+            continue
+        if payload.required:
+            rule["required"] = True
+        else:
+            rule.pop("required", None)
+        cleaned = _clean(rule)
+        if cleaned:
+            stored[key] = cleaned
+        else:
+            stored.pop(key, None)
+        changed += 1
+    g.erp_column_rules = stored or None
+    db.commit()
+    return {"changed": changed}

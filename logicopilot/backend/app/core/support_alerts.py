@@ -12,7 +12,8 @@ website runs several workers) looks for:
 Each alert is written to the support activity log (kind "alert", shown on the support screen)
 and emailed to the addresses saved on Application Health, through the SMTP_* settings in
 .env. The same alert (alert_key) is not repeated within REPEAT_AFTER. Without SMTP settings
-the alert is still logged - only the email is skipped.
+the alert is still logged - only the email is skipped. Support phones registered in the
+support app get a push notification too (app/core/support_app.send_push).
 """
 from __future__ import annotations
 
@@ -151,6 +152,7 @@ def check_once(db: Session, since: datetime) -> list[str]:
         raised.append((key, txt))
     db.commit()
     if raised:
+        _push(db, raised)
         to = get_config(db)["alert_emails"]
         if to and email_configured():
             body = "\n\n".join(t for _k, t in raised)
@@ -160,6 +162,27 @@ def check_once(db: Session, since: datetime) -> list[str]:
             except Exception as exc:  # noqa: BLE001 - the alert stays logged on screen
                 logger.warning("support alert email failed: %s", exc)
     return [t for _k, t in raised]
+
+
+def _push(db: Session, raised: list[tuple[str, str]]) -> None:
+    """The support phone app (2026-11-28): one notification per alert. A single new failed
+    job carries its id, so tapping the notification opens that job."""
+    from app.core.support_app import send_push
+    from app.models.job import Job
+
+    for key, txt in raised[:5]:
+        data: dict = {"alert_key": key}
+        if key.startswith("failed:") and "," not in key:
+            job = db.query(Job).filter(Job.reference == key.split(":", 1)[1]).first()
+            if job is not None:
+                data["job_id"] = job.id
+        title = ("Job failed" if key.startswith("failed:") else "Job delayed" if key.startswith("slow:")
+                 else "Queue stuck" if key.startswith("queue:") else "Cargora is DOWN" if key.startswith("down:")
+                 else "Cargora alert")
+        try:
+            send_push(db, title, txt, data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("support push failed: %s", exc)
 
 
 # ---------------------------------------------------------------- loop
