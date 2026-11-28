@@ -6179,6 +6179,18 @@ def persist_run_outcome(db: Session, job: Job, script, result: dict,
                 record_suggestions(db, job, job.erp_help)
             except Exception:  # noqa: BLE001
                 logger.exception("job %s: could not record ERP rule suggestions", job.id)
+    # The ERP's own screen refused a value, so there is no "Invalid Data Found" table to
+    # read - but the operator still deserves words, not 'puOrgAddress$ddlCodeTop'. Same card.
+    if job.erp_help is None and job.erp_failed_field and result.get("status") != "ok":
+        try:
+            from app.core.erp_rejection import build_field_help
+
+            job.erp_help = build_field_help(
+                db, job, job.erp_failed_field, job.erp_failed_value or "",
+                erp_field=(result.get("failed_steps") or [""])[0] or "",
+                reason=job.erp_reason or "")
+        except Exception:  # noqa: BLE001 - never let the explanation break the run's record
+            logger.exception("job %s: could not explain the ERP field rejection", job.id)
     db.commit()
 
     erp = {

@@ -143,6 +143,27 @@ def _display_names(db: Session, fvs: list) -> str | None:
     return None
 
 
+def _hidden(db: Session, fvs: list) -> bool:
+    """Every box feeding this label is hidden_from_capture - it renders NOWHERE on the job
+    screen (see JobRunPage: "that field renders nowhere on this screen").
+
+    So offering a Fix button for it is a lie: the operator presses it and no box opens. That
+    is what happened to Product Value on JOB-358099 - the ERP refused it as empty, the card
+    said "press Fix, the box opens", and there was no box to open. The ERP Excel is the only
+    way in for these."""
+    from app.models.custom_field import CustomField
+
+    if not fvs:
+        return False
+    for fv in fvs:
+        if fv.mark_id or not fv.custom_field_id:
+            return False          # a document field always has a box on the screen
+        c = db.get(CustomField, fv.custom_field_id)
+        if c is None or not getattr(c, "hidden_from_capture", False):
+            return False
+    return True
+
+
 def _pretty(label: str) -> str:
     s = re.sub(r"[_]+", " ", label or "").strip()
     return s[:1].upper() + s[1:] if s else s
@@ -235,7 +256,13 @@ def build_items(db: Session, job, erp_rows: list[dict]) -> list[dict]:
             name = (_display_names(db, fvs) if fvs else None) or _pretty(label or r["column"])
             fixable = kind == "field" and bool(fvs)
             support = None
-            if not fixable:
+            support_action = None
+            if fixable and _hidden(db, fvs):
+                fixable = False
+                support = ("This box is not on the job screen - Cargora fills it and sends it "
+                           "straight to the ERP.")
+                support_action = "excel"
+            if not fixable and support is None:
                 support = {
                     "fixed": "This value is set in the ERP Excel setup, not on the job.",
                     "serial": "This number is made by Cargora, not typed on the job.",
@@ -244,7 +271,8 @@ def build_items(db: Session, job, erp_rows: list[dict]) -> list[dict]:
             it = items[gkey] = {
                 "field": label or None, "display": name, "erp_columns": [], "sheet": r["sheet"],
                 "places": [], "sent": [], "rules": [], "fixable": fixable,
-                "support_reason": support, "field_value_ids": [],
+                "support_reason": support, "support_action": support_action,
+                "field_value_ids": [],
             }
         if r["column"] not in it["erp_columns"]:
             it["erp_columns"].append(r["column"])
@@ -348,4 +376,73 @@ def build_help(db: Session, job, raw_text: str, *, use_ai: bool = True) -> dict 
         "erp_rows": erp_rows,
         "excel_edited": edited_file(job.id) is not None,
         "ai": ai,
+    }
+
+
+def build_field_help(db: Session, job, field_label: str, sent: str, *,
+                     erp_field: str = "", reason: str = "") -> dict | None:
+    """The ERP's own SCREEN refused one value while the script was typing it.
+
+    A different failure from build_help's, and until now the only one still reaching the
+    operator as raw machinery:
+
+        Field 'puOrgAddress$ddlCodeTop | CHENNAI NEW' rejected the value 'SCAN GLOBAL
+        LOGISTICS (IN) PVT LTD (CHENNAI)' - the ERP doesn't have this value (re-entered 3
+        times, it kept clearing).
+
+    There is exactly one cause (browser.py ~5265): the value is not in that ERP dropdown's
+    own list, so the ERP clears the box, and Cargora re-types it three times before giving
+    up. The fix is therefore never "type it again" - it is "pick something the ERP already
+    has, or have the ERP's list updated". Said plainly, on the same card as the import
+    rejection, so the operator has one thing to learn and not two.
+
+    Returns None when the field cannot be named, leaving the old text as the only message.
+    """
+    from app.core.erp_excel_edit import edited_file
+    from app.core.erp_ui_fields import MASTER_FIELDS
+    from app.models.job import JobFieldValue
+
+    label = (field_label or "").strip()
+    if not label:
+        return None
+    fvs = db.query(JobFieldValue).filter(
+        JobFieldValue.job_id == job.id, JobFieldValue.label_name == label).all()
+    master = MASTER_FIELDS.get(label.lower()) or {}
+    display = ((_display_names(db, fvs) if fvs else None)
+               or master.get("display") or _pretty(label))
+
+    hidden = _hidden(db, fvs)
+    fixable = bool(fvs) and not hidden
+    support = None
+    support_action = None
+    if hidden:
+        support = ("This box is not on the job screen - Cargora fills it and sends it "
+                   "straight to the ERP.")
+        support_action = "excel"
+    elif not fvs:
+        support = "There is no box for this on the job."
+
+    value = (sent or "").strip()
+    needs = "A value the ERP already has in its own list for this box."
+    if value:
+        needs += ' It has no "%s".' % value
+    if fixable:
+        needs += " Open the box and pick one of the options it offers."
+    needs += " If the right one is genuinely missing, it has to be added in the ERP first."
+
+    item = {
+        "field": label, "display": display, "erp_columns": [], "sheet": "",
+        "places": [], "where": "", "sent": [value], "rules": [reason] if reason else [],
+        "needs": needs, "example": "", "suggest": "",
+        "fixable": fixable, "support_reason": support, "support_action": support_action,
+        "field_value_ids": [f.id for f in fvs],
+    }
+    row_text = reason or needs
+    return {
+        "kind": "field_rejected",
+        "items": [item],
+        "erp_rows": [{"sheet": "ERP screen", "column": erp_field or display,
+                      "invoice": None, "product": None, "rule": row_text, "text": row_text}],
+        "excel_edited": edited_file(job.id) is not None,
+        "ai": False,
     }
