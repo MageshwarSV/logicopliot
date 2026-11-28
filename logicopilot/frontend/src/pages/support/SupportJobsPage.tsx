@@ -21,6 +21,7 @@ export function SupportJobsPage() {
   const [period, setPeriod] = useState<Period>(initialPeriod);
   const [stage, setStage] = useState(params.get("stage") ?? "");
   const [tenant, setTenant] = useState(params.get("customer") ?? "");
+  const [view, setView] = useState(params.get("view") ?? "");
   const [q, setQ] = useState("");
   const [data, setData] = useState<SupportJobs | null>(null);
   const [sla, setSla] = useState<Record<string, number>>({});
@@ -34,20 +35,21 @@ export function SupportJobsPage() {
     setLoading(true);
     try {
       const [from, to] = rangeFor(period);
-      setData(await supportApi.getJobs({ date_from: from, date_to: to, stage: stage || undefined, tenant_id: tenant || undefined, q: q || undefined, limit: 1000 }));
+      setData(await supportApi.getJobs({ date_from: from, date_to: to, stage: stage || undefined, view: view || undefined, tenant_id: tenant || undefined, q: q || undefined, limit: 1000 }));
     } catch (err) {
       setError(axios.isAxiosError(err) ? (err.response?.data?.detail ?? "Could not load jobs.") : "Could not load jobs.");
     } finally {
       setLoading(false);
     }
-  }, [period, stage, tenant, q]);
+  }, [period, stage, view, tenant, q]);
 
   useEffect(() => {
     const t = window.setTimeout(load, 250);
     return () => window.clearTimeout(t);
   }, [load]);
 
-  const paged = usePaged(data?.items ?? [], `${period}|${stage}|${tenant}|${q}`);
+  const paged = usePaged(data?.items ?? [], `${period}|${stage}|${view}|${tenant}|${q}`);
+  const viewLabel = data?.views?.find((v) => v.key === view)?.label;
 
   const timeCell = (v: number | null, key: StageKey) => {
     const over = v != null && sla[key] != null && v > sla[key];
@@ -74,6 +76,16 @@ export function SupportJobsPage() {
             <option value="">All stages</option>
             {(data?.stages ?? []).map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
+          <select value={view} onChange={(e) => setView(e.target.value)} className={field} aria-label="Show">
+            <option value="">All jobs</option>
+            {(data?.views ?? []).map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+          </select>
+          {viewLabel && (
+            <button type="button" onClick={() => setView("")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">
+              Showing: {viewLabel} <span aria-hidden>✕</span>
+            </button>
+          )}
           <div className="relative">
             <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Job no." className={`${field} pl-8`} />
@@ -87,13 +99,13 @@ export function SupportJobsPage() {
               <thead className={T.thead}>
                 <tr>
                   <th className={T.thSno}>S.No</th><th className={T.th}>Job No.</th><th className={T.th}>Client</th><th className={T.th}>Type</th>
-                  <th className={T.th}>Stage</th><th className={T.thRight}>Pages</th><th className={T.th}>Arrived</th>
+                  <th className={T.th}>Stage</th><th className={T.th}>User</th><th className={T.thRight}>Pages</th><th className={T.th}>Arrived</th>
                   <th className={T.thRight}>Email → AI</th><th className={T.thRight}>Queue</th>
                   <th className={T.thRight}>Extraction</th><th className={T.thRight}>ERP</th>
                 </tr>
               </thead>
               <tbody>
-                {paged.shown.length === 0 && <EmptyRow cols={11} loading={loading && !data} text="No jobs match these filters." />}
+                {paged.shown.length === 0 && <EmptyRow cols={12} loading={loading && !data} text="No jobs match these filters." />}
                 {paged.shown.map((j, i) => (
                   <tr key={j.job_id} className={`${T.row} ${ROW_EDGE[STAGE_TONE[j.stage] ?? "slate"]} ${j.stage === "failed" ? "bg-rose-50/40 dark:bg-rose-500/5" : ""}`}>
                     <td className={T.tdSno}>{(paged.page - 1) * paged.size + i + 1}</td>
@@ -104,6 +116,14 @@ export function SupportJobsPage() {
                     <td className={T.td}>{j.client}</td>
                     <td className={T.td}><TypeCell type={j.type} /></td>
                     <td className={T.td}><StageBadge stage={j.stage} label={j.stage_label} /></td>
+                    <td className={`${T.td} whitespace-nowrap`}>
+                      {j.user ? (
+                        <>
+                          <span className={`font-medium ${j.auto ? "text-indigo-700 dark:text-indigo-300" : "text-slate-800 dark:text-slate-100"}`}>{j.auto ? "⚡ " : ""}{j.user}</span>
+                          {j.user_how && <span className="block text-[11px] text-slate-500">{j.user_how}</span>}
+                        </>
+                      ) : <span className="text-slate-400">—</span>}
+                    </td>
                     <td className={T.tdRight}>{j.pages}</td>
                     <td className={`${T.td} whitespace-nowrap text-slate-600 dark:text-slate-300`}>{formatWhen(j.created_at)}</td>
                     {timeCell(j.timings.email_to_ai, "email_to_ai")}

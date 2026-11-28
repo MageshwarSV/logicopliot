@@ -12,37 +12,11 @@ import { ChangePasswordModal } from "./ChangePasswordModal";
 import { Avatar } from "./ui/Avatar";
 import {
   LayersIcon, DocumentIcon, CreditCardIcon, UsersIcon, DatabaseIcon, GearIcon,
-  BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon, MailIcon,
-  CodeIcon, MonitorIcon, ArrowPathIcon, UserIcon, LockIcon, LogoutIcon, PencilIcon, FolderIcon,
-  ExclamationTriangleIcon, ClockIcon, CheckBadgeIcon, DownloadIcon,
+  BriefcaseIcon, ChartBarIcon, ChevronDownIcon, BuildingIcon,
+  CodeIcon, MonitorIcon, UserIcon, LockIcon, LogoutIcon,
+  ExclamationTriangleIcon, ClockIcon, CheckBadgeIcon, DownloadIcon, FilterIcon,
 } from "./ui/icons";
 
-// One icon per Super Admin nav item, keyed by path - kept here (not in registry.js, which is
-// pure data only, no component imports, to avoid a cycle with this file) rather than as a
-// third parallel array to keep in sync by hand.
-const SUPER_ADMIN_ICON_BY_PATH: Record<string, (props: SVGProps<SVGSVGElement>) => ReactNode> = {
-  "/super-admin/tenants": BuildingIcon,
-  "/super-admin/users": UsersIcon,
-  "/super-admin/template-list": DocumentIcon,
-  "/super-admin/template-creation": LayersIcon,
-  "/super-admin/data-transformation": ArrowPathIcon,
-  "/super-admin/extraction-corrections": PencilIcon,
-  "/super-admin/screen-designer": FolderIcon,
-  "/super-admin/onboarding/start": LayersIcon,
-  "/super-admin/onboarding/erp-fields": DatabaseIcon,
-  "/super-admin/onboarding/document-mapping": DocumentIcon,
-  "/super-admin/onboarding/screen-designer": FolderIcon,
-  "/super-admin/onboarding/field-config": GearIcon,
-  "/super-admin/onboarding/prompts": GearIcon,
-  "/super-admin/onboarding/template-settings": GearIcon,
-  "/super-admin/email-puller": MailIcon,
-  "/super-admin/erp-scripts": CodeIcon,
-  "/super-admin/entry-browser": MonitorIcon,
-  "/jobs": BriefcaseIcon,
-  "/super-admin/billing": CreditCardIcon,
-  "/super-admin/api-cost": ChartBarIcon,
-  "/super-admin/settings": GearIcon,
-};
 
 function initials(name: string): string {
   return name
@@ -332,30 +306,7 @@ export function AppShell({
             Dashboard
           </Link>
 
-          {user?.role === "super_admin" && (
-            <>
-              {/* "/super-admin" itself (tenant+admin management) is NOT repeated here - the
-                  universal Dashboard link above already points there. */}
-              {SUPER_ADMIN_FEATURE_GROUPS.map((group) => (
-                <div key={group} className="mt-8">
-                  <h3 className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    {group}
-                  </h3>
-                  <div className="mt-2 space-y-1">
-                    {superAdminFeatures.filter((f) => f.group === group).map((f) => {
-                      const Icon = SUPER_ADMIN_ICON_BY_PATH[f.path];
-                      return (
-                        <Link key={f.path} to={f.path} className={navClass(f.path)}>
-                          {Icon && <Icon />}
-                          {f.navLabel}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
+          {user?.role === "super_admin" && <SuperAdminNav pathname={location.pathname} />}
 
           {/* A Tenant Admin's "Jobs" opens in its own tab, and there the jobs screens look
               exactly like an operator's: the Workspace list (New Jobs, Missing Documents, ERP
@@ -706,3 +657,87 @@ function UserMenu({
     </div>
   );
 }
+
+
+// ---------------------------------------------------------------------------
+// Super Admin menu (2026-11-28): one row per group with its icon, opening to its pages on a
+// guide line - the group holding the current page opens by itself, the others remember
+// whether they were left open. A group with a single page (Jobs) is a plain link.
+// ---------------------------------------------------------------------------
+const SA_GROUP_ICON: Record<string, (props: SVGProps<SVGSVGElement>) => ReactNode> = {
+  "Customers": BuildingIcon,
+  "Templates": DocumentIcon,
+  "Document Rules": FilterIcon,
+  "Customer Onboarding": LayersIcon,
+  "ERP & Integrations": CodeIcon,
+  "Operations": BriefcaseIcon,
+  "Finance & System": CreditCardIcon,
+};
+const SA_OPEN_KEY = "cargora.sa-nav-open";
+
+function SuperAdminNav({ pathname }: { pathname: string }) {
+  const inGroup = (g: string) => superAdminFeatures.some((f) => f.group === g && pathname.startsWith(f.path));
+  const [open, setOpen] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem(SA_OPEN_KEY) || "{}") as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  });
+  const toggle = (g: string) => setOpen((o) => {
+    const next = { ...o, [g]: !(o[g] ?? inGroup(g)) };
+    try { window.localStorage.setItem(SA_OPEN_KEY, JSON.stringify(next)); } catch { /* private window */ }
+    return next;
+  });
+  const rowBase = "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition";
+  return (
+    <div className="mt-3 space-y-1">
+      {SUPER_ADMIN_FEATURE_GROUPS.map((g) => {
+        const items = superAdminFeatures.filter((f) => f.group === g);
+        const Icon = SA_GROUP_ICON[g] ?? LayersIcon;
+        const here = inGroup(g);
+        if (items.length === 1) {
+          const f = items[0];
+          return (
+            <Link key={g} to={f.path}
+              className={`${rowBase} ${here ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"}`}>
+              <Icon className="h-5 w-5 shrink-0" />{f.navLabel}
+            </Link>
+          );
+        }
+        const isOpen = open[g] ?? here;
+        return (
+          <div key={g}>
+            <button type="button" onClick={() => toggle(g)} aria-expanded={isOpen}
+              className={`${rowBase} ${here ? "text-indigo-700 dark:text-indigo-300" : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"} ${here && !isOpen ? "bg-indigo-50 dark:bg-indigo-500/10" : ""}`}>
+              <Icon className="h-5 w-5 shrink-0" />
+              <span className="flex-1 text-left">{g}</span>
+              <span className="rounded-full bg-slate-100 px-1.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">{items.length}</span>
+              <ChevronDownIcon className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+            </button>
+            {isOpen && (
+              <div className="mb-2 ml-5 mt-1 space-y-0.5 border-l border-slate-200 pl-3 dark:border-slate-700">
+                {items.map((f) => {
+                  const active = pathname === f.path || (f.path !== "/jobs" && pathname.startsWith(f.path + "/"));
+                  const step = /^Step (\d+) - (.+)$/.exec(f.navLabel);
+                  return (
+                    <Link key={f.path} to={f.path}
+                      className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition ${active
+                        ? "bg-indigo-600 font-semibold text-white shadow-sm dark:bg-indigo-500"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"}`}>
+                      {step && (
+                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${active ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>{step[1]}</span>
+                      )}
+                      <span className="truncate">{step ? step[2] : f.navLabel}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+

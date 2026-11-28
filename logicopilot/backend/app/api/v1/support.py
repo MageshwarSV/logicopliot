@@ -305,6 +305,13 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
     # Attachments tile on the overview).
     auto_submitted = sum(1 for j in submitted_jobs if getattr(j, "auto_erp_submitted", False))
     manual_submitted = submitted - auto_submitted
+    # Not submitted yet, not failed: an auto job is on its way into the ERP; a manual one is
+    # still with a person (review / approval / their own ERP run).
+    open_jobs = [j for j in jobs if not _is_failed(j) and not (_is_submitted(j) and not _is_failed(j))]
+    auto_in_progress = sum(1 for j in open_jobs if getattr(j, "auto_erp_submitted", False))
+    manual_in_review = sum(1 for j in open_jobs if not getattr(j, "auto_erp_submitted", False)
+                           and _pipeline_stage(j) in ("ready_for_review", "in_review", "waiting_approval",
+                                                      "erp_submission"))
     failed = sum(1 for j in jobs if _is_failed(j))
     events = _extracting_events(db, ids)
     delayed = sum(1 for j in jobs if _breaches(_timings(j, events.get(j.id, [])), sla))
@@ -342,6 +349,7 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
             "attachments": attachments,
             "submitted": submitted, "submitted_pct": pct(submitted),
             "auto_submitted": auto_submitted, "manual_submitted": manual_submitted,
+            "auto_in_progress": auto_in_progress, "manual_in_review": manual_in_review,
             "auto_submitted_pct": round(100.0 * auto_submitted / submitted, 1) if submitted else None,
             "manual_submitted_pct": round(100.0 * manual_submitted / submitted, 1) if submitted else None,
             "failed": failed, "failed_pct": pct(failed),
@@ -442,9 +450,29 @@ def health(db: Session = Depends(get_db), _user: User = Depends(_desk)) -> dict:
 
 # ---------------------------------------------------------------- job monitoring / customers (S5)
 
+JOB_VIEWS = {
+    "submitted": "Submitted to ERP", "auto": "Auto submitted", "manual": "Manually submitted",
+    "auto_progress": "Auto - being entered now", "in_review": "Manual - in review",
+    "failed": "Failed", "delayed": "Delayed (over SLA)",
+}
+_REVIEW_STAGES = ("ready_for_review", "in_review", "waiting_approval", "erp_submission")
+
+
+def _in_view(j: Job, view: str, delayed: bool) -> bool:
+    """The overview tiles' own definitions (overview()), so a tile and its list always agree."""
+    auto = bool(getattr(j, "auto_erp_submitted", False))
+    submitted = _is_submitted(j) and not _is_failed(j)
+    open_ = not _is_failed(j) and not submitted
+    return {
+        "submitted": submitted, "auto": submitted and auto, "manual": submitted and not auto,
+        "auto_progress": open_ and auto, "in_review": open_ and not auto and _pipeline_stage(j) in _REVIEW_STAGES,
+        "failed": _is_failed(j), "delayed": delayed,
+    }.get(view, True)
+
+
 @router.get("/jobs")
 def jobs_list(date_from: str, date_to: str, tenant_id: str | None = None, stage: str | None = None,
-              q: str | None = None, limit: int = 300, db: Session = Depends(get_db),
+              q: str | None = None, view: str | None = None, limit: int = 300, db: Session = Depends(get_db),
               _user: User = Depends(_desk)) -> dict:
     _f, _t, start, end = _period(date_from, date_to)
     query = db.query(Job).filter(Job.created_at >= start, Job.created_at < end)
@@ -455,27 +483,46 @@ def jobs_list(date_from: str, date_to: str, tenant_id: str | None = None, stage:
     jobs = query.order_by(Job.created_at.desc()).all()
     if stage:
         jobs = [j for j in jobs if _pipeline_stage(j) == stage]
+    sla = get_config(db)["sla"]
+    if view and view in JOB_VIEWS:
+        ev_all = _extracting_events(db, [j.id for j in jobs]) if view == "delayed" else {}
+        jobs = [j for j in jobs if _in_view(j, view, view == "delayed" and bool(_breaches(_timings(j, ev_all.get(j.id, [])), sla)))]
     total = len(jobs)
     jobs = jobs[:max(1, min(limit, 1000))]
     groups = {g.id: g for g in db.query(TemplateGroup).all()}
     tenants = {t.id: t.name for t in db.query(Tenant).all()}
     events = _extracting_events(db, [j.id for j in jobs])
+    # Who has the job: the person who sent it to the ERP, else the operator it is assigned to,
+    # else who created it; "Auto ERP" when the system sent it itself.
+    uids = {u for j in jobs for u in (j.erp_submitted_by_id, j.assigned_operator_id, j.created_by_id) if u}
+    names = {u.id: (u.full_name or u.email) for u in db.query(User).filter(User.id.in_(uids)).all()} if uids else {}
     pages: Counter = Counter()
     for jid, pc in (db.query(JobDocument.job_id, JobDocument.page_count)
                     .filter(JobDocument.job_id.in_([j.id for j in jobs])).all()) if jobs else []:
         pages[jid] += pc or 0
-    sla = get_config(db)["sla"]
     rows = []
     for j in jobs:
         g = groups.get(j.group_id)
         st = _pipeline_stage(j)
         t = _timings(j, events.get(j.id, []))
+        if getattr(j, "auto_erp_submitted", False):
+            user, user_how = "Auto ERP", "sent by the system"
+        elif j.erp_submitted_by_id and names.get(j.erp_submitted_by_id):
+            user, user_how = names[j.erp_submitted_by_id], "submitted to ERP"
+        elif j.assigned_operator_id and names.get(j.assigned_operator_id):
+            user, user_how = names[j.assigned_operator_id], "assigned"
+        elif j.created_by_id and names.get(j.created_by_id):
+            user, user_how = names[j.created_by_id], "created"
+        else:
+            user, user_how = None, None
         rows.append({"job_id": j.id, "reference": j.reference, "client": tenants.get(j.tenant_id) or "",
                      "type": (g.mode if g else None) or "", "template": g.name if g else "",
                      "stage": st, "stage_label": PIPELINE_LABEL.get(st, "Other"),
                      "pages": pages[j.id], "created_at": _aware(j.created_at).isoformat(),
-                     "timings": t, "delayed": bool(_breaches(t, sla))})
+                     "timings": t, "delayed": bool(_breaches(t, sla)),
+                     "user": user, "user_how": user_how, "auto": bool(getattr(j, "auto_erp_submitted", False))})
     return {"total": total, "items": rows, "stages": [{"key": k, "label": v} for k, v in PIPELINE],
+            "views": [{"key": k, "label": v} for k, v in JOB_VIEWS.items()],
             "customers": [{"id": tid, "name": n} for tid, n in sorted(tenants.items(), key=lambda x: x[1].lower())]}
 
 
