@@ -1,0 +1,33 @@
+{
+  "modules": [
+    {"key": "architecture", "name": "System architecture"},
+    {"key": "email-intake", "name": "Email intake & Smart Upload"},
+    {"key": "classification", "name": "Document classification"},
+    {"key": "extraction", "name": "AI extraction"},
+    {"key": "templates", "name": "Templates & fields"},
+    {"key": "onboarding", "name": "Customer onboarding (Steps 0-6)"},
+    {"key": "job-screen", "name": "Job screen & review (GK1 / GK2)"},
+    {"key": "erp-excel", "name": "ERP Excel building"},
+    {"key": "erp-rules", "name": "ERP field configuration & checks"},
+    {"key": "erp-robot", "name": "ERP robot & scripts"},
+    {"key": "auto-erp", "name": "Auto ERP Submission"},
+    {"key": "cth-tariff", "name": "Customs tariff (CTH)"},
+    {"key": "support", "name": "Production Support"},
+    {"key": "mobile-app", "name": "Support phone app"},
+    {"key": "billing", "name": "Billing & invoices"},
+    {"key": "users-roles", "name": "Users, roles & access"},
+    {"key": "deployment", "name": "Deployment & servers"},
+    {"key": "backups", "name": "Backups"},
+    {"key": "knowledge-hub", "name": "Knowledge Hub"},
+    {"key": "vision", "name": "Product vision"}
+  ],
+  "quick_links": [
+    {"title": "How Cargora works (end to end)", "slug": "architecture/how-cargora-works"},
+    {"title": "Why customers buy Cargora", "slug": "business/value-proposition"},
+    {"title": "Operator guide", "slug": "user-guides/operator-guide"},
+    {"title": "ERP field rules & checks", "slug": "business-logic/erp-rules"},
+    {"title": "Deployment & operations", "slug": "operations/deployment"},
+    {"title": "Product vision", "slug": "business/product-vision"},
+    {"title": "How to write and update docs", "slug": "admin/writing-docs"}
+  ]
+}

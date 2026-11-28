@@ -128,6 +128,22 @@ WARN
   [ "$CHECK" = "--force" ] || exit 1
 fi
 
+# Knowledge Hub team rule: application changes update docs/knowledge in the same commit.
+# A WARNING only - it never stops a deploy. It lists the incoming commits that changed app
+# code but no Knowledge Hub page, so the gap is seen at the moment the change goes live.
+NODOCS=""
+for c in $(git rev-list --no-merges "HEAD..origin/$BRANCH" 2>/dev/null); do
+  FILES=$(git diff-tree --no-commit-id --name-only -r "$c")
+  if echo "$FILES" | grep -qE "logicopilot/(backend/app|frontend/src)/" && ! echo "$FILES" | grep -q "logicopilot/docs/knowledge/"; then
+    NODOCS="$NODOCS
+       $(git log --format='%h %an: %s' -1 "$c" | cut -c1-110)"
+  fi
+done
+if [ -n "$NODOCS" ]; then
+  say "docs: these incoming commits changed the app but no Knowledge Hub page (warning only)$NODOCS"
+  echo "     rule: logicopilot/docs/knowledge/admin/writing-docs.md"
+fi
+
 if [ "$CHECK" = "--check" ]; then
   say "AI model now: ${MODELS_BEFORE:-unknown}"
   MISSING="$(missing_model_lines)"

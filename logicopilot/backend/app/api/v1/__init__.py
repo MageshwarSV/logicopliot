@@ -24,6 +24,7 @@ from app.api.v1.public_irn import router as public_irn_router
 from app.api.v1.saas_finance import router as saas_finance_router
 from app.api.v1.support import router as support_router
 from app.api.v1.support_app import router as support_app_router
+from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.erp_rules import router as erp_rules_router
 from app.api.v1.manual_invoices import router as manual_invoices_router
 from app.api.v1.payments import router as payments_router
@@ -67,6 +68,7 @@ api_router.include_router(public_irn_router)
 api_router.include_router(saas_finance_router)
 api_router.include_router(support_router)
 api_router.include_router(support_app_router)
+api_router.include_router(knowledge_router)
 api_router.include_router(erp_rules_router)
 api_router.include_router(manual_invoices_router)
 api_router.include_router(payments_router)

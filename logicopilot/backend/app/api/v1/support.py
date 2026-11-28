@@ -506,7 +506,10 @@ def jobs_list(date_from: str, date_to: str, tenant_id: str | None = None, stage:
         st = _pipeline_stage(j)
         t = _timings(j, events.get(j.id, []))
         if getattr(j, "auto_erp_submitted", False):
-            user, user_how = "Auto ERP", "sent by the system"
+            # The job still has an owner - the operator its mail was routed to / it is assigned
+            # to (or who made it); the system only did the ERP entry. No owner -> "Auto ERP".
+            owner = names.get(j.assigned_operator_id) or names.get(j.created_by_id)
+            user, user_how = (owner, "sent to ERP by Auto ERP") if owner else ("Auto ERP", "sent by the system")
         elif j.erp_submitted_by_id and names.get(j.erp_submitted_by_id):
             user, user_how = names[j.erp_submitted_by_id], "submitted to ERP"
         elif j.assigned_operator_id and names.get(j.assigned_operator_id):
