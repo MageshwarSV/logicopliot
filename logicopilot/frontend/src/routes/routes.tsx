@@ -54,6 +54,7 @@ import { BillingUsagePage } from "../pages/billing/BillingUsagePage";
 import { AccountSettingsPage } from "../pages/AccountSettingsPage";
 import { SaasFinanceDashboardPage } from "../pages/saas-finance/DashboardPage";
 import { ErpColumnRulesPage } from "../pages/super-admin/ErpColumnRulesPage";
+import { KnowledgeHubPage } from "../pages/knowledge/KnowledgeHub";
 import { SupportOverviewPage } from "../pages/support/SupportOverviewPage";
 import { SupportIssuesPage } from "../pages/support/SupportIssuesPage";
 import { SupportHealthPage } from "../pages/support/SupportHealthPage";
@@ -633,6 +634,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={["saas_finance"]}>
             <SaasFinanceReportsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/knowledge/*"
+        element={
+          <ProtectedRoute allowedRoles={["super_admin"]}>
+            <KnowledgeHubPage />
           </ProtectedRoute>
         }
       />

@@ -570,6 +570,7 @@ export function AppShell({
             )}
             {/* Only for users a Super Admin ticked ERP branch logins for - renders nothing otherwise. */}
             <ErpBranchButton />
+            <AppLauncher role={user?.role} />
             <NotificationBell />
             {actions}
           </div>
@@ -741,3 +742,28 @@ function SuperAdminNav({ pathname }: { pathname: string }) {
   );
 }
 
+
+
+/** Module applications (Knowledge Hub, ...) as icons in the header. Each opens in a NEW tab;
+ *  the login cookie is shared, so the app is already signed in (single sign-on). */
+function AppLauncher({ role }: { role?: string }) {
+  const apps = [
+    { roles: ["super_admin"], path: "/knowledge", label: "Knowledge Hub", glyph: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+        <path d="M2 5.5A2.5 2.5 0 0 1 4.5 3H10a2 2 0 0 1 2 2v15a2 2 0 0 0-2-2H4.5A2.5 2.5 0 0 1 2 15.5z" />
+        <path d="M22 5.5A2.5 2.5 0 0 0 19.5 3H14a2 2 0 0 0-2 2v15a2 2 0 0 1 2-2h5.5a2.5 2.5 0 0 0 2.5-2.5z" />
+      </svg>
+    ) },
+  ].filter((a) => role && a.roles.includes(role));
+  if (apps.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1">
+      {apps.map((a) => (
+        <a key={a.path} href={a.path} target="_blank" rel="noopener" title={`${a.label} (opens in a new tab)`}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 dark:text-slate-400 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300">
+          {a.glyph}
+        </a>
+      ))}
+    </div>
+  );
+}
