@@ -23,6 +23,9 @@
   ],
   "quick_links": [
     {"title": "How Cargora works (end to end)", "slug": "architecture/how-cargora-works"},
+    {"title": "Why customers buy Cargora", "slug": "business/value-proposition"},
+    {"title": "Operator guide", "slug": "user-guides/operator-guide"},
+    {"title": "ERP field rules & checks", "slug": "business-logic/erp-rules"},
     {"title": "Deployment & operations", "slug": "operations/deployment"},
     {"title": "Product vision", "slug": "business/product-vision"},
     {"title": "How to write and update docs", "slug": "admin/writing-docs"}

@@ -445,11 +445,14 @@ function ChangesView() {
   const { data, error } = useLoad<KbChange[]>(() => kb.getChanges(200), []);
   const [mod, setMod] = useState("");
   const [who, setWho] = useState("");
+  const [gapsOnly, setGapsOnly] = useState(false);
   if (!data) return <Loading error={error} />;
   const modules = Array.from(new Set(data.flatMap((c) => c.modules))).sort();
   const people = Array.from(new Set(data.map((c) => c.author))).sort();
-  const shown = data.filter((c) => (!mod || c.modules.includes(mod)) && (!who || c.author === who));
+  const gap = (c: KbChange) => c.code_changed && !c.docs_changed;
+  const shown = data.filter((c) => (!mod || c.modules.includes(mod)) && (!who || c.author === who) && (!gapsOnly || gap(c)));
   const withDocs = data.filter((c) => c.docs_changed).length;
+  const gaps = data.filter(gap).length;
   const sel = "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900";
   return (
     <div className="space-y-4">
@@ -457,6 +460,10 @@ function ChangesView() {
       <div className="flex flex-wrap gap-2">
         <select value={mod} onChange={(e) => setMod(e.target.value)} className={sel}><option value="">All modules</option>{modules.map((m) => <option key={m}>{m}</option>)}</select>
         <select value={who} onChange={(e) => setWho(e.target.value)} className={sel}><option value="">Everyone</option>{people.map((p) => <option key={p}>{p}</option>)}</select>
+        <label className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${gapsOnly ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
+          <input type="checkbox" checked={gapsOnly} onChange={(e) => setGapsOnly(e.target.checked)} />
+          Missing docs ({gaps})
+        </label>
         <span className="self-center text-xs text-slate-500">{shown.length} change(s)</span>
       </div>
       <ol className="relative space-y-3 border-l-2 border-indigo-100 pl-6 dark:border-indigo-500/20">
@@ -468,6 +475,7 @@ function ChangesView() {
                 <Avatar name={c.author} /><span className="font-medium text-slate-700 dark:text-slate-200">{c.author}</span>
                 <span>· {formatDateTime(c.date)}</span><code className="text-[11px]">{c.hash}</code>
                 {c.docs_changed && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">docs updated</span>}
+                {gap(c) && <span className="rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">no docs</span>}
               </div>
               <p className="mt-2 text-sm font-medium text-slate-900 dark:text-slate-50">{c.subject}</p>
               <div className="mt-2 flex flex-wrap gap-1">{c.modules.map((m) => <span key={m} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">{m}</span>)}</div>

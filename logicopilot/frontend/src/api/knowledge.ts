@@ -22,7 +22,7 @@ export interface KbTable {
 }
 export interface KbApi { method: string; path: string; module: string; name: string; summary: string; tags: string[] }
 export interface KbChange {
-  hash: string; date: string; author: string; subject: string; files: string[]; modules: string[]; docs_changed: boolean;
+  hash: string; date: string; author: string; subject: string; files: string[]; modules: string[]; docs_changed: boolean; code_changed: boolean;
 }
 export interface KbSearchHit { type: "page" | "table" | "api"; slug?: string; title: string; category?: string; snippet: string }
 

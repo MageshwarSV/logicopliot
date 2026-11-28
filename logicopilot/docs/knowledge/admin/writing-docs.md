@@ -40,7 +40,9 @@ summary: One line shown in lists and search.
 
 ## What you do NOT write by hand
 The Hub reads these live from the code: **database tables**, **API endpoints**, **settings names**
-and the **change history**. Write a clear docstring on the model / endpoint instead - it shows up there.
+and the **change history** - don't copy full lists of them into a page. Naming the few settings
+that change a feature on that feature's page is good. Write a clear docstring on the model /
+endpoint instead - it shows up there.
 
 ## Completeness
-Home shows the share of modules (in `_index.json`) that have at least one `ready` page.
+Home shows the share of modules (in `_index.json`) that have at least one page that is not `draft` (a page with no status counts as `ready`).

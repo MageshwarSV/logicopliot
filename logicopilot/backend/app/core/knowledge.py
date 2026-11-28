@@ -238,6 +238,7 @@ def changes(limit: int = 150) -> list[dict]:
                     mods.append(m)
             it["modules"] = mods[:6]
             it["docs_changed"] = any("docs/knowledge/" in f for f in it["files"])
+            it["code_changed"] = any(re.search(r"logicopilot/(backend/app|frontend/src)/", f) for f in it["files"])
             it["files"] = it["files"][:40]
         return items
     return _cached(f"changes:{limit}", 60, build)
