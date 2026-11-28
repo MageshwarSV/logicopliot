@@ -428,7 +428,20 @@ def build_field_help(db: Session, job, field_label: str, sent: str, *,
         needs += ' It has no "%s".' % value
     if fixable:
         needs += " Open the box and pick one of the options it offers."
-    needs += " If the right one is genuinely missing, it has to be added in the ERP first."
+    # A master-data box is only ever offered what Cargora's own ERP Master Data holds, so when
+    # the right option is missing the fix is THERE, not in the ERP. JOB-368C7F is the case: the
+    # ERP's own Address dropdown held "Tamil Nadu" and "Maharashtra", while the Sea import
+    # branch master offered a single value, "SCAN GLOBAL LOGISTICS (IN) PVT LTD (CHENNAI)" - a
+    # company name sitting in the branch column. No pick on the job screen could have worked,
+    # and "add it in the ERP" would have sent the operator to the one place already correct.
+    screen = {"quotation_master": "Tenant Admin -> ERP Master Data - Quotation",
+              "importer_master": "Tenant Admin -> ERP Master Data - Importer",
+              }.get(master.get("source") or "")
+    if screen:
+        needs += (" If the right one is not in the list, add it in %s - spelled exactly as the "
+                  "ERP's own list spells it." % screen)
+    else:
+        needs += " If the right one is genuinely missing, it has to be added in the ERP first."
 
     item = {
         "field": label, "display": display, "erp_columns": [], "sheet": "",
