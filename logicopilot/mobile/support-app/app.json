@@ -35,7 +35,11 @@
     ],
     "scheme": "cargorasupport",
     "extra": {
-      "defaultServer": "https://cargora.axioralabs.ai"
+      "defaultServer": "https://cargora.axioralabs.ai",
+      "router": {},
+      "eas": {
+        "projectId": "64d7e761-1dfb-4afb-b3b3-f4404f8c2452"
+      }
     },
     "owner": "axioralabs"
   }
