@@ -280,7 +280,7 @@ export function ErpColumnRulesPage() {
           </div>
           {help && (
             <div className="mt-4 grid gap-3 rounded-xl bg-slate-50 p-4 text-sm text-slate-600 sm:grid-cols-3 dark:bg-slate-800/60 dark:text-slate-300">
-              <p><b className="text-slate-800 dark:text-slate-100">Mandatory</b> - a job with this column empty is stopped before the ERP and the operator gets a Fix card. Auto ERP jobs still get a value filled in.</p>
+              <p><b className="text-slate-800 dark:text-slate-100">Mandatory</b> - a job with this column empty is stopped before the ERP and the operator gets a Fix card. Auto ERP jobs still get a value filled in. <b>"Suggested: turn on"</b> = Cargora thinks this column should be mandatory (the reason is shown under it) - click it to switch it on, then Save.</p>
               <p><b className="text-slate-800 dark:text-slate-100">Rules</b> - length, a list of allowed values, country / currency / unit code, number or a pattern. Checked on every job before it goes to the ERP.</p>
               <p><b className="text-slate-800 dark:text-slate-100">Status</b> - Configured works; Missing = mandatory with no source; Invalid = its source does not exist, so it always goes out empty.</p>
             </div>
@@ -447,10 +447,16 @@ export function ErpColumnRulesPage() {
                                     <td className="px-3 py-3">
                                       <Switch on={mandOn} onChange={(v) => setRule(r.key, { required: v, off: false })} />
                                       {r.suggest_mandatory && !mandOn && (
-                                        <span title={r.mandatory_reasons.join("\n")}
-                                          className={`mt-1.5 block w-fit cursor-help rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.suggest_strength === "strong" ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
-                                          Suggested{r.suggest_strength === "data" ? " · data" : ""}
-                                        </span>
+                                        <div className="mt-1.5 max-w-[12rem]">
+                                          <button type="button" onClick={() => setRule(r.key, { required: true, off: false })}
+                                            title="Click to make this column mandatory"
+                                            className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold transition ${r.suggest_strength === "strong"
+                                              ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300"
+                                              : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"}`}>
+                                            <SparklesIcon className="h-3 w-3" />Suggested: turn on
+                                          </button>
+                                          <p className="mt-0.5 text-[10px] leading-snug text-slate-500">{r.mandatory_reasons[0]}{r.mandatory_reasons.length > 1 ? ` (+${r.mandatory_reasons.length - 1} more)` : ""}</p>
+                                        </div>
                                       )}
                                     </td>
                                     <td className="max-w-[18rem] px-3 py-3">
