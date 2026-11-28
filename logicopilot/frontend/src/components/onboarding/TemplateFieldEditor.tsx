@@ -19,6 +19,19 @@ import type { CompositePiece, CrossDocLink } from "../../types/onboarding";
 import { MARK_COLORS } from "../../types/onboarding";
 import { DATE_FORMAT_CHOICES } from "../../utils/fieldDates";
 import { NUMBER_PATTERN } from "../../utils/fieldNumbers";
+
+// A field as an admin should see it in a list: its template label (what the operator reads)
+// with the internal name beside it in grey - the internal name is what Excel columns, rules
+// and scripts use, so it stays visible. A field without its own label shows the internal name.
+function fieldName(f: { label_name: string; display_label?: string | null }): ReactNode {
+  const shown = (f.display_label ?? "").trim();
+  if (!shown || shown === f.label_name) return f.label_name;
+  return <>{shown} <span className="text-xs text-slate-400">· {f.label_name}</span></>;
+}
+function fieldNameText(f: { label_name: string; display_label?: string | null }): string {
+  const shown = (f.display_label ?? "").trim();
+  return !shown || shown === f.label_name ? f.label_name : `${shown} (${f.label_name})`;
+}
 import { FixPromptModal } from "../../pages/super-admin/FixPromptModal";
 import type { CorrectedField } from "../../api/extractionCorrections";
 
@@ -431,7 +444,7 @@ export function TemplateFieldEditor({
                   <Row label="Pair with another field (picker)" help="The operator picks between the two values; the pick is written onto this field.">
                     <select className={INPUT} value={asStr(v("paired_custom_field_id"))} onChange={(e) => set("paired_custom_field_id", nullIfBlank(e.target.value))}>
                       <option value="">— not paired —</option>
-                      {(group.custom_fields ?? []).filter((c) => c.id !== cf.id).map((c) => <option key={c.id} value={c.id}>{c.label_name}</option>)}
+                      {(group.custom_fields ?? []).filter((c) => c.id !== cf.id).map((c) => <option key={c.id} value={c.id}>{fieldNameText(c)}</option>)}
                     </select>
                   </Row>
                   <Row label="Picker heading">
@@ -447,7 +460,7 @@ export function TemplateFieldEditor({
                               const cur = (v("sync_field_ids") as string[] | null) ?? [];
                               set("sync_field_ids", e.target.checked ? [...cur, c.id] : cur.filter((x) => x !== c.id));
                             }} />
-                            {c.label_name}
+                            {fieldName(c)}
                           </label>
                         );
                       })}
@@ -872,9 +885,9 @@ function CrossCheckSection({ group, mark, cf, v, set, onChanged }: {
             const tgt = marksById.get(l.target_mark_id);
             return (
               <li key={l.id} className="flex items-center gap-2 text-sm">
-                <span>{src ? `${src.m.label_name} (${src.d.name})` : cf?.label_name}</span>
+                <span>{src ? `${fieldNameText(src.m)} (${src.d.name})` : cf ? fieldNameText(cf) : ""}</span>
                 <span className="text-slate-400">must equal</span>
-                <span>{tgt ? `${tgt.m.label_name} (${tgt.d.name})` : "?"}</span>
+                <span>{tgt ? `${fieldNameText(tgt.m)} (${tgt.d.name})` : "?"}</span>
                 <button type="button" className="ml-auto text-slate-400 hover:text-rose-600" onClick={() => remove(l)}>✕</button>
               </li>
             );
@@ -895,7 +908,7 @@ function CrossCheckSection({ group, mark, cf, v, set, onChanged }: {
                 <label key={m.id} className="flex items-center gap-2 text-sm">
                   <input type="checkbox" className="accent-indigo-600" checked={pick.includes(m.id)}
                     onChange={(e) => setPick(e.target.checked ? [...pick, m.id] : pick.filter((x) => x !== m.id))} />
-                  {m.label_name} <span className="text-slate-400">· {d.name}</span>
+                  {fieldName(m)} <span className="text-slate-400">· {d.name}</span>
                 </label>
               )))}
         </div>

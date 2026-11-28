@@ -4950,7 +4950,7 @@ export function JobRunPage() {
                   htmlFor="fix-value"
                   className="mt-1 block text-base font-semibold text-slate-900 dark:text-slate-50"
                 >
-                  {fv.label_name}
+                  {fieldLabelOverride(fv.display_label) ?? fv.label_name}
                 </label>
                 {fv.ask_operator_hint && (
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -5745,7 +5745,7 @@ function ExtractedField({
       try {
         if (!new RegExp(`^(?:${fv.validation_pattern})$`).test(transformed.trim())) {
           setFormatError(
-            fv.validation_message || `${fv.label_name} does not match the required format.`,
+            fv.validation_message || `${fieldLabelOverride(fv.display_label) ?? fv.label_name} does not match the required format.`,
           );
           return;
         }
@@ -6297,6 +6297,7 @@ function ReferenceSearchPicker({
   jobId,
   customFieldId,
   label,
+  displayName,
   readOnly,
   onPick,
 }: {
@@ -6304,8 +6305,10 @@ function ReferenceSearchPicker({
   customFieldId: string;
   /** This field's own label (fv.label_name) - picks the right placeholder wording from
    *  REFERENCE_SEARCH_PLACEHOLDERS, since this one component serves several very different
-   *  reference fields (a port code, a consignee name, ...). */
+   *  reference fields (a port code, a consignee name, ...). A KEY, never shown. */
   label: string;
+  /** The field's name as the operator sees it (its template label) - used in the general hint. */
+  displayName?: string;
   readOnly: boolean;
   /** The whole ROW, not just its value - the caller may fill other fields from the same row
    *  it was picked from (see REFERENCE_PICK_FILLS_FIELDS). */
@@ -6359,7 +6362,7 @@ function ReferenceSearchPicker({
         onFocus={() => setOpen(true)}
         // A short delay so a click on a result (below) lands before the blur closes the list.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${label}…`}
+        placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${displayName ?? label}…`}
         className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
       />
       {
@@ -8474,6 +8477,7 @@ function ExtractionReview({
                           jobId={jobId}
                           customFieldId={fv.custom_field_id!}
                           label={fv.label_name}
+                          displayName={fieldLabelOverride(fv.display_label) ?? fv.label_name}
                           readOnly={readOnly}
                           onPick={async (picked) => {
                             await jobsApi.correctFieldValue(fv.id, picked.value);
