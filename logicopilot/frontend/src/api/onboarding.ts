@@ -88,8 +88,8 @@ export async function createCustomField(
     /** This field's own section heading on the Job Run page - omit/null to fall back to the
      *  hardcoded FIELD_GROUPS_BY_DOC_TYPE map. */
     standalone_group_heading?: string | null;
-    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
-     *  label-override maps. */
+    /** What the operator sees instead of label_name - omit/null to show label_name itself
+     *  (the hardcoded label lists were moved into the templates, 2026-11-28). */
     display_label?: string | null;
     /** Admin-settable format check, tested as `^(?:pattern)$` - omit/null for no restriction. */
     validation_pattern?: string | null;
@@ -312,8 +312,8 @@ export async function createMark(
     standalone_multi_value?: boolean;
     /** standalone_multi_value only: heading shown above this group, e.g. "Container". */
     standalone_group_heading?: string | null;
-    /** What the operator sees instead of label_name - omit/null to fall back to the hardcoded
-     *  label-override maps. */
+    /** What the operator sees instead of label_name - omit/null to show label_name itself
+     *  (the hardcoded label lists were moved into the templates, 2026-11-28). */
     display_label?: string | null;
     /** Admin-settable format check, tested as `^(?:pattern)$` - omit/null for no restriction. */
     validation_pattern?: string | null;

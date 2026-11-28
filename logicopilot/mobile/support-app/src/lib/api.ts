@@ -13,6 +13,10 @@ export const DEFAULT_SERVER: string =
   (Constants.expoConfig?.extra as { defaultServer?: string } | undefined)?.defaultServer ??
   "https://cargora.axioralabs.ai";
 
+// The backend refuses a POST/PUT/DELETE without this header (its CSRF check - app/main.py),
+// exactly as the website's own client sends it.
+const BASE_HEADERS = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
+
 let server = DEFAULT_SERVER;
 let access: string | null = null;
 let refresh: string | null = null;
@@ -74,7 +78,7 @@ export async function login(serverUrl: string, email: string, password: string):
   const s = cleanServer(serverUrl);
   const res = await fetch(`${s}/api/v1/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: BASE_HEADERS,
     body: JSON.stringify({ email: email.trim(), password, token_response: true }),
   });
   if (!res.ok) throw new ApiError(res.status, await detail(res));
@@ -97,7 +101,7 @@ async function doRefresh(): Promise<boolean> {
   try {
     const res = await fetch(`${server}/api/v1/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: BASE_HEADERS,
       body: JSON.stringify({ refresh_token: refresh, token_response: true }),
     });
     if (!res.ok) return false;
@@ -119,7 +123,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     fetch(`${server}/api/v1${path}`, {
       method: init.method ?? "GET",
       headers: {
-        "Content-Type": "application/json",
+        ...BASE_HEADERS,
         ...(access ? { Authorization: `Bearer ${access}` } : {}),
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
@@ -141,7 +145,7 @@ export async function logout(pushToken: string | null) {
     if (refresh) {
       await fetch(`${server}/api/v1/auth/logout`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: BASE_HEADERS,
         body: JSON.stringify({ refresh_token: refresh }),
       });
     }

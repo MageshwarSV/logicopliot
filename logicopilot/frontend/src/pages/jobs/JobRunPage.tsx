@@ -138,105 +138,18 @@ const HIDDEN_ADDITIONAL_DETAILS_LABELS = new Set([
 const HIDDEN_DOCUMENT_FIELD_LABELS_BY_DOC_TYPE: Record<string, Set<string>> = {
   BL: new Set(["mode_of_transport", "PortOfShipmentCode"]),
 };
-// Display label only - label_name in the database is unchanged, so template config, ERP
-// mapping, and every other screen that reads this field by name are unaffected. Keyed by
-// the ACTIVE document's doc_type - "Supplier Address"/"Supplier Name" are real marks that
-// exist on BOTH the Bill of Lading and the Fright Certificate under the same label_name, and
-// only the Bill of Lading's copy should read "Shipper ...".
-const FIELD_LABEL_OVERRIDES_BY_DOC_TYPE: Record<string, Record<string, string>> = {
-  BL: {
-    "Supplier Address": "Shipper Address",
-    "Supplier Name": "Shipper Name",
-    "HBL No": "HBL Number",
-    vessel_name: "Vessel Name",
-    voyage_number: "Voyage Number",
-    "Consignment Type": "Shipment Type",
-    port_of_entry: "Port of Entry",
-    CountryOfShipmentCode: "Shipment Country Code",
-    TransportModeCode: "Transport Mode Code",
-    package_count: "Package Count",
-    "Gross Wt": "Gross Weight",
-    container_number: "Container Number",
-    container_type: "Container Type",
-    ContainerTypeCode: "CTR ISO CODE",
-    // By request: read more naturally on the Bill of Lading tab than their own raw label_name.
-    Destination: "ERP Branch",
-    CustomsHouseCode: "Customs House Code",
-  },
-  Invoice: {
-    "Invoice No": "Invoice Number",
-    Currency_type: "Currency",
-    "Product Value": "Total Invoice Value",
-    total_quantity: "Total Quantity",
-    unit: "Quantity Unit",
-    shipper: "Shipper Name",
-    // By request: this party is the IMPORTER, not the consignee - "Consignee" reads here as a
-    // document term (what the Bill of Lading itself calls the party), it never meant something
-    // different from "Importer" underneath. label_name is unchanged, so nothing that matches
-    // on it (reference search, country-scoping, the Additional Details duplicate-exclusion
-    // list) is affected - this only changes what the operator reads on screen.
-    Consignee: "Document Importer Name",
-    "ERP Consignee Name": "ERP Importer Name",
-    "ERP Consignee Country": "ERP Importer Country",
-    "ERP Importer Address / Branch Code": "ERP Importer Branch",
-    CountryOfOriginCode: "Country of Origin Code",
-    TOI: "Terms of Invoice",
-    product_description: "Product Description",
-    item_material_code: "Item Material Code",
-    item_quantity: "Item Quantity",
-    item_unit_price: "Unit Price",
-    item_po_no: "Purchase Order Number",
-    product_amount: "Product Amount",
-    "product quantity type": "Product Quantity Unit",
-    "Customer Part code": "Customer Part Code",
-    // Covers a job extracted BEFORE the underlying field was renamed from "RITC No." to "CTH"
-    // (see app/api/v1/field_marks.py's edit_custom_field - a rename only applies to jobs
-    // extracted after it, a job's own stored field keeps whatever label it was extracted
-    // under). Mapping the old label to the same "CTH" text here means an old job and a new
-    // one read identically on screen either way, with no data backfill needed.
-    "RITC No.": "CTH",
-    "Combined Description": "Combined Product Description",
-  },
-  PackingList: {
-    package_count: "Package Count",
-    total_quantity: "Total Quantity",
-  },
-  Custom: {
-    insurance_percentage: "Insurance Rate (%)",
-    insurance_amount: "Insurance Amount",
-    // Display only. The underscored names are the ERP sheet's own column fields (see each
-    // group's excel_config) and the key the export resolves against, so they are spelt out
-    // here for the operator rather than renamed underneath, where a rename would silently
-    // blank the column it feeds.
-    Frt_Currency: "Freight Currency",
-    Misc_Charge_Currency: "Misc Charge Currency",
-    Ins_Currency: "Insurance Currency",
-  },
-};
-// Same idea as FIELD_LABEL_OVERRIDES_BY_DOC_TYPE, but scoped to ONE template (keyed by
-// group_id) rather than every template that shares a doc_type - for a rename that should NOT
-// apply platform-wide. "HBL No" -> "HAWB Number" is the first of these: 4S Logistics' Sea
-// Import template (and every other BL-type template) must keep reading "HBL Number", only
-// "Air import (November 5)" reads "HAWB Number" for the exact same underlying field. Checked
-// BEFORE the doc-type-wide map (see fieldLabelOverride below) - a group-specific entry wins,
-// every other group falls through to the doc-type-wide override exactly as before.
-const FIELD_LABEL_OVERRIDES_BY_GROUP: Record<string, Record<string, string>> = {
-  "9b7a9384-4030-4052-ad5c-b33da7bf2912": { "HBL No": "HAWB Number" }, // Air import (November 5)
-};
-// `displayLabel` (FieldMark/CustomField.display_label, set per-field by an admin through the
-// Template Creation Wizard - no deploy needed) wins when set; otherwise falls back to the two
-// hardcoded frontend maps exactly as before, so no existing template's display changes.
+// A field's name on screen comes ONLY from its template (FieldMark / CustomField.display_label,
+// set in onboarding or Screen Designer). The hardcoded per-document / per-template label lists
+// that used to sit here were copied into every template's own labels on 2026-11-28
+// (deploy/oneoff/move_ui_labels_to_template.py) and removed - label_name, which the Excel, ERP,
+// rules and robot work on, is never changed by a label. Without a label the field's own name shows.
 function fieldLabelOverride(
   displayLabel: string | null | undefined,
-  groupId: string | undefined,
-  docType: string | undefined,
-  label: string,
+  _groupId?: string,
+  _docType?: string,
+  _label?: string,
 ): string | undefined {
-  if (displayLabel && displayLabel.trim()) return displayLabel.trim();
-  if (groupId && FIELD_LABEL_OVERRIDES_BY_GROUP[groupId]?.[label] !== undefined) {
-    return FIELD_LABEL_OVERRIDES_BY_GROUP[groupId][label];
-  }
-  return docType ? FIELD_LABEL_OVERRIDES_BY_DOC_TYPE[docType]?.[label] : undefined;
+  return displayLabel && displayLabel.trim() ? displayLabel.trim() : undefined;
 }
 // The Combined Description Configuration modal lists its source fields by label_name
 // (item_material_code, item_po_no, ...). This gives each one the name the product card on this
@@ -244,15 +157,13 @@ function fieldLabelOverride(
 // option's value - and so every saved format, the combined text, the Excel and the ERP - stays
 // the label_name. A label this screen has no other name for is shown as it is.
 function compositeFieldNamer(job: JobDetail | null): (label: string) => string {
-  const docTypeById = new Map((job?.documents ?? []).map((d) => [d.id, d.doc_type]));
   const names = new Map<string, string>();
   for (const fv of job?.field_values ?? []) {
     if (names.has(fv.label_name)) continue;
-    const docType = (fv.job_document_id && docTypeById.get(fv.job_document_id)) || "Invoice";
-    const name = fieldLabelOverride(fv.display_label, job?.group_id, docType, fv.label_name);
+    const name = fieldLabelOverride(fv.display_label);
     if (name) names.set(fv.label_name, name);
   }
-  return (label) => names.get(label) ?? fieldLabelOverride(undefined, job?.group_id, "Invoice", label) ?? label;
+  return (label) => names.get(label) ?? label;
 }
 // A static, informational caption under a field - background on a business rule applied to
 // it, not tied to this job's own data (see ExtractedField's own `hint` prop).
@@ -755,26 +666,6 @@ const ADDITIONAL_DETAILS_GROUPS: { heading: string; labels: string[] }[] = [
     labels: ["BETypeCode", "AdvancePriorNormal", "IGM No", "IGM Date", "MBL No", "MBL Date"],
   },
 ];
-// Display label only - label_name in the database is unchanged.
-const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
-  "Quotation Name": "Document Quotation Name",
-  "Erp Entry Name": "ERP Quotation Name",
-  branch_name: "ERP Quotation Branch",
-  "Payment Method": "Duty Payment Method",
-  AdvancePriorNormal: "Bill of Entry Type",
-  BETypeCode: "BE Type",
-  "IGM No": "IGM Number",
-  "MBL No": "Master Bill of Lading Number",
-  "MBL Date": "Master Bill of Lading Date",
-  insurance_percentage: "Insurance Rate (%)",
-  insurance_amount: "Insurance Amount",
-  // Same three as FIELD_LABEL_OVERRIDES_BY_DOC_TYPE.Custom, repeated so they read identically
-  // whether the operator meets them on the Freight Certificate tab or under Additional
-  // Details - the two cards are rendered by different code paths with their own maps.
-  Frt_Currency: "Freight Currency",
-  Misc_Charge_Currency: "Misc Charge Currency",
-  Ins_Currency: "Insurance Currency",
-};
 // The NAME an Additional Details field goes by on screen. Its field box, the "still need an
 // answer" banner and the "You haven't changed anything" confirmation all use this, so the
 // same field is never called one thing where it is typed and its backend name
@@ -782,7 +673,7 @@ const ADDITIONAL_DETAILS_LABEL_OVERRIDES: Record<string, string> = {
 // (CustomField.display_label - "PriorNormal" on Air import (November 5), where Advance is not
 // offered) wins; the name the Excel and the ERP script use is never changed by this.
 function askFieldLabel(fv: { label_name: string; display_label?: string | null }): string {
-  return fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name] || fv.label_name;
+  return fv.display_label?.trim() || fv.label_name;
 }
 // ...and the VALUE as the operator picked it: a dropdown saves a short code ("P") and shows a
 // word ("Prior"). The confirmation listed the code, which nobody can check at a glance. The
@@ -4496,8 +4387,8 @@ export function JobRunPage() {
                                 onToggle={switchInsuranceMode}
                                 readOnly={!canEditValues}
                                 reload={load}
-                                labelOverridePercentage={ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
-                                labelOverrideAmount={ADDITIONAL_DETAILS_LABEL_OVERRIDES["insurance_amount"]}
+                                labelOverridePercentage={fieldLabelOverride(fv.display_label)}
+                                labelOverrideAmount={fieldLabelOverride(insuranceAmountFv?.display_label)}
                               />
                             </div>
                           );
@@ -4546,7 +4437,7 @@ export function JobRunPage() {
                               readOnly={!canEditValues}
                               reload={load}
                               tone={fv.origin === "computed" ? "computed" : undefined}
-                              labelOverride={fv.display_label?.trim() || ADDITIONAL_DETAILS_LABEL_OVERRIDES[fv.label_name]}
+                              labelOverride={fieldLabelOverride(fv.display_label)}
                               options={
                                 fv.fixed_options && fv.fixed_options.length && !fixedChoicesSearchable
                                   ? fv.fixed_options.map(parseFixedOption)
@@ -5059,7 +4950,7 @@ export function JobRunPage() {
                   htmlFor="fix-value"
                   className="mt-1 block text-base font-semibold text-slate-900 dark:text-slate-50"
                 >
-                  {fv.label_name}
+                  {fieldLabelOverride(fv.display_label) ?? fv.label_name}
                 </label>
                 {fv.ask_operator_hint && (
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -5854,7 +5745,7 @@ function ExtractedField({
       try {
         if (!new RegExp(`^(?:${fv.validation_pattern})$`).test(transformed.trim())) {
           setFormatError(
-            fv.validation_message || `${fv.label_name} does not match the required format.`,
+            fv.validation_message || `${fieldLabelOverride(fv.display_label) ?? fv.label_name} does not match the required format.`,
           );
           return;
         }
@@ -6406,6 +6297,7 @@ function ReferenceSearchPicker({
   jobId,
   customFieldId,
   label,
+  displayName,
   readOnly,
   onPick,
 }: {
@@ -6413,8 +6305,10 @@ function ReferenceSearchPicker({
   customFieldId: string;
   /** This field's own label (fv.label_name) - picks the right placeholder wording from
    *  REFERENCE_SEARCH_PLACEHOLDERS, since this one component serves several very different
-   *  reference fields (a port code, a consignee name, ...). */
+   *  reference fields (a port code, a consignee name, ...). A KEY, never shown. */
   label: string;
+  /** The field's name as the operator sees it (its template label) - used in the general hint. */
+  displayName?: string;
   readOnly: boolean;
   /** The whole ROW, not just its value - the caller may fill other fields from the same row
    *  it was picked from (see REFERENCE_PICK_FILLS_FIELDS). */
@@ -6468,7 +6362,7 @@ function ReferenceSearchPicker({
         onFocus={() => setOpen(true)}
         // A short delay so a click on a result (below) lands before the blur closes the list.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${label}…`}
+        placeholder={REFERENCE_SEARCH_PLACEHOLDERS[label] ?? `Search to find or correct ${displayName ?? label}…`}
         className="w-full rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs italic text-slate-600 placeholder:text-slate-400 focus:border-indigo-400 focus:not-italic focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
       />
       {
@@ -8583,6 +8477,7 @@ function ExtractionReview({
                           jobId={jobId}
                           customFieldId={fv.custom_field_id!}
                           label={fv.label_name}
+                          displayName={fieldLabelOverride(fv.display_label) ?? fv.label_name}
                           readOnly={readOnly}
                           onPick={async (picked) => {
                             await jobsApi.correctFieldValue(fv.id, picked.value);

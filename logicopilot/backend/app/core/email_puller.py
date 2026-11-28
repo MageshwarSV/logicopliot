@@ -1786,6 +1786,34 @@ def _discard_pre_created_job(db: Session, job: Job | None, unbill: bool = False)
     db.commit()
 
 
+# What of a shipment's pre-alert row is kept on its job for _remember_prealert_shipment.
+PREALERT_KEPT_FIELDS = ("hawb", "pieces", "gross_weight")
+
+
+def _remember_prealert_shipment(db: Session, job: Job, shipment: dict | None) -> bool:
+    """Keep this shipment's HAWB, pieces and gross weight from the pre-alert on the job, in
+    Job.attachment_notes["prealert_shipment"], so the extraction can fill whichever of those
+    boxes the job's waybill leaves empty (jobs._fill_waybill_from_prealert). True when kept.
+
+    Found live on the MASIMO pre-alert (28 Nov 2026): one mail, four shipments, each with its
+    own FedEx label copy attached. A waybill had arrived, so none was generated from the mail,
+    and the HAWB - printed on the label as "TRK# 5472 4211 2765" - came out empty on three of
+    the four jobs, though the mail's own table named all four (HAWB, PCS, weight).
+
+    Nothing is kept for a record that is unknown or names no HAWB."""
+    if not isinstance(shipment, dict) or not str(shipment.get("hawb") or "").strip():
+        return False
+    if job.attachment_notes is not None and not isinstance(job.attachment_notes, dict):
+        return False
+    kept = {key: str(shipment[key]).strip() for key in PREALERT_KEPT_FIELDS
+            if str(shipment.get(key) or "").strip()}
+    notes = dict(job.attachment_notes or {})
+    notes["prealert_shipment"] = kept
+    job.attachment_notes = notes
+    db.commit()
+    return True
+
+
 def _file_prealert_awb(db: Session, group_id: str, job: Job, slots: dict, shipment_for,
                        filled: list[str], named: list[str]) -> bool:
     """File a generated "Air Waybill (Pre-Alert)" in this job's waybill slot when no waybill
@@ -2848,6 +2876,15 @@ def _process_one_message(
             _file_prealert_awb(db, group.id, job, slots, _prealert_shipment, filled, named)
         except Exception:  # noqa: BLE001 - the job simply has no waybill, as before
             logger.exception("could not generate the Air Waybill for email job %s", job.id)
+            db.rollback()
+        # A carrier's waybill DID arrive, so none was generated - but the pre-alert's own row
+        # for this shipment may still be known (a split mail always carries it). Kept on the
+        # job so the extraction fills whatever HAWB / pieces / gross weight that waybill leaves
+        # empty (jobs._fill_waybill_from_prealert). Only what is already known: no model call.
+        try:
+            _remember_prealert_shipment(db, job, _prealert_cache.get("rec"))
+        except Exception:  # noqa: BLE001 - the job is read exactly as before
+            logger.exception("could not keep the pre-alert row on email job %s", job.id)
             db.rollback()
 
     if not filled:
