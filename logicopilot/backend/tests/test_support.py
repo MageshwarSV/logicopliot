@@ -261,3 +261,19 @@ def test_first_erp_send_is_kept_across_retries(client, db_session):
     row = next(i for i in client.get("/api/v1/support/issues").json()["items"] if i["reference"] == "JOB-ERR")
     assert row["created_at"] and row["first_erp_at"] and row["last_erp_at"]
     assert 295 <= row["since_first_erp_minutes"] <= 305
+
+
+def test_job_monitoring_views_and_user(client, db_session):
+    """The overview tiles open Job Monitoring on the same jobs; each row says who has the job."""
+    _world(db_session)
+    _support(client, db_session)
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+    base = {"date_from": today, "date_to": today}
+    ov = client.get("/api/v1/support/overview", params=base).json()["tiles"]
+    for view, tile in (("failed", "failed"), ("submitted", "submitted"), ("manual", "manual_submitted"),
+                       ("auto", "auto_submitted"), ("in_review", "manual_in_review"), ("delayed", "delayed")):
+        body = client.get("/api/v1/support/jobs", params={**base, "view": view}).json()
+        assert body["total"] == ov[tile], view
+    body = client.get("/api/v1/support/jobs", params=base).json()
+    assert {v["key"] for v in body["views"]} >= {"auto", "manual", "failed", "delayed"}
+    assert all("user" in r and "user_how" in r for r in body["items"])

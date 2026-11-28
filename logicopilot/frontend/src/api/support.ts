@@ -129,15 +129,19 @@ export interface MonitoredJob {
   stage: string; stage_label: string; pages: number; created_at: string;
   timings: Record<"email_to_ai" | "queue_wait" | "extraction" | "erp", number | null>;
   delayed: boolean;
+  user: string | null;
+  user_how: string | null;
+  auto: boolean;
 }
 export interface SupportJobs {
   total: number;
   items: MonitoredJob[];
   stages: { key: string; label: string }[];
+  views: { key: string; label: string }[];
   customers: { id: string; name: string }[];
 }
 
-export async function getJobs(params: { date_from: string; date_to: string; tenant_id?: string; stage?: string; q?: string; limit?: number }): Promise<SupportJobs> {
+export async function getJobs(params: { date_from: string; date_to: string; tenant_id?: string; stage?: string; view?: string; q?: string; limit?: number }): Promise<SupportJobs> {
   const { data } = await apiClient.get<SupportJobs>("/support/jobs", { params });
   return data;
 }
