@@ -9,7 +9,8 @@ type AuthState = {
   email: string;
   server: string;
   pushProblem: string | null;
-  signIn: (server: string, email: string, password: string) => Promise<void>;
+  remember: boolean;
+  signIn: (server: string, email: string, password: string, remember: boolean) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -22,6 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [server, setServer] = useState(Api.DEFAULT_SERVER);
   const [pushToken, setPushToken] = useState<string | null>(null);
   const [pushProblem, setPushProblem] = useState<string | null>(null);
+  const [remember, setRemember] = useState(true);
 
   const startPush = useCallback(async () => {
     const r = await registerForPush();
@@ -31,18 +33,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     Api.setSignedOutHandler(() => setSignedIn(false));
-    Api.loadSession().then((s) => {
+    Api.loadSession().then(async (s) => {
       setServer(s.server);
       setEmail(s.email);
-      setSignedIn(s.signedIn);
+      setRemember(s.remember);
+      // Remember me: an ended session is renewed by signing in again, without the login screen.
+      const ok = s.signedIn ? await Api.ensureSession() : false;
+      setSignedIn(ok);
       setReady(true);
-      if (s.signedIn) startPush();
+      if (ok) startPush();
     });
     return () => Api.setSignedOutHandler(null);
   }, [startPush]);
 
-  const signIn = useCallback(async (srv: string, em: string, pw: string) => {
-    await Api.login(srv, em, pw);
+  const signIn = useCallback(async (srv: string, em: string, pw: string, rem: boolean) => {
+    await Api.login(srv, em, pw, rem);
+    setRemember(rem);
     setServer(Api.getServer());
     setEmail(em.trim());
     setSignedIn(true);
@@ -56,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [pushToken]);
 
   return (
-    <Ctx.Provider value={{ ready, signedIn, email, server, pushProblem, signIn, signOut }}>{children}</Ctx.Provider>
+    <Ctx.Provider value={{ ready, signedIn, email, server, pushProblem, remember, signIn, signOut }}>{children}</Ctx.Provider>
   );
 }
 

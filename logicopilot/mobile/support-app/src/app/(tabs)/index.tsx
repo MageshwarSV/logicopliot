@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 
+import { BUILD_LABEL } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import type { Home } from "../../lib/types";
 import { Card, Chip, ErrorLine, KIND_LABEL, agoIso, s, useColors, when } from "../../lib/ui";
@@ -90,6 +91,7 @@ export default function HomeScreen() {
       )}
       <View style={{ marginTop: 16, alignItems: "center", gap: 6 }}>
         <Text style={{ color: c.sub, fontSize: 12 }}>{email} · {server.replace(/^https?:\/\//, "")}</Text>
+        <Text style={{ color: c.sub, fontSize: 11 }}>Build {BUILD_LABEL}</Text>
         <Pressable onPress={signOut} hitSlop={10}>
           <Text style={{ color: c.red, fontWeight: "700" }}>Log out</Text>
         </Pressable>
