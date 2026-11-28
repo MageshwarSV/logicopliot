@@ -220,6 +220,12 @@ export function JobsPage() {
     user?.role === "tenant_admin" ||
     ((user?.role === "operator" || user?.role === "gk2") && assignedModes.length > 0);
   const [activeModeTab, setActiveModeTab] = useState<string>("All");
+  // A BL / HAWB is an import document. A user who only works export modes - or anyone looking
+  // at an export tab - has no use for that column, so it is left out for them.
+  const isExportMode = (m: string) => /export/i.test(m);
+  const hideBlColumn =
+    (assignedModes.length > 0 && assignedModes.every(isExportMode)) ||
+    (activeModeTab !== "All" && isExportMode(activeModeTab));
   const [savingEtaId, setSavingEtaId] = useState<string | null>(null);
   const canEditEta = user?.role === "operator" || user?.role === "super_admin" || user?.role === "admin";
   // Who can assign a job to an operator — same roles the backend's PATCH /jobs/{id}/assign
@@ -997,12 +1003,14 @@ export function JobsPage() {
         <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{j.reference}</span>
       ),
     },
-    {
-      header: "BL / HAWB",
-      render: (j) => (
-        <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
-      ),
-    },
+    ...(hideBlColumn
+      ? []
+      : [{
+          header: "BL / HAWB",
+          render: (j: Job) => (
+            <span className="font-mono text-slate-600 dark:text-slate-300">{j.hbl_no || "—"}</span>
+          ),
+        }]),
     {
       header: "Status",
       render: (j) => stageBadge(j.outer_status ?? j.stage, j.missing_documents, j.completed_at, j.erp_failed_at, j.auto_erp_submitted),
@@ -1227,7 +1235,7 @@ export function JobsPage() {
               type="search"
               value={jobSearch}
               onChange={(e) => setJobSearch(e.target.value)}
-              placeholder="Search by Job No or BL / HAWB..."
+              placeholder={hideBlColumn ? "Search by Job No..." : "Search by Job No or BL / HAWB..."}
               className={`${quickField} w-full pl-9`}
               autoComplete="off"
             />
