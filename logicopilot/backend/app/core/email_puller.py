@@ -58,7 +58,10 @@ logger = logging.getLogger(__name__)
 _scheduler_started = False
 
 CLASSIFY_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
-ATTACH_EXTS = CLASSIFY_EXTS | {".zip"}
+# Any other image (TIFF scans, BMP, GIF, WebP ...) is accepted and turned into a PDF before
+# classification (app/core/image_convert.py, 2026-11-28).
+from app.core.image_convert import CONVERT_EXTS as IMAGE_CONVERT_EXTS  # noqa: E402
+ATTACH_EXTS = CLASSIFY_EXTS | {".zip"} | IMAGE_CONVERT_EXTS
 
 # What the background poller's own last cycle did - not a message-processing result, a report
 # on the CYCLE itself: how many mailboxes were there to check, how many of them actually got
@@ -359,9 +362,18 @@ def _extract_attachments(msg: email.message.Message, exts: set[str] | None = Non
         if cid and (cid in body_cids or "attachment" not in disp):
             continue
         fname = _decode(part.get_filename())
+        allowed = exts or ATTACH_EXTS
+        # A picture attached without a usable name or extension ("scan", "image.dat") still
+        # counts when its content type says it is an image - named from that type.
+        if not fname or Path(fname).suffix.lower() not in allowed:
+            from app.core.image_convert import ext_for_mime
+
+            mext = ext_for_mime(part.get_content_type())
+            if mext and mext in allowed and "attachment" in disp:
+                fname = f"{Path(fname).stem if fname else 'attachment'}{mext}"
         if not fname:
             continue
-        if Path(fname).suffix.lower() not in (exts or ATTACH_EXTS):
+        if Path(fname).suffix.lower() not in allowed:
             continue
         payload = part.get_payload(decode=True)
         if payload:
@@ -2012,7 +2024,7 @@ def _process_one_message(
         except Exception:  # noqa: BLE001 - no passwords is the old behaviour, never a crash
             logger.exception("could not load saved zip passwords")
             db.rollback()
-    unpacked = unpack_attachments(raw_attachments, CLASSIFY_EXTS | office_convert.OFFICE_EXTS,
+    unpacked = unpack_attachments(raw_attachments, CLASSIFY_EXTS | office_convert.OFFICE_EXTS | IMAGE_CONVERT_EXTS,
                                   passwords=list(extra_passwords) + [pw for _id, pw in saved_pw])
     if unpacked.used_passwords:
         mark_used(db, [rid for rid, pw in saved_pw if pw in unpacked.used_passwords])
@@ -2035,7 +2047,15 @@ def _process_one_message(
 
     _flags = root_flags(unpacked.paths)
     file_root: list[bool | None] = []
+    from app.core.image_convert import ImageConvertFailed, is_convertible, to_pdf
+
     for (name, blob), flag in zip(unpacked.files, _flags):
+        if is_convertible(name):
+            try:
+                name, blob = to_pdf(name, blob)
+            except ImageConvertFailed as exc:
+                logger.warning("%s", exc)
+                continue
         if Path(name).suffix.lower() in CLASSIFY_EXTS:
             files.append((name, blob))
             file_root.append(flag)

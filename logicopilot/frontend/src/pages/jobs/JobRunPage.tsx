@@ -3168,7 +3168,7 @@ export function JobRunPage() {
                     <input
                       type="file"
                       multiple
-                      accept=".pdf,.png,.jpg,.jpeg,.zip,.doc,.docx,.xls,.xlsx"
+                      accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.zip,.doc,.docx,.xls,.xlsx"
                       className="hidden"
                       disabled={smartBusy}
                       onChange={(e) => {
@@ -3525,7 +3525,7 @@ export function JobRunPage() {
                         </span>
                       )}
                       {/* `multiple`: three invoices are picked in one go, not one at a time. */}
-                      <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx" className="hidden" disabled={isUploading} onChange={(e) => handleUpload(tdocId, e.target.files)} />
+                      <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.doc,.docx,.xls,.xlsx" className="hidden" disabled={isUploading} onChange={(e) => handleUpload(tdocId, e.target.files)} />
                     </label>
                   )}
                 </div>
@@ -8311,7 +8311,7 @@ function ExtractionReview({
                 <input
                   ref={reuploadInputRef}
                   type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx"
+                  accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.doc,.docx,.xls,.xlsx"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
