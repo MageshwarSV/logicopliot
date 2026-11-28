@@ -8,7 +8,7 @@ import { AppShell } from "../../components/AppShell";
 import { Alert } from "../../components/ui/Alert";
 import {
   ArrowPathIcon, BriefcaseIcon, CheckBadgeIcon, CheckCircleIcon, ChartBarIcon, ClockIcon, DocumentIcon,
-  ExclamationTriangleIcon, LayersIcon, MonitorIcon, UploadIcon,
+  ExclamationTriangleIcon, LayersIcon, MonitorIcon,
 } from "../../components/ui/icons";
 import * as supportApi from "../../api/support";
 import type { IssueTab, SupportHealth, SupportIssues, SupportOverview, SupportPerformance } from "../../api/support";
@@ -100,8 +100,10 @@ export function SupportOverviewPage() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <StatTile label="Total jobs" value={t?.total_jobs ?? "—"} icon={<BriefcaseIcon className="h-5 w-5" />} tone="blue" />
           <StatTile label="Pages" value={t?.pages ?? "—"} sub={t?.avg_pages != null ? `Avg ${t.avg_pages} / job` : undefined} icon={<DocumentIcon className="h-5 w-5" />} tone="violet" />
-          <StatTile label="Attachments" value={t?.attachments ?? "—"} icon={<UploadIcon className="h-5 w-5" />} tone="slate" />
-          <StatTile label="Submitted to ERP" value={t?.submitted ?? "—"} sub={t?.submitted_pct != null ? `${t.submitted_pct}%` : undefined} icon={<CheckCircleIcon className="h-5 w-5" />} tone="green" />
+          <StatTile label="Submitted to ERP" value={t?.submitted ?? "—"} sub={t?.submitted_pct != null ? `${t.submitted_pct}% of jobs` : undefined} icon={<CheckCircleIcon className="h-5 w-5" />} tone="green" />
+          <SplitTile
+            left={{ label: "Auto submitted", value: t?.auto_submitted, pct: t?.auto_submitted_pct, cls: "text-indigo-700 dark:text-indigo-300" }}
+            right={{ label: "Manual submitted", value: t?.manual_submitted, pct: t?.manual_submitted_pct, cls: "text-slate-900 dark:text-slate-50" }} />
           <StatTile label="Failed" value={t?.failed ?? "—"} sub={t?.failed_pct != null ? `${t.failed_pct}%` : undefined} icon={<ExclamationTriangleIcon className="h-5 w-5" />} tone="red" />
           <StatTile label="Delayed (> SLA)" value={t?.delayed ?? "—"} sub={t?.delayed_pct != null ? `${t.delayed_pct}%` : undefined} icon={<ClockIcon className="h-5 w-5" />} tone="amber" />
         </div>
@@ -183,5 +185,27 @@ export function SupportOverviewPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+
+/** One tile, two columns - Auto vs Manual submissions, each with its share of all submitted. */
+function SplitTile({ left, right }: {
+  left: { label: string; value?: number; pct?: number | null; cls: string };
+  right: { label: string; value?: number; pct?: number | null; cls: string };
+}) {
+  const side = (x: typeof left) => (
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400" title={x.label}>{x.label}</p>
+      <p className={`text-2xl font-bold tabular-nums ${x.cls}`}>{x.value ?? "—"}</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{x.pct != null ? `${x.pct}% of submitted` : "—"}</p>
+    </div>
+  );
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      {side(left)}
+      <div className="h-10 w-px bg-slate-200 dark:bg-slate-700" />
+      {side(right)}
+    </div>
   );
 }

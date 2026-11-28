@@ -11,6 +11,10 @@ export interface SupportOverview {
     attachments: number;
     submitted: number;
     submitted_pct: number | null;
+    auto_submitted: number;
+    manual_submitted: number;
+    auto_submitted_pct: number | null;
+    manual_submitted_pct: number | null;
     failed: number;
     failed_pct: number | null;
     delayed: number;
