@@ -11520,6 +11520,9 @@ def run_extraction(
     _ensure_manual_entry_fields(db, job, group)
     # A waybill generated from a pre-alert has no dates on it - see the helper.
     _blank_dates_on_generated_waybills(db, job)
+    # HAWB / pieces / gross weight the waybill left empty come from the pre-alert mail's own
+    # row for this shipment - see the helper.
+    _fill_waybill_from_prealert(db, job)
     # Indian Customs Tariff (off unless the template has it on): CTH codes outside the tariff
     # are not used, empty lines get the nearest tariff code for the operator to confirm.
     # After the dump lookup above, which is unchanged. See app/core/customs_tariff_jobs.py.
@@ -11953,6 +11956,84 @@ def _blank_dates_on_generated_waybills(db: Session, job: Job) -> list[str]:
         logger.info("job %s: %s left empty - its only source is a waybill generated from the "
                     "pre-alert, which carries no dates", job.id, emptied)
     return emptied
+
+
+# Which waybill box each kept pre-alert value fills - labels compared in lower case, letters and
+# digits only ("HBL No" -> "hblno").
+_PREALERT_FILL_LABELS = {
+    "hawb": {"hblno", "hblnumber", "hawb", "hawbno", "hawbnumber", "houseawbno", "housebillno"},
+    "pieces": {"packagecount", "noofpackages", "noofpkgs", "pieces", "pcs", "totalpackages"},
+    "gross_weight": {"grosswt", "grossweight"},
+}
+_PREALERT_WEIGHT_UNIT_LABELS = {"grossweightunit", "grosswtunit"}
+
+
+def _fill_waybill_from_prealert(db: Session, job: Job) -> list[str]:
+    """Fill the HAWB, pieces and gross weight the job's waybill left EMPTY from the pre-alert
+    mail's own row for this shipment (kept by email_puller._remember_prealert_shipment in
+    Job.attachment_notes["prealert_shipment"]). Returns the labels it filled.
+
+    The rule "BL details in the mail become a document" generates a waybill only when none is
+    attached. When the carrier's own copy IS attached, the mail's table used to go unused, and
+    whatever that copy did not give stayed empty: on the MASIMO pre-alert (28 Nov 2026) four
+    FedEx label copies arrived and the HAWB came out empty on three jobs (JOB-FBC2F0,
+    JOB-FCEEFC, JOB-ACBCD1), pieces and weight on two, though the mail named all of them.
+
+    Only an empty box (nothing but blanks or punctuation) is filled - a value read off the
+    waybill always stays, and so does an operator's correction (restored after this runs). When
+    the weight is filled with a plain number, an empty gross-weight unit becomes KGS, as on a
+    waybill generated from the pre-alert. Does not commit.
+    """
+    notes = job.attachment_notes if isinstance(job.attachment_notes, dict) else {}
+    shipment = notes.get("prealert_shipment")
+    if not isinstance(shipment, dict) or not shipment:
+        return []
+    waybill_tdoc_ids = {
+        tid for (tid,) in db.query(TemplateDocument.id)
+        .filter(TemplateDocument.group_id == job.group_id, TemplateDocument.doc_type == "BL").all()
+    }
+    if not waybill_tdoc_ids:
+        return []
+    waybill_jd_ids = {
+        jid for (jid,) in db.query(JobDocument.id)
+        .filter(JobDocument.job_id == job.id, JobDocument.file_path.isnot(None),
+                JobDocument.template_document_id.in_(waybill_tdoc_ids)).all()
+    }
+    if not waybill_jd_ids:
+        return []
+
+    def key(label: str | None) -> str:
+        return re.sub(r"[^a-z0-9]", "", (label or "").lower())
+
+    def empty(value: str | None) -> bool:
+        return not re.search(r"[A-Za-z0-9]", value or "")
+
+    db.flush()
+    boxes = (db.query(JobFieldValue)
+             .filter(JobFieldValue.job_id == job.id, JobFieldValue.mark_id.isnot(None),
+                     JobFieldValue.row_index.is_(None),
+                     JobFieldValue.job_document_id.in_(waybill_jd_ids)).all())
+    filled: list[str] = []
+    weight_filled = False
+    for field, labels in _PREALERT_FILL_LABELS.items():
+        value = str(shipment.get(field) or "").strip()
+        if empty(value):
+            continue
+        for fv in boxes:
+            if key(fv.label_name) in labels and empty(fv.extracted_value):
+                fv.extracted_value = value
+                filled.append(fv.label_name)
+                if field == "gross_weight" and re.fullmatch(r"[\d.,]+", value):
+                    weight_filled = True
+    if weight_filled:
+        for fv in boxes:
+            if key(fv.label_name) in _PREALERT_WEIGHT_UNIT_LABELS and empty(fv.extracted_value):
+                fv.extracted_value = "KGS"
+                filled.append(fv.label_name)
+    if filled:
+        logger.info("job %s: %s filled from the pre-alert mail's row for HAWB %s - the waybill "
+                    "left them empty", job.id, filled, shipment.get("hawb"))
+    return filled
 
 
 def _apply_correction(db: Session, fv: JobFieldValue, value: str) -> None:
