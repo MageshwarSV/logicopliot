@@ -415,12 +415,15 @@ export interface ErpHelpItem {
   suggest: string;
   fixable: boolean;
   support_reason: string | null;
+  /** "excel" = there is no box on the job screen, but the ERP Excel has the cell. */
+  support_action?: "excel" | null;
   field_value_ids: string[];
 }
 
 export interface ErpHelp {
-  /** import_rejected = the ERP refused it; pre_check = Cargora stopped it before the ERP. */
-  kind: "import_rejected" | "pre_check";
+  /** import_rejected = the ERP refused the Excel import; pre_check = Cargora stopped it
+   *  before the ERP; field_rejected = the ERP's own screen would not keep one value. */
+  kind: "import_rejected" | "pre_check" | "field_rejected";
   items: ErpHelpItem[];
   erp_rows: { sheet: string; column: string; invoice: number | null; product: number | null; rule: string; text: string }[];
   excel_edited: boolean;

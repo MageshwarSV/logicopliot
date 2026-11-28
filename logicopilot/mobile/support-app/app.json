@@ -12,13 +12,14 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#4F46E5",
+        "backgroundColor": "#6366F1",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "ai.axioralabs.cargora.support"
+      "package": "ai.axioralabs.cargora.support",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -35,7 +36,12 @@
     ],
     "scheme": "cargorasupport",
     "extra": {
-      "defaultServer": "https://cargora.axioralabs.ai"
-    }
+      "defaultServer": "https://cargora.axioralabs.ai",
+      "router": {},
+      "eas": {
+        "projectId": "64d7e761-1dfb-4afb-b3b3-f4404f8c2452"
+      }
+    },
+    "owner": "axioralabs"
   }
 }

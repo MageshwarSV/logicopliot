@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "175387676428",
+    "project_id": "cargora-production-support",
+    "storage_bucket": "cargora-production-support.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:175387676428:android:d27168b25a6a09b09c4329",
+        "android_client_info": {
+          "package_name": "ai.axioralabs.cargora.support"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbX_NPjgSZQ14KIDVIRef5ef0FhPojops"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -138,3 +138,26 @@ export async function setMandatory(groupId: string, keys: string[], required: bo
   const { data } = await apiClient.post(`/erp-rules/${groupId}/mandatory`, { keys, required });
   return data;
 }
+
+/** The configuration by document and field - the operator's view (GET /erp-rules/{id}/fields). */
+export interface FieldTarget {
+  key: string; sheet: string; column: string; header: string; mandatory: boolean;
+  rule: ErpRule | null; builtin: boolean; accepted_values: string[] | null; refused: number; fill_pct: number | null;
+}
+export interface FieldSuggestion { kind: "mandatory" | "rule" | "note" | "covered"; strong: boolean; text: string; keys: string[]; rule?: ErpRule }
+export interface FieldItem {
+  label: string; display: string; group: string; kind: "document" | "job" | "missing";
+  documents: string[]; per_line: boolean; targets: FieldTarget[];
+  mandatory: "all" | "some" | "none"; validation: string[]; issues: string[]; suggestions: FieldSuggestion[];
+  status: MappingStatus; refused: number;
+}
+export interface FieldView {
+  id: string; name: string; excel_file: string; fields: FieldItem[];
+  fixed: { key: string; sheet: string; column: string; header: string; value: string | null }[];
+  counts: { fields: number; with_issues: number; with_suggestions: number };
+}
+
+export async function getFieldView(groupId: string): Promise<FieldView> {
+  const { data } = await apiClient.get<FieldView>(`/erp-rules/${groupId}/fields`);
+  return data;
+}

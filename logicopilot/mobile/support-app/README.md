@@ -21,24 +21,37 @@ Expo Go - they need a build (below).
 
 ## Build the Android app (APK) - one time setup
 
+Install the Expo CLI once (outside this folder - its .npmrc trips `npx eas-cli` on npm 11):
+
+    npm install -g eas-cli
+
+
 1. Create a free Expo account (company email) at expo.dev.
-2. `npx eas-cli@latest login`
-3. `npx eas-cli@latest init` - links this folder to an Expo project and writes
+2. `eas login`
+3. `eas init` - links this folder to an Expo project and writes
    `extra.eas.projectId` into app.json (commit that change).
-4. `npx eas-cli@latest build --platform android --profile preview`
+4. `eas build --platform android --profile preview`
+   (already linked: Expo project @axioralabs/cargora-support, owner axioralabs)
 5. EAS gives a link to the .apk - send it to the team; they open it on the phone and install
    (allow "install unknown apps" once).
 
 Push alerts on Android also need Firebase (FCM) credentials uploaded once:
-`npx eas-cli@latest credentials` -> Android -> Google Service Account / FCM V1 key.
+`eas credentials` -> Android -> Google Service Account / FCM V1 key.
 
 ## iPhone (later)
 
 Needs an Apple Developer account (99 USD / year, company). Then
-`npx eas-cli@latest build --platform ios` and `npx eas-cli@latest submit --platform ios` to
+`eas build --platform ios` and `eas submit --platform ios` to
 TestFlight; the team installs via the TestFlight app.
 
 ## Checks
 
     npx tsc --noEmit
     npx expo-doctor
+
+## Build notes
+
+- `/.easignore` (repository root): the EAS uploader does not follow the repo's allow-list
+  `.gitignore`; without it the upload held no app files and every build failed.
+- `.npmrc` here (`legacy-peer-deps=true`): EAS's npm 10 refused Expo SDK 57's optional peer
+  versions (react-dom 19.3.1 vs react 19.2.3) and stopped at "Install dependencies".

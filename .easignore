@@ -1,0 +1,19 @@
+# Expo (EAS) build upload - read INSTEAD of .gitignore, whose allow-list style ("/*" then
+# "!/logicopilot/...") the EAS uploader does not follow (it uploaded nothing but deploy.sh).
+# Only the phone app (logicopilot/mobile/support-app) is needed for a build.
+/*.xlsx
+/*.zip
+/CLAUDE.md
+/logicopilot/backend/
+/logicopilot/frontend/
+/logicopilot/deploy/
+**/node_modules/
+**/.expo/
+**/dist/
+**/web-build/
+**/.DS_Store
+**/*.jks
+**/*.p8
+**/*.p12
+**/*.key
+**/*.mobileprovision

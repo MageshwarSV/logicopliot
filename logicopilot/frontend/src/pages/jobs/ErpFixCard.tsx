@@ -54,6 +54,9 @@ export function ErpFixCard({
   const allDone = fixable.length > 0 && done === fixable.length && support.length === 0;
   const n = items.length;
   const preCheck = help.kind === "pre_check";
+  // The ERP's own screen refused ONE value (its dropdown has no such option), rather than
+  // its Excel import refusing a table of them. Same card, different words.
+  const fieldRejected = help.kind === "field_rejected";
 
   const copyForSupport = async () => {
     const text = [
@@ -80,10 +83,18 @@ export function ErpFixCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {preCheck ? "Not sent to ERP - ERP would refuse these values" : "ERP did not accept this job"}
+            {preCheck
+              ? "Not sent to ERP - ERP would refuse these values"
+              : fieldRejected
+                ? "The ERP would not accept one of the values"
+                : "ERP did not accept this job"}
           </p>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
-            {preCheck ? "Cargora checked the ERP Excel before sending it. " : "Nothing was saved in ERP. "}
+            {preCheck
+              ? "Cargora checked the ERP Excel before sending it. "
+              : fieldRejected
+                ? "Nothing was saved in ERP. The ERP kept clearing this box, because its own list has no such value. "
+                : "Nothing was saved in ERP. "}
             {fixable.length > 0 ? "Fix the detail" + (n === 1 ? "" : "s") + " below and press Retry." : "See below."}
           </p>
         </div>
@@ -176,6 +187,22 @@ export function ErpFixCard({
                     </button>
                   </div>
                 )
+              ) : item.support_action === "excel" ? (
+                /* There is genuinely no box on the job screen for this one, but the ERP
+                   Excel has the cell - so send them there instead of to support. */
+                <p className="mt-1.5 text-xs text-amber-800 dark:text-amber-200">
+                  {item.support_reason} Type it in{" "}
+                  {onOpenExcel ? (
+                    <button type="button" onClick={onOpenExcel} className="font-semibold underline">
+                      Edit ERP Excel
+                    </button>
+                  ) : (
+                    "Edit ERP Excel"
+                  )}
+                  {item.sheet ? <> — sheet <b>{item.sheet}</b></> : null}
+                  {item.erp_columns.length ? <>, column <b>{item.erp_columns[0]}</b></> : null}
+                  {item.where ? `, ${item.where}` : ""} — then press Retry.
+                </p>
               ) : (
                 <p className="mt-1.5 text-xs text-amber-800 dark:text-amber-200">
                   {item.support_reason} You can't change it here — please contact Cargora support.
@@ -191,7 +218,13 @@ export function ErpFixCard({
           <p className="font-semibold text-slate-900 dark:text-slate-50">How to fix</p>
           <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-slate-700 dark:text-slate-300">
             <li>Press <b>Fix</b>. The box opens, outlined in red.</li>
-            <li>Type the correct value and press <b>Save</b>.</li>
+            <li>
+              {fieldRejected ? (
+                <>Pick a value from the list and press <b>Save</b>.</>
+              ) : (
+                <>Type the correct value and press <b>Save</b>.</>
+              )}
+            </li>
             <li>Come back here and press <b>Retry</b>.</li>
           </ol>
         </div>

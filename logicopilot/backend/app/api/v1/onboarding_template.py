@@ -619,8 +619,11 @@ def live_settings_from(f: ErpField, label: str) -> dict:
     used when the live field is created AND every time Step 4 saves (push_to_live), so what is
     configured in onboarding is what jobs use."""
     cfg = f.config or {}
-    out: dict = {"display_label": f.display_label if f.display_label and f.display_label != label else None,
-                 "ask_operator_required": bool(f.mandatory)}
+    out: dict = {"ask_operator_required": bool(f.mandatory)}
+    # A blank onboarding label never wipes the label already on the live field (2026-11-28) -
+    # labels live in the template; onboarding only ever adds or changes one.
+    if f.display_label and f.display_label != label:
+        out["display_label"] = f.display_label
     if f.category == "fixed":
         out["hardcoded_value"] = cfg.get("value") or f.default_value
         out["hidden_from_capture"] = bool(cfg.get("hidden"))
@@ -661,7 +664,9 @@ def push_to_live(db: Session, f: ErpField) -> dict | None:
         m = db.get(FieldMark, ref[2:])
         if m is None:
             return None
-        m.display_label = f.display_label if f.display_label and f.display_label != m.label_name else None
+        # A blank onboarding label leaves the live label as it is (it used to clear it).
+        if f.display_label and f.display_label != m.label_name:
+            m.display_label = f.display_label
         return {"ref": ref, "label": m.label_name}
     return None
 
