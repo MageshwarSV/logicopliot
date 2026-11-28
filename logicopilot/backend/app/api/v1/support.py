@@ -305,6 +305,13 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
     # Attachments tile on the overview).
     auto_submitted = sum(1 for j in submitted_jobs if getattr(j, "auto_erp_submitted", False))
     manual_submitted = submitted - auto_submitted
+    # Not submitted yet, not failed: an auto job is on its way into the ERP; a manual one is
+    # still with a person (review / approval / their own ERP run).
+    open_jobs = [j for j in jobs if not _is_failed(j) and not (_is_submitted(j) and not _is_failed(j))]
+    auto_in_progress = sum(1 for j in open_jobs if getattr(j, "auto_erp_submitted", False))
+    manual_in_review = sum(1 for j in open_jobs if not getattr(j, "auto_erp_submitted", False)
+                           and _pipeline_stage(j) in ("ready_for_review", "in_review", "waiting_approval",
+                                                      "erp_submission"))
     failed = sum(1 for j in jobs if _is_failed(j))
     events = _extracting_events(db, ids)
     delayed = sum(1 for j in jobs if _breaches(_timings(j, events.get(j.id, [])), sla))
@@ -342,6 +349,7 @@ def overview(date_from: str, date_to: str, db: Session = Depends(get_db), _user:
             "attachments": attachments,
             "submitted": submitted, "submitted_pct": pct(submitted),
             "auto_submitted": auto_submitted, "manual_submitted": manual_submitted,
+            "auto_in_progress": auto_in_progress, "manual_in_review": manual_in_review,
             "auto_submitted_pct": round(100.0 * auto_submitted / submitted, 1) if submitted else None,
             "manual_submitted_pct": round(100.0 * manual_submitted / submitted, 1) if submitted else None,
             "failed": failed, "failed_pct": pct(failed),

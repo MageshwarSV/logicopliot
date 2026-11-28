@@ -102,8 +102,10 @@ export function SupportOverviewPage() {
           <StatTile label="Pages" value={t?.pages ?? "—"} sub={t?.avg_pages != null ? `Avg ${t.avg_pages} / job` : undefined} icon={<DocumentIcon className="h-5 w-5" />} tone="violet" />
           <StatTile label="Submitted to ERP" value={t?.submitted ?? "—"} sub={t?.submitted_pct != null ? `${t.submitted_pct}% of jobs` : undefined} icon={<CheckCircleIcon className="h-5 w-5" />} tone="green" />
           <SplitTile
-            left={{ label: "Auto submitted", value: t?.auto_submitted, pct: t?.auto_submitted_pct, cls: "text-indigo-700 dark:text-indigo-300" }}
-            right={{ label: "Manual submitted", value: t?.manual_submitted, pct: t?.manual_submitted_pct, cls: "text-slate-900 dark:text-slate-50" }} />
+            left={{ label: "Auto submitted", value: t?.auto_submitted, pct: t?.auto_submitted_pct, cls: "text-indigo-700 dark:text-indigo-300",
+                    extra: t?.auto_in_progress ? `+${t.auto_in_progress} being entered now` : undefined }}
+            right={{ label: "Manual submitted", value: t?.manual_submitted, pct: t?.manual_submitted_pct, cls: "text-slate-900 dark:text-slate-50",
+                     extra: t?.manual_in_review ? `+${t.manual_in_review} in review` : undefined }} />
           <StatTile label="Failed" value={t?.failed ?? "—"} sub={t?.failed_pct != null ? `${t.failed_pct}%` : undefined} icon={<ExclamationTriangleIcon className="h-5 w-5" />} tone="red" />
           <StatTile label="Delayed (> SLA)" value={t?.delayed ?? "—"} sub={t?.delayed_pct != null ? `${t.delayed_pct}%` : undefined} icon={<ClockIcon className="h-5 w-5" />} tone="amber" />
         </div>
@@ -191,14 +193,15 @@ export function SupportOverviewPage() {
 
 /** One tile, two columns - Auto vs Manual submissions, each with its share of all submitted. */
 function SplitTile({ left, right }: {
-  left: { label: string; value?: number; pct?: number | null; cls: string };
-  right: { label: string; value?: number; pct?: number | null; cls: string };
+  left: { label: string; value?: number; pct?: number | null; cls: string; extra?: string };
+  right: { label: string; value?: number; pct?: number | null; cls: string; extra?: string };
 }) {
   const side = (x: typeof left) => (
     <div className="min-w-0 flex-1">
       <p className="truncate text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400" title={x.label}>{x.label}</p>
       <p className={`text-2xl font-bold tabular-nums ${x.cls}`}>{x.value ?? "—"}</p>
       <p className="text-xs text-slate-500 dark:text-slate-400">{x.pct != null ? `${x.pct}% of submitted` : "—"}</p>
+      {x.extra && <p className="mt-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300">{x.extra}</p>}
     </div>
   );
   return (

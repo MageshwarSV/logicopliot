@@ -15,6 +15,8 @@ export interface SupportOverview {
     manual_submitted: number;
     auto_submitted_pct: number | null;
     manual_submitted_pct: number | null;
+    auto_in_progress: number;
+    manual_in_review: number;
     failed: number;
     failed_pct: number | null;
     delayed: number;

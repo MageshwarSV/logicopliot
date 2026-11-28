@@ -77,6 +77,7 @@ def test_overview_counts_every_customer(client, db_session):
     assert tiles["total_jobs"] >= 4 and tiles["failed"] >= 1 and tiles["submitted"] >= 1
     assert tiles["auto_submitted"] + tiles["manual_submitted"] == tiles["submitted"]
     assert tiles["manual_submitted_pct"] is not None
+    assert tiles["manual_in_review"] >= 1 and tiles["auto_in_progress"] == 0
     stages = {p["key"]: p["count"] for p in body["pipeline"]}
     assert stages["failed"] >= 1 and stages["ai_processing"] >= 1 and stages["ready_for_review"] >= 1
     attention = {a["key"]: a["count"] for a in body["attention"]}
