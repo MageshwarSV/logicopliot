@@ -390,6 +390,14 @@ def rename_group(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
     if user.role == TENANT_ADMIN and group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template group not found")
+    # Two templates of one customer with the same name cannot be told apart in any list
+    # (user assignment, mailbox routing, reports) - refused (2026-11-28).
+    clash = (db.query(TemplateGroup)
+             .filter(TemplateGroup.tenant_id == group.tenant_id, TemplateGroup.id != group.id)
+             .all())
+    if any((g.name or "").strip().lower() == name.lower() for g in clash):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This customer already has a template with that name - pick another")
     group.name = name[:200]
     db.commit()
     db.refresh(group)

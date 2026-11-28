@@ -2,7 +2,7 @@
   "expo": {
     "name": "Cargora Support",
     "slug": "cargora-support",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -19,7 +19,8 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "ai.axioralabs.cargora.support",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "versionCode": 2
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -40,7 +41,8 @@
       "router": {},
       "eas": {
         "projectId": "64d7e761-1dfb-4afb-b3b3-f4404f8c2452"
-      }
+      },
+      "buildLabel": "1.0.1 \u00b7 28 Nov 15:15"
     },
     "owner": "axioralabs"
   }
