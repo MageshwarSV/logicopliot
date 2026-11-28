@@ -119,8 +119,20 @@ export function SupportJobsPage() {
                     <td className={`${T.td} whitespace-nowrap`}>
                       {j.user ? (
                         <>
-                          <span className={`font-medium ${j.auto ? "text-indigo-700 dark:text-indigo-300" : "text-slate-800 dark:text-slate-100"}`}>{j.auto ? "⚡ " : ""}{j.user}</span>
-                          {j.user_how && <span className="block text-[11px] text-slate-500">{j.user_how}</span>}
+                          {j.auto && j.user !== "Auto ERP" ? (
+                            <>
+                              <span className="font-medium text-slate-800 dark:text-slate-100">{j.user}</span>
+                              <span className="mt-0.5 flex items-center gap-1">
+                                <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">⚡ Auto ERP</span>
+                                <span className="text-[11px] text-slate-500">sent to ERP</span>
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className={`font-medium ${j.auto ? "text-indigo-700 dark:text-indigo-300" : "text-slate-800 dark:text-slate-100"}`}>{j.auto ? "⚡ " : ""}{j.user}</span>
+                              {j.user_how && <span className="block text-[11px] text-slate-500">{j.user_how}</span>}
+                            </>
+                          )}
                         </>
                       ) : <span className="text-slate-400">—</span>}
                     </td>
