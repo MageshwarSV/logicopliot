@@ -14,6 +14,8 @@
 /logicopilot/*
 !/logicopilot/backend/
 !/logicopilot/frontend/
+# The Production Support phone app (Expo). Its own .gitignore keeps node_modules / builds out.
+!/logicopilot/mobile/
 # Multi-server setup files (nginx routing, deploy for the 4 servers): text configs and
 # examples only - never secrets or .env files.
 !/logicopilot/deploy/
