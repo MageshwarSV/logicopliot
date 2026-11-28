@@ -5546,6 +5546,8 @@ function ExtractedField({
   hideBlankOption,
   multiline,
   wrapLabel,
+  subgrid,
+  after,
   flagged,
   flagNote,
   hint: hintProp,
@@ -5596,6 +5598,12 @@ function ExtractedField({
   /** A label too long to read under the default single-line truncate - see
    *  WRAP_LABEL_FIELD_LABELS. */
   wrapLabel?: boolean;
+  /** Inside a document tab's field grid: the field spans two rows of its parent's subgrid -
+   *  label row, then box row - so every box on a line starts at the same height, whatever
+   *  each label wraps to and whatever caption sits under a neighbour's box. */
+  subgrid?: boolean;
+  /** Rendered at the end of the box row (under the box), e.g. a reference search picker. */
+  after?: ReactNode;
   /** Painted red regardless of tone/corrected state, with `flagNote` shown under it - e.g. a
    *  product description that was translated from another language, so the operator knows to
    *  double-check it against the original printed text rather than trusting it blindly. */
@@ -5926,10 +5934,8 @@ function ExtractedField({
   // See EMPTY_PLACEHOLDER_BY_LABEL. Every field keeps "not found" unless it is listed there.
   const emptyPlaceholder = EMPTY_PLACEHOLDER_BY_LABEL[fv.label_name] ?? "not found";
   return (
-    // flex-1 + items-end: in a grid row whose labels wrap to different line counts, every
-    // box still sits on the same line - the label takes up the slack above it.
-    <div id={id} className="flex min-w-0 flex-1 flex-col">
-      <div className="mb-1 flex flex-1 items-end gap-1.5">
+    <div id={id} className={subgrid ? "row-span-2 grid min-w-0 grid-rows-subgrid" : "min-w-0"}>
+      <div className={`mb-1 flex gap-1.5 ${subgrid ? "items-end" : "items-center"}`}>
         <p
           className={`${wrapLabel || !small ? "break-words" : "truncate"} font-semibold text-slate-900 dark:text-slate-100 ${
             small ? "text-[11px] font-medium text-slate-500 dark:text-slate-400" : "text-sm"
@@ -5975,6 +5981,7 @@ function ExtractedField({
         )}
         {headerExtra && <div className="ml-auto shrink-0">{headerExtra}</div>}
       </div>
+      <div className="min-w-0">
       <div
         ref={boxWrapRef}
         className="relative"
@@ -6381,6 +6388,8 @@ function ExtractedField({
         <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-400">{flagNote}</p>
       )}
       {hint && <p className="mt-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">{hint}</p>}
+      {after}
+      </div>
     </div>
   );
 }
@@ -8422,7 +8431,7 @@ function ExtractionReview({
                   if (fv.label_name === "insurance_amount") return null;
                   if (fv.label_name === "insurance_percentage") {
                     return (
-                      <div key={fv.id} id={`field-${fv.id}`} className="sm:col-span-12">
+                      <div key={fv.id} id={`field-${fv.id}`} className="row-span-2 pb-3 sm:col-span-12">
                         <InsuranceModeField
                           percentageFv={insurancePercentageFv}
                           amountFv={insuranceAmountFv}
@@ -8556,7 +8565,7 @@ function ExtractionReview({
                       key={fv.id}
                       id={`field-${fv.id}`}
                       className={
-                        `flex flex-col ${
+                        `row-span-2 grid grid-rows-subgrid pb-3 ${
                           FULL_WIDTH_FIELD_LABELS.has(fv.label_name) || fv.full_width
                             ? "sm:col-span-12"
                             : fv.quarter_width
@@ -8568,6 +8577,39 @@ function ExtractionReview({
                       }
                     >
                       <ExtractedField
+                        subgrid
+                        after={showSearchFallback && (
+                        <ReferenceSearchPicker
+                          jobId={jobId}
+                          customFieldId={fv.custom_field_id!}
+                          label={fv.label_name}
+                          readOnly={readOnly}
+                          onPick={async (picked) => {
+                            await jobsApi.correctFieldValue(fv.id, picked.value);
+                            // The row that gave us the code also describes it - fill the
+                            // fields it answers rather than make the operator retype them off
+                            // the same document. See REFERENCE_PICK_FILLS_FIELDS.
+                            const fills = REFERENCE_PICK_FILLS_FIELDS[fv.label_name];
+                            if (fills) {
+                              const pairs: [string | undefined, string | undefined][] = [
+                                [picked.match_1, fills.fromMatch1],
+                                [picked.match_2, fills.fromMatch2],
+                              ];
+                              for (const [key, targetLabel] of pairs) {
+                                if (!key?.trim() || !targetLabel) continue;
+                                // Job-level only (row_index == null): these describe the
+                                // shipment, never a single product line.
+                                const target = job.field_values.find(
+                                  (x) => x.row_index == null && x.label_name === targetLabel,
+                                );
+                                if (!target) continue;
+                                await jobsApi.correctFieldValue(target.id, titleCasePlace(key));
+                              }
+                            }
+                            await reload();
+                          }}
+                        />
+                      )}
                         fv={fv}
                         // ERP Branch Address is read-only: it is always the address of the branch picked
                         // above it, never typed. To change it, pick a different branch.
@@ -8687,38 +8729,6 @@ function ExtractionReview({
                               : undefined
                         }
                       />
-                      {showSearchFallback && (
-                        <ReferenceSearchPicker
-                          jobId={jobId}
-                          customFieldId={fv.custom_field_id!}
-                          label={fv.label_name}
-                          readOnly={readOnly}
-                          onPick={async (picked) => {
-                            await jobsApi.correctFieldValue(fv.id, picked.value);
-                            // The row that gave us the code also describes it - fill the
-                            // fields it answers rather than make the operator retype them off
-                            // the same document. See REFERENCE_PICK_FILLS_FIELDS.
-                            const fills = REFERENCE_PICK_FILLS_FIELDS[fv.label_name];
-                            if (fills) {
-                              const pairs: [string | undefined, string | undefined][] = [
-                                [picked.match_1, fills.fromMatch1],
-                                [picked.match_2, fills.fromMatch2],
-                              ];
-                              for (const [key, targetLabel] of pairs) {
-                                if (!key?.trim() || !targetLabel) continue;
-                                // Job-level only (row_index == null): these describe the
-                                // shipment, never a single product line.
-                                const target = job.field_values.find(
-                                  (x) => x.row_index == null && x.label_name === targetLabel,
-                                );
-                                if (!target) continue;
-                                await jobsApi.correctFieldValue(target.id, titleCasePlace(key));
-                              }
-                            }
-                            await reload();
-                          }}
-                        />
-                      )}
                     </div>
                   );
                 };
@@ -8733,14 +8743,14 @@ function ExtractionReview({
                         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                           {heading}
                         </p>
-                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-12">
+                        <div className="grid gap-x-4 sm:grid-cols-12">
                           {items.map(renderField)}
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="grid gap-x-4 gap-y-3 sm:grid-cols-12">
+                  <div className="grid gap-x-4 sm:grid-cols-12">
                     {visibleFields.map(renderField)}
                     {relocatedFields.map(renderField)}
                   </div>
