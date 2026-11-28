@@ -12,7 +12,8 @@ import axios from "axios";
 import { AppShell } from "../../components/AppShell";
 import { Alert } from "../../components/ui/Alert";
 import * as rulesApi from "../../api/erpRules";
-import type { ConfigRow, ErpRule, FieldConfig, MappingStatus, RuleCheckItem, RuleSuggestion, RuleTemplate } from "../../api/erpRules";
+import type { ConfigRow, ErpRule, FieldConfig, FieldView, MappingStatus, RuleCheckItem, RuleSuggestion, RuleTemplate } from "../../api/erpRules";
+import { ErpFieldsByDocument } from "./ErpFieldsByDocument";
 import { formatDateTime } from "../../utils/dateTime";
 import {
   CheckBadgeIcon, CheckCircleIcon, ChevronDownIcon, DatabaseIcon, DocumentIcon, ExclamationTriangleIcon,
@@ -56,6 +57,8 @@ export function ErpColumnRulesPage() {
   const [templates, setTemplates] = useState<RuleTemplate[]>([]);
   const [groupId, setGroupId] = useState("");
   const [cfg, setCfg] = useState<FieldConfig | null>(null);
+  const [fieldView, setFieldView] = useState<FieldView | null>(null);
+  const [tab, setTab] = useState<"doc" | "col">("doc");
   const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
   const [draft, setDraft] = useState<Record<string, ErpRule>>({});
   const [saved, setSaved] = useState<Record<string, ErpRule>>({});
@@ -92,7 +95,8 @@ export function ErpColumnRulesPage() {
       return;
     }
     try {
-      const [c, cols] = await Promise.all([rulesApi.getFieldConfig(id), rulesApi.getColumns(id)]);
+      const [c, cols, fv] = await Promise.all([rulesApi.getFieldConfig(id), rulesApi.getColumns(id), rulesApi.getFieldView(id)]);
+      setFieldView(fv);
       const initial = Object.fromEntries(c.rows.filter((r) => r.rule).map((r) => [r.key, { ...r.rule }]));
       setCfg(c);
       setSuggestions(cols.suggestions ?? []);
@@ -344,6 +348,28 @@ export function ErpColumnRulesPage() {
               </section>
             )}
 
+            {/* ---------- view switch */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="inline-flex rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+                {([["doc", "By document (field view)"], ["col", "By ERP column"]] as const).map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setTab(k)}
+                    className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${tab === k ? "bg-white text-indigo-700 shadow-sm dark:bg-slate-900 dark:text-indigo-300" : "text-slate-600 hover:text-slate-900 dark:text-slate-300"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs text-slate-500">
+                {tab === "doc" ? "Each field the operator sees, where it goes in the ERP Excel, and what to fix." : "Every column of the ERP Excel, sheet by sheet."}
+              </span>
+            </div>
+            {note && tab === "doc" && <div className="rounded-xl bg-emerald-50 px-4 py-2 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">✓ {note}</div>}
+
+            {tab === "doc" && fieldView && (
+              <ErpFieldsByDocument view={fieldView} draft={draft} setRule={setRule}
+                editColumn={(key) => { const r = rows.find((x) => x.key === key); setTab("col"); clearFilters(); if (r) setQ(r.header); setEditing(key); }} />
+            )}
+
+            {tab === "col" && (<>
             {/* ---------- filters + table */}
             <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-4 dark:border-slate-800">
@@ -548,6 +574,7 @@ export function ErpColumnRulesPage() {
                 </div>
               )}
             </section>
+            </>)}
 
             {/* ---------- tools */}
             <div className="grid gap-4 md:grid-cols-2">

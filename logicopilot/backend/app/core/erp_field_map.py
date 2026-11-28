@@ -120,9 +120,14 @@ def refused_counts(db: Session, group) -> dict[tuple[str, str], dict]:
             m = pat.search(text)
             if not m:
                 continue
-            e = out.setdefault(k, {"count": 0, "empty": 0, "last": ref})
+            e = out.setdefault(k, {"count": 0, "empty": 0, "last": ref, "sample": ""})
             e["count"] += 1
             e["last"] = ref
+            raw_tail = re.split(r"[|\u201d\"]", text[m.end():m.end() + 200])[0].strip(" :-")
+            raw_tail = re.sub(r"(?i)^((invoice|product|shipment) no\.?\s*#?\d+\s*|shipment\s*#\d+\s*|#?invsrno=\d+\s*|#?prodsrno=\d+\s*|[:#\s])*", "", raw_tail)
+            raw_tail = re.split(r"(?i)\.?\s*fix the excel", raw_tail)[0].strip()
+            if raw_tail and not e["sample"]:
+                e["sample"] = raw_tail[:140]
             tail = text[m.end():m.end() + 160].lower()
             if any(w in tail for w in ("mandatory", "required", "blank", "empty", "not entered")):
                 e["empty"] += 1
@@ -237,6 +242,7 @@ def config_rows(db: Session, group) -> dict:
             "refused": rf["count"] if rf else 0, "refused_last": rf["last"] if rf else None,
             "fill_pct": pct,
             "accepted_values": (analysis.get("values") or {}).get(key) if not (fixed is not None and not labels) else None,
+            "labels": labels, "refused_sample": rf["sample"] if rf else "",
         })
     summary = Counter(r["status"] for r in rows)
     return {
@@ -311,3 +317,121 @@ def analyse(db: Session, group, limit: int = 80) -> dict:
     group.erp_column_rules = stored
     db.commit()
     return {"jobs": used, "columns": len(fill)}
+
+
+# ---------------------------------------------------------------- by document (2026-11-28)
+
+def field_rows(db: Session, group) -> dict:
+    """The same information turned round to the way an operator thinks of it: one row per
+    FIELD (the label they see on the job screen), grouped by the document it is read from,
+    with every ERP sheet / column it is sent to (a field can feed two), whether it is
+    mandatory, the validation in force, what went wrong with it, and what to change."""
+    from app.core.erp_rules import SUGGESTED_KEY, describe
+
+    base = config_rows(db, group)
+    idx = field_index(db, group)
+    sugg = (group.erp_column_rules or {}).get(SUGGESTED_KEY) or {}
+    fields: dict[str, dict] = {}
+    fixed_rows: list[dict] = []
+    for r in base["rows"]:
+        if r["status"] == "not_used" and not r["mandatory"]:
+            continue
+        if not r["labels"]:
+            fixed_rows.append(r)
+            continue
+        label = r["labels"][0]
+        info = idx.get(label)
+        if info is None:
+            group_name, kind = "Not on this template", "missing"
+        elif info["kind"] == "document":
+            group_name, kind = (info["documents"][0] if info["documents"] else "Document"), "document"
+        else:
+            group_name, kind = "Job fields (picked, typed or worked out by Cargora)", "job"
+        f = fields.setdefault(label, {
+            "label": label, "display": (info or {}).get("display") or label, "group": group_name, "kind": kind,
+            "documents": (info or {}).get("documents") or [], "per_line": False, "targets": [],
+        })
+        f["per_line"] |= bool(r["per_line"])
+        f["targets"].append(r)
+
+    out = []
+    for f in fields.values():
+        t = f["targets"]
+        mand = [x["mandatory"] for x in t]
+        validation: list[str] = []
+        for x in t:
+            for v in x["rules"]:
+                if v not in validation:
+                    validation.append(v)
+        issues: list[str] = []
+        for x in t:
+            if x["refused"]:
+                issues.append(f"ERP refused {x['sheet']} {x['header']} {x['refused']}x"
+                              + (f": \u201c{x['refused_sample']}\u201d" if x["refused_sample"] else "")
+                              + (f" (last {x['refused_last']})" if x["refused_last"] else ""))
+            for p in x["problems"]:
+                if p not in issues:
+                    issues.append(p)
+        fills = [x["fill_pct"] for x in t if x["fill_pct"] is not None]
+        if fills and min(fills) < 50:
+            issues.append(f"Empty on {100 - min(fills)}% of the jobs the ERP accepted")
+
+        suggestions: list[dict] = []
+        if not all(mand):
+            reasons = [rr for x in t for rr in x["mandatory_reasons"]]
+            strong = any(x["suggest_strength"] == "strong" for x in t if x["suggest_mandatory"])
+            if reasons:
+                suggestions.append({"kind": "mandatory", "strong": strong,
+                                    "text": "Make it mandatory - " + "; ".join(dict.fromkeys(reasons)),
+                                    "keys": [x["key"] for x in t if not x["mandatory"]]})
+        for x in t:
+            sg = sugg.get(x["key"])
+            is_cth = any(w in x["header"].upper() for w in ("CTH", "RITC"))
+            active_rule = x["rule"] or {}
+            if x["refused"] and (x["builtin"] or active_rule) and not active_rule.get("off"):
+                covered = ", ".join(v for v in x["rules"] if not v.startswith("Job screen")) or "its rule"
+                suggestions.append({"kind": "covered", "strong": False, "keys": [x["key"]],
+                                    "text": f"{x['header']}: already covered - Cargora now checks it before the ERP ({covered})"})
+                continue
+            if x["refused"] and is_cth:
+                suggestions.append({"kind": "note", "strong": False, "keys": [x["key"]],
+                                    "text": f"{x['header']}: checked against the Indian Customs Tariff on the job screen - an "
+                                            "invalid or empty code is shown to the operator before submission"})
+                continue
+            if sg and (sg.get("rule") or {}) == {"required": True} and any(z["kind"] == "mandatory" for z in suggestions):
+                continue
+            if sg and not (sg.get("rule") or {}).get("needs_list"):
+                suggestions.append({"kind": "rule", "strong": True, "keys": [x["key"]], "rule": sg["rule"],
+                                    "text": f"{x['header']}: add the rule \u201c{describe(sg['rule'])}\u201d (the ERP said \u201c{sg.get('erp_text') or ''}\u201d)"})
+            elif (x["refused"] and not x["rule"] and not x["builtin"]
+                  and x["accepted_values"] and len(x["accepted_values"]) <= 12):
+                suggestions.append({"kind": "rule", "strong": True, "keys": [x["key"]],
+                                    "rule": {"allowed": x["accepted_values"]},
+                                    "text": f"{x['header']}: allow only the values the ERP accepted ({', '.join(x['accepted_values'])})"})
+            elif x["refused"] and not x["rule"] and not x["builtin"]:
+                suggestions.append({"kind": "note", "strong": False, "keys": [x["key"]],
+                                    "text": f"{x['header']}: the ERP refused values here - set a length or a list of allowed values"})
+            if any(p.startswith("Field '") for p in x["problems"]):
+                suggestions.append({"kind": "note", "strong": True, "keys": [x["key"]],
+                                    "text": f"{x['header']}: map it to a field that exists on this template, or remove the mapping"})
+        status = ("invalid" if any(x["status"] == "invalid" for x in t)
+                  else "missing" if any(x["status"] == "missing" for x in t) else "configured")
+        out.append({
+            "label": f["label"], "display": f["display"], "group": f["group"], "kind": f["kind"],
+            "documents": f["documents"], "per_line": f["per_line"],
+            "targets": [{"key": x["key"], "sheet": x["sheet"], "column": x["column"], "header": x["header"],
+                         "mandatory": x["mandatory"], "rule": x["rule"], "builtin": x["builtin"],
+                         "accepted_values": x["accepted_values"], "refused": x["refused"],
+                         "fill_pct": x["fill_pct"]} for x in t],
+            "mandatory": "all" if all(mand) else "some" if any(mand) else "none",
+            "validation": validation, "issues": issues, "suggestions": suggestions, "status": status,
+            "refused": sum(x["refused"] for x in t),
+        })
+    order = {"document": 0, "job": 1, "missing": 2}
+    out.sort(key=lambda f: (order.get(f["kind"], 3), f["group"].lower(), -f["refused"], f["display"].lower()))
+    fixed = [{"key": r["key"], "sheet": r["sheet"], "column": r["column"], "header": r["header"],
+              "value": r["fixed_value"]} for r in fixed_rows]
+    return {"fields": out, "fixed": fixed, "summary": base["summary"], "excel_file": base["excel_file"],
+            "analysis": base["analysis"],
+            "counts": {"fields": len(out), "with_issues": sum(1 for f in out if f["issues"]),
+                       "with_suggestions": sum(1 for f in out if f["suggestions"])}}

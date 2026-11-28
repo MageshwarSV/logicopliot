@@ -286,3 +286,13 @@ def set_mandatory(group_id: str, payload: MandatoryIn, db: Session = Depends(get
     g.erp_column_rules = stored or None
     db.commit()
     return {"changed": changed}
+
+
+
+@router.get("/{group_id}/fields")
+def field_view(group_id: str, db: Session = Depends(get_db), _u: User = Depends(_admin)) -> dict:
+    """The configuration by document and field (the operator's view) - app/core/erp_field_map.field_rows."""
+    from app.core.erp_field_map import field_rows
+
+    g = _group(db, group_id)
+    return {"id": g.id, "name": g.name, **field_rows(db, g)}

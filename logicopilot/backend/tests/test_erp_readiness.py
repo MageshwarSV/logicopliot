@@ -141,3 +141,26 @@ def test_failure_reports_resolved_when_job_enters_erp(db_session):
     rep = db_session.query(JobFailureReport).filter_by(job_id=job.id).one()
     db_session.refresh(rep)
     assert rep.status == "resolved" and rep.reason == "stuck"
+
+
+def test_field_view_groups_by_document_with_targets_issues_and_suggestions(client, db_session):
+    _t, g, job = _world(db_session, mode="S")
+    cfg = dict(g.excel_config)
+    cfg["sheets"] = [*cfg["sheets"], {"sheet": "EXTRA", "scope": "job", "columns": [
+        {"header": "PortCopy", "field": "Shipment Port Code"}]}]          # one field, two columns
+    g.excel_config = cfg
+    from app.models.job_failure import JobFailureReport
+    db_session.add(JobFailureReport(tenant_id=_t.id, job_id=job.id, job_reference=job.reference, status="open",
+                                    reason="The ERP says: “SHIPMENT PkgUnitCode Shipment #1 This field is mandatory”"))
+    db_session.commit()
+    admin = make_user(db_session, role=SUPER_ADMIN, email=f"sa-{uuid.uuid4().hex[:6]}@x.com")
+    assert login(client, admin.email).status_code == 200
+    body = client.get(f"/api/v1/erp-rules/{g.id}/fields").json()
+    by = {f["label"]: f for f in body["fields"]}
+    port = by["Shipment Port Code"]
+    assert port["group"] == "Air Waybill" and len(port["targets"]) == 2
+    pkg = by["Package Unit"]
+    assert any("refused" in i and "This field is mandatory" in i for i in pkg["issues"])
+    assert any(s["kind"] == "mandatory" for s in pkg["suggestions"])
+    assert by["IGM Number"]["group"] == "Not on this template" and by["IGM Number"]["status"] == "invalid"
+    assert any(x["header"] == "BETypeCode" for x in body["fixed"])
