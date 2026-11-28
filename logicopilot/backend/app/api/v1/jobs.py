@@ -6342,7 +6342,21 @@ def complete_job(
         # A value the ERP would refuse stops here, before anything is entered (erp_rules.py).
         from app.core.erp_rules import pre_check, summary
 
-        _help = pre_check(db, job, values, rows)
+        # Auto ERP keeps filling an empty mandatory value (decided 2026-11-28) - checked on
+        # the values the workbook will really carry, the same order as _build_job_excel.
+        _check_values, _check_rows = values, rows
+        if getattr(job, "auto_erp_submitted", False):
+            try:
+                from app.core.auto_erp_complete import complete_for_erp
+                from app.core.erp_rules import effective_config
+
+                _grp = db.get(TemplateGroup, job.group_id)
+                if _grp is not None and (_grp.entry_mode or "fields") == "excel":
+                    _check_values, _check_rows, _ = complete_for_erp(
+                        db, job, effective_config(_grp), values, rows)
+            except Exception:  # noqa: BLE001 - the check then runs on the values as read
+                _check_values, _check_rows = values, rows
+        _help = pre_check(db, job, _check_values, _check_rows)
         if _help:
             job.erp_status = "failed"
             job.erp_reason = summary(_help)

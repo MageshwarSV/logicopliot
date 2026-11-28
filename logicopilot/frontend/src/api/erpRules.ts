@@ -11,6 +11,8 @@ export interface ErpRule {
   message?: string;
   uppercase?: boolean;
   off?: boolean;
+  allowed?: string[];
+  length_when?: { column: string; lengths: Record<string, number> };
 }
 
 export interface RuleTemplate { id: string; name: string; tenant: string; mode: string | null; rules_saved: number; suggestions: number }
@@ -83,4 +85,56 @@ export function getMasterList(kind: "country" | "currency"): Promise<MasterEntry
       .catch((err) => { delete masterCache[kind]; throw err; });
   }
   return masterCache[kind];
+}
+
+/** R7 - ERP Field Configuration: one row per ERP Excel column (GET /erp-rules/{id}/config). */
+export type MappingStatus = "configured" | "missing" | "invalid" | "not_used";
+export interface ConfigRow {
+  key: string;
+  sheet: string;
+  scope: string;
+  column: string;
+  header: string;
+  erp_field: string;
+  document: string;
+  doc_field: string;
+  per_line: boolean;
+  fixed_value: string | null;
+  mandatory: boolean;
+  suggest_mandatory: boolean;
+  suggest_strength: "strong" | "data" | null;
+  mandatory_reasons: string[];
+  rules: string[];
+  rule: ErpRule | null;
+  builtin: boolean;
+  status: MappingStatus;
+  problems: string[];
+  excel_file: string;
+  refused: number;
+  refused_last: string | null;
+  fill_pct: number | null;
+  accepted_values: string[] | null;
+}
+export interface ConfigSummary {
+  total: number; configured: number; missing: number; invalid: number; not_used: number;
+  mandatory: number; suggested: number; suggested_strong: number; refused: number;
+}
+export interface FieldConfig {
+  id: string; name: string; excel_file: string; rows: ConfigRow[]; summary: ConfigSummary;
+  analysis: { at: string | null; jobs: number }; masters: Record<string, string>;
+}
+
+export async function getFieldConfig(groupId: string): Promise<FieldConfig> {
+  const { data } = await apiClient.get<FieldConfig>(`/erp-rules/${groupId}/config`);
+  return data;
+}
+
+export async function analyseJobs(groupId: string): Promise<{ jobs: number; columns: number }> {
+  const { data } = await apiClient.post(`/erp-rules/${groupId}/analyse`);
+  return data;
+}
+
+export async function setMandatory(groupId: string, keys: string[], required: boolean): Promise<{ changed: number }> {
+  const { data } = await apiClient.post(`/erp-rules/${groupId}/mandatory`, { keys, required });
+  return data;
 }

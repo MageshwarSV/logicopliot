@@ -153,6 +153,10 @@ def job_detail(job_id: str, db: Session = Depends(get_db), _u: User = Depends(_d
                    for it in (help_.get("items") or [])][:20]
     events = (db.query(JobEvent).filter(JobEvent.job_id == j.id)
               .order_by(JobEvent.created_at.desc()).limit(15).all())
+    from app.models.job_failure import JobFailureReport
+
+    past = (db.query(JobFailureReport).filter(JobFailureReport.job_id == j.id)
+            .order_by(JobFailureReport.created_at.desc()).limit(20).all())
     notes = desk._recent_activity(db, 50, job_id=j.id)
     outcomes = {a.id: a.outcome for a in db.query(SupportActivity).filter(
         SupportActivity.id.in_([n["id"] for n in notes])).all()} if notes else {}
@@ -176,6 +180,8 @@ def job_detail(job_id: str, db: Session = Depends(get_db), _u: User = Depends(_d
         "timeline": _timeline(j),
         "events": [{"at": _iso(e.created_at), "status": e.status, "note": e.note} for e in events],
         "notes": notes,
+        # R6: every ERP failure this job had, kept after a successful retry.
+        "erp_failures": [{"at": _iso(r.created_at), "reason": (r.reason or "")[:400], "status": r.status} for r in past],
     }
 
 

@@ -83,6 +83,7 @@ export type JobDetail = {
   timeline: { label: string; at: string }[];
   events: { at: string; status: string; note: string | null }[];
   notes: Activity[];
+  erp_failures: { at: string; reason: string; status: string }[];
 };
 
 export type KnownGroup = {

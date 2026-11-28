@@ -144,6 +144,20 @@ export default function Job() {
             </Card>
           ))}
 
+          {j.erp_failures.length > 0 && (
+            <>
+              <Text style={[s.h2, { color: c.text, marginVertical: 8 }]}>Past ERP failures ({j.erp_failures.length})</Text>
+              <Card>
+                {j.erp_failures.map((f, i) => (
+                  <View key={i} style={{ paddingVertical: 5 }}>
+                    <Text style={{ color: c.sub, fontSize: 12 }}>{when(f.at)} · {f.status === "open" ? "open" : "resolved"}</Text>
+                    <Text style={{ color: c.text }}>{f.reason}</Text>
+                  </View>
+                ))}
+              </Card>
+            </>
+          )}
+
           <Text style={[s.h2, { color: c.text, marginVertical: 8 }]}>Timeline</Text>
           <Card>
             {j.timeline.map((t, i) => (
